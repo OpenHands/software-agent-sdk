@@ -179,6 +179,44 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "str_replace_editor": "file_editor",
 }
 
+# Regex to detect malformed tool names (e.g., "str_replace </parameter"
+# or "str_replace</function>"). These occur when LLMs emit XML/HTML
+# tag fragments in tool names
+_MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _try_fix_malformed_tool_name(
+    tool_name: str, available_tools: Collection[str]
+) -> str:
+    """Try to fix a malformed tool name by extracting the first valid identifier.
+
+    When LLMs emit malformed tool names like "str_replace </parameter" or
+    "str_replace</function", extract the first valid identifier and check
+    if it matches a known alias or is a registered tool.
+
+    If the extracted identifier doesn't match any alias or tool, return the
+    original tool name so the caller can fall back to other resolution paths
+    (e.g., terminal fallback).
+    """
+    match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
+    if not match:
+        return tool_name
+
+    base_name = match.group(1)
+
+    # If the base name is a registered tool, use it
+    if base_name in available_tools:
+        return base_name
+
+    # If the base name is an alias, return the alias target
+    alias_target = TOOL_NAME_ALIASES.get(base_name)
+    if alias_target and alias_target in available_tools:
+        return alias_target
+
+    # No fix possible (base name doesn't match any known tool/alias), return original
+    return tool_name
+
+
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
 _SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
@@ -303,24 +341,30 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
-            normalized_tool_name = alias_target
-        elif "terminal" in available_tools:
-            terminal_command = _maybe_rewrite_as_terminal_command(
-                tool_name,
-                normalized_arguments,
-            )
-            if terminal_command is not None:
-                normalized_tool_name = "terminal"
-                # Preserve only terminal-relevant arguments (security_risk, summary)
-                # along with the generated command
-                normalized_arguments = {
-                    key: value
-                    for key, value in normalized_arguments.items()
-                    if key in {"security_risk", "summary"}
-                }
-                normalized_arguments["command"] = terminal_command
+        # First, try to fix malformed tool names (e.g., "str_replace </parameter")
+        fixed_name = _try_fix_malformed_tool_name(tool_name, available_tools)
+        if fixed_name != tool_name:
+            # Successfully fixed - use the result (already includes alias resolution)
+            normalized_tool_name = fixed_name
+        else:
+            alias_target = TOOL_NAME_ALIASES.get(tool_name)
+            if alias_target and alias_target in available_tools:
+                normalized_tool_name = alias_target
+            elif "terminal" in available_tools:
+                terminal_command = _maybe_rewrite_as_terminal_command(
+                    tool_name,
+                    normalized_arguments,
+                )
+                if terminal_command is not None:
+                    normalized_tool_name = "terminal"
+                    # Preserve only terminal-relevant arguments (security_risk, summary)
+                    # along with the generated command
+                    normalized_arguments = {
+                        key: value
+                        for key, value in normalized_arguments.items()
+                        if key in {"security_risk", "summary"}
+                    }
+                    normalized_arguments["command"] = terminal_command
 
     if normalized_tool_name == "file_editor":
         inferred_command = _infer_file_editor_command(normalized_arguments)
