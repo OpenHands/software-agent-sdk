@@ -297,6 +297,20 @@ def test_git_change_model_properties():
         assert change_dict["status"] == GitChangeStatus.ADDED
 
 
+def test_git_change_path_serializes_to_posix_and_deserializes():
+    change = GitChange(
+        status=GitChangeStatus.ADDED,
+        path=Path("nested") / "file.py",
+    )
+
+    serialized = change.model_dump(mode="json")
+    assert serialized["path"] == "nested/file.py"
+
+    deserialized = GitChange.model_validate(serialized)
+    assert deserialized.path == Path("nested/file.py")
+    assert deserialized.status == GitChangeStatus.ADDED
+
+
 def test_git_changes_with_gitignore():
     """Test that gitignore files are respected."""
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -235,7 +235,7 @@ class TestAsyncHookExecution:
     def test_execute_async_hook_uses_windows_process_group(
         self, executor, sample_event, monkeypatch
     ):
-        """Test that async hooks request a Windows process group on win32."""
+        """Test Windows process-group kwargs by simulating win32 on any runner."""
         import openhands.sdk.hooks.executor as executor_module
 
         popen_kwargs: dict[str, object] = {}
