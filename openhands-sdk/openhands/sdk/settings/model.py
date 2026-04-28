@@ -955,6 +955,25 @@ class ACPAgentSettings(BaseModel):
         """Export a structured schema describing configurable ACP settings."""
         return export_settings_schema(cls)
 
+    @property
+    def api_key_env_var(self) -> str | None:
+        """Env var name the ACP subprocess expects for its API key.
+
+        Returns ``None`` for ``'custom'`` servers — users manage credentials
+        entirely via :attr:`acp_env` in that case.
+
+        Mapping:
+        - ``claude-code``  → ``ANTHROPIC_API_KEY``
+        - ``codex``        → ``OPENAI_API_KEY``
+        - ``gemini-cli``   → ``GEMINI_API_KEY``
+        - ``custom``       → ``None``
+        """
+        return {
+            "claude-code": "ANTHROPIC_API_KEY",
+            "codex": "OPENAI_API_KEY",
+            "gemini-cli": "GEMINI_API_KEY",
+        }.get(self.acp_server)
+
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
 

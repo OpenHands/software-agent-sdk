@@ -341,15 +341,17 @@ class LocalConversation(BaseConversation):
             but has its own identity and independent state going forward.
         """
         fork_id = conversation_id or uuid.uuid4()
-        if agent is not None:
-            fork_agent = agent
-        else:
-            # Round-trip via JSON to produce a deep copy that avoids
-            # thread-lock pickling issues with model_copy(deep=True).
-            agent_cls = type(self.agent)
-            fork_agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
-            )
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
