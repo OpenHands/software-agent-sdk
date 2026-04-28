@@ -12,6 +12,7 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from tests.platform_utils import maybe_mark_forked
 
 
 def create_test_agent() -> Agent:
@@ -127,7 +128,6 @@ def test_conversation_with_custom_id():
 
 def test_conversation_event_id_validation():
     """Test that EventLog prevents duplicate event IDs."""
-    import pytest
 
     agent = create_test_agent()
 
@@ -150,16 +150,7 @@ def test_conversation_event_id_validation():
         assert len(our_events) == 1
 
 
-def _maybe_forked(test_func):
-    # pytest-forked doesn't reliably compose with xdist; under xdist we already
-    # have process isolation per worker, so avoid forking again. Windows has no
-    # os.fork(), so the pytest-forked marker cannot run there.
-    if os.name == "nt" or os.environ.get("PYTEST_XDIST_WORKER"):
-        return test_func
-    return pytest.mark.forked(test_func)
-
-
-@_maybe_forked
+@maybe_mark_forked
 def test_conversation_large_event_handling():
     """Test conversation handling of many events with memory usage monitoring."""
     import gc
