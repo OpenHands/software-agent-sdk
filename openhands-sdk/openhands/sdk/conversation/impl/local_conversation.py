@@ -42,6 +42,7 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import expand_mcp_variables
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -53,7 +54,6 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
-from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
