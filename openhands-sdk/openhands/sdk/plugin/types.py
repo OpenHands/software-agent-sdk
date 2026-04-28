@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 import frontmatter
 from pydantic import BaseModel, Field, field_validator
 
+from openhands.sdk.utils.path import to_posix_path
+
 
 class PluginSource(BaseModel):
     """Specification for a plugin to load.
@@ -308,7 +310,7 @@ class CommandDefinition(BaseModel):
             argument_hint=argument_hint,
             allowed_tools=allowed_tools,
             content=post.content.strip(),
-            source=str(command_path),
+            source=to_posix_path(command_path),
             metadata=metadata,
         )
 

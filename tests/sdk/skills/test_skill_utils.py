@@ -14,6 +14,7 @@ from openhands.sdk.context import (
     load_skills_from_dir,
 )
 from openhands.sdk.skills.utils import find_third_party_files
+from openhands.sdk.utils.path import to_posix_path
 
 
 CONTENT = "# dummy header\ndummy content\n## dummy subheader\ndummy subcontent\n"
@@ -231,7 +232,7 @@ Add proper error handling."""
     assert agent.name == "cursorrules"
     assert agent.content == cursorrules_content
     assert agent.trigger is None
-    assert agent.source == str(cursorrules_path)
+    assert agent.source == to_posix_path(cursorrules_path)
 
 
 def test_skill_version_as_integer(tmp_path):

@@ -13,10 +13,6 @@ markdown.  These tests verify:
   - Integration with the Skill model (load + render)
 """
 
-import os
-import shlex
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -27,16 +23,7 @@ from openhands.sdk.skills.execute import (
     _execute_inline_command,
     render_content_with_commands,
 )
-
-
-def _shell_join(args: list[str]) -> str:
-    if os.name == "nt":
-        return subprocess.list2cmdline(args)
-    return shlex.join(args)
-
-
-def _python_command(script: str) -> str:
-    return _shell_join([sys.executable, "-c", script])
+from tests.command_utils import python_command
 
 
 # ---------------------------------------------------------------------------
@@ -49,19 +36,19 @@ def _python_command(script: str) -> str:
     [
         pytest.param("echo hello", 10.0, lambda r: r == "hello", id="success"),
         pytest.param(
-            _python_command("print('line1'); print('line2'); print('line3')"),
+            python_command("print('line1'); print('line2'); print('line3')"),
             10.0,
             lambda r: r == "line1\nline2\nline3",
             id="multiline_output",
         ),
         pytest.param(
-            _python_command("import sys; sys.exit(1)"),
+            python_command("import sys; sys.exit(1)"),
             10.0,
             lambda r: "[Error:" in r,
             id="failure",
         ),
         pytest.param(
-            _python_command("import time; time.sleep(5)"),
+            python_command("import time; time.sleep(5)"),
             0.1,
             lambda r: "timed out" in r,
             id="timeout",
@@ -74,7 +61,7 @@ def test_execute_inline_command(command, timeout, check_fn):
 
 def test_execute_inline_command_respects_working_dir(tmp_path: Path):
     result = _execute_inline_command(
-        _python_command("from pathlib import Path; print(Path.cwd())"),
+        python_command("from pathlib import Path; print(Path.cwd())"),
         working_dir=tmp_path,
     )
     assert result == str(tmp_path.resolve())
@@ -83,7 +70,7 @@ def test_execute_inline_command_respects_working_dir(tmp_path: Path):
 def test_execute_inline_command_truncates_large_output():
     size = MAX_OUTPUT_SIZE + 100
     result = _execute_inline_command(
-        _python_command(f"import sys; sys.stdout.write('x' * {size})")
+        python_command(f"import sys; sys.stdout.write('x' * {size})")
     )
     assert result.endswith("... [output truncated]")
     assert len(result.encode()) <= MAX_OUTPUT_SIZE + 50  # small overhead ok

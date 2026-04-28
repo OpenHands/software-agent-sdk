@@ -14,6 +14,7 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -426,7 +427,7 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
 
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
@@ -456,7 +457,7 @@ def _list_resource_files(
             if item.is_file():
                 # Store relative path from resource directory
                 rel_path = item.relative_to(resource_dir)
-                files.append(rel_path.as_posix())
+                files.append(to_posix_path(rel_path))
     except OSError as e:
         logger.warning(f"Error listing {resource_type} directory: {e}")
     return sorted(files)

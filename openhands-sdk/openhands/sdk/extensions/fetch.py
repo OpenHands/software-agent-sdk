@@ -7,6 +7,7 @@ from pathlib import Path
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_local_path_source
 
 
 logger = get_logger(__name__)
@@ -30,9 +31,9 @@ class SourceType(StrEnum):
 
 
 def _is_local_path_source(source: str) -> bool:
-    if source.startswith(("/", "~", ".")):
+    if source.startswith("."):
         return True
-    return "\\" in source or Path(source).expanduser().is_absolute()
+    return is_local_path_source(source)
 
 
 def parse_extension_source(source: str) -> tuple[SourceType, str]:

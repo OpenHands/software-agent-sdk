@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -15,7 +16,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _remote_path(path: str | Path) -> str:
-    return Path(path).as_posix()
+    return to_posix_path(path)
 
 
 class RemoteWorkspaceMixin(BaseModel):

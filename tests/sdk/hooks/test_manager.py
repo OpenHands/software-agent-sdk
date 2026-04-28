@@ -1,32 +1,10 @@
 """Tests for HookManager."""
 
-import os
-import shlex
-import subprocess
-import sys
-
 import pytest
 
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.manager import HookManager
-
-
-def _shell_join(args: list[str]) -> str:
-    if os.name == "nt":
-        return subprocess.list2cmdline(args)
-    return shlex.join(args)
-
-
-def _python_command(script: str) -> str:
-    return _shell_join([sys.executable, "-c", script])
-
-
-def _touch_command(path) -> str:
-    return _python_command(f"from pathlib import Path; Path({str(path)!r}).touch()")
-
-
-def _sleep_command(seconds: float) -> str:
-    return _python_command(f"import time; time.sleep({seconds})")
+from tests.command_utils import python_command, sleep_command, touch_command
 
 
 class TestHookManager:
@@ -40,7 +18,7 @@ class TestHookManager:
     @pytest.fixture
     def config_with_blocking_hook(self, tmp_path):
         """Create config with a blocking PreToolUse hook."""
-        command = _python_command(
+        command = python_command(
             "import json, sys; "
             "print(json.dumps({'decision': 'deny', 'reason': 'Blocked by test'})); "
             "sys.exit(2)"
@@ -84,7 +62,7 @@ class TestHookManager:
 
         hook = {
             "type": "command",
-            "command": _python_command(
+            "command": python_command(
                 "from pathlib import Path; "
                 f"Path({str(log_file)!r}).write_text('logged\\n')"
             ),
@@ -106,7 +84,7 @@ class TestHookManager:
 
     def test_run_user_prompt_submit(self, tmp_working_dir):
         """Test UserPromptSubmit hooks execute and return additionalContext."""
-        cmd = _python_command(
+        cmd = python_command(
             "import json; "
             "print(json.dumps({'additionalContext': 'Always check tests'}))"
         )
@@ -133,7 +111,7 @@ class TestHookManager:
         """Test SessionStart hooks execute."""
         marker_file = tmp_path / "started"
 
-        hook = {"type": "command", "command": _touch_command(marker_file)}
+        hook = {"type": "command", "command": touch_command(marker_file)}
         config = HookConfig.from_dict(
             {"hooks": {"SessionStart": [{"matcher": "*", "hooks": [hook]}]}}
         )
@@ -149,7 +127,7 @@ class TestHookManager:
         """Test that blocking Stop hook means agent should continue."""
         hook = {
             "type": "command",
-            "command": _python_command(
+            "command": python_command(
                 "import json, sys; print(json.dumps({'decision': 'deny'})); sys.exit(2)"
             ),
         }
@@ -213,7 +191,7 @@ class TestAsyncHookManager:
     def test_async_pre_tool_use_still_runs(self, tmp_working_dir, tmp_path):
         """Test that async PreToolUse hooks still execute despite warning."""
         marker = tmp_path / "async_ran.txt"
-        hook = {"type": "command", "command": _touch_command(marker), "async": True}
+        hook = {"type": "command", "command": touch_command(marker), "async": True}
         config = HookConfig.from_dict(
             {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
         )
@@ -235,7 +213,7 @@ class TestAsyncHookManager:
 
     def test_cleanup_async_processes_on_session_end(self, tmp_working_dir, tmp_path):
         """Test that session end cleans up async processes."""
-        hook = {"type": "command", "command": _sleep_command(60), "async": True}
+        hook = {"type": "command", "command": sleep_command(60), "async": True}
         config = HookConfig.from_dict(
             {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}}
         )
@@ -254,7 +232,7 @@ class TestAsyncHookManager:
 
     def test_cleanup_async_processes_method(self, tmp_working_dir, tmp_path):
         """Test cleanup_async_processes method directly."""
-        hook = {"type": "command", "command": _sleep_command(60), "async": True}
+        hook = {"type": "command", "command": sleep_command(60), "async": True}
         config = HookConfig.from_dict(
             {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}}
         )
@@ -282,11 +260,11 @@ class TestAsyncHookManager:
                             "matcher": "*",
                             "hooks": [
                                 {
-                                    "command": _touch_command(sync_marker),
+                                    "command": touch_command(sync_marker),
                                     "async": False,
                                 },
                                 {
-                                    "command": _python_command(
+                                    "command": python_command(
                                         "import time; "
                                         "from pathlib import Path; "
                                         "time.sleep(0.2); "
@@ -325,11 +303,7 @@ class TestAsyncHookManager:
         """Test that session end hooks run before async process cleanup."""
         marker = tmp_path / "session_end.txt"
         config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "SessionEnd": [{"hooks": [{"command": _touch_command(marker)}]}]
-                }
-            }
+            {"hooks": {"SessionEnd": [{"hooks": [{"command": touch_command(marker)}]}]}}
         )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)

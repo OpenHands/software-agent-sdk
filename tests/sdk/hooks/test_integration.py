@@ -1,10 +1,5 @@
 """Integration tests for hooks blocking in Agent and Conversation."""
 
-import os
-import shlex
-import subprocess
-import sys
-
 import pytest
 
 from openhands.sdk.conversation.state import ConversationState
@@ -16,32 +11,23 @@ from openhands.sdk.hooks.conversation_hooks import (
 )
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.llm import Message, TextContent
-
-
-def _shell_join(args: list[str]) -> str:
-    if os.name == "nt":
-        return subprocess.list2cmdline(args)
-    return shlex.join(args)
-
-
-def _python_command(script: str) -> str:
-    return _shell_join([sys.executable, "-c", script])
+from tests.command_utils import python_command
 
 
 def _json_command(payload: dict[str, object], exit_code: int = 0) -> str:
-    return _python_command(
+    return python_command(
         f"import json, sys; print(json.dumps({payload!r})); sys.exit({exit_code})"
     )
 
 
 def _stderr_exit_command(message: str, exit_code: int) -> str:
-    return _python_command(
+    return python_command(
         f"import sys; sys.stderr.write({message!r} + '\\n'); sys.exit({exit_code})"
     )
 
 
 def _write_stdin_to_file_command(path) -> str:
-    return _python_command(
+    return python_command(
         "import sys; "
         "from pathlib import Path; "
         f"Path({str(path)!r}).write_text(sys.stdin.read())"
@@ -206,7 +192,7 @@ class TestUserPromptSubmitBlocking:
         self, tmp_path, mock_conversation_state
     ):
         """Test that non-blocking hooks don't add to blocked_messages."""
-        command = _python_command("import sys; sys.exit(0)")
+        command = python_command("import sys; sys.exit(0)")
 
         config = HookConfig.from_dict(
             {
@@ -817,7 +803,7 @@ class TestStopHookIntegration:
         self, tmp_path, mock_conversation_state
     ):
         """Test that hook errors are handled gracefully and stopping is allowed."""
-        command = _python_command("import sys; sys.exit(1)")
+        command = python_command("import sys; sys.exit(1)")
 
         config = HookConfig.from_dict(
             {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
@@ -852,7 +838,7 @@ class TestStopHookConversationIntegration:
         stop_count_file = tmp_path / "stop_count"
         stop_count_file.write_text("0")
 
-        command = _python_command(
+        command = python_command(
             "import json, sys; "
             "from pathlib import Path; "
             f"path = Path({str(stop_count_file)!r}); "
@@ -1094,7 +1080,7 @@ class TestHookExecutionEventEmission:
         self, tmp_path, mock_conversation_state
     ):
         """Test that HookExecutionEvent is emitted for SessionStart hooks."""
-        command = _python_command("print('Session started')")
+        command = python_command("print('Session started')")
 
         config = HookConfig.from_dict(
             {

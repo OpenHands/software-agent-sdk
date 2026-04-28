@@ -31,6 +31,7 @@ from openhands.sdk.plugin.fetch import (
     fetch_plugin_with_resolution,
 )
 from openhands.sdk.plugin.plugin import Plugin
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -114,7 +115,7 @@ class InstalledPluginInfo(BaseModel):
             resolved_ref=resolved_ref,
             repo_path=repo_path,
             installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(install_path),
+            install_path=to_posix_path(install_path),
         )
 
 
@@ -417,7 +418,7 @@ def _discover_untracked_plugins(
             description=plugin.description,
             source="local",
             installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(item),
+            install_path=to_posix_path(item),
         )
         discovered.append(info)
         metadata.plugins[item.name] = info

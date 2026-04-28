@@ -16,6 +16,7 @@ from openhands.sdk.tool.tool import (
     ToolDefinition,
     ToolExecutor,
 )
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -139,7 +140,7 @@ class InvokeSkillExecutor(ToolExecutor):
                 pass  # skill lives outside working_dir, keep absolute
         footer = (
             f"\n\n---\n"
-            f"This skill is located at `{display.as_posix()}`. "
+            f"This skill is located at `{to_posix_path(display)}`. "
             f"Any files it references (e.g. under `scripts/`, `references/`, "
             f"`assets/`) are relative to that directory."
         )

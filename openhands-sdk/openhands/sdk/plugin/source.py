@@ -12,6 +12,7 @@ from typing import NamedTuple
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_local_path_source
 
 
 logger = get_logger(__name__)
@@ -46,11 +47,7 @@ def parse_github_url(url: str) -> GitHubURLComponents | None:
 
 def is_local_path(source: str) -> bool:
     """Check if source is a local path (./, ../, /, ~, file://)."""
-    return (
-        any(source.startswith(p) for p in ("./", "../", "/", "~", "file://"))
-        or "\\" in source
-        or Path(source).expanduser().is_absolute()
-    )
+    return is_local_path_source(source)
 
 
 def validate_source_path(source: str) -> str:

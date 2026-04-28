@@ -18,6 +18,7 @@ from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.skills.fetch import fetch_skill_with_resolution
 from openhands.sdk.skills.skill import Skill, load_skills_from_dir
 from openhands.sdk.skills.utils import find_skill_md, validate_skill_name
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -104,7 +105,7 @@ class InstalledSkillInfo(BaseModel):
             resolved_ref=resolved_ref,
             repo_path=repo_path,
             installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(install_path),
+            install_path=to_posix_path(install_path),
         )
 
 
@@ -379,7 +380,7 @@ def _discover_untracked_skills(
             allowed_tools=skill.allowed_tools,
             source="local",
             installed_at=datetime.now(UTC).isoformat(),
-            install_path=str(item),
+            install_path=to_posix_path(item),
         )
         discovered.append(info)
         metadata.skills[item.name] = info
@@ -574,7 +575,9 @@ def install_skills_from_marketplace(
     # Install all collected skills
     for name, path in skill_dirs:
         try:
-            info = install_skill(str(path), installed_dir=installed_dir, force=force)
+            info = install_skill(
+                to_posix_path(path), installed_dir=installed_dir, force=force
+            )
             installed.append(info)
             logger.info(f"Installed skill '{info.name}'")
         except FileExistsError:

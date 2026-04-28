@@ -32,6 +32,7 @@ from openhands.sdk.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -362,10 +363,9 @@ class Skill(BaseModel):
 
         # Calculate derived name from path
         if skill_base_dir is not None:
-            skill_name = (
-                cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
-                or path.relative_to(skill_base_dir).with_suffix("").as_posix()
-            )
+            skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(
+                path.name.lower()
+            ) or to_posix_path(path.relative_to(skill_base_dir).with_suffix(""))
         else:
             skill_name = path.stem
 
@@ -448,7 +448,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
                 mcp_tools=mcp_tools,
@@ -461,7 +461,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 resources=resources,
@@ -473,7 +473,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
                 resources=resources,
@@ -494,7 +494,7 @@ class Skill(BaseModel):
             return Skill(
                 name=skill_name,
                 content=file_content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=None,
             )
 
@@ -941,7 +941,9 @@ def load_marketplace_skill_names(
             data = json.load(f)
 
         # Use Marketplace model for validation and parsing
-        marketplace = Marketplace.model_validate({**data, "path": str(repo_path)})
+        marketplace = Marketplace.model_validate(
+            {**data, "path": to_posix_path(repo_path)}
+        )
 
         skill_names = {plugin.name for plugin in marketplace.plugins}
 

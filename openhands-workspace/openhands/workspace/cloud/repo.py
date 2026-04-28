@@ -19,6 +19,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -236,7 +237,7 @@ def _extract_repo_name(url: str) -> str:
         url = url.split("://")[-1]
 
     # Windows file:// URLs often carry backslash-separated local paths.
-    url = url.replace("\\", "/")
+    url = to_posix_path(url)
 
     # Get the last path component (repo name)
     parts = url.rstrip("/").split("/")

@@ -31,6 +31,7 @@ from openhands.sdk.plugin import (
     update_plugin,
 )
 from openhands.sdk.plugin.fetch import DEFAULT_CACHE_DIR as DEFAULT_PLUGIN_CACHE_DIR
+from openhands.sdk.utils.path import to_posix_path
 
 
 # ============================================================================
@@ -108,7 +109,7 @@ class TestInstalledPluginInfo:
         assert info.resolved_ref == "abc123"
         assert info.repo_path is None
         assert info.installed_at is not None
-        assert str(install_path) in info.install_path
+        assert to_posix_path(install_path) in info.install_path
 
 
 class TestInstalledPluginsMetadata:

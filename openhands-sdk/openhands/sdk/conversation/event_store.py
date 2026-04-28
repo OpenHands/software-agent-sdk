@@ -12,6 +12,7 @@ from openhands.sdk.conversation.persistence_const import (
 from openhands.sdk.event import Event, EventID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import posix_path_name
 
 
 logger = get_logger(__name__)
@@ -154,8 +155,7 @@ class EventLog(EventsListBase):
         return sum(
             1
             for p in paths
-            if p.replace("\\", "/").rsplit("/", 1)[-1].startswith("event-")
-            and p.endswith(".json")
+            if posix_path_name(p).startswith("event-") and p.endswith(".json")
         )
 
     def _sync_from_disk(self, disk_length: int) -> None:
@@ -199,7 +199,7 @@ class EventLog(EventsListBase):
 
         by_idx: dict[int, EventID] = {}
         for p in paths:
-            name = p.replace("\\", "/").rsplit("/", 1)[-1]
+            name = posix_path_name(p)
             m = EVENT_NAME_RE.match(name)
             if m:
                 idx = int(m.group("idx"))

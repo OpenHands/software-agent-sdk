@@ -1,26 +1,14 @@
 """Tests for hook executor."""
 
 import json
-import os
-import shlex
 import subprocess
-import sys
 
 import pytest
 
 from openhands.sdk.hooks.config import HookDefinition
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
-
-
-def _shell_join(args: list[str]) -> str:
-    if os.name == "nt":
-        return subprocess.list2cmdline(args)
-    return shlex.join(args)
-
-
-def _python_command(script: str) -> str:
-    return _shell_join([sys.executable, "-c", script])
+from tests.command_utils import python_command
 
 
 class TestHookExecutor:
@@ -53,7 +41,7 @@ class TestHookExecutor:
     def test_execute_receives_json_stdin(self, executor, sample_event, tmp_path):
         """Test that hook receives event data as JSON on stdin."""
         hook = HookDefinition(
-            command=_python_command("import sys; sys.stdout.write(sys.stdin.read())")
+            command=python_command("import sys; sys.stdout.write(sys.stdin.read())")
         )
         result = executor.execute(hook, sample_event)
 
@@ -64,7 +52,7 @@ class TestHookExecutor:
 
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
-        hook = HookDefinition(command=_python_command("import sys; sys.exit(2)"))
+        hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
         result = executor.execute(hook, sample_event)
 
         assert not result.success
@@ -75,7 +63,7 @@ class TestHookExecutor:
     def test_execute_json_output_decision(self, executor, sample_event):
         """Test parsing JSON output with decision field."""
         hook = HookDefinition(
-            command=_python_command(
+            command=python_command(
                 "import json; print(json.dumps("
                 "{'decision': 'deny', 'reason': 'Not allowed'}))"
             )
@@ -89,7 +77,7 @@ class TestHookExecutor:
     def test_execute_environment_variables(self, executor, sample_event, tmp_path):
         """Test that environment variables are set correctly."""
         hook = HookDefinition(
-            command=_python_command(
+            command=python_command(
                 "import os; "
                 "print(f\"SESSION={os.environ['OPENHANDS_SESSION_ID']}\"); "
                 "print(f\"TOOL={os.environ['OPENHANDS_TOOL_NAME']}\")"
@@ -105,7 +93,7 @@ class TestHookExecutor:
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""
         hook = HookDefinition(
-            command=_python_command("import time; time.sleep(10)"), timeout=1
+            command=python_command("import time; time.sleep(10)"), timeout=1
         )
         result = executor.execute(hook, sample_event)
 
@@ -116,7 +104,7 @@ class TestHookExecutor:
         """Test that execute_all stops on blocking hook."""
         hooks = [
             HookDefinition(command="echo 'first'"),
-            HookDefinition(command=_python_command("import sys; sys.exit(2)")),
+            HookDefinition(command=python_command("import sys; sys.exit(2)")),
             HookDefinition(command="echo 'third'"),
         ]
 
@@ -129,7 +117,7 @@ class TestHookExecutor:
     def test_execute_captures_stderr(self, executor, sample_event):
         """Test that stderr is captured."""
         hook = HookDefinition(
-            command=_python_command(
+            command=python_command(
                 "import sys; sys.stderr.write('error message\\n'); sys.exit(2)"
             )
         )
@@ -162,7 +150,7 @@ class TestAsyncHookExecution:
         import time
 
         hook = HookDefinition.model_validate(
-            {"command": _python_command("import time; time.sleep(5)"), "async": True}
+            {"command": python_command("import time; time.sleep(5)"), "async": True}
         )
 
         start = time.time()
@@ -190,7 +178,7 @@ class TestAsyncHookExecution:
         marker = tmp_path / "async_marker.txt"
         hook = HookDefinition.model_validate(
             {
-                "command": _python_command(
+                "command": python_command(
                     "import time; "
                     "from pathlib import Path; "
                     "time.sleep(0.3); "
@@ -219,7 +207,7 @@ class TestAsyncHookExecution:
         # Script that reads stdin and writes to file
         hook = HookDefinition.model_validate(
             {
-                "command": _python_command(
+                "command": python_command(
                     "import sys; "
                     "from pathlib import Path; "
                     f"Path({str(output_file)!r}).write_text(sys.stdin.read())"
@@ -261,7 +249,7 @@ class TestAsyncHookExecution:
             HookDefinition(command="echo 'sync1'"),
             HookDefinition.model_validate(
                 {
-                    "command": _python_command(
+                    "command": python_command(
                         f"from pathlib import Path; Path({str(marker)!r}).touch()"
                     ),
                     "async": True,
@@ -295,7 +283,7 @@ class TestAsyncProcessManager:
 
         # Start a long-running process with new session for process group cleanup
         process = subprocess.Popen(
-            _python_command("import time; time.sleep(60)"),
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,
@@ -327,7 +315,7 @@ class TestAsyncProcessManager:
 
         # Start a process with very short timeout that's already expired
         process = subprocess.Popen(
-            _python_command("import time; time.sleep(60)"),
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,
@@ -355,7 +343,7 @@ class TestAsyncProcessManager:
         manager = AsyncProcessManager()
 
         process = subprocess.Popen(
-            _python_command("import time; time.sleep(60)"),
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,

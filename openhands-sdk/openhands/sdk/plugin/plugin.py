@@ -23,6 +23,7 @@ from openhands.sdk.skills.utils import (
     load_mcp_config,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -325,7 +326,7 @@ class Plugin(BaseModel):
 
         return cls(
             manifest=manifest,
-            path=str(plugin_dir),
+            path=to_posix_path(plugin_dir),
             skills=skills,
             hooks=hooks,
             mcp_config=mcp_config,

@@ -11,6 +11,7 @@ from binaryornot.check import is_binary
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -410,10 +411,11 @@ class FileEditor:
         )
 
     def _format_directory_entry(self, root: Path, entry: Path) -> str:
+        root_display = to_posix_path(root)
         if entry == root:
-            display = str(root)
+            display = root_display
         else:
-            display = f"{root}/{entry.relative_to(root).as_posix()}"
+            display = f"{root_display}/{to_posix_path(entry.relative_to(root))}"
         if entry.is_dir():
             return f"{display}/"
         return display
