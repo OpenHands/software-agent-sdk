@@ -1,6 +1,7 @@
 import argparse
 import atexit
 import faulthandler
+import importlib
 import signal
 import sys
 from types import FrameType
@@ -13,6 +14,22 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
+
+def preload_modules(modules_arg: str | None) -> None:
+    """Import user-specified modules so their top-level side effects run.
+
+    Used to register custom tools before any conversation is created, avoiding
+    a race with dynamic `tool_module_qualnames` import in conversation_service.
+    """
+    if not modules_arg:
+        return
+    for module_name in modules_arg.split(","):
+        module_name = module_name.strip()
+        if not module_name:
+            continue
+        importlib.import_module(module_name)
+        logger.info("Imported module: %s", module_name)
 
 
 def check_browser():
@@ -110,8 +127,19 @@ def main() -> None:
         action="store_true",
         help="Check if browser functionality works and exit",
     )
+    parser.add_argument(
+        "--import-modules",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of modules to import at startup "
+            "(e.g. 'myapp.tools,myapp.plugins')"
+        ),
+    )
 
     args = parser.parse_args()
+
+    preload_modules(args.import_modules)
 
     # Handle browser check
     if args.check_browser:
