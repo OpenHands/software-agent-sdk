@@ -45,6 +45,7 @@ class SlowServiceBrowserExecutor(BrowserToolExecutor):
         self._cleanup_initiated = False
         self._action_timeout_seconds = action_timeout_seconds
         self.full_output_save_dir = None
+        self._consecutive_failures = 0
 
     async def navigate(self, url: str, new_tab: bool = False) -> str:
         del new_tab
@@ -245,6 +246,150 @@ def test_browser_executor_timeout_wrapping(mock_browser_executor):
 
     assert_browser_observation_error(result, "Browser operation failed")
     assert "timed out after 7 seconds" in result.text
+
+
+def test_issue_2412_consecutive_failures_reset_session(mock_browser_executor):
+    """After MAX_CONSECUTIVE_FAILURES timeouts, the session should be reset.
+
+    When a browser crashes, every subsequent action times out against
+    the dead session. After enough consecutive failures the executor
+    should set _initialized=False so the next call re-creates the
+    browser session instead of looping on the dead one.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2412
+    """
+    from openhands.tools.browser_use.impl import MAX_CONSECUTIVE_FAILURES
+
+    mock_browser_executor._initialized = True
+
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ):
+        action = BrowserNavigateAction(url="https://example.com")
+
+        # First (MAX_CONSECUTIVE_FAILURES - 1) failures should NOT reset
+        for i in range(MAX_CONSECUTIVE_FAILURES - 1):
+            result = mock_browser_executor(action)
+            assert result.is_error is True
+            assert mock_browser_executor._initialized is True, (
+                f"Session reset too early on failure {i + 1}"
+            )
+            assert "reset" not in result.text.lower()
+
+        # The next failure triggers the reset
+        result = mock_browser_executor(action)
+        assert result.is_error is True
+        assert mock_browser_executor._initialized is False
+        assert "reset" in result.text.lower()
+        assert mock_browser_executor._consecutive_failures == 0
+
+
+def test_issue_2412_success_resets_failure_counter(mock_browser_executor):
+    """A successful action should reset the consecutive failure counter.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2412
+    """
+    mock_browser_executor._initialized = True
+
+    # Simulate 2 failures
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ):
+        action = BrowserNavigateAction(url="https://example.com")
+        mock_browser_executor(action)
+        mock_browser_executor(action)
+
+    assert mock_browser_executor._consecutive_failures == 2
+
+    # Now a success
+    success_result = BrowserObservation.from_text(text="OK")
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        return_value=success_result,
+    ):
+        result = mock_browser_executor(action)
+
+    assert result.is_error is False
+    assert mock_browser_executor._consecutive_failures == 0
+
+
+def test_issue_2412_action_errors_do_not_trigger_reset(mock_browser_executor):
+    """Regular action errors should NOT count toward crash detection.
+
+    Only timeouts indicate a potentially dead browser. Errors like
+    invalid selector or missing element are normal agent mistakes.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2412
+    """
+    from openhands.tools.browser_use.impl import MAX_CONSECUTIVE_FAILURES
+
+    mock_browser_executor._initialized = True
+
+    error_result = BrowserObservation.from_text(text="Element not found", is_error=True)
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        return_value=error_result,
+    ):
+        action = BrowserNavigateAction(url="https://example.com")
+        for _ in range(MAX_CONSECUTIVE_FAILURES + 1):
+            mock_browser_executor(action)
+
+    # Session should NOT be reset despite many action errors
+    assert mock_browser_executor._initialized is True
+    assert mock_browser_executor._consecutive_failures == 0
+
+
+def test_issue_2412_degraded_timeout_after_failures(mock_browser_executor):
+    """Degraded timeout kicks in after 2+ consecutive timeout failures.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2412
+    """
+    from openhands.tools.browser_use.impl import DEGRADED_TIMEOUT_SECONDS
+
+    mock_browser_executor._initialized = True
+    mock_browser_executor._action_timeout_seconds = 300.0
+
+    action = BrowserNavigateAction(url="https://example.com")
+
+    # First call fails — uses normal timeout
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ) as mock_run:
+        mock_browser_executor(action)
+        _, kwargs = mock_run.call_args
+        assert kwargs["timeout"] == 300.0
+
+    # Second call still uses normal timeout (degraded kicks in at 2+)
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ) as mock_run:
+        mock_browser_executor(action)
+        _, kwargs = mock_run.call_args
+        assert kwargs["timeout"] == 300.0
+
+    # Third call should use degraded timeout for the action.
+    # Note: the reset also calls run_async for cleanup, so we check
+    # the first call (the action), not the last (the cleanup).
+    with patch.object(
+        mock_browser_executor._async_executor,
+        "run_async",
+        side_effect=builtins.TimeoutError(),
+    ) as mock_run:
+        mock_browser_executor(action)
+        # First call is the action (degraded timeout),
+        # second call may be cleanup (5s) if reset triggers.
+        _, kwargs = mock_run.call_args_list[0]
+        assert kwargs["timeout"] == DEGRADED_TIMEOUT_SECONDS
 
 
 async def test_browser_executor_initialization_lazy(mock_browser_executor):
