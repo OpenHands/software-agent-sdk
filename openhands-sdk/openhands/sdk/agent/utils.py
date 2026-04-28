@@ -292,7 +292,7 @@ def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     if not isinstance(pattern, str) or not pattern.strip():
         return None
 
-    command_parts = ["python", "-c", _GREP_FALLBACK_SCRIPT, pattern]
+    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
 
     path = arguments.get("path")
     command_parts.append(path if isinstance(path, str) and path.strip() else ".")

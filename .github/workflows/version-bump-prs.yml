@@ -53,6 +53,12 @@ jobs:
                   fi
                   echo "📦 Creating version bump PRs for version: $VERSION"
 
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.12'
+
             - name: Wait for packages to be available on PyPI
               env:
                   VERSION: ${{ steps.get_version.outputs.version }}
@@ -71,37 +77,31 @@ jobs:
 
                   echo "⏳ Waiting for packages to be available on PyPI..."
 
+                  # Use uv pip compile --dry-run to verify packages are resolvable
+                  # via the Simple API (the same index uv add uses).
+                  # The JSON API propagates faster than the Simple API, so a curl
+                  # check alone is insufficient.
                   for PKG in "${PACKAGES[@]}"; do
                     echo "Checking $PKG==$VERSION..."
                     ATTEMPT=1
                     while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-                      # Check if the package version is available on PyPI
-                      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-                        "https://pypi.org/pypi/$PKG/$VERSION/json")
-
-                      if [ "$HTTP_CODE" = "200" ]; then
-                        echo "✅ $PKG==$VERSION is available on PyPI"
+                      if uv pip compile --no-cache --python-version 3.12 - <<< "$PKG==$VERSION" > /dev/null 2>&1; then
+                        echo "✅ $PKG==$VERSION is resolvable on PyPI"
                         break
                       fi
 
-                      echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: $PKG==$VERSION not yet available (HTTP $HTTP_CODE), waiting ${SLEEP_SECONDS}s..."
+                      echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: $PKG==$VERSION not yet resolvable, waiting ${SLEEP_SECONDS}s..."
                       sleep $SLEEP_SECONDS
                       ATTEMPT=$((ATTEMPT + 1))
                     done
 
                     if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
-                      echo "❌ Timeout waiting for $PKG==$VERSION to be available on PyPI"
+                      echo "❌ Timeout waiting for $PKG==$VERSION to be resolvable on PyPI"
                       exit 1
                     fi
                   done
 
-                  echo "✅ All packages are available on PyPI!"
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v7
-              with:
-                  version: latest
-                  python-version: '3.12'
+                  echo "✅ All packages are resolvable on PyPI!"
 
             - name: Install Poetry
               run: |
@@ -138,10 +138,11 @@ jobs:
                   fi
 
                   # OpenHands-CLI currently requires Python 3.12, so resolve with that interpreter.
-                  # Override exclude-newer so uv can find the just-published packages
-                  # (the target repo's lockfile may have an older cutoff date).
-                  UV_EXCLUDE_NEWER="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-                    uv add --python 3.12 --refresh \
+                  # The target repo uses exclude-newer-package to exempt openhands-sdk/tools
+                  # from its 7-day freshness guardrail, so no UV_EXCLUDE_NEWER override
+                  # is needed — doing so would actually break the per-package exemptions.
+                  # We use --no-cache to avoid stale index data from just-published packages.
+                  uv add --python 3.12 --no-cache \
                     "openhands-sdk==$VERSION" \
                     "openhands-tools==$VERSION"
 

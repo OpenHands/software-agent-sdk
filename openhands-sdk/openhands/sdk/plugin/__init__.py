@@ -32,7 +32,6 @@ from openhands.sdk.plugin.fetch import (
 )
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
-    InstalledPluginsMetadata,
     disable_plugin,
     enable_plugin,
     get_installed_plugin,
@@ -80,7 +79,7 @@ def __getattr__(name: str) -> Any:
         warn_deprecated(
             f"Importing {name} from openhands.sdk.plugin",
             deprecated_in="1.16.0",
-            removed_in="1.19.0",
+            removed_in="1.21.0",
             details="Import from openhands.sdk.marketplace instead.",
             stacklevel=3,
         )
@@ -115,7 +114,6 @@ __all__ = [
     "resolve_source_path",
     # Installed plugins management
     "InstalledPluginInfo",
-    "InstalledPluginsMetadata",
     "install_plugin",
     "uninstall_plugin",
     "list_installed_plugins",
