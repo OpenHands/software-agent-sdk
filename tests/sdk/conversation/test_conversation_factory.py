@@ -9,8 +9,10 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
 @pytest.fixture
@@ -117,3 +119,56 @@ def test_conversation_factory_type_inference(mock_ws_client, agent, remote_works
 
     assert isinstance(local_conv, LocalConversation)
     assert isinstance(remote_conv, RemoteConversation)
+
+
+def test_conversation_state_create_with_injected_file_store(agent):
+    """ConversationState.create() uses the injected FileStore directly."""
+    custom_store = InMemoryFileStore()
+    workspace = LocalWorkspace(working_dir="/tmp/test")
+    conversation_id = uuid.uuid4()
+
+    state = ConversationState.create(
+        id=conversation_id,
+        agent=agent,
+        workspace=workspace,
+        file_store=custom_store,
+    )
+
+    assert state._fs is custom_store
+
+
+def test_conversation_factory_file_store_forwarded_to_state(agent):
+    """Conversation() forwards file_store all the way to ConversationState._fs."""
+    custom_store = InMemoryFileStore()
+
+    conv = Conversation(agent=agent, file_store=custom_store)
+
+    assert isinstance(conv, LocalConversation)
+    assert conv._state._fs is custom_store
+
+
+def test_conversation_state_create_raises_when_both_file_store_and_persistence_dir(
+    agent,
+):
+    """Passing File_store and persistence_dir raises ValueError"""
+    custom_store = InMemoryFileStore()
+    workspace = LocalWorkspace(working_dir="/tmp/test")
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            file_store=custom_store,
+            persistence_dir="/tmp/some_dir",
+        )
+
+
+def test_conversation_factory_file_store_rejected_for_remote(agent, remote_workspace):
+    """Passing file_store with a RemoteWorkspace raises ValueError."""
+    with pytest.raises(ValueError, match="file_store should not be set"):
+        Conversation(
+            agent=agent,
+            workspace=remote_workspace,
+            file_store=InMemoryFileStore(),
+        )
