@@ -16,6 +16,14 @@ importing them from here will emit a deprecation warning.
 
 from typing import Any
 
+from openhands.sdk.extensions.source import (
+    GitHubURLComponents,
+    is_local_path,
+    parse_github_url,
+    resolve_source_path,
+    validate_source_path,
+)
+
 # Import marketplace classes from new location for internal use
 # (no deprecation warning since we're importing from the canonical location)
 from openhands.sdk.marketplace import (
@@ -44,13 +52,6 @@ from openhands.sdk.plugin.installed import (
 )
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
-from openhands.sdk.plugin.source import (
-    GitHubURLComponents,
-    is_local_path,
-    parse_github_url,
-    resolve_source_path,
-    validate_source_path,
-)
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
