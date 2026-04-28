@@ -128,6 +128,35 @@ def test_fork_copies_agent_state():
         assert "new" not in src._state.agent_state
 
 
+def test_fork_copies_invoked_skills():
+    """invoked_skills should be carried over and isolated in the fork."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src._state.invoked_skills = ["skill-a", "skill-b"]
+
+        fork = src.fork()
+
+        assert fork._state.invoked_skills == ["skill-a", "skill-b"]
+        # Mutation on fork should not affect source
+        fork._state.invoked_skills.append("skill-c")
+        assert "skill-c" not in src._state.invoked_skills
+
+
+def test_fork_stuck_detector_references_fork_state():
+    """After fork, stuck_detector must point to the fork's state, not the source's."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(
+            agent=_agent(),
+            persistence_dir=tmpdir,
+            workspace=tmpdir,
+            stuck_detection=True,
+        )
+        fork = src.fork()
+
+        assert fork.stuck_detector is not None
+        assert fork.stuck_detector.state is fork._state
+
+
 def test_fork_accepts_replacement_agent():
     """Providing an agent kwarg replaces the source agent in the fork."""
     with tempfile.TemporaryDirectory() as tmpdir:
