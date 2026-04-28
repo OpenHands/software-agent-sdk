@@ -2,6 +2,7 @@
 
 import io
 import json
+import sys
 from collections.abc import Sequence
 from typing import IO, TYPE_CHECKING, Self, cast
 
@@ -300,18 +301,12 @@ def test_conversation_visualizer_initialization():
     assert hasattr(visualizer, "_create_event_block")
 
 
-def test_default_visualizer_handles_unicode_on_legacy_windows_stdout():
+def test_default_visualizer_handles_unicode_on_legacy_windows_stdout(monkeypatch):
     """Visualizer output should not fail on legacy Windows stdout."""
-    from rich.console import Console
-
     stream = _Cp1252Stdout()
+    monkeypatch.setattr(sys, "stdout", cast(IO[str], stream))
+
     visualizer = DefaultConversationVisualizer()
-    visualizer._console = Console(
-        file=cast(IO[str], stream),
-        force_terminal=True,
-        legacy_windows=True,
-        width=120,
-    )
     event = MessageEvent(
         source="agent",
         llm_message=Message(
