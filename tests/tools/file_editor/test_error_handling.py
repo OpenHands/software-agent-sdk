@@ -1,5 +1,10 @@
 """Tests for error handling in file editor."""
 
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.impl import file_editor
 
 from .conftest import assert_error_result
@@ -138,3 +143,41 @@ def test_undo_validation(temp_file):
     )
     assert_error_result(result)
     assert result.is_error and "No edit history found" in result.text
+
+
+def test_view_directory_permission_error_returns_error_observation():
+    """Directory view should return an error observation on PermissionError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        editor = FileEditor()
+        with patch.object(
+            editor,
+            "_count_hidden_children",
+            side_effect=PermissionError("denied"),
+        ):
+            result = editor.view(path)
+        assert result.is_error
+        assert "denied" in result.text
+
+
+def test_view_subdirectory_permission_error_skips_inaccessible_dir():
+    """Subdirectory permission errors should be silently skipped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        sub = path / "sub"
+        sub.mkdir()
+        (path / "visible.txt").write_text("hello")
+
+        # Simulate iterdir on the subdirectory raising PermissionError.
+        original_iterdir = Path.iterdir
+
+        def patched_iterdir(self: Path):
+            if self == sub:
+                raise PermissionError("denied")
+            return original_iterdir(self)
+
+        editor = FileEditor()
+        with patch.object(Path, "iterdir", patched_iterdir):
+            result = editor.view(path)
+        assert not result.is_error
+        assert "visible.txt" in result.text
