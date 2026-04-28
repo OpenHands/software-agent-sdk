@@ -1375,24 +1375,51 @@ class RemoteConversation(BaseConversation):
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.
 
-        Note: This method is not yet supported for RemoteConversation.
-        Tool execution for remote conversations happens on the server side
-        during the normal agent loop.
+        This sends the tool execution request to the agent server, which
+        executes it through the conversation's tool executor. This is useful
+        for pre-run setup operations like running setup scripts through the
+        agent's terminal tool so environment changes persist in the agent's
+        session.
 
         Args:
             tool_name: The name of the tool to execute
             action: The action to pass to the tool executor
 
+        Returns:
+            The observation returned by the tool execution
+
         Raises:
-            NotImplementedError: Always, as this feature is not yet supported
-                for remote conversations.
+            RuntimeError: If the tool execution fails on the server
         """
-        raise NotImplementedError(
-            "execute_tool is not yet supported for RemoteConversation. "
-            "Tool execution for remote conversations happens on the server side "
-            "during the normal agent loop. Use LocalConversation for direct "
-            "tool execution."
+        from openhands.sdk.tool.schema import Observation
+
+        payload = {
+            "tool_name": tool_name,
+            "action": action.model_dump(mode="json"),
+        }
+        response = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/execute_tool",
+            json=payload,
         )
+        result = response.json()
+        observation_data = result.get("observation", {})
+        is_error = result.get("is_error", False)
+
+        # Server returns observation.model_dump(mode="json") which has:
+        #   {"content": [{"text": "...", "kind": "text"}, ...], "is_error": bool}
+        # Extract text from the content array.
+        text = ""
+        content = observation_data.get("content", [])
+        if content and isinstance(content, list) and len(content) > 0:
+            text = content[0].get("text", "")
+
+        # Use a concrete subclass since Observation is abstract
+        class _RemoteObservation(Observation):
+            pass
+
+        return _RemoteObservation.from_text(text=text, is_error=is_error)
 
     def close(self) -> None:
         """Close the conversation and clean up resources.

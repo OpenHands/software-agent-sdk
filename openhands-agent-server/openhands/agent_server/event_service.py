@@ -356,6 +356,46 @@ class EventService:
             # blocking on the full conversation execution.
             loop.create_task(_run_with_error_handling())
 
+    async def execute_tool(self, tool_name: str, action_dict: dict) -> dict:
+        """Execute a tool directly on the conversation.
+
+        Bypasses the agent loop. Useful for pre-run setup operations
+        like running .openhands/setup.sh through the agent's terminal
+        tool so environment changes persist in the agent's session.
+
+        Args:
+            tool_name: The name of the tool to execute (e.g., 'terminal')
+            action_dict: The action parameters as a dictionary
+
+        Returns:
+            The observation as a dictionary
+
+        Raises:
+            ValueError: If the service is inactive
+            KeyError: If the tool is not found
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        conversation = self._conversation
+        loop = asyncio.get_running_loop()
+
+        def _execute():
+            # Get the tool to resolve the action type
+            conversation._ensure_agent_ready()
+            tool = conversation.agent.tools_map.get(tool_name)
+            if tool is None:
+                available_tools = list(conversation.agent.tools_map.keys())
+                raise KeyError(
+                    f"Tool '{tool_name}' not found. Available tools: {available_tools}"
+                )
+            # Validate the action dict against the tool's action type
+            action = tool.action_type.model_validate(action_dict)
+            observation = conversation.execute_tool(tool_name, action)
+            return observation.model_dump(mode="json")
+
+        return await loop.run_in_executor(None, _execute)
+
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
 
