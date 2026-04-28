@@ -146,6 +146,8 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             Tuple of (file_paths, truncated) where file_paths is a list of matching files
             and truncated is True if results were limited to 100 files
         """  # noqa: E501
+        search_path = search_path.resolve()
+
         # Build ripgrep command: rg --files {path} -g {pattern} --sortr=modified
         cmd = [
             "rg",
@@ -193,6 +195,8 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             Tuple of (file_paths, truncated) where file_paths is a list of matching files
             and truncated is True if results were limited to 100 files
         """  # noqa: E501
+        search_path = search_path.resolve()
+
         # Change to search directory for glob to work correctly
         original_cwd = os.getcwd()
         try:
