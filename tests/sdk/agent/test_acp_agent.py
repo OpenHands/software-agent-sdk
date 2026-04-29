@@ -34,9 +34,9 @@ from openhands.sdk.event import (
     MessageEvent,
     SystemPromptEvent,
 )
-from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -894,7 +894,7 @@ class TestACPAgentStep:
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
 
     def test_step_with_reasoning_emits_finish_action(self, tmp_path):
-        """Reasoning content is accumulated but only the response text is in FinishAction."""
+        """Reasoning is accumulated; only response text surfaces via FinishAction."""
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
