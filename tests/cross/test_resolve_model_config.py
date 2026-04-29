@@ -631,6 +631,7 @@ def test_kimi_k2_6_config():
     assert model["display_name"] == "Kimi K2.6"
     assert model["llm_config"]["model"] == "litellm_proxy/moonshot/kimi-k2.6"
     assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["disable_vision"] is True
 
 
 def test_gpt_5_5_config():

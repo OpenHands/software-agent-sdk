@@ -78,6 +78,8 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/moonshot/kimi-k2.6",
             "temperature": 1.0,
+            # Moonshot rejects the remote image URLs used in swebenchmultimodal.
+            "disable_vision": True,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
