@@ -150,7 +150,10 @@ def expand_mcp_variables(
         if isinstance(value, str):
             return var_pattern.sub(replace_var, value)
         if isinstance(value, dict):
-            return {key: expand_value(item) for key, item in value.items()}
+            return {
+                expand_value(key) if isinstance(key, str) else key: expand_value(item)
+                for key, item in value.items()
+            }
         if isinstance(value, list):
             return [expand_value(item) for item in value]
         return value
