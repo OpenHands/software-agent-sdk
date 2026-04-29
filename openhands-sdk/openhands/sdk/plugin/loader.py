@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import SecretLookup, expand_mcp_variables
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
-from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
 
 
 if TYPE_CHECKING:
