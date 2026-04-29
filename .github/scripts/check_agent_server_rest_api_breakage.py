@@ -271,7 +271,7 @@ def _find_sdk_deprecated_fastapi_routes_in_file(
                     uses_sdk_deprecated = True
 
         if has_route_decorator and uses_sdk_deprecated:
-            rel_path = file_path.relative_to(repo_root)
+            rel_path = file_path.relative_to(repo_root).as_posix()
             errors.append(
                 f"{rel_path}:{node.lineno} FastAPI route `{node.name}` uses "
                 "openhands.sdk.utils.deprecation.deprecated; use the route "

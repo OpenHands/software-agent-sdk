@@ -34,7 +34,8 @@ def _sigterm_handler(signum: int, _frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
-signal.signal(signal.SIGALRM, _sigterm_handler)
+if sigalrm := getattr(signal, "SIGALRM", None):
+    signal.signal(sigalrm, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
@@ -180,6 +181,14 @@ MODELS = {
         "display_name": "GPT-5.4",
         "llm_config": {
             "model": "litellm_proxy/openai/gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    },
+    "gpt-5.5": {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.5",
             "reasoning_effort": "high",
         },
     },

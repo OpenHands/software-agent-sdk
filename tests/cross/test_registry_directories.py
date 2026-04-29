@@ -1,6 +1,7 @@
 """Test directory handling in tool registry."""
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -65,6 +66,10 @@ def register_tools():
     register_tool("TaskTrackerTool", TaskTrackerTool)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool directory resolution requires the Unix terminal backend.",
+)
 def test_resolve_tool_with_conversation_directories(test_agent):
     """Test that resolve_tool uses directories from conversation."""
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,5 +1,9 @@
 """Test automatic tool registration functionality."""
 
+import sys
+
+import pytest
+
 from openhands.sdk.tool.registry import list_registered_tools
 
 
@@ -83,6 +87,10 @@ def test_import_from_init_triggers_registration():
     assert "terminal" in registered_tools
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool V1 backend is not supported on Windows.",
+)
 def test_tool_can_be_resolved_after_automatic_registration():
     """Test that automatically registered tools can be resolved and used."""
     from unittest.mock import MagicMock

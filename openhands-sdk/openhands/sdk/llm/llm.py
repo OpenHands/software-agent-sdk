@@ -30,6 +30,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
+    from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -525,18 +526,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
-        # Metrics + Telemetry wiring
+        # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
+        # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
+        # and replacing _telemetry would silently drop any callback callers
+        # have attached via telemetry.set_*_callback().
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
 
-        self._telemetry = Telemetry(
-            model_name=self.model,
-            log_enabled=self.log_completions,
-            log_dir=self.log_completions_folder if self.log_completions else None,
-            input_cost_per_token=self.input_cost_per_token,
-            output_cost_per_token=self.output_cost_per_token,
-            metrics=self._metrics,
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self._metrics,
+            )
 
         # Tokenizer
         if self.custom_tokenizer:
@@ -1583,6 +1588,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model: str,
         force_login: bool = False,
         open_browser: bool = True,
+        auth_method: OpenAIAuthMethod = "browser",
         **llm_kwargs,
     ) -> LLM:
         """Authenticate with a subscription service and return an LLM instance.
@@ -1609,6 +1615,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 credentials exist.
             open_browser: Whether to automatically open the browser for the
                 OAuth login flow.
+            auth_method: Login method to use: "browser" or "device_code".
             **llm_kwargs: Additional arguments to pass to the LLM constructor.
 
         Returns:
@@ -1636,5 +1643,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=model,
             force_login=force_login,
             open_browser=open_browser,
+            auth_method=auth_method,
             **llm_kwargs,
         )

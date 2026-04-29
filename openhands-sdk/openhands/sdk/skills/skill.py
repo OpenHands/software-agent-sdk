@@ -32,6 +32,7 @@ from openhands.sdk.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.utils import DEFAULT_TRUNCATE_NOTICE, maybe_truncate
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -167,6 +168,10 @@ class Skill(BaseModel):
     MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
+    version: str = Field(
+        default="1.0.0",
+        description="Skill version (AgentSkills standard field).",
+    )
     description: str | None = Field(
         default=None,
         description=(
@@ -283,7 +288,7 @@ class Skill(BaseModel):
         """
         path = Path(path) if isinstance(path, str) else path
 
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
@@ -364,7 +369,7 @@ class Skill(BaseModel):
         if skill_base_dir is not None:
             skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(
                 path.name.lower()
-            ) or str(path.relative_to(skill_base_dir).with_suffix(""))
+            ) or to_posix_path(path.relative_to(skill_base_dir).with_suffix(""))
         else:
             skill_name = path.stem
 
@@ -447,7 +452,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
                 mcp_tools=mcp_tools,
@@ -460,7 +465,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 resources=resources,
@@ -472,7 +477,7 @@ class Skill(BaseModel):
             return Skill(
                 name=agent_name,
                 content=content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
                 resources=resources,
@@ -493,7 +498,7 @@ class Skill(BaseModel):
             return Skill(
                 name=skill_name,
                 content=file_content,
-                source=str(path),
+                source=to_posix_path(path),
                 trigger=None,
             )
 
@@ -936,11 +941,13 @@ def load_marketplace_skill_names(
         return None
 
     try:
-        with open(marketplace_file) as f:
+        with open(marketplace_file, encoding="utf-8") as f:
             data = json.load(f)
 
         # Use Marketplace model for validation and parsing
-        marketplace = Marketplace.model_validate({**data, "path": str(repo_path)})
+        marketplace = Marketplace.model_validate(
+            {**data, "path": to_posix_path(repo_path)}
+        )
 
         skill_names = {plugin.name for plugin in marketplace.plugins}
 

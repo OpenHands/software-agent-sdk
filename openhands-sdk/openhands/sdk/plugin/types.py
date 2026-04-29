@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 import frontmatter
 from pydantic import BaseModel, Field, field_validator
 
+from openhands.sdk.utils.path import to_posix_path
+
 
 class PluginSource(BaseModel):
     """Specification for a plugin to load.
@@ -264,7 +266,7 @@ class CommandDefinition(BaseModel):
         Returns:
             Loaded CommandDefinition instance.
         """
-        with open(command_path) as f:
+        with open(command_path, encoding="utf-8") as f:
             post = frontmatter.load(f)
 
         # Extract frontmatter fields with proper type handling
@@ -308,7 +310,7 @@ class CommandDefinition(BaseModel):
             argument_hint=argument_hint,
             allowed_tools=allowed_tools,
             content=post.content.strip(),
-            source=str(command_path),
+            source=to_posix_path(command_path),
             metadata=metadata,
         )
 
@@ -389,7 +391,7 @@ def __getattr__(name: str) -> Any:
         warn_deprecated(
             f"Importing {name} from openhands.sdk.plugin.types",
             deprecated_in="1.16.0",
-            removed_in="1.19.0",
+            removed_in="1.21.0",
             details="Import from openhands.sdk.marketplace instead.",
             stacklevel=3,
         )

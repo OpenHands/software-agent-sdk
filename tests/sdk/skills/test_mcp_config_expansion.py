@@ -3,11 +3,55 @@
 import json
 import os
 
+from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
+
 from openhands.sdk.skills.utils import expand_mcp_variables, load_mcp_config
 
 
 class TestExpandMcpVariables:
     """Tests for expand_mcp_variables function."""
+
+    def test_expand_with_pydantic_mcp_server_objects(self):
+        """Test that expand_mcp_variables handles Pydantic MCP server objects.
+
+        This reproduces a bug where the config dict contains RemoteMCPServer or
+        StdioMCPServer Pydantic model objects (not plain dicts), causing:
+            TypeError: Object of type RemoteMCPServer is not JSON serializable
+
+        This happens when mcp_config is copied via dict(agent.mcp_config) which
+        creates a shallow copy preserving the Pydantic objects as values.
+        """
+        # This is what the config looks like after dict(agent.mcp_config)
+        # when the agent has Pydantic MCP server objects
+        config = {
+            "mcpServers": {
+                "Notion": RemoteMCPServer(
+                    url="https://mcp.notion.com/mcp",
+                    auth="oauth",
+                ),
+                "fetch": StdioMCPServer(
+                    command="uvx",
+                    args=["mcp-server-fetch"],
+                ),
+                "context-layer": RemoteMCPServer(
+                    url="https://example.com/api/mcp",
+                    transport="streamable-http",
+                    headers={"Authorization": "Bearer ${API_TOKEN}"},
+                ),
+            }
+        }
+        secrets = {"API_TOKEN": "secret-token-123"}
+
+        # This should NOT raise TypeError
+        result = expand_mcp_variables(config, {}, get_secret=secrets.get)
+
+        # Verify the variable was expanded
+        assert result["mcpServers"]["context-layer"]["headers"]["Authorization"] == (
+            "Bearer secret-token-123"
+        )
+        # Verify other values are preserved
+        assert result["mcpServers"]["Notion"]["url"] == "https://mcp.notion.com/mcp"
+        assert result["mcpServers"]["fetch"]["command"] == "uvx"
 
     def test_expand_basic_variables(self):
         """Test expanding basic variables from the variables dict."""
@@ -26,6 +70,45 @@ class TestExpandMcpVariables:
         assert result["mcpServers"]["test-server"]["command"] == (
             "/path/to/skill/scripts/server.py"
         )
+
+    def test_expand_windows_path_variables_preserves_backslashes(self):
+        """Windows paths must be expanded as values, not raw JSON fragments."""
+        config = {
+            "mcpServers": {
+                "test-server": {
+                    "command": "${SKILL_ROOT}\\scripts\\server.py",
+                }
+            }
+        }
+        variables = {"SKILL_ROOT": r"C:\Users\tester\skill"}
+
+        result = expand_mcp_variables(config, variables)
+
+        assert result["mcpServers"]["test-server"]["command"] == (
+            r"C:\Users\tester\skill\scripts\server.py"
+        )
+
+    def test_expand_variables_in_dictionary_keys(self):
+        """Variable expansion should preserve the legacy key-substitution behavior."""
+        config = {
+            "mcpServers": {
+                "${SERVER_NAME}": {
+                    "headers": {"${HEADER_NAME}": "Bearer ${TOKEN}"},
+                }
+            }
+        }
+        variables = {
+            "SERVER_NAME": "expanded-server",
+            "HEADER_NAME": "Authorization",
+            "TOKEN": "secret-token",
+        }
+
+        result = expand_mcp_variables(config, variables)
+
+        assert "expanded-server" in result["mcpServers"]
+        assert result["mcpServers"]["expanded-server"]["headers"] == {
+            "Authorization": "Bearer secret-token"
+        }
 
     def test_expand_environment_variables(self):
         """Test expanding variables from environment."""

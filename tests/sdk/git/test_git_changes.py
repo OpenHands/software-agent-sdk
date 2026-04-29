@@ -167,7 +167,7 @@ def test_get_changes_in_repo_nested_directories():
         assert len(changes) == 3
 
         # Convert to set of paths for easier testing
-        paths = {str(change.path) for change in changes}
+        paths = {change.path.as_posix() for change in changes}
 
         assert "src/utils/helper.py" in paths
         assert "src/main.py" in paths
@@ -295,6 +295,20 @@ def test_git_change_model_properties():
         assert "path" in change_dict
         assert "status" in change_dict
         assert change_dict["status"] == GitChangeStatus.ADDED
+
+
+def test_git_change_path_serializes_to_posix_and_deserializes():
+    change = GitChange(
+        status=GitChangeStatus.ADDED,
+        path=Path("nested") / "file.py",
+    )
+
+    serialized = change.model_dump(mode="json")
+    assert serialized["path"] == "nested/file.py"
+
+    deserialized = GitChange.model_validate(serialized)
+    assert deserialized.path == Path("nested/file.py")
+    assert deserialized.status == GitChangeStatus.ADDED
 
 
 def test_git_changes_with_gitignore():
