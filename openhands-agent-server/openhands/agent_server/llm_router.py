@@ -32,6 +32,20 @@ class VerifiedModelsResponse(BaseModel):
     models: dict[str, list[str]]
 
 
+def _get_provider_scoped_verified_models() -> dict[str, list[str]]:
+    provider_scoped_models = {
+        provider: list(models) for provider, models in VERIFIED_MODELS.items()
+    }
+    # Keep OpenHands entries fully qualified. The OpenHands provider proxies
+    # upstream model ids like "gpt-5.4", so returning bare ids here makes any
+    # provider-verified model look OpenHands-verified to consumers that compare
+    # model ids directly.
+    provider_scoped_models["openhands"] = [
+        f"openhands/{model}" for model in provider_scoped_models["openhands"]
+    ]
+    return provider_scoped_models
+
+
 @llm_router.get("/providers", response_model=ProvidersResponse)
 async def list_providers() -> ProvidersResponse:
     """List all available LLM providers supported by LiteLLM."""
@@ -75,4 +89,4 @@ async def list_verified_models() -> VerifiedModelsResponse:
     Verified models are those that have been tested and confirmed to work well
     with OpenHands.
     """
-    return VerifiedModelsResponse(models=VERIFIED_MODELS)
+    return VerifiedModelsResponse(models=_get_provider_scoped_verified_models())

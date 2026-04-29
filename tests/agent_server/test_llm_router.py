@@ -13,6 +13,16 @@ from openhands.agent_server.llm_router import (
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
 
+def _expected_verified_models() -> dict[str, list[str]]:
+    expected_models = {
+        provider: list(models) for provider, models in VERIFIED_MODELS.items()
+    }
+    expected_models["openhands"] = [
+        f"openhands/{model}" for model in expected_models["openhands"]
+    ]
+    return expected_models
+
+
 @pytest.fixture
 def client():
     """Create a test client."""
@@ -60,9 +70,10 @@ async def test_list_models_unknown_provider():
 async def test_list_verified_models():
     """Test listing verified models directly."""
     response = await list_verified_models()
-    assert response.models == VERIFIED_MODELS
+    assert response.models == _expected_verified_models()
     assert "openai" in response.models
     assert "anthropic" in response.models
+    assert all(model.startswith("openhands/") for model in response.models["openhands"])
 
 
 def test_providers_endpoint_integration(client):
@@ -107,6 +118,5 @@ def test_verified_models_endpoint_integration(client):
     response = client.get("/api/llm/models/verified")
     assert response.status_code == 200
     data = response.json()
-    assert "models" in data
-    assert "openai" in data["models"]
-    assert "anthropic" in data["models"]
+    assert data == {"models": _expected_verified_models()}
+    assert all(model.startswith("openhands/") for model in data["models"]["openhands"])
