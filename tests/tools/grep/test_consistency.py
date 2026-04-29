@@ -1,4 +1,4 @@
-"""Tests to verify consistency between ripgrep and fallback implementations."""
+"""Tests to verify consistency between ripgrep and Python fallback."""
 
 import tempfile
 from pathlib import Path
@@ -18,7 +18,7 @@ from openhands.tools.utils import _check_ripgrep_available
     reason="ripgrep not available - consistency tests require ripgrep",
 )
 class TestGrepConsistency:
-    """Test that ripgrep and fallback methods produce consistent results."""
+    """Test that ripgrep and the Python fallback stay consistent."""
 
     @pytest.fixture
     def temp_dir_with_content(self):
@@ -101,90 +101,90 @@ class TestGrepConsistency:
             yield temp_dir
 
     def test_basic_search_consistency(self, temp_dir_with_content):
-        """Test that both methods return consistent results for basic searches."""
+        """Test that ripgrep and the Python fallback return consistent results for basic searches."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="hello")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets of matching files for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_case_insensitive_consistency(self, temp_dir_with_content):
-        """Test that both methods handle case-insensitive searches consistently."""
+        """Test that ripgrep and the Python fallback handle case-insensitive searches consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="HELLO")  # Uppercase pattern
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_include_pattern_consistency(self, temp_dir_with_content):
-        """Test that both methods handle include patterns consistently."""
+        """Test that ripgrep and the Python fallback handle include patterns consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="hello", include="*.py")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
         # Verify all matches are Python files
@@ -192,205 +192,205 @@ class TestGrepConsistency:
             assert match.endswith(".py"), f"Non-Python file found: {match}"
 
     def test_no_matches_consistency(self, temp_dir_with_content):
-        """Test that both methods handle no matches consistently."""
+        """Test that ripgrep and the Python fallback handle no matches consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="nonexistentpattern12345")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed with identical empty results
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
         # Both must return exactly the same (empty) set
-        assert ripgrep_matches == fallback_matches == set()
+        assert ripgrep_matches == python_matches == set()
 
     def test_regex_pattern_consistency(self, temp_dir_with_content):
-        """Test that both methods handle simple regex patterns consistently."""
+        """Test that ripgrep and the Python fallback handle simple regex patterns consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="def ")  # Simple pattern that should work in both
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_todo_comments_consistency(self, temp_dir_with_content):
-        """Test that both methods find TODO comments consistently."""
+        """Test that ripgrep and the Python fallback find TODO comments consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="TODO")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_error_patterns_consistency(self, temp_dir_with_content):
-        """Test that both methods find error patterns consistently."""
+        """Test that ripgrep and the Python fallback find error patterns consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="ERROR:")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_import_statements_consistency(self, temp_dir_with_content):
-        """Test that both methods find import statements consistently."""
+        """Test that ripgrep and the Python fallback find import statements consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="import ", include="*.py")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_class_definitions_consistency(self, temp_dir_with_content):
-        """Test that both methods find class definitions consistently."""
+        """Test that ripgrep and the Python fallback find class definitions consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="class ")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_deep_nested_search_consistency(self, temp_dir_with_content):
-        """Test that both methods search deeply nested files consistently."""
+        """Test that ripgrep and the Python fallback search deeply nested files consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="deep")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
 
     def test_config_file_search_consistency(self, temp_dir_with_content):
-        """Test that both methods search various config file formats consistently."""
+        """Test that ripgrep and the Python fallback search various config file formats consistently."""
         executor = GrepExecutor(temp_dir_with_content)
 
         for pattern, file_type in [
@@ -400,56 +400,56 @@ class TestGrepConsistency:
         ]:
             action = GrepAction(pattern=pattern, include=file_type)
 
-            # Get results from both methods
+            # Get results from ripgrep and the Python fallback
             ripgrep_result = executor._execute_with_ripgrep(
                 action, Path(temp_dir_with_content)
             )
-            fallback_result = executor._execute_with_grep(
+            python_result = executor._execute_with_python_search(
                 action, Path(temp_dir_with_content)
             )
 
             # Both should succeed
             assert not ripgrep_result.is_error
-            assert not fallback_result.is_error
+            assert not python_result.is_error
 
             # Convert to sets for exact comparison
             ripgrep_matches = set(ripgrep_result.matches)
-            fallback_matches = set(fallback_result.matches)
+            python_matches = set(python_result.matches)
 
-            # Both methods must return exactly the same files
-            assert ripgrep_matches == fallback_matches, (
+            # Ripgrep and the Python fallback must return exactly the same files
+            assert ripgrep_matches == python_matches, (
                 f"Pattern: {pattern}, File type: {file_type}\n"
                 f"Ripgrep found: {ripgrep_matches}\n"
-                f"Fallback found: {fallback_matches}\n"
-                f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-                f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+                f"Python fallback found: {python_matches}\n"
+                f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+                f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
             )
 
     def test_hidden_files_search_consistency(self, temp_dir_with_content):
-        """Test that both methods search hidden files consistently."""
+        """Test that ripgrep and the Python fallback search hidden files consistently."""
         executor = GrepExecutor(temp_dir_with_content)
         action = GrepAction(pattern="API_KEY")
 
-        # Get results from both methods
+        # Get results from ripgrep and the Python fallback
         ripgrep_result = executor._execute_with_ripgrep(
             action, Path(temp_dir_with_content)
         )
-        fallback_result = executor._execute_with_grep(
+        python_result = executor._execute_with_python_search(
             action, Path(temp_dir_with_content)
         )
 
         # Both should succeed
         assert not ripgrep_result.is_error
-        assert not fallback_result.is_error
+        assert not python_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
-        fallback_matches = set(fallback_result.matches)
+        python_matches = set(python_result.matches)
 
-        # Both methods must return exactly the same files
-        assert ripgrep_matches == fallback_matches, (
+        # Ripgrep and the Python fallback must return exactly the same files
+        assert ripgrep_matches == python_matches, (
             f"Ripgrep found: {ripgrep_matches}\n"
-            f"Fallback found: {fallback_matches}\n"
-            f"Difference (ripgrep - fallback): {ripgrep_matches - fallback_matches}\n"
-            f"Difference (fallback - ripgrep): {fallback_matches - ripgrep_matches}"
+            f"Python fallback found: {python_matches}\n"
+            f"Difference (ripgrep - Python fallback): {ripgrep_matches - python_matches}\n"
+            f"Difference (Python fallback - ripgrep): {python_matches - ripgrep_matches}"
         )
