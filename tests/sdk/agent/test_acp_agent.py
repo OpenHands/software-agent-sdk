@@ -893,8 +893,8 @@ class TestACPAgentStep:
         assert "<name>agentskill-review</name>" in prompt_text
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
 
-    def test_step_with_reasoning_emits_finish_action(self, tmp_path):
-        """Reasoning is accumulated; only response text surfaces via FinishAction."""
+    def test_step_with_reasoning_surfaces_via_action_event(self, tmp_path):
+        """Reasoning traces are preserved in ActionEvent.reasoning_content."""
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
@@ -917,6 +917,7 @@ class TestACPAgentStep:
         assert isinstance(events[0], ActionEvent)
         assert isinstance(events[0].action, FinishAction)
         assert events[0].action.message == "4"
+        assert events[0].reasoning_content == "I need to add 2+2"
 
     def test_step_sets_finished(self, tmp_path):
         agent = _make_agent()

@@ -1278,6 +1278,7 @@ class ACPAgent(AgentBase):
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
+            thought_text = "".join(self._client.accumulated_thoughts)
 
             if not response_text:
                 response_text = "(No response from ACP server)"
@@ -1290,6 +1291,7 @@ class ACPAgent(AgentBase):
             action_event = ActionEvent(
                 source="agent",
                 thought=[],
+                reasoning_content=thought_text or None,
                 action=finish_action,
                 tool_name="finish",
                 tool_call_id=tc_id,
