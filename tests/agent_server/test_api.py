@@ -1,6 +1,7 @@
 """Tests for the agent server API functionality."""
 
 import asyncio
+import os
 import tempfile
 import warnings
 from pathlib import Path
@@ -10,7 +11,13 @@ import pytest
 from deprecation import DeprecatedWarning
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.api import _get_root_path, api_lifespan, create_app
+from openhands.agent_server.api import (
+    _default_server_tmux_tmpdir,
+    _ensure_server_tmux_tmpdir,
+    _get_root_path,
+    api_lifespan,
+    create_app,
+)
 from openhands.agent_server.config import Config
 
 
@@ -18,6 +25,41 @@ from openhands.agent_server.config import Config
 def clear_web_url_env(monkeypatch):
     monkeypatch.delenv("OH_WEB_URL", raising=False)
     monkeypatch.delenv("RUNTIME_URL", raising=False)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
+
+def test_default_server_tmux_tmpdir_uses_current_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+    )
+
+    assert _default_server_tmux_tmpdir() == (
+        tmp_path / f"openhands-agent-server-{os.getpid()}"
+    )
+
+
+def test_ensure_server_tmux_tmpdir_defaults_per_process_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+    )
+
+    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+
+    assert was_defaulted is True
+    assert tmux_tmpdir == tmp_path / f"openhands-agent-server-{os.getpid()}"
+    assert tmux_tmpdir.is_dir()
+    assert os.environ["TMUX_TMPDIR"] == str(tmux_tmpdir)
+
+
+def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
+    existing = tmp_path / "custom-tmux"
+    monkeypatch.setenv("TMUX_TMPDIR", str(existing))
+
+    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+
+    assert was_defaulted is False
+    assert tmux_tmpdir == existing
+    assert not existing.exists()
 
 
 class TestStaticFilesServing:
@@ -362,6 +404,35 @@ class TestServiceParallelization:
 
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
+
+    async def test_lifespan_defaults_and_restores_tmux_tmpdir(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that lifespan defaults TMUX_TMPDIR per server instance."""
+        monkeypatch.setattr(
+            "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = AsyncMock()
+            expected_tmux_tmpdir = tmp_path / f"openhands-agent-server-{os.getpid()}"
+
+            async with api_lifespan(mock_app):
+                assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
+
+            assert "TMUX_TMPDIR" not in os.environ
 
 
 class TestRootPath:
