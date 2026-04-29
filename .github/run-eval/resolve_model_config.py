@@ -71,6 +71,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    # https://www.kimi.com/blog/kimi-k2-6
+    "kimi-k2.6": {
+        "id": "kimi-k2.6",
+        "display_name": "Kimi K2.6",
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "temperature": 1.0,
+        },
+    },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
     "qwen3-max-thinking": {
         "id": "qwen3-max-thinking",
@@ -171,6 +180,14 @@ MODELS = {
         "display_name": "GPT-5.4",
         "llm_config": {
             "model": "litellm_proxy/openai/gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    },
+    "gpt-5.5": {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.5",
             "reasoning_effort": "high",
         },
     },

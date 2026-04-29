@@ -27,6 +27,7 @@ from openhands.sdk.conversation.exceptions import (
 )
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
@@ -1263,29 +1264,21 @@ class RemoteConversation(BaseConversation):
         """Generate a title for the conversation based on the first user message.
 
         Args:
-            llm: Optional LLM to use for title generation. If provided, its usage_id
-                 will be sent to the server. If not provided, uses the agent's LLM.
+            llm: Optional LLM to use for title generation. If not provided,
+                 uses the agent's LLM.
             max_length: Maximum length of the generated title.
 
         Returns:
             A generated title for the conversation.
         """
-        # For remote conversations, delegate to the server endpoint
-        payload = {
-            "max_length": max_length,
-            "llm": llm.model_dump(mode="json", context={"expose_secrets": True})
-            if llm
-            else None,
-        }
+        # Reconcile before reading state so recently posted user messages are
+        # visible even if they arrived between the last sync and this call.
+        self._state.events.reconcile()
 
-        resp = _send_request(
-            self._client,
-            "POST",
-            f"{self._conversation_action_base_path}/{self._id}/generate_title",
-            json=payload,
+        effective_llm = llm if llm is not None else self.agent.llm
+        return generate_conversation_title(
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
-        data = resp.json()
-        return data["title"]
 
     def condense(self) -> None:
         """Force condensation of the conversation history.
@@ -1304,6 +1297,79 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"{self._conversation_action_base_path}/{self._id}/condense",
+        )
+
+    def fork(
+        self,
+        *,
+        conversation_id: "ConversationID | None" = None,
+        agent: "AgentBase | None" = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "RemoteConversation":
+        """Fork this conversation on the remote agent server.
+
+        Sends a fork request to the server which deep-copies events and
+        state. Returns a new ``RemoteConversation`` pointing at the fork.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                on the server if ``None``).
+            agent: **Not supported for remote conversations.** Passing a
+                non-``None`` value raises ``NotImplementedError``. Use
+                ``LocalConversation.fork(agent=...)`` for agent replacement.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``RemoteConversation`` backed by the forked server-side
+            conversation.
+
+        Raises:
+            NotImplementedError: If ``agent`` is provided.
+        """
+        if agent is not None:
+            raise NotImplementedError(
+                "Agent replacement is not supported for remote conversation "
+                "forks. Use LocalConversation.fork(agent=...) instead."
+            )
+
+        body: dict[str, object] = {"reset_metrics": reset_metrics}
+        if conversation_id is not None:
+            body["id"] = str(conversation_id)
+        if title is not None:
+            body["title"] = title
+        if tags is not None:
+            body["tags"] = tags
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/fork",
+            json=body,
+        )
+        fork_info = resp.json()
+        fork_uuid = uuid.UUID(fork_info["id"])
+
+        agent_cls = type(self.agent)
+        fork_agent = agent_cls.model_validate(
+            self.agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Use server-returned tags (which include merged title) rather than
+        # the input tags, so the client-side object stays consistent.
+        server_tags: dict[str, str] | None = fork_info.get("tags") or None
+
+        return RemoteConversation(
+            agent=fork_agent,
+            workspace=self.workspace,
+            conversation_id=fork_uuid,
+            max_iteration_per_run=self.max_iteration_per_run,
+            delete_on_close=self.delete_on_close,
+            tags=server_tags,
         )
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":

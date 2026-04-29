@@ -107,8 +107,10 @@ jobs:
                    - Has write access or higher on the repository.
                    - Has authored at least one commit in this repository in the last 12 months.
                    - Has authored at least one commit touching at least one changed file in the last 12 months.
-                3. NEVER assign someone solely because they are a maintainer or collaborator. If they have write access but zero qualifying commits, they are NOT eligible.
-                4. For bot-authored PRs (for example dependabot[bot]), be stricter: only assign a reviewer if they have a qualifying recent commit touching a changed
+                3. NEVER assign someone solely because they are a maintainer or collaborator. If they have write access but zero qualifying commits, they
+                are NOT eligible.
+                4. For bot-authored PRs (for example dependabot[bot]), be stricter: only assign a reviewer if they have a qualifying recent commit touching
+                a changed
                    file. If no one qualifies, leave the PR unassigned and do NOT comment.
                 5. If multiple eligible reviewers qualify, avoid assigning too many reviews to any single person.
                 6. Add this message:

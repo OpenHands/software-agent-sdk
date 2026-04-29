@@ -121,26 +121,46 @@ jobs:
                 3. CI is passing and there are no merge conflicts
 
                 For each PR that truly has NO reviewers:
-                1) Build reviewer candidates ONLY from human users who appear in git blame for the changed files or changed hunks on the base branch.
-                   Never invent or guess a reviewer who does not appear in blame for at least one changed file.
-                2) Before requesting review, verify that each candidate meets ALL of these requirements:
+                1) Build reviewer candidates ONLY from human users who appear in git blame
+                   for the changed files or changed hunks on the base branch. Never
+                   invent or guess a reviewer who does not appear in blame for at least
+                   one changed file.
+                2) Before requesting review, verify that each candidate meets ALL of
+                   these requirements:
                    - Is a human user (not a bot or app) and is not the PR author.
-                   - Has repository write access or higher. Verify via the GitHub API before requesting review:
-                     * Preferred: GET /repos/{owner}/{repo}/collaborators (no permission filter). Filter client-side using either:
-                       role_name in ["write", "maintain", "admin"] OR permissions.push || permissions.admin. Note: paginate if > 30 collaborators.
-                     * Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission in {push, maintain, admin}.
-                   - Has authored at least one commit in this repository in the last 12 months:
+                   - Has repository write access or higher. Verify via the GitHub API
+                     before requesting review:
+                     * Preferred: GET /repos/{owner}/{repo}/collaborators (no permission
+                       filter). Filter client-side using either:
+                       role_name in ["write", "maintain", "admin"] OR
+                       permissions.push || permissions.admin. Note: paginate if > 30
+                       collaborators.
+                     * Alternative: GET
+                       /repos/{owner}/{repo}/collaborators/{username}/permission and
+                       accept if permission in {push, maintain, admin}.
+                   - Has authored at least one commit in this repository in the last 12
+                     months:
                      GET /repos/{owner}/{repo}/commits?author={username}&per_page=1&since={iso_timestamp}
-                   - Has authored at least one commit touching at least one changed file in the last 12 months:
+                   - Has authored at least one commit touching at least one changed file
+                     in the last 12 months:
                      GET /repos/{owner}/{repo}/commits?author={username}&path={file}&per_page=1&since={iso_timestamp}
-                3) NEVER assign someone solely because they are a maintainer or collaborator. If they have write access but zero qualifying commits, they are NOT eligible.
-                4) For bot-authored PRs (for example dependabot[bot]), be stricter: only assign a reviewer if they have a qualifying recent commit touching a changed
-                   file. If no one qualifies, leave the PR unassigned and do NOT comment.
-                5) If multiple eligible reviewers qualify, avoid assigning too many reviews to any single one.
-                6) Request review from exactly one eligible reviewer and add this message:
+                3) NEVER assign someone solely because they are a maintainer or
+                   collaborator. If they have write access but zero qualifying commits,
+                   they are NOT eligible.
+                4) For bot-authored PRs (for example dependabot[bot]), be stricter:
+                   only assign a reviewer if they have a qualifying recent commit
+                   touching a changed file. If no one qualifies, leave the PR
+                   unassigned and do NOT comment.
+                5) If multiple eligible reviewers qualify, avoid assigning too many
+                   reviews to any single one.
+                6) Request review from exactly one eligible reviewer and add this
+                   message:
 
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame and recent commit history.
                 Thanks in advance for the help!
+
+                7) If no eligible reviewer qualifies, do not request review from anyone
+                   and do not fall back to a broader maintainer/collaborator pool.
 
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
             LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
@@ -199,7 +219,7 @@ jobs:
             - name: Run task
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+                  GITHUB_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   PYTHONPATH: ''
               run: |
                   echo "Running agent script: $AGENT_SCRIPT_URL"

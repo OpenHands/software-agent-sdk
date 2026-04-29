@@ -1,5 +1,6 @@
 import warnings
 
+import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
@@ -55,12 +56,20 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
 
     # -- general section (top-level scalar fields) --
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert set(general_fields) == {"agent", "tools", "mcp_config"}
+    assert set(general_fields) == {
+        "agent",
+        "tools",
+        "enable_sub_agents",
+        "mcp_config",
+    }
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
     assert general_fields["tools"].value_type == "array"
     assert general_fields["tools"].default == []
     assert general_fields["tools"].prominence is SettingProminence.MAJOR
+    assert general_fields["enable_sub_agents"].value_type == "boolean"
+    assert general_fields["enable_sub_agents"].default is False
+    assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -74,7 +83,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
-    assert llm_fields["llm.base_url"].prominence is SettingProminence.CRITICAL
+    assert llm_fields["llm.base_url"].prominence is SettingProminence.MAJOR
 
     # Excluded fields must not appear
     assert "llm.fallback_strategy" not in llm_fields
@@ -236,7 +245,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
-    assert general_keys == {"agent", "tools", "mcp_config"}
+    assert general_keys == {"agent", "tools", "enable_sub_agents", "mcp_config"}
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
@@ -303,6 +312,47 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
     )
     assert isinstance(acp, ACPAgentSettings)
     assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
+
+
+def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
+    settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
+
+    assert isinstance(settings, LLMAgentSettings)
+    assert settings.schema_version == 1
+    assert settings.agent_kind == "llm"
+    assert settings.llm.model == "test-model"
+
+
+def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
+    settings = AgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "acp",
+            "acp_command": ["npx", "-y", "claude-agent-acp"],
+            "acp_model": "claude-opus-4-6",
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == 1
+    assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
+
+
+def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported version 1"):
+        AgentSettings.from_persisted({"schema_version": 2, "llm": {"model": "m"}})
+
+
+def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
+    settings = ConversationSettings.from_persisted({"max_iterations": 42})
+
+    assert settings.schema_version == 1
+    assert settings.max_iterations == 42
+
+
+def test_conversation_settings_from_persisted_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported version 1"):
+        ConversationSettings.from_persisted({"schema_version": 2})
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +517,18 @@ def test_acp_custom_server_with_command_resolves() -> None:
         acp_command=["bin", "--flag"],
     )
     assert settings.resolve_acp_command() == ["bin", "--flag"]
+
+
+def test_acp_api_key_env_var_maps_known_servers() -> None:
+    assert (
+        ACPAgentSettings(acp_server="claude-code").api_key_env_var
+        == "ANTHROPIC_API_KEY"
+    )
+    assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
+    assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
+    assert (
+        ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
+    )
 
 
 # ---------------------------------------------------------------------------

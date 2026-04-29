@@ -23,12 +23,14 @@ from openhands.sdk.agent.acp_agent import (
     _serialize_tool_content,
 )
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -105,6 +107,18 @@ class TestACPAgentInstantiation:
             agent.llm.metrics.accumulated_token_usage.model == "gemini-3-flash-preview"
         )
 
+    def test_acp_model_propagated_to_llm_model(self):
+        """acp_model overrides the sentinel model name so logs/state show
+        the real model. The ACP-sentinel marker lives on usage_id."""
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        assert agent.llm.model == "claude-opus-4-6"
+        assert agent.llm.usage_id == "acp-managed"
+
+    def test_sentinel_usage_id_without_acp_model(self):
+        agent = _make_agent()
+        assert agent.llm.model == "acp-managed"
+        assert agent.llm.usage_id == "acp-managed"
+
     def test_no_acp_model_keeps_sentinel(self):
         """Without acp_model, metrics.model_name remains the sentinel value."""
         agent = _make_agent()
@@ -180,6 +194,176 @@ class TestACPAgentValidation:
         )
         with pytest.raises(NotImplementedError, match="mcp_config"):
             self._init_with_patches(agent, tmp_path)
+
+    def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
+        agent = ACPAgent(
+            acp_command=["echo"],
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="review",
+                        content="Review instructions",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                    )
+                ]
+            ),
+        )
+
+        self._init_with_patches(agent, tmp_path)
+
+    def test_allows_agent_context_with_secrets(self, tmp_path):
+        """Secrets are now ACP-compatible: they are injected into the subprocess
+        env by _start_acp_server and advertised in the prompt via <CUSTOM_SECRETS>."""
+        agent = ACPAgent(
+            acp_command=["echo"],
+            agent_context=AgentContext(secrets={"GITHUB_TOKEN": "ghp_secret"}),
+        )
+        # Should not raise
+        self._init_with_patches(agent, tmp_path)
+
+    def test_agent_context_to_acp_prompt_context(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="review",
+                    content="Full review instructions",
+                    trigger=KeywordTrigger(keywords=["/review"]),
+                    description="Review pull requests.",
+                )
+            ],
+            system_message_suffix="Follow repository rules.",
+            user_message_suffix="Prefer concise responses.",
+            current_datetime="2026-04-24T00:00:00",
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        # Reuses the same system_message_suffix.j2 template as the general
+        # agent, so the rendered sections are identical.
+        assert "<CURRENT_DATETIME>" in prompt
+        assert "2026-04-24T00:00:00" in prompt
+        assert "<name>review</name>" in prompt
+        assert "<description>Review pull requests.</description>" in prompt
+        assert "Full review instructions" not in prompt
+        assert "Follow repository rules." in prompt
+        # user_message_suffix is not emitted by to_acp_prompt_context because
+        # LocalConversation already applies it via event.to_llm_message().
+        assert "Prefer concise responses." not in prompt
+
+    def test_agent_context_to_acp_prompt_context_returns_none_when_empty(self):
+        context = AgentContext(skills=[], current_datetime=None)
+
+        assert context.to_acp_prompt_context() is None
+
+    def test_agent_context_to_acp_prompt_context_emits_datetime_by_default(self):
+        context = AgentContext(skills=[])
+
+        prompt = context.to_acp_prompt_context()
+        assert prompt is not None
+        assert "<CURRENT_DATETIME>" in prompt
+
+    def test_agent_context_to_acp_prompt_context_includes_secrets(self):
+        """Secrets appear in the ACP prompt as a <CUSTOM_SECRETS> block so the
+        ACP subprocess knows which environment variables are available."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        context = AgentContext(
+            secrets={
+                "GITHUB_TOKEN": StaticSecret(
+                    value=SecretStr("ghp_secret"),
+                    description="GitHub authentication token",
+                ),
+                "MY_API_KEY": StaticSecret(value=SecretStr("key123")),
+            },
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<CUSTOM_SECRETS>" in prompt
+        assert "$GITHUB_TOKEN" in prompt
+        assert "GitHub authentication token" in prompt
+        assert "$MY_API_KEY" in prompt
+
+    def test_agent_context_to_acp_prompt_context_includes_legacy_repo_skills(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="claude",
+                    content="Always follow the repository review checklist.",
+                    trigger=None,
+                ),
+                Skill(
+                    name="repo-skill",
+                    content="Full AgentSkills instructions should stay out.",
+                    description="Use repo-specific tools.",
+                    is_agentskills_format=True,
+                ),
+            ],
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<REPO_CONTEXT>" in prompt
+        assert "[BEGIN context from [claude]]" in prompt
+        assert "Always follow the repository review checklist." in prompt
+        assert "<name>repo-skill</name>" in prompt
+        assert "<description>Use repo-specific tools.</description>" in prompt
+        assert "Full AgentSkills instructions should stay out." not in prompt
+        assert "<name>claude</name>" not in prompt
+
+    def test_agent_context_to_acp_prompt_context_lists_legacy_triggered_skills(self):
+        context = AgentContext(
+            skills=[
+                Skill(
+                    name="roasted-review",
+                    content="Use a stricter review tone.",
+                    trigger=KeywordTrigger(keywords=["/roasted"]),
+                    description="Run a stricter review.",
+                )
+            ],
+            current_datetime=None,
+        )
+
+        prompt = context.to_acp_prompt_context()
+
+        assert prompt is not None
+        assert "<REPO_CONTEXT>" not in prompt
+        assert "<name>roasted-review</name>" in prompt
+        assert "<description>Run a stricter review.</description>" in prompt
+        assert "Use a stricter review tone." not in prompt
+
+    def test_build_acp_prompt_preserves_all_text_blocks(self):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                user_message_suffix="Prefer concise responses.",
+                current_datetime=None,
+            )
+        )
+        event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[
+                    TextContent(text="First block."),
+                    TextContent(text="Second block."),
+                ],
+            ),
+            extended_content=[TextContent(text="Prefer concise responses.")],
+        )
+
+        prompt = agent._build_acp_prompt(event)
+
+        assert prompt is not None
+        assert "First block." in prompt
+        assert "Second block." in prompt
+        assert prompt.count("Prefer concise responses.") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +728,166 @@ class TestACPAgentStep:
         content_block = events[0].llm_message.content[0]
         assert isinstance(content_block, TextContent)
         assert content_block.text == "The answer is 4"
+
+    @staticmethod
+    def _wire_passthrough_mocks(agent: ACPAgent) -> None:
+        """Wire mock ACP internals that relay prompt() calls through asyncio."""
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._conn.prompt = AsyncMock(return_value=None)
+        agent._session_id = "test-session"
+
+        def _fake_run_async(coro_factory, **_kwargs):
+            return asyncio.run(coro_factory())
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+    def test_step_sends_skill_catalog_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="review",
+                        content="Full review instructions that ACP should not receive.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                        description="Review pull requests.",
+                    )
+                ]
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="Review this PR.")],
+                ),
+                extended_content=[
+                    TextContent(
+                        text="<skill_context>Use strict review.</skill_context>"
+                    )
+                ],
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_blocks = prompt_call.args[0]
+        assert len(prompt_blocks) == 1
+        prompt_text = prompt_blocks[0].text
+        assert "Review this PR." in prompt_text
+        assert "<name>review</name>" in prompt_text
+        assert "<description>Review pull requests.</description>" in prompt_text
+        assert "<skill_context>Use strict review.</skill_context>" in prompt_text
+        assert (
+            "Full review instructions that ACP should not receive." not in prompt_text
+        )
+
+    def test_step_sends_legacy_repo_context_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="claude",
+                        content="Always follow repository-specific review rules.",
+                        trigger=None,
+                    ),
+                    Skill(
+                        name="agent-skill",
+                        content="AgentSkills full instructions should not be sent.",
+                        is_agentskills_format=True,
+                        description="Use the agent skill catalog entry.",
+                    ),
+                ],
+                current_datetime=None,
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="Review this PR.")],
+                ),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_text = prompt_call.args[0][0].text
+        assert "Review this PR." in prompt_text
+        assert "<REPO_CONTEXT>" in prompt_text
+        assert "Always follow repository-specific review rules." in prompt_text
+        assert "<name>agent-skill</name>" in prompt_text
+        assert (
+            "<description>Use the agent skill catalog entry.</description>"
+            in prompt_text
+        )
+        assert "AgentSkills full instructions should not be sent." not in prompt_text
+
+    def test_step_sends_triggered_skill_content_to_acp_server(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(
+                skills=[
+                    Skill(
+                        name="legacy-review",
+                        content="Legacy triggered review instructions.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                    ),
+                    Skill(
+                        name="agentskill-review",
+                        content="AgentSkills triggered review instructions.",
+                        trigger=KeywordTrigger(keywords=["/review"]),
+                        is_agentskills_format=True,
+                        description="AgentSkills review catalog.",
+                    ),
+                ],
+                current_datetime=None,
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text="/review this PR.")],
+                ),
+                extended_content=[
+                    TextContent(text="Legacy triggered review instructions."),
+                    TextContent(text="AgentSkills triggered review instructions."),
+                ],
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_call = agent._conn.prompt.await_args
+        assert prompt_call is not None
+        prompt_text = prompt_call.args[0][0].text
+        assert "Legacy triggered review instructions." in prompt_text
+        assert "AgentSkills triggered review instructions." in prompt_text
+        assert "<name>agentskill-review</name>" in prompt_text
+        assert "<description>AgentSkills review catalog.</description>" in prompt_text
 
     def test_step_includes_reasoning(self, tmp_path):
         agent = _make_agent()
@@ -2088,14 +2432,13 @@ class TestSelectAuthMethod:
 
     def test_openai_api_key(self):
         methods = [
-            self._make_auth_method("chatgpt"),
             self._make_auth_method("codex-api-key"),
             self._make_auth_method("openai-api-key"),
         ]
         env = {"OPENAI_API_KEY": "sk-test"}
         assert _select_auth_method(methods, env) == "openai-api-key"
 
-    def test_codex_api_key_preferred(self):
+    def test_codex_api_key_preferred_over_openai(self):
         """CODEX_API_KEY is checked first (appears first in the map)."""
         methods = [
             self._make_auth_method("codex-api-key"),
@@ -2104,13 +2447,46 @@ class TestSelectAuthMethod:
         env = {"CODEX_API_KEY": "key1", "OPENAI_API_KEY": "key2"}
         assert _select_auth_method(methods, env) == "codex-api-key"
 
-    def test_no_matching_env_var(self):
+    def test_chatgpt_preferred_over_api_key(self, tmp_path):
+        """ChatGPT subscription login takes precedence over API keys."""
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+
+        env = {"OPENAI_API_KEY": "sk-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "chatgpt"
+
+    def test_api_key_fallback_when_no_chatgpt_file(self):
+        """Falls back to API key when chatgpt is offered but auth file absent."""
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"OPENAI_API_KEY": "sk-test"}
+        # Path.home() points to a real dir without .codex/auth.json
+        assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_no_matching_credentials(self):
         methods = [
             self._make_auth_method("chatgpt"),
             self._make_auth_method("openai-api-key"),
         ]
         env = {"UNRELATED": "value"}
         assert _select_auth_method(methods, env) is None
+
+    def test_chatgpt_auth_file(self, tmp_path):
+        methods = [self._make_auth_method("chatgpt")]
+        auth_dir = tmp_path / ".codex"
+        auth_dir.mkdir()
+        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) == "chatgpt"
 
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
@@ -2937,3 +3313,144 @@ class TestACPSessionIdPersistence:
         assert kwargs["cwd"] == str(workspace)
         conn2.new_session.assert_not_awaited()
         assert agent2._session_id == "roundtrip-sess"
+
+
+class TestACPSecretsEnvInjection:
+    """Tests for secret injection into the ACP subprocess environment.
+
+    Secrets passed via ``agent_context.secrets`` must land in the subprocess
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them.
+    ``acp_env`` entries take precedence over agent_context secrets.
+    """
+
+    @staticmethod
+    def _make_conn():
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-1"
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path) -> dict:
+        """Run _start_acp_server and return the env dict passed to the subprocess."""
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPSecretsEnvInjection._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        state = _make_state(tmp_path)
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_static_secret_injected_into_subprocess_env(self, tmp_path):
+        """A StaticSecret in agent_context.secrets lands in the subprocess env."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(
+                        value=SecretStr("ghp_test123"),
+                        description="GitHub token",
+                    )
+                }
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("GITHUB_TOKEN") == "ghp_test123"
+
+    def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
+        """An explicit acp_env entry wins over the same key in agent_context.secrets."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            acp_env={"MY_TOKEN": "acp-env-wins"},
+            agent_context=AgentContext(
+                secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
+            ),
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("MY_TOKEN") == "acp-env-wins"
+
+    def test_none_value_secret_not_injected(self, tmp_path):
+        """A StaticSecret with value=None is not added to the subprocess env."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"ABSENT_SECRET": StaticSecret(value=None)}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert "ABSENT_SECRET" not in env
+
+    def test_empty_string_secret_not_injected(self, tmp_path):
+        """Empty string secrets are not injected into the subprocess env."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"EMPTY_SECRET": StaticSecret(value=SecretStr(""))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert "EMPTY_SECRET" not in env

@@ -3,7 +3,9 @@
 The Agent Client Protocol (ACP) lets OpenHands power conversations using
 ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
-the ACPAgent simply relays user messages and collects the response.
+the ACPAgent relays user messages and collects the response. OpenHands
+can still append prompt-only context, such as a skill catalog, to the
+user message before it is sent to the ACP server.
 
 Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
 assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
@@ -21,6 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
@@ -53,6 +56,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 
@@ -116,9 +120,17 @@ _ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 _TERMINAL_TOOL_CALL_STATUSES: frozenset[str] = frozenset({"completed", "failed"})
 
 
+# Stable identifier stamped onto the sentinel LLM so downstream code
+# (e.g. title_utils) can detect "this LLM cannot be called" without
+# relying on the model name — which we overwrite with the real model
+# once ``acp_model`` is known, so logs and serialized state show the
+# actual model rather than "acp-managed".
+ACP_SENTINEL_USAGE_ID = "acp-managed"
+
+
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
-    return LLM(model="acp-managed")
+    return LLM(model="acp-managed", usage_id=ACP_SENTINEL_USAGE_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +148,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
-# required env var is set.
+# required credential source is present.
 # Note: claude-login is intentionally NOT included because Claude Code ACP
 # uses bypassPermissions mode instead of API key authentication.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
@@ -144,18 +156,28 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "openai-api-key": "OPENAI_API_KEY",
     "gemini-api-key": "GEMINI_API_KEY",
 }
+_CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
 
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
 ) -> str | None:
-    """Pick an auth method whose required env var is present.
+    """Pick an auth method whose required credentials are present.
 
     Returns the ``id`` of the first matching method, or ``None`` if no
-    env-var-based method is available (the server may not require auth).
+    supported credential source is available (the server may not require auth).
+
+    ChatGPT subscription login (device-code flow stored in
+    ``~/.codex/auth.json``) is checked first so it takes precedence over
+    explicit API keys, which serve as the fallback.
     """
     method_ids = {m.id for m in auth_methods}
+    # Prefer ChatGPT subscription login when the auth file is present.
+    if "chatgpt" in method_ids:
+        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+            return "chatgpt"
+    # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
             return method_id
@@ -657,10 +679,13 @@ class ACPAgent(AgentBase):
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
-        # Propagate the actual model name to metrics so that cost/token
-        # entries are attributed to the real model, not the sentinel
-        # "acp-managed" placeholder.
+        # Propagate the actual model name to the sentinel LLM and its
+        # metrics so that logs, serialized state, and cost/token entries
+        # show the real model instead of the "acp-managed" placeholder.
+        # The ACP-sentinel marker lives on ``llm.usage_id`` and is
+        # independent of the model name.
         if self.acp_model:
+            self.llm.model = self.acp_model
             self.llm.metrics.model_name = self.acp_model
             if self.llm.metrics.accumulated_token_usage is not None:
                 self.llm.metrics.accumulated_token_usage.model = self.acp_model
@@ -799,7 +824,10 @@ class ACPAgent(AgentBase):
             )
         )
 
-        # Validate no unsupported features
+        # Validate unsupported execution features. agent_context is allowed
+        # because it contributes prompt-only extensions to user messages; ACP
+        # server tools, MCP configuration, and context-window management remain
+        # owned by the server.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
@@ -815,11 +843,8 @@ class ACPAgent(AgentBase):
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
             )
-        if self.agent_context is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support agent_context; "
-                "configure the ACP server directly"
-            )
+        if self.agent_context:
+            self.agent_context.validate_acp_compatibility()
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -861,6 +886,20 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
+        # Inject secrets from agent_context. acp_env entries take precedence
+        # (already set above), so we only fill keys not already present.
+        # SecretSource.get_value() is synchronous; calling it here is safe
+        # because _start_acp_server is a regular (non-async) method.
+        if self.agent_context and self.agent_context.secrets:
+            for name, secret in self.agent_context.secrets.items():
+                if name not in env:
+                    value = (
+                        secret.get_value()
+                        if isinstance(secret, SecretSource)
+                        else str(secret)
+                    )
+                    if value:
+                        env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -1089,6 +1128,24 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
+    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
+        """Build the prompt text for one ACP user turn."""
+        message = event.to_llm_message()
+        # Preserve all text blocks produced by the conversation layer, including
+        # any extended_content it already attached to the user turn.
+        text_parts = [
+            content.text
+            for content in message.content
+            if isinstance(content, TextContent) and content.text.strip()
+        ]
+        if self.agent_context:
+            acp_prompt_context = self.agent_context.to_acp_prompt_context()
+            if acp_prompt_context:
+                text_parts.append(acp_prompt_context)
+        if not text_parts:
+            return None
+        return "\n\n".join(text_parts)
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -1099,15 +1156,13 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message
+        # Find the latest user message. Conversation implementations already
+        # attach per-turn AgentContext extensions to MessageEvent.extended_content;
+        # MessageEvent.to_llm_message() merges those extensions with the user text.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                # Extract text from the message
-                for content in event.llm_message.content:
-                    if isinstance(content, TextContent) and content.text.strip():
-                        user_message = content.text
-                        break
+                user_message = self._build_acp_prompt(event)
                 if user_message:
                     break
 

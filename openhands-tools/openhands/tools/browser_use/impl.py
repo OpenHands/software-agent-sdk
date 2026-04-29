@@ -585,6 +585,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         finally:
             # Always close the async executor
             self._async_executor.close()
+            # Release the shared executor reference so the class variable
+            # doesn't keep a stale reference that could prevent process exit.
+            from openhands.tools.browser_use.definition import BrowserToolSet
+
+            with BrowserToolSet._shared_executor_lock:
+                if BrowserToolSet._shared_executor is self:
+                    BrowserToolSet._shared_executor = None
 
     def __del__(self):
         """Cleanup on deletion."""

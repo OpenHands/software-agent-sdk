@@ -621,3 +621,23 @@ def test_claude_opus_4_7_config():
     assert model["id"] == "claude-opus-4-7"
     assert model["display_name"] == "Claude Opus 4.7"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-7"
+
+
+def test_kimi_k2_6_config():
+    """Test that kimi-k2.6 has correct configuration."""
+    model = MODELS["kimi-k2.6"]
+
+    assert model["id"] == "kimi-k2.6"
+    assert model["display_name"] == "Kimi K2.6"
+    assert model["llm_config"]["model"] == "litellm_proxy/moonshot/kimi-k2.6"
+    assert model["llm_config"]["temperature"] == 1.0
+
+
+def test_gpt_5_5_config():
+    """Test that gpt-5.5 has correct configuration."""
+    model = MODELS["gpt-5.5"]
+
+    assert model["id"] == "gpt-5.5"
+    assert model["display_name"] == "GPT-5.5"
+    assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.5"
+    assert model["llm_config"]["reasoning_effort"] == "high"

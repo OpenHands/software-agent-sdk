@@ -68,6 +68,10 @@ class MockConversation(BaseConversation):
         """Mock implementation of execute_tool method."""
         raise NotImplementedError("Mock execute_tool not implemented")
 
+    def fork(self, **kwargs: Any) -> "MockConversation":
+        """Mock implementation of fork method."""
+        raise NotImplementedError("Mock fork not implemented")
+
 
 def test_base_conversation_span_management():
     """Test that BaseConversation properly manages span state to prevent double-ending."""  # noqa: E501

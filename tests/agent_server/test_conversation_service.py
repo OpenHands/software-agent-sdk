@@ -1656,16 +1656,21 @@ class TestAutoTitle:
     )
 
     def _make_service(
-        self, title: str | None = None, llm_model: str = "gpt-4o"
+        self,
+        title: str | None = None,
+        title_llm_profile: str | None = None,
+        llm_model: str = "gpt-4o",
+        llm_usage_id: str = "test-llm",
     ) -> AsyncMock:
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model=llm_model, usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
             metrics=None,
             title=title,
+            title_llm_profile=title_llm_profile,
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -1683,6 +1688,22 @@ class TestAutoTitle:
             source="user",
             llm_message=Message(role="user", content=[TextContent(text=text)]),
         )
+
+    @staticmethod
+    async def _drain_title_task(
+        predicate=lambda: True, max_iterations: int = 50, step: float = 0.02
+    ) -> None:
+        """Yield to the event loop until the background title task completes.
+
+        `AutoTitleSubscriber` schedules generation via `run_in_executor`, so a
+        single `await asyncio.sleep(0)` is not enough to let the executor
+        thread finish. Poll with a short sleep until `predicate()` becomes
+        truthy or the timeout elapses.
+        """
+        for _ in range(max_iterations):
+            await asyncio.sleep(step)
+            if predicate():
+                return
 
     @pytest.mark.asyncio
     async def test_autotitle_sets_title_on_first_user_message(self):
@@ -1765,15 +1786,204 @@ class TestAutoTitle:
         assert service.stored.title is None
 
     @pytest.mark.asyncio
+    async def test_autotitle_uses_llm_profile_when_configured(self):
+        """Profile LLM takes precedence over agent.llm when configured."""
+        service = self._make_service(title_llm_profile="cheap-model")
+        mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.return_value = mock_llm
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            MockStore.assert_called_once_with()
+            mock_store_instance.load.assert_called_once_with("cheap-model")
+            # Profile-loaded LLM wins over agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is mock_llm
+
+        assert service.stored.title == "✨ Profile LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_to_agent_llm_when_profile_not_found(self):
+        """Missing profile → fall back to agent.llm (non-breaking behavior)."""
+        service = self._make_service(title_llm_profile="nonexistent-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = FileNotFoundError(
+                "Profile 'nonexistent-profile' not found"
+            )
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # Failed profile load → falls back to agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_no_profile_uses_agent_llm(self):
+        """No profile configured → use agent.llm (preserves existing behavior)."""
+        service = self._make_service(title_llm_profile=None)
+        agent_llm = service._conversation.agent.llm
+
+        with patch(
+            self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+        ) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # No profile → agent.llm is used (backwards compatible)
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_handles_profile_load_value_error(self):
+        """Profile load ValueError → fall back to agent.llm."""
+        service = self._make_service(title_llm_profile="corrupted-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = ValueError("Invalid profile format")
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_autotitle_falls_back_for_acp_managed_llm(self):
-        """ACP-managed agents should skip LLM title generation and fall back."""
-        service = self._make_service(llm_model="acp-managed")
+        """ACP-managed agents with no title profile → truncation fallback."""
+        service = self._make_service(llm_usage_id="acp-managed")
         subscriber = AutoTitleSubscriber(service=service)
 
         await subscriber(self._user_message_event("Fix the login bug"))
-        await asyncio.sleep(0)
+        await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "Fix the login bug"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_integration_routes_through_profile_store(self, tmp_path):
+        """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
+
+        Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
+        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        so this catches regressions in profile loading, LLM passthrough, and the
+        agent-server → SDK integration — the unit tests above only exercise
+        AutoTitleSubscriber in isolation.
+        """
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
+
+        from openhands.sdk.llm import LLMResponse, MetricsSnapshot
+        from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+        # Persist a real LLM profile to disk with a distinctive usage_id so we
+        # can tell the title LLM apart from the agent's LLM in the assertion.
+        profile_dir = tmp_path / "profiles"
+        title_llm_on_disk = LLM(
+            usage_id="title-llm",
+            model="claude-haiku-4-5",
+            api_key=SecretStr("title-key"),
+        )
+        LLMProfileStore(base_dir=profile_dir).save(
+            "title-fast", title_llm_on_disk, include_secrets=True
+        )
+
+        service = self._make_service(title_llm_profile="title-fast")
+
+        calls: list[str] = []
+
+        def fake_completion(self_llm, _messages, **_kwargs):
+            calls.append(self_llm.usage_id)
+            msg = LiteLLMMessage(content="✨ Generated", role="assistant")
+            choice = Choices(finish_reason="stop", index=0, message=msg)
+            raw = ModelResponse(
+                id="resp-1",
+                choices=[choice],
+                created=0,
+                model=self_llm.model,
+                object="chat.completion",
+                usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            )
+            return LLMResponse(
+                message=Message.from_llm_chat_message(choice["message"]),
+                metrics=MetricsSnapshot(
+                    model_name=self_llm.model,
+                    accumulated_cost=0.0,
+                    max_budget_per_task=None,
+                    accumulated_token_usage=None,
+                ),
+                raw_response=raw,
+            )
+
+        # Point LLMProfileStore() (no args) at our tmp dir so the real
+        # _load_title_llm code path finds our on-disk profile.
+        with (
+            patch(
+                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
+            ),
+            patch(
+                "openhands.sdk.llm.llm.LLM.completion",
+                autospec=True,
+                side_effect=fake_completion,
+            ),
+        ):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            # Wait for the background executor task to complete. The production
+            # code uses run_in_executor, so sleep(0) is not enough.
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if service.stored.title is not None:
+                    break
+
+        # The profile's LLM (usage_id="title-llm") was called — not agent.llm
+        # (usage_id="test-llm"). This is the regression-sensitive assertion.
+        assert calls == ["title-llm"], (
+            f"Expected only the title profile LLM to be called, got: {calls}"
+        )
+        assert service.stored.title == "✨ Generated"
         service.save_meta.assert_called_once()
 
 

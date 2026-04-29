@@ -167,6 +167,10 @@ class Skill(BaseModel):
     MAX_DESCRIPTION_LENGTH: ClassVar[int] = 1024
 
     # AgentSkills standard fields (https://agentskills.io/specification)
+    version: str = Field(
+        default="1.0.0",
+        description="Skill version (AgentSkills standard field).",
+    )
     description: str | None = Field(
         default=None,
         description=(
@@ -729,6 +733,10 @@ def load_user_skills() -> list[Skill]:
     with earlier entries in USER_SKILLS_DIRS taking precedence for duplicate
     names.
 
+    Also loads enabled installed skills from ~/.openhands/skills/installed/
+    (managed via install_skill/uninstall_skill). Installed skills have lower
+    precedence than user skills from the directories above.
+
     Returns:
         List of Skill objects loaded from user directories.
         Returns empty list if no skills found or loading fails.
@@ -737,6 +745,17 @@ def load_user_skills() -> list[Skill]:
     seen_names: set[str] = set()
 
     _load_and_merge_from_dirs(USER_SKILLS_DIRS, seen_names, all_skills, "user skills")
+
+    # Load enabled installed skills (lower precedence than user skills)
+    try:
+        from openhands.sdk.skills.installed import load_installed_skills
+
+        for skill in load_installed_skills():
+            if skill.name not in seen_names:
+                seen_names.add(skill.name)
+                all_skills.append(skill)
+    except Exception as e:
+        logger.warning(f"Failed to load installed skills: {e}")
 
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
