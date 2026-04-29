@@ -14,6 +14,7 @@ from openhands.sdk import (
     Agent,
     AgentSettings,
     ConversationSettings,
+    LLMAgentSettings,
     OpenHandsAgentSettings,
     SettingProminence,
     Tool,
@@ -568,6 +569,28 @@ def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
     # inheritance.
     for name in ("export_schema", "create_agent", "build_condenser", "build_critic"):
         assert hasattr(AgentSettings, name), f"missing: AgentSettings.{name}"
+
+
+def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
+    """``LLMAgentSettings(...)`` emits a DeprecationWarning; is OpenHandsAgentSettings subclass."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        settings = LLMAgentSettings(llm=LLM(model="test-model"))
+
+    assert any("LLMAgentSettings" in str(w.message) for w in caught), (
+        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.agent_kind == "openhands"
+    assert settings.llm.model == "test-model"
+
+
+def test_agent_kind_llm_migrates_to_openhands() -> None:
+    """Payloads with ``agent_kind: 'llm'`` (pre-1.19.0) deserialize as OpenHandsAgentSettings."""
+    v = validate_agent_settings({"agent_kind": "llm", "llm": {"model": "test-model"}})
+    assert isinstance(v, OpenHandsAgentSettings)
+    assert v.agent_kind == "openhands"
+    assert v.llm.model == "test-model"
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from pydantic import (
     TypeAdapter,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -76,7 +77,7 @@ class SettingsFieldSchema(BaseModel):
         default=None,
         description=(
             "When set, the field only applies to the named ``AgentSettings`` "
-            "variant (``'llm'`` or ``'acp'``). The GUI filters fields by the "
+            "variant (``'openhands'`` or ``'acp'``). The GUI filters fields by the "
             "user's current variant; fields with ``variant=None`` are shown "
             "regardless."
         ),
@@ -91,7 +92,7 @@ class SettingsSectionSchema(BaseModel):
         default=None,
         description=(
             "When set, this section only applies to the named ``AgentSettings`` "
-            "variant (e.g. ``'llm'`` or ``'acp'``). The GUI filters sections by "
+            "variant (e.g. ``'openhands'`` or ``'acp'``). The GUI filters sections by "
             "the current ``agent_kind`` value; sections with ``variant=None`` "
             "are always shown."
         ),
@@ -605,6 +606,14 @@ class OpenHandsAgentSettings(BaseModel):
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_agent_kind(cls, data: Any) -> Any:
+        """Upgrade ``agent_kind: "llm"`` from pre-1.19.0 payloads."""
+        if isinstance(data, dict) and data.get("agent_kind") == "llm":
+            return {**data, "agent_kind": "openhands"}
+        return data
+
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["openhands"] = Field(
         default="openhands",
@@ -1003,12 +1012,17 @@ def _agent_settings_discriminator(value: Any) -> str:
     Existing persisted payloads predate ``agent_kind`` and carry only
     OpenHands-agent fields. Treating a missing discriminator as ``'openhands'``
     lets those payloads validate without a migration.
+
+    ``'llm'`` is mapped to ``'openhands'`` for backward compatibility with
+    payloads written by SDK versions prior to the rename (v1.19.0).
     """
     if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "openhands")
-    if isinstance(value, dict):
-        return value.get("agent_kind", "openhands")
-    return "openhands"
+        kind = getattr(value, "agent_kind", "openhands")
+    elif isinstance(value, dict):
+        kind = value.get("agent_kind", "openhands")
+    else:
+        return "openhands"
+    return "openhands" if kind == "llm" else kind
 
 
 AgentSettingsConfig = Annotated[
@@ -1081,13 +1095,9 @@ class AgentSettings(OpenHandsAgentSettings):
         )
         return validate_agent_settings(payload)
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def model_post_init(self, __context: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
 
-        # ``deprecated_in`` matches the current SDK version that ships
-        # this refactor so warn_deprecated() actually fires (its gate is
-        # current_version >= deprecated_in). ``removed_in`` is 5 minor
-        # releases later per the repo's API-breakage policy.
         warn_deprecated(
             "AgentSettings",
             deprecated_in="1.17.0",
@@ -1099,11 +1109,35 @@ class AgentSettings(OpenHandsAgentSettings):
                 "either variant."
             ),
         )
-        super().__init__(*args, **kwargs)
+        super().model_post_init(__context)
 
 
-# Deprecated alias — use OpenHandsAgentSettings directly.
-LLMAgentSettings = OpenHandsAgentSettings
+class LLMAgentSettings(OpenHandsAgentSettings):
+    """Deprecated name for :class:`OpenHandsAgentSettings`.
+
+    ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
+    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
+    callers keep working, though direct construction now emits a
+    :class:`DeprecationWarning`.
+
+    Use :class:`OpenHandsAgentSettings` for all new code.
+
+    Scheduled for removal in v1.22.0.
+    """
+
+    def model_post_init(self, __context: Any) -> None:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "LLMAgentSettings",
+            deprecated_in="1.19.0",
+            removed_in="1.22.0",
+            details=(
+                "Use ``OpenHandsAgentSettings`` directly. "
+                "``LLMAgentSettings`` was renamed in v1.19.0."
+            ),
+        )
+        super().model_post_init(__context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
@@ -1134,7 +1168,7 @@ def export_agent_settings_schema() -> SettingsSchema:
     (``agent_kind``) is intentionally **not** emitted as a schema field
     — each variant lives on its own settings page in the GUI, and the
     page injects the correct ``agent_kind`` value on save. Sections
-    carry a ``variant`` tag (``'llm'``, ``'acp'``, or ``None`` for
+    carry a ``variant`` tag (``'openhands'``, ``'acp'``, or ``None`` for
     shared) so the frontend can filter by the page's variant.
     """
     llm_schema = OpenHandsAgentSettings.export_schema()
