@@ -21,4 +21,6 @@ __all__ = [
     "create_mcp_tools",
     "MCPError",
     "MCPTimeoutError",
+    # MCPInitializationError is intentionally NOT exported here to avoid
+    # circular imports. Import it directly from openhands.sdk.mcp.exceptions
 ]

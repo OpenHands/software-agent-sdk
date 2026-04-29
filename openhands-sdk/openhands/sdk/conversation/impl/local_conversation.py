@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.mcp.exceptions import MCPInitializationError
 from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -489,13 +490,19 @@ class LocalConversation(BaseConversation):
         if merged_mcp:
             # Pass the registry's lookup method as a callback - secrets are retrieved
             # lazily, one at a time, only when actually referenced in the config
-            merged_mcp = expand_mcp_variables(
-                merged_mcp,
-                {},
-                get_secret=self._state.secret_registry.get_secret_value,
-                expand_defaults=True,
-            )
-            logger.debug("Expanded MCP config variables")
+            try:
+                merged_mcp = expand_mcp_variables(
+                    merged_mcp,
+                    {},
+                    get_secret=self._state.secret_registry.get_secret_value,
+                    expand_defaults=True,
+                )
+                logger.debug("Expanded MCP config variables")
+            except Exception as e:
+                raise MCPInitializationError(
+                    f"Failed to expand MCP configuration variables: {e}",
+                    cause=e,
+                ) from e
 
         # Update agent with merged content only if we have plugins or MCP config
         # Skip update when nothing changed to avoid unnecessary agent state mutations

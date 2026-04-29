@@ -241,6 +241,38 @@ class TestExpandMcpVariables:
 
         assert result["mcpServers"]["test-server"]["url"] == "/path/api"
 
+    def test_expand_with_pydantic_mcp_server_objects(self):
+        """Test that Pydantic MCP server objects are properly serialized.
+
+        When MCP config contains Pydantic models (RemoteMCPServer, StdioMCPServer)
+        instead of plain dicts, they should be converted to dicts automatically.
+        This regression test covers the fix for:
+        TypeError: Object of type RemoteMCPServer is not JSON serializable
+        """
+        from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
+
+        config = {
+            "mcpServers": {
+                "Notion": RemoteMCPServer(
+                    url="https://mcp.notion.com/mcp",
+                    headers={},
+                    auth="oauth",
+                ),
+                "fetch": StdioMCPServer(
+                    command="uvx",
+                    args=["mcp-server-fetch"],
+                ),
+            }
+        }
+
+        # This should not raise TypeError
+        result = expand_mcp_variables(config, {})
+
+        # Verify the result is a plain dict with expected values
+        assert result["mcpServers"]["Notion"]["url"] == "https://mcp.notion.com/mcp"
+        assert result["mcpServers"]["fetch"]["command"] == "uvx"
+        assert result["mcpServers"]["fetch"]["args"] == ["mcp-server-fetch"]
+
 
 class TestLoadMcpConfigWithSecrets:
     """Tests for load_mcp_config function with secrets."""
