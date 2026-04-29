@@ -768,6 +768,9 @@ class RemoteConversation(BaseConversation):
                 )
             self._id = uuid.UUID(cid)
 
+            # Register the conversation ID with the workspace for callbacks
+            workspace.register_conversation(str(self._id))
+
         # Initialize the remote state
         self._state = RemoteState(
             self._client,
