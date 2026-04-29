@@ -1024,17 +1024,20 @@ class LLMAgentSettings(OpenHandsAgentSettings):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
+        # Only warn when constructing LLMAgentSettings directly, not subclasses
+        # (AgentSettings inherits from LLMAgentSettings and emits its own warning).
+        if type(self) is LLMAgentSettings:
+            from openhands.sdk.utils.deprecation import warn_deprecated
 
-        warn_deprecated(
-            "LLMAgentSettings",
-            deprecated_in="1.19.0",
-            removed_in="1.22.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` directly. "
-                "``LLMAgentSettings`` was renamed in v1.19.0."
-            ),
-        )
+            warn_deprecated(
+                "LLMAgentSettings",
+                deprecated_in="1.19.0",
+                removed_in="1.22.0",
+                details=(
+                    "Use ``OpenHandsAgentSettings`` directly. "
+                    "``LLMAgentSettings`` was renamed in v1.19.0."
+                ),
+            )
         super().model_post_init(__context)
 
 
@@ -1089,17 +1092,23 @@ def validate_agent_settings(
     return _AGENT_SETTINGS_ADAPTER.validate_python(data)
 
 
-class AgentSettings(OpenHandsAgentSettings):
+class AgentSettings(LLMAgentSettings):
     """Deprecated legacy name for :class:`OpenHandsAgentSettings`.
 
     Before the discriminated-union redesign, ``AgentSettings`` was the
     single concrete class for agent configuration. It is kept as a
-    :class:`OpenHandsAgentSettings` subclass so every v1.17 attribute and
+    :class:`LLMAgentSettings` subclass (which itself is a
+    :class:`OpenHandsAgentSettings` subclass) so every v1.17 attribute and
     method (``agent``, ``llm``, ``tools``, ``mcp_config``,
     ``condenser``, ``verification``, ``build_condenser``,
     ``build_critic``, ``create_agent``, …) resolves through
     inheritance — existing callers keep working, though direct
     construction now emits a :class:`DeprecationWarning`.
+
+    Inherits from :class:`LLMAgentSettings` so that ``agent_kind`` remains
+    ``"llm"`` (matching the PyPI 1.19.x API surface seen by the breakage
+    checker), while new code should use :class:`OpenHandsAgentSettings`
+    directly.
 
     For new code:
 
@@ -1116,7 +1125,9 @@ class AgentSettings(OpenHandsAgentSettings):
     """
 
     @classmethod
-    def from_persisted(cls, data: Any) -> OpenHandsAgentSettings | ACPAgentSettings:
+    def from_persisted(
+        cls, data: Any
+    ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
         """Load persisted agent settings, applying any schema migrations."""
         payload = _apply_persisted_migrations(
             data,
@@ -1126,11 +1137,11 @@ class AgentSettings(OpenHandsAgentSettings):
         )
         return validate_agent_settings(payload)
 
-    def __init__(self, **data: Any) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         # pydantic v2 generates __init__; this stub exists so the API-breakage
         # checker does not flag AgentSettings.__init__ as removed. The
         # deprecation warning is emitted via model_post_init instead.
-        super().__init__(**data)
+        super().__init__(*args, **kwargs)
 
     def model_post_init(self, __context: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated

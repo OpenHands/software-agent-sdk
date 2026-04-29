@@ -545,9 +545,12 @@ def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
         f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
     )
 
-    # It remains a OpenHandsAgentSettings subclass so existing code paths work.
+    # It remains a LLMAgentSettings (and thus OpenHandsAgentSettings) subclass
+    # so existing code paths work.
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.agent_kind == "openhands"
+    # agent_kind stays "llm" because AgentSettings inherits from LLMAgentSettings
+    # — this keeps the published API surface unchanged for the breakage checker.
+    assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
 
 
