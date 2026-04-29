@@ -88,6 +88,28 @@ class TestExpandMcpVariables:
             r"C:\Users\tester\skill\scripts\server.py"
         )
 
+    def test_expand_variables_in_dictionary_keys(self):
+        """Variable expansion should preserve the legacy key-substitution behavior."""
+        config = {
+            "mcpServers": {
+                "${SERVER_NAME}": {
+                    "headers": {"${HEADER_NAME}": "Bearer ${TOKEN}"},
+                }
+            }
+        }
+        variables = {
+            "SERVER_NAME": "expanded-server",
+            "HEADER_NAME": "Authorization",
+            "TOKEN": "secret-token",
+        }
+
+        result = expand_mcp_variables(config, variables)
+
+        assert "expanded-server" in result["mcpServers"]
+        assert result["mcpServers"]["expanded-server"]["headers"] == {
+            "Authorization": "Bearer secret-token"
+        }
+
     def test_expand_environment_variables(self):
         """Test expanding variables from environment."""
         os.environ["TEST_MCP_VAR"] = "env-value-123"

@@ -40,12 +40,22 @@ def is_absolute_path_source(path: str | os.PathLike[str]) -> bool:
     return PureWindowsPath(value).is_absolute()
 
 
-def is_local_path_source(source: str) -> bool:
-    """Return whether a plugin/skill source is a local filesystem path.
+def is_host_absolute_path(path: str | os.PathLike[str]) -> bool:
+    """Return whether ``path`` is absolute for the current host filesystem."""
 
-    Backslashes identify local path syntax only when no URL scheme is present;
-    they do not imply that a path is fully qualified. Windows drive-qualified
-    paths are detected explicitly through ``PureWindowsPath``.
+    value = os.fspath(path).strip()
+    if not value:
+        return False
+    return Path(value).expanduser().is_absolute()
+
+
+def is_local_path_source(source: str) -> bool:
+    """Return whether a plugin/skill source should be treated as local.
+
+    This accepts explicit local path syntax such as ``file://`` URLs,
+    home-relative paths, any dot-prefixed relative path (``.``, ``..``,
+    ``.openhands``), host-native absolute paths, Windows absolute paths, and
+    backslash-separated paths when they are not URL-like.
     """
 
     value = source.strip()

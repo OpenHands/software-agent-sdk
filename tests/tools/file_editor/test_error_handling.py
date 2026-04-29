@@ -1,8 +1,11 @@
 """Tests for error handling in file editor."""
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.impl import file_editor
@@ -10,11 +13,12 @@ from openhands.tools.file_editor.impl import file_editor
 from .conftest import assert_error_result
 
 
-def test_validation_error_formatting():
+def test_validation_error_formatting(tmp_path):
     """Test that validation errors are properly formatted in the output."""
+    missing_file = tmp_path / "nonexistent" / "file.txt"
     result = file_editor(
         command="view",
-        path="/nonexistent/file.txt",
+        path=str(missing_file),
     )
     assert_error_result(result)
     assert result.is_error and "does not exist" in result.text
@@ -22,12 +26,23 @@ def test_validation_error_formatting():
     # Test directory validation for non-view commands
     result = file_editor(
         command="str_replace",
-        path="/tmp",
+        path=str(tmp_path),
         old_str="something",
         new_str="new",
     )
     assert_error_result(result)
     assert result.is_error and "directory and only the `view` command" in result.text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only regression test")
+def test_create_rejects_foreign_platform_absolute_paths(tmp_path, monkeypatch):
+    """Create should reject absolute-path syntax that is not absolute on this host."""
+    monkeypatch.chdir(tmp_path)
+    result = file_editor(command="create", path=r"C:\foo", file_text="hello")
+
+    assert_error_result(result)
+    assert "absolute path" in result.text
+    assert not (tmp_path / r"C:\foo").exists()
 
 
 def test_str_replace_error_handling(temp_file):

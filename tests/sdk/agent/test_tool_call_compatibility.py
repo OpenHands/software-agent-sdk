@@ -1,6 +1,7 @@
 """Tests for legacy tool-name compatibility shims."""
 
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -308,6 +309,7 @@ def test_shell_tool_name_does_not_fall_back_without_terminal(tmp_path):
     assert errors[0].tool_name == "ls"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="grep fallback emits a Unix command")
 def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     test_file = tmp_path / "needle.txt"
     test_file.write_text("needle\n")
