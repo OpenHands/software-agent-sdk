@@ -2466,23 +2466,24 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) == "chatgpt"
 
-    def test_api_key_fallback_when_no_chatgpt_file(self):
+    def test_api_key_fallback_when_no_chatgpt_file(self, tmp_path):
         """Falls back to API key when chatgpt is offered but auth file absent."""
         methods = [
             self._make_auth_method("chatgpt"),
             self._make_auth_method("openai-api-key"),
         ]
         env = {"OPENAI_API_KEY": "sk-test"}
-        # Path.home() points to a real dir without .codex/auth.json
-        assert _select_auth_method(methods, env) == "openai-api-key"
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "openai-api-key"
 
-    def test_no_matching_credentials(self):
+    def test_no_matching_credentials(self, tmp_path):
         methods = [
             self._make_auth_method("chatgpt"),
             self._make_auth_method("openai-api-key"),
         ]
         env = {"UNRELATED": "value"}
-        assert _select_auth_method(methods, env) is None
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) is None
 
     def test_chatgpt_auth_file(self, tmp_path):
         methods = [self._make_auth_method("chatgpt")]
@@ -2496,11 +2497,12 @@ class TestSelectAuthMethod:
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 
-    def test_method_not_in_server_list(self):
+    def test_method_not_in_server_list(self, tmp_path):
         """Even if env var is set, method must be offered by server."""
         methods = [self._make_auth_method("chatgpt")]
         env = {"OPENAI_API_KEY": "sk-test"}
-        assert _select_auth_method(methods, env) is None
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) is None
 
 
 # ---------------------------------------------------------------------------
