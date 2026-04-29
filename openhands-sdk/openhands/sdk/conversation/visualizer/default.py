@@ -2,6 +2,7 @@ import logging
 import re
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import IO, TextIO, cast
 
 from pydantic import BaseModel
@@ -56,11 +57,11 @@ DEFAULT_HIGHLIGHT_REGEX = {
 }
 
 
+@dataclass(slots=True)
 class _EncodingSafeTextIO:
     """Text stream wrapper that replaces characters unsupported by stdout."""
 
-    def __init__(self, stream: TextIO) -> None:
-        self._stream = stream
+    _stream: TextIO
 
     @property
     def encoding(self) -> str | None:

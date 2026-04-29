@@ -11,7 +11,7 @@ from binaryornot.check import is_binary
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.path import is_absolute_path_source, to_posix_path
+from openhands.sdk.utils.path import is_host_absolute_path, to_posix_path
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -572,11 +572,9 @@ class FileEditor:
         1. Path is absolute
         2. Path and command are compatible
         """
-        # Check if its an absolute path
-        if not is_absolute_path_source(path):
-            suggestion_message = (
-                "The path should be an absolute path, starting with `/`."
-            )
+        # Check if it's an absolute path on the current host filesystem.
+        if not is_host_absolute_path(path):
+            suggestion_message = "The path should be an absolute path."
 
             # Only suggest the absolute path if cwd is provided and the path exists
             if self._cwd is not None:
