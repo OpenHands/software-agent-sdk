@@ -3,6 +3,7 @@
 import os
 import re
 import subprocess
+import sys
 import time
 
 from openhands.sdk import get_logger
@@ -113,7 +114,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
 
             # Start the HTTP server in the background
             self.server_process: subprocess.Popen[bytes] | None = subprocess.Popen(
-                ["python3", "-m", "http.server", "8000"],
+                [sys.executable, "-m", "http.server", "8000", "--bind", "127.0.0.1"],
                 cwd=self.workspace,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -34,7 +34,8 @@ def _sigterm_handler(signum: int, _frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
-signal.signal(signal.SIGALRM, _sigterm_handler)
+if sigalrm := getattr(signal, "SIGALRM", None):
+    signal.signal(sigalrm, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.

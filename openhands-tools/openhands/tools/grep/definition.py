@@ -70,9 +70,9 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     def declared_resources(self, action: Action) -> DeclaredResources:
         """Declare resource usage for parallel execution.
 
-        Both backends (ripgrep and regular grep) spawn independent
-        subprocesses with no shared mutable state, so all grep calls
-        are safe to run lock-free in parallel.
+        All grep backends are stateless and safe to run lock-free in parallel:
+        ripgrep and system grep spawn independent subprocesses, and the Python
+        fallback only performs local file reads.
         """
         if not isinstance(action, GrepAction):
             raise TypeError(f"Expected GrepAction, got {type(action).__name__}")

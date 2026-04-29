@@ -176,6 +176,10 @@ class TestHelperFunctions:
         assert _extract_repo_name("https://github.com/owner/repo.git") == "repo"
         assert _extract_repo_name("https://gitlab.com/owner/repo") == "repo"
 
+    def test_extract_repo_name_windows_file_url(self):
+        """Test extracting repo names from Windows file URLs."""
+        assert _extract_repo_name(r"file://C:\Users\user\work\repo") == "repo"
+
     def test_extract_repo_name_ssh_url(self):
         """Test extracting repo name from SSH URLs."""
         assert _extract_repo_name("git@github.com:owner/repo.git") == "repo"

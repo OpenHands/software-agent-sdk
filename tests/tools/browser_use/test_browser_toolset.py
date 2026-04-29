@@ -1,6 +1,7 @@
 """Test BrowserToolSet functionality."""
 
 import tempfile
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -20,7 +21,30 @@ def _reset_shared_executor():
     """Reset the shared executor singleton before and after each test."""
     BrowserToolSet._shared_executor = None
     yield
+    if BrowserToolSet._shared_executor is not None:
+        BrowserToolSet._shared_executor.close()
     BrowserToolSet._shared_executor = None
+
+
+@pytest.fixture(autouse=True)
+def _mock_browser_executor_init():
+    def fake_init(self, **_kwargs):
+        self.full_output_save_dir = None
+        self._initialized = False
+        self._cleanup_initiated = False
+        self._action_timeout_seconds = 30.0
+        self._async_executor = MagicMock()
+        self._async_executor.close = MagicMock()
+
+    with (
+        patch.object(BrowserToolExecutor, "__init__", fake_init),
+        patch.object(
+            BrowserToolExecutor,
+            "_ensure_chromium_available",
+            return_value="/usr/bin/chromium",
+        ),
+    ):
+        yield
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
