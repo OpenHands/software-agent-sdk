@@ -16,7 +16,6 @@ from pydantic import (
     TypeAdapter,
     field_serializer,
     field_validator,
-    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -606,14 +605,6 @@ class OpenHandsAgentSettings(BaseModel):
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_agent_kind(cls, data: Any) -> Any:
-        """Upgrade ``agent_kind: "llm"`` from pre-1.19.0 payloads."""
-        if isinstance(data, dict) and data.get("agent_kind") == "llm":
-            return {**data, "agent_kind": "openhands"}
-        return data
-
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["openhands"] = Field(
         default="openhands",
@@ -1012,17 +1003,12 @@ def _agent_settings_discriminator(value: Any) -> str:
     Existing persisted payloads predate ``agent_kind`` and carry only
     OpenHands-agent fields. Treating a missing discriminator as ``'openhands'``
     lets those payloads validate without a migration.
-
-    ``'llm'`` is mapped to ``'openhands'`` for backward compatibility with
-    payloads written by SDK versions prior to the rename (v1.19.0).
     """
     if isinstance(value, BaseModel):
-        kind = getattr(value, "agent_kind", "openhands")
-    elif isinstance(value, dict):
-        kind = value.get("agent_kind", "openhands")
-    else:
-        return "openhands"
-    return "openhands" if kind == "llm" else kind
+        return getattr(value, "agent_kind", "openhands")
+    if isinstance(value, dict):
+        return value.get("agent_kind", "openhands")
+    return "openhands"
 
 
 AgentSettingsConfig = Annotated[

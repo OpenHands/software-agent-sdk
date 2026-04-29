@@ -585,14 +585,6 @@ def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
     assert settings.llm.model == "test-model"
 
 
-def test_agent_kind_llm_migrates_to_openhands() -> None:
-    """Payloads with ``agent_kind: 'llm'`` (pre-1.19.0) deserialize as OpenHandsAgentSettings."""
-    v = validate_agent_settings({"agent_kind": "llm", "llm": {"model": "test-model"}})
-    assert isinstance(v, OpenHandsAgentSettings)
-    assert v.agent_kind == "openhands"
-    assert v.llm.model == "test-model"
-
-
 # ---------------------------------------------------------------------------
 # ConversationSettings.create_request — dispatches on variant
 # ---------------------------------------------------------------------------
