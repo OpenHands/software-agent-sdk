@@ -530,7 +530,7 @@ def test_acp_custom_server_with_command_resolves() -> None:
 
 
 def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
-    """``AgentSettings(...)`` is retained (deprecated) as a OpenHandsAgentSettings subclass.
+    """``AgentSettings(...)`` is retained as a deprecated OpenHandsAgentSettings.
 
     All v1.17.0 attributes must remain reachable so the API breakage
     check does not flag them as removed.
@@ -572,7 +572,7 @@ def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
 
 
 def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
-    """``LLMAgentSettings(...)`` emits a DeprecationWarning; is OpenHandsAgentSettings subclass."""
+    """``LLMAgentSettings(...)`` emits DeprecationWarning; is OpenHandsAgentSettings."""
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         settings = LLMAgentSettings(llm=LLM(model="test-model"))

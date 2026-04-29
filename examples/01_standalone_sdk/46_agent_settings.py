@@ -1,4 +1,4 @@
-"""Create, serialize, and deserialize OpenHandsAgentSettings, then build a working agent.
+"""Create, serialize, and deserialize OpenHandsAgentSettings, then build an agent.
 
 Demonstrates:
 1. Configuring an agent entirely through OpenHandsAgentSettings (LLM, tools, condenser).

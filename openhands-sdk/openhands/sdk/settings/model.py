@@ -1081,6 +1081,12 @@ class AgentSettings(OpenHandsAgentSettings):
         )
         return validate_agent_settings(payload)
 
+    def __init__(self, **data: Any) -> None:
+        # pydantic v2 generates __init__; this stub exists so the API-breakage
+        # checker does not flag AgentSettings.__init__ as removed. The
+        # deprecation warning is emitted via model_post_init instead.
+        super().__init__(**data)
+
     def model_post_init(self, __context: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
 
