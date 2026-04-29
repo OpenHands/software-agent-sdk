@@ -18,6 +18,7 @@ from openhands.tools.file_editor.utils.constants import (
     DIRECTORY_CONTENT_TRUNCATED_NOTICE,
     TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
 )
+from tests.path_utils import symlink_or_skip
 
 from .conftest import (
     assert_successful_result,
@@ -286,12 +287,13 @@ def test_view_file(editor):
 def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent
+    expected_dir = parent_dir.as_posix()
     result = editor(command="view", path=str(parent_dir))
     assert (
         result.text
         == f"""Here's the files and directories up to 2 levels deep in {parent_dir}, excluding hidden items:
-{parent_dir}/
-{parent_dir}/test.txt"""  # noqa: E501
+{expected_dir}/
+{expected_dir}/test.txt"""  # noqa: E501
     )
 
 
@@ -557,7 +559,7 @@ def test_insert_chinese_text_into_english_file(editor):
         new_str="中文文本",
     )
     assert isinstance(result, FileEditorObservation)
-    assert "中文文本" in test_file.read_text()
+    assert "中文文本" in test_file.read_text(encoding="utf-8")
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
@@ -725,7 +727,7 @@ def test_view_symlinked_directory(tmp_path):
 
     # Create a symlink to the directory
     symlink_dir = tmp_path / "symlink_dir"
-    symlink_dir.symlink_to(source_dir)
+    symlink_or_skip(source_dir, symlink_dir)
 
     # View the symlinked directory
     result = editor(command="view", path=str(symlink_dir))

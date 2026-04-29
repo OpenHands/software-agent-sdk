@@ -171,7 +171,7 @@ def test_footer_uses_absolute_path_when_outside_working_dir(tmp_path):
     obs = _run("pdf-analyst", conv)
 
     assert obs.is_error is False
-    assert str(skill_dir.resolve()) in obs.text
+    assert skill_dir.resolve().as_posix() in obs.text
     assert "scripts/" in obs.text and "references/" in obs.text
     assert obs.text.rstrip().endswith("relative to that directory.")
 

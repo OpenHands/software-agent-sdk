@@ -10,6 +10,7 @@ These tests aim to be a behavioral spec for conversation restore:
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.conftest import create_mock_litellm_response
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
 
 
 register_tool("TerminalTool", TerminalTool)

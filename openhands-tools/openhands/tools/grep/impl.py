@@ -1,5 +1,7 @@
 """Grep tool executor implementation."""
 
+import fnmatch
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -22,9 +24,9 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     """Executor for grep content search operations.
 
     This implementation prefers ripgrep for performance but falls back to
-    regular grep if ripgrep is not available:
+    a Python recursive search if ripgrep is not available:
     - Primary: Uses ripgrep with case-insensitive search and file listing
-    - Fallback: Uses regular grep command with similar functionality
+    - Fallback: Uses Python file walking with similar functionality
     """
 
     def __init__(self, working_dir: str):
@@ -36,7 +38,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         self.working_dir: Path = Path(working_dir).resolve()
         self._ripgrep_available: bool = _check_ripgrep_available()
         if not self._ripgrep_available:
-            _log_ripgrep_fallback_warning("grep", "regular grep command")
+            _log_ripgrep_fallback_warning("grep", "Python recursive search")
 
     def __call__(
         self,
@@ -168,7 +170,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         if result.stdout:
             for line in result.stdout.strip().split("\n"):
                 if line:
-                    matches.append(line)
+                    matches.append(str(Path(line).resolve()))
                     # Limit to first 100 files
                     if len(matches) >= 100:
                         break
@@ -195,51 +197,28 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     def _execute_with_grep(
         self, action: GrepAction, search_path: Path
     ) -> GrepObservation:
-        """Execute grep content search using regular grep command."""
-        # Build grep command: grep -r -l -I -i pattern path
-        cmd = [
-            "grep",
-            "-r",  # recursive
-            "-l",  # files-with-matches
-            "-I",  # ignore binary files
-            "-i",  # ignore-case
-            action.pattern,
-            str(search_path),
-            "--exclude-dir=.*",  # exclude hidden directories to match ripgrep behavior
-            "--exclude=.*",  # exclude hidden files to match ripgrep behavior
-        ]
-
-        # Add include pattern using --include if specified
-        if action.include:
-            cmd.extend(["--include", action.include])
-
-        # Execute grep
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=sanitized_env(),
-        )
-
-        # Parse output into file paths
+        """Execute grep content search using Python file walking."""
+        regex = re.compile(action.pattern, re.IGNORECASE)
         matches = []
-        if result.stdout:
-            for line in result.stdout.strip().split("\n"):
-                if line:
-                    # Apply include pattern filtering if --include didn't work properly
-                    # This ensures consistent behavior across different grep versions
-                    if action.include:
-                        import fnmatch
+        for root, dirs, files in os.walk(search_path):
+            dirs[:] = [name for name in dirs if not name.startswith(".")]
+            for filename in files:
+                if not action.include and filename.startswith("."):
+                    continue
+                if action.include and not fnmatch.fnmatch(filename, action.include):
+                    continue
 
-                        filename = Path(line).name
-                        if not fnmatch.fnmatch(filename, action.include):
-                            continue
-
-                    matches.append(line)
+                file_path = Path(root) / filename
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if regex.search(content):
+                    matches.append(str(file_path.resolve()))
                     if len(matches) >= 100:
                         break
+            if len(matches) >= 100:
+                break
 
         truncated = len(matches) >= 100
 

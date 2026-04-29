@@ -95,7 +95,7 @@ def test_grep_executor_custom_path():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(sub_dir.resolve())
-        assert str(sub_dir) in str(observation.matches[0])
+        assert str(sub_dir.resolve()) in str(observation.matches[0])
 
 
 def test_grep_executor_invalid_path():
@@ -135,6 +135,23 @@ def test_grep_executor_hidden_files_excluded():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert ".hidden" not in observation.matches[0]
+
+
+def test_grep_executor_include_filter_still_skips_hidden_directories():
+    """Test that include globs do not recurse into hidden directories."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        visible = Path(temp_dir) / "visible.py"
+        visible.write_text("test")
+        hidden_dir = Path(temp_dir) / ".hidden"
+        hidden_dir.mkdir()
+        (hidden_dir / "secret.py").write_text("test")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        action = GrepAction(pattern="test", include="*.py")
+        observation = executor._execute_with_grep(action, Path(temp_dir))
+
+        assert observation.is_error is False
+        assert observation.matches == [str(visible.resolve())]
 
 
 @pytest.mark.skipif(
