@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pytest
 
+import openhands.tools.grep.impl as grep_impl
 from openhands.tools.grep import GrepAction
 from openhands.tools.grep.impl import GrepExecutor
-from openhands.tools.utils import _check_ripgrep_available
+from openhands.tools.utils import _check_grep_available
 
 
 def test_grep_executor_initialization():
@@ -22,6 +23,36 @@ def test_grep_executor_initialization():
     with tempfile.TemporaryDirectory() as temp_dir:
         executor = GrepExecutor(working_dir=temp_dir)
         assert executor.working_dir == Path(temp_dir).resolve()
+
+
+def test_grep_executor_prefers_ripgrep_backend(monkeypatch):
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: True)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: True)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = GrepExecutor(working_dir=temp_dir)
+
+    assert executor._search_backend == "ripgrep"
+
+
+def test_grep_executor_falls_back_to_system_grep(monkeypatch):
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: True)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = GrepExecutor(working_dir=temp_dir)
+
+    assert executor._search_backend == "grep"
+
+
+def test_grep_executor_falls_back_to_python_when_no_binary_exists(monkeypatch):
+    monkeypatch.setattr(grep_impl, "_check_ripgrep_available", lambda: False)
+    monkeypatch.setattr(grep_impl, "_check_grep_available", lambda: False)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executor = GrepExecutor(working_dir=temp_dir)
+
+    assert executor._search_backend == "python"
 
 
 def test_grep_executor_basic_search():
@@ -148,16 +179,36 @@ def test_grep_executor_include_filter_still_skips_hidden_directories():
 
         executor = GrepExecutor(working_dir=temp_dir)
         action = GrepAction(pattern="test", include="*.py")
-        observation = executor._execute_with_grep(action, Path(temp_dir))
+        observation = executor._execute_with_python_search(action, Path(temp_dir))
 
         assert observation.is_error is False
         assert observation.matches == [str(visible.resolve())]
 
 
-@pytest.mark.skipif(
-    not _check_ripgrep_available(),
-    reason="ripgrep not available - sorting test requires ripgrep",
-)
+@pytest.mark.skipif(not _check_grep_available(), reason="grep not available")
+def test_grep_executor_system_grep_matches_python_fallback_for_hidden_include():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        visible = Path(temp_dir) / "visible.py"
+        visible.write_text("test")
+        hidden_file = Path(temp_dir) / ".env"
+        hidden_file.write_text("test")
+        hidden_dir = Path(temp_dir) / ".hidden"
+        hidden_dir.mkdir()
+        (hidden_dir / ".env").write_text("test")
+
+        executor = GrepExecutor(working_dir=temp_dir)
+        action = GrepAction(pattern="test", include=".env")
+
+        grep_observation = executor._execute_with_system_grep(action, Path(temp_dir))
+        python_observation = executor._execute_with_python_search(
+            action,
+            Path(temp_dir),
+        )
+
+        assert grep_observation.matches == python_observation.matches
+        assert grep_observation.matches == [str(hidden_file.resolve())]
+
+
 def test_grep_executor_sorting():
     """Test that files are sorted by modification time (newest first)."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -209,8 +260,8 @@ def test_grep_executor_invalid_regex():
 def test_grep_executor_concurrent():
     """Test that concurrent grep calls return correct results.
 
-    Both backends spawn independent subprocesses, so concurrent calls
-    are inherently thread-safe.
+    All grep backends are stateless, so concurrent calls are inherently
+    thread-safe.
     """
     import threading
 

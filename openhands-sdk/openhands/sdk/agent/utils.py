@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import textwrap
 import types
@@ -250,24 +251,45 @@ _GREP_FALLBACK_SCRIPT = textwrap.dedent(
     """
     import fnmatch
     import pathlib
+    import re
     import sys
 
     pattern = sys.argv[1]
     root = pathlib.Path(sys.argv[2])
     include = sys.argv[3] if len(sys.argv) > 3 else None
+    regex = re.compile(pattern, re.IGNORECASE)
 
     if root.is_file():
         candidates = [root]
     else:
-        candidates = sorted(path for path in root.rglob("*") if path.is_file())
+        candidates = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative_parts = path.relative_to(root).parts
+            except ValueError:
+                relative_parts = (path.name,)
+            if any(part.startswith(".") for part in relative_parts[:-1]):
+                continue
+            if include:
+                if not fnmatch.fnmatch(path.name, include):
+                    continue
+            elif path.name.startswith("."):
+                continue
+            candidates.append(path)
+        candidates.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
 
     for path in candidates:
-        if include and not fnmatch.fnmatch(path.name, include):
-            continue
+        if root.is_file():
+            if include and not fnmatch.fnmatch(path.name, include):
+                continue
+            if not include and path.name.startswith("."):
+                continue
         try:
             with path.open(encoding="utf-8", errors="ignore") as handle:
                 for line_number, line in enumerate(handle, start=1):
-                    if pattern in line:
+                    if regex.search(line):
                         sys.stdout.write(f"{path}:{line_number}:{line}")
         except OSError:
             continue
@@ -282,6 +304,40 @@ def _join_shell_command(parts: list[str]) -> str:
     return shlex.join(parts)
 
 
+def _build_ripgrep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["rg", "-n", "-i", pattern, search_path, "--sortr=modified"]
+    if include:
+        command_parts.extend(["-g", include])
+    return _join_shell_command(command_parts)
+
+
+def _build_system_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["grep", "-R", "-I", "-n", "-i", pattern, search_path]
+    if include:
+        command_parts.append(f"--include={include}")
+    return _join_shell_command(command_parts)
+
+
+def _build_python_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
+    command_parts.append(search_path)
+    if include:
+        command_parts.append(include)
+    return _join_shell_command(command_parts)
+
+
 def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     """Return a portable terminal command for structured grep fallbacks.
 
@@ -292,16 +348,19 @@ def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     if not isinstance(pattern, str) or not pattern.strip():
         return None
 
-    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
-
     path = arguments.get("path")
-    command_parts.append(path if isinstance(path, str) and path.strip() else ".")
+    search_path = path if isinstance(path, str) and path.strip() else "."
 
     include = arguments.get("include")
-    if isinstance(include, str) and include.strip():
-        command_parts.append(include)
+    include_pattern = include if isinstance(include, str) and include.strip() else None
 
-    return _join_shell_command(command_parts)
+    if shutil.which("rg") is not None:
+        return _build_ripgrep_terminal_command(pattern, search_path, include_pattern)
+    if shutil.which("grep") is not None:
+        return _build_system_grep_terminal_command(
+            pattern, search_path, include_pattern
+        )
+    return _build_python_grep_terminal_command(pattern, search_path, include_pattern)
 
 
 def _maybe_rewrite_as_terminal_command(
