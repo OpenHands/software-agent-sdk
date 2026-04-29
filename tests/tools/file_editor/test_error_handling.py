@@ -13,11 +13,12 @@ from openhands.tools.file_editor.impl import file_editor
 from .conftest import assert_error_result
 
 
-def test_validation_error_formatting():
+def test_validation_error_formatting(tmp_path):
     """Test that validation errors are properly formatted in the output."""
+    missing_file = tmp_path / "nonexistent" / "file.txt"
     result = file_editor(
         command="view",
-        path="/nonexistent/file.txt",
+        path=str(missing_file),
     )
     assert_error_result(result)
     assert result.is_error and "does not exist" in result.text
@@ -25,7 +26,7 @@ def test_validation_error_formatting():
     # Test directory validation for non-view commands
     result = file_editor(
         command="str_replace",
-        path="/tmp",
+        path=str(tmp_path),
         old_str="something",
         new_str="new",
     )
