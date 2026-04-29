@@ -14,7 +14,6 @@ from openhands.sdk import (
     Agent,
     AgentSettings,
     ConversationSettings,
-    LLMAgentSettings,
     OpenHandsAgentSettings,
     SettingProminence,
     Tool,
@@ -575,14 +574,19 @@ def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
 
 
 def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
-    """``LLMAgentSettings(...)`` emits DeprecationWarning; is OpenHandsAgentSettings."""
+    """Importing ``LLMAgentSettings`` emits DeprecationWarning at import time."""
+    import openhands.sdk.settings as _settings_mod
+
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        settings = LLMAgentSettings(llm=LLM(model="test-model"))
+        cls = getattr(_settings_mod, "LLMAgentSettings")
 
     assert any("LLMAgentSettings" in str(w.message) for w in caught), (
         f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
     )
+    assert issubclass(cls, OpenHandsAgentSettings)
+    # Construction itself does not emit a second warning.
+    settings = cls(llm=LLM(model="test-model"))
     assert isinstance(settings, OpenHandsAgentSettings)
     # LLMAgentSettings keeps its own agent_kind="llm" so the API-breakage
     # checker sees no field-value change vs the published PyPI release.

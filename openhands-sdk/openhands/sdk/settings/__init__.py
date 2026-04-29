@@ -45,7 +45,6 @@ _MODEL_EXPORTS = {
     "AgentSettingsConfig",
     "CondenserSettings",
     "ConversationSettings",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "SettingsChoice",
     "SettingsFieldSchema",
@@ -57,6 +56,20 @@ _MODEL_EXPORTS = {
     "export_agent_settings_schema",
     "export_settings_schema",
     "validate_agent_settings",
+}
+
+# Names that have been deprecated and emit a warning when imported.
+# Importing from here triggers a DeprecationWarning; use the canonical
+# replacement listed in ``details``.
+_DEPRECATED_MODEL_EXPORTS: dict[str, dict[str, str]] = {
+    "LLMAgentSettings": {
+        "deprecated_in": "1.19.0",
+        "removed_in": "1.22.0",
+        "details": (
+            "Use ``OpenHandsAgentSettings`` directly. "
+            "``LLMAgentSettings`` was renamed in v1.19.0."
+        ),
+    },
 }
 
 __all__ = [
@@ -90,6 +103,20 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_MODEL_EXPORTS:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        info = _DEPRECATED_MODEL_EXPORTS[name]
+        warn_deprecated(
+            f"Importing {name!r} from openhands.sdk.settings",
+            deprecated_in=info["deprecated_in"],
+            removed_in=info["removed_in"],
+            details=info["details"],
+            stacklevel=3,
+        )
+        from . import model
+
+        return getattr(model, name)
     if name in _MODEL_EXPORTS:
         from . import model
 

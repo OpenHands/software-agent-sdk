@@ -1002,8 +1002,9 @@ class LLMAgentSettings(OpenHandsAgentSettings):
 
     ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
     It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
-    callers keep working, though direct construction now emits a
-    :class:`DeprecationWarning`.
+    callers keep working. Importing this name from ``openhands.sdk.settings``
+    (or ``openhands.sdk``) emits a :class:`DeprecationWarning` via the
+    module-level ``__getattr__`` — no construction-time overhead.
 
     Use :class:`OpenHandsAgentSettings` for all new code.
 
@@ -1022,23 +1023,6 @@ class LLMAgentSettings(OpenHandsAgentSettings):
             "the standard LLM-backed agent. Deprecated; use ``'openhands'``."
         ),
     )
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        # Guard so AgentSettings (which inherits from LLMAgentSettings) does not
-        # emit two warnings: one from LLMAgentSettings.__init__ and one from its own.
-        if type(self) is LLMAgentSettings:
-            warn_deprecated(
-                "LLMAgentSettings",
-                deprecated_in="1.19.0",
-                removed_in="1.22.0",
-                details=(
-                    "Use ``OpenHandsAgentSettings`` directly. "
-                    "``LLMAgentSettings`` was renamed in v1.19.0."
-                ),
-            )
-        super().__init__(*args, **kwargs)
 
 
 def _agent_settings_discriminator(value: Any) -> str:
