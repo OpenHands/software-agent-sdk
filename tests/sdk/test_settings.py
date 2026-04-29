@@ -306,6 +306,14 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
         {"agent_kind": "openhands", "llm": {"model": "m"}}
     )
     assert isinstance(openhands, OpenHandsAgentSettings)
+    assert openhands.agent_kind == "openhands"
+
+    legacy_llm = validate_agent_settings(
+        {"agent_kind": "llm", "llm": {"model": "legacy-model"}}
+    )
+    assert isinstance(legacy_llm, OpenHandsAgentSettings)
+    assert legacy_llm.agent_kind == "llm"
+    assert legacy_llm.llm.model == "legacy-model"
 
     acp = validate_agent_settings(
         {

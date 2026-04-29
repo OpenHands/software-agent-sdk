@@ -578,7 +578,7 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-AgentKind = Literal["openhands", "acp"]
+AgentKind = Literal["openhands", "llm", "acp"]
 
 ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
 """Known ACP backend servers the GUI can pick from.
