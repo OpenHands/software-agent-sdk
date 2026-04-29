@@ -28,7 +28,13 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import ACPToolCallEvent, MessageEvent, SystemPromptEvent
+from openhands.sdk.event import (
+    ACPToolCallEvent,
+    ActionEvent,
+    MessageEvent,
+    SystemPromptEvent,
+)
+from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -699,7 +705,7 @@ class TestACPAgentStep:
         conversation.state = state
         return conversation
 
-    def test_step_emits_message_event(self, tmp_path):
+    def test_step_emits_finish_action_event(self, tmp_path):
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
@@ -720,14 +726,12 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        # step() emits MessageEvent + ActionEvent(FinishAction)
-        # + ObservationEvent(FinishObservation)
-        assert len(events) == 3
-        assert isinstance(events[0], MessageEvent)
-        assert events[0].source == "agent"
-        content_block = events[0].llm_message.content[0]
-        assert isinstance(content_block, TextContent)
-        assert content_block.text == "The answer is 4"
+        # step() emits ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        # MessageEvent is not emitted — FinishAction.message carries the response text
+        assert len(events) == 2
+        assert isinstance(events[0], ActionEvent)
+        assert isinstance(events[0].action, FinishAction)
+        assert events[0].action.message == "The answer is 4"
 
     @staticmethod
     def _wire_passthrough_mocks(agent: ACPAgent) -> None:
@@ -889,7 +893,8 @@ class TestACPAgentStep:
         assert "<name>agentskill-review</name>" in prompt_text
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
 
-    def test_step_includes_reasoning(self, tmp_path):
+    def test_step_with_reasoning_emits_finish_action(self, tmp_path):
+        """Reasoning content is accumulated but only the response text is in FinishAction."""
         agent = _make_agent()
         conversation = self._make_conversation_with_message(tmp_path)
         events: list = []
@@ -909,8 +914,9 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        msg = events[0].llm_message
-        assert msg.reasoning_content == "I need to add 2+2"
+        assert isinstance(events[0], ActionEvent)
+        assert isinstance(events[0].action, FinishAction)
+        assert events[0].action.message == "4"
 
     def test_step_sets_finished(self, tmp_path):
         agent = _make_agent()
@@ -988,9 +994,9 @@ class TestACPAgentStep:
 
         agent.step(conversation, on_event=events.append)
 
-        content_block = events[0].llm_message.content[0]
-        assert isinstance(content_block, TextContent)
-        assert "(No response from ACP server)" in content_block.text
+        assert isinstance(events[0], ActionEvent)
+        assert isinstance(events[0].action, FinishAction)
+        assert "(No response from ACP server)" in events[0].action.message
 
     def test_step_passes_on_token(self, tmp_path):
         agent = _make_agent()
@@ -2014,12 +2020,11 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # Should be: 2 tool call events (live) + 1 message event
-        # + finish action + finish observation
-        assert len(events) == 5
+        # Should be: 2 tool call events (live) + finish action + finish observation
+        assert len(events) == 4
         assert isinstance(events[0], ACPToolCallEvent)
         assert isinstance(events[1], ACPToolCallEvent)
-        assert isinstance(events[2], MessageEvent)
+        assert isinstance(events[2], ActionEvent)
 
         # Verify first tool call event
         assert events[0].tool_call_id == "tc-1"
@@ -2125,9 +2130,9 @@ class TestACPToolCallEmission:
 
         agent.step(conversation, on_event=events.append)
 
-        # MessageEvent + ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
-        assert len(events) == 3
-        assert isinstance(events[0], MessageEvent)
+        # ActionEvent(FinishAction) + ObservationEvent(FinishObservation)
+        assert len(events) == 2
+        assert isinstance(events[0], ActionEvent)
 
     def test_tool_call_events_cleared_between_turns(self, tmp_path):
         """accumulated_tool_calls are cleared on reset() between turns."""
@@ -2164,10 +2169,10 @@ class TestACPToolCallEmission:
         # step() calls reset() which should clear old tool calls
         agent.step(conversation, on_event=events.append)
 
-        # Only the MessageEvent + FinishAction + FinishObservation should appear —
+        # Only the FinishAction + FinishObservation should appear —
         # the old tool call was cleared by reset()
-        assert len(events) == 3
-        assert isinstance(events[0], MessageEvent)
+        assert len(events) == 2
+        assert isinstance(events[0], ActionEvent)
 
 
 # ---------------------------------------------------------------------------
@@ -2630,8 +2635,10 @@ class TestACPPromptRetry:
         assert (
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
-        assert len(events) == 3
-        assert "Success after retry" in events[0].llm_message.content[0].text
+        assert len(events) == 2
+        assert isinstance(events[0], ActionEvent)
+        assert isinstance(events[0].action, FinishAction)
+        assert "Success after retry" in events[0].action.message
 
     def test_no_retry_on_non_connection_error(self, tmp_path):
         """Non-connection errors fail immediately without retry."""
