@@ -75,7 +75,7 @@ class EventService:
         )
 
     async def save_meta(self):
-        with self._guard_write():
+        with self._write_guard():
             meta_file = self.conversation_dir / "meta.json"
             meta_file.write_text(
                 self.stored.model_dump_json(
@@ -85,7 +85,7 @@ class EventService:
                 )
             )
 
-    def _guard_write(self):
+    def _write_guard(self):
         if self._lease is None or self._lease_generation is None:
             return nullcontext()
         return self._lease.guarded_write(self._lease_generation)
@@ -583,7 +583,7 @@ class EventService:
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
         self._conversation = conversation
-        self._conversation._state.set_write_guard(self._guard_write)
+        self._conversation._state.set_write_guard(self._write_guard)
         self._lease_task = asyncio.create_task(self._renew_lease_loop())
 
         # Register state change callback to automatically publish updates

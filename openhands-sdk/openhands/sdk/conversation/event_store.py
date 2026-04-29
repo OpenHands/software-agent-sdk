@@ -1,7 +1,7 @@
 # state.py
 import operator
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from typing import SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -139,13 +139,12 @@ class EventLog(EventsListBase):
                     )
 
                 payload = event.model_dump_json(exclude_none=True)
-                if self._write_guard is None:
+                write_guard = (
+                    nullcontext() if self._write_guard is None else self._write_guard()
+                )
+                with write_guard:
                     target_path = self._path(self._length, event_id=evt_id)
                     self._fs.write(target_path, payload)
-                else:
-                    with self._write_guard():
-                        target_path = self._path(self._length, event_id=evt_id)
-                        self._fs.write(target_path, payload)
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
                 self._length += 1

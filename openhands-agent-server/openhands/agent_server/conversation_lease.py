@@ -61,6 +61,13 @@ class ConversationOwnershipLostError(RuntimeError):
 
 
 class ConversationLease:
+    """Coordinate conversation ownership across multiple service instances.
+
+    The lease file stores the active owner, a monotonically increasing
+    generation, and an expiry timestamp so stale owners can be fenced off after
+    a takeover.
+    """
+
     def __init__(
         self,
         *,
@@ -75,6 +82,7 @@ class ConversationLease:
         self._lock_path = conversation_dir / LEASE_LOCK_FILE_NAME
 
     def claim(self) -> LeaseClaim:
+        """Claim or renew ownership of the conversation directory."""
         self._conversation_dir.mkdir(parents=True, exist_ok=True)
         with FileLock(str(self._lock_path)):
             now = time.time()
@@ -104,6 +112,7 @@ class ConversationLease:
             return LeaseClaim(generation=generation, takeover=takeover)
 
     def renew(self, generation: int) -> None:
+        """Extend the current lease while keeping the same generation."""
         with FileLock(str(self._lock_path)):
             self._assert_owner_locked(generation)
             self._write_payload(
@@ -113,11 +122,13 @@ class ConversationLease:
 
     @contextmanager
     def guarded_write(self, generation: int) -> Iterator[None]:
+        """Hold the lease lock while verifying ownership for a disk write."""
         with FileLock(str(self._lock_path)):
             self._assert_owner_locked(generation)
             yield
 
     def release(self, generation: int) -> None:
+        """Release the lease if this instance still owns the generation."""
         with FileLock(str(self._lock_path)):
             payload = self._read_payload()
             if payload is None:
