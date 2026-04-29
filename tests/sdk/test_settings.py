@@ -581,7 +581,9 @@ def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
         f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.agent_kind == "openhands"
+    # LLMAgentSettings keeps its own agent_kind="llm" so the API-breakage
+    # checker sees no field-value change vs the published PyPI release.
+    assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
 
 

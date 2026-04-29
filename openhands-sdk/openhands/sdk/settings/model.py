@@ -997,12 +997,56 @@ class ACPAgentSettings(BaseModel):
         )
 
 
+class LLMAgentSettings(OpenHandsAgentSettings):
+    """Deprecated name for :class:`OpenHandsAgentSettings`.
+
+    ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
+    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
+    callers keep working, though direct construction now emits a
+    :class:`DeprecationWarning`.
+
+    Use :class:`OpenHandsAgentSettings` for all new code.
+
+    Scheduled for removal in v1.22.0.
+    """
+
+    # Keep agent_kind as Literal["llm"] so the API-breakage checker sees no
+    # field-value change compared with the PyPI release (which had this class
+    # as the primary class with agent_kind="llm").  The discriminated union
+    # routes "llm" payloads here; validate_agent_settings({}) still defaults
+    # to OpenHandsAgentSettings ("openhands").
+    agent_kind: Literal["llm"] = Field(  # type: ignore[assignment]
+        default="llm",
+        description=(
+            "Discriminator for the ``AgentSettings`` union. ``'llm'`` selects "
+            "the standard LLM-backed agent. Deprecated; use ``'openhands'``."
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "LLMAgentSettings",
+            deprecated_in="1.19.0",
+            removed_in="1.22.0",
+            details=(
+                "Use ``OpenHandsAgentSettings`` directly. "
+                "``LLMAgentSettings`` was renamed in v1.19.0."
+            ),
+        )
+        super().model_post_init(__context)
+
+
 def _agent_settings_discriminator(value: Any) -> str:
     """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'openhands'``.
 
     Existing persisted payloads predate ``agent_kind`` and carry only
     OpenHands-agent fields. Treating a missing discriminator as ``'openhands'``
     lets those payloads validate without a migration.
+
+    ``'llm'`` is still a valid tag, routed to the deprecated
+    :class:`LLMAgentSettings` subclass.
     """
     if isinstance(value, BaseModel):
         return getattr(value, "agent_kind", "openhands")
@@ -1013,6 +1057,7 @@ def _agent_settings_discriminator(value: Any) -> str:
 
 AgentSettingsConfig = Annotated[
     Annotated[OpenHandsAgentSettings, Tag("openhands")]
+    | Annotated[LLMAgentSettings, Tag("llm")]
     | Annotated[ACPAgentSettings, Tag("acp")],
     Discriminator(_agent_settings_discriminator),
 ]
@@ -1028,14 +1073,14 @@ compatibility with v1.17.x callers — see :class:`AgentSettings`.
 """
 
 
-_AGENT_SETTINGS_ADAPTER: TypeAdapter[OpenHandsAgentSettings | ACPAgentSettings] = (
-    TypeAdapter(AgentSettingsConfig)
-)
+_AGENT_SETTINGS_ADAPTER: TypeAdapter[
+    OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings
+] = TypeAdapter(AgentSettingsConfig)
 
 
 def validate_agent_settings(
     data: Any,
-) -> OpenHandsAgentSettings | ACPAgentSettings:
+) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
 
     This is the drop-in replacement for the old
@@ -1099,34 +1144,6 @@ class AgentSettings(OpenHandsAgentSettings):
                 "``ACPAgentSettings`` (for an ACP agent) directly; use "
                 "``AgentSettingsConfig`` as the type for fields that accept "
                 "either variant."
-            ),
-        )
-        super().model_post_init(__context)
-
-
-class LLMAgentSettings(OpenHandsAgentSettings):
-    """Deprecated name for :class:`OpenHandsAgentSettings`.
-
-    ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
-    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
-    callers keep working, though direct construction now emits a
-    :class:`DeprecationWarning`.
-
-    Use :class:`OpenHandsAgentSettings` for all new code.
-
-    Scheduled for removal in v1.22.0.
-    """
-
-    def model_post_init(self, __context: Any) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "LLMAgentSettings",
-            deprecated_in="1.19.0",
-            removed_in="1.22.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` directly. "
-                "``LLMAgentSettings`` was renamed in v1.19.0."
             ),
         )
         super().model_post_init(__context)
