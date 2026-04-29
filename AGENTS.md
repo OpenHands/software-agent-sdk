@@ -115,11 +115,15 @@ When reviewing code, provide constructive feedback:
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
+- `agent-server` now defaults `TMUX_TMPDIR` to a per-process directory under the system temp dir (`openhands-agent-server-<pid>`) when the environment variable is unset. This isolates tmux sockets/cleanup across concurrent server instances while still respecting an explicit `TMUX_TMPDIR` override.
+
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
 - `RemoteConversation.generate_title()` now reconciles remote events and reuses the shared local `generate_conversation_title(...)` helper instead of calling the removed deprecated agent-server `/generate_title` REST route, so explicit remote title generation still works without a transport-only compatibility endpoint.
 
 
 - Remote workspace git operations should call `/api/git/changes` and `/api/git/diff` via the `path` query parameter with slash-normalized strings; building those URLs with `pathlib.Path` leaks host-platform separators and breaks Windows paths. For grep parity, the Python fallback should hide dotfiles by default but still let explicit `include` globs surface files like `.env`, matching ripgrep. For glob parity, any symlink-preservation regression test should force the Python fallback path, because ripgrep availability changes whether the fallback implementation runs at all.
+- Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
+
 
 
 ## Package-specific guidance
