@@ -1,7 +1,7 @@
 """Tests for Laminar observability configuration."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -63,16 +63,14 @@ def test_lmnr_base_url_passed_to_laminar():
         os.environ["LMNR_BASE_URL"] = "https://custom.lmnr.ai"
 
         with patch("lmnr.Laminar") as mock_laminar:
-            with patch("lmnr.LaminarLiteLLMCallback"):
-                with patch("litellm.callbacks", new=MagicMock()):
-                    mock_laminar.is_initialized.return_value = False
-                    from openhands.sdk.observability.laminar import maybe_init_laminar
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
 
-                    maybe_init_laminar()
+            maybe_init_laminar()
 
-                    # Check that Laminar.initialize was called with base_url
-                    call_kwargs = mock_laminar.initialize.call_args.kwargs
-                    assert call_kwargs.get("base_url") == "https://custom.lmnr.ai"
+            # Check that Laminar.initialize was called with base_url
+            call_kwargs = mock_laminar.initialize.call_args.kwargs
+            assert call_kwargs.get("base_url") == "https://custom.lmnr.ai"
     finally:
         # Restore original values
         if original_base_url is not None:
@@ -97,16 +95,14 @@ def test_lmnr_base_url_not_passed_when_empty():
             del os.environ["LMNR_BASE_URL"]
 
         with patch("lmnr.Laminar") as mock_laminar:
-            with patch("lmnr.LaminarLiteLLMCallback"):
-                with patch("litellm.callbacks", new=MagicMock()):
-                    mock_laminar.is_initialized.return_value = False
-                    from openhands.sdk.observability.laminar import maybe_init_laminar
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
 
-                    maybe_init_laminar()
+            maybe_init_laminar()
 
-                    # Check that Laminar.initialize was called with base_url=None
-                    call_kwargs = mock_laminar.initialize.call_args.kwargs
-                    assert call_kwargs.get("base_url") is None
+            # Check that Laminar.initialize was called with base_url=None
+            call_kwargs = mock_laminar.initialize.call_args.kwargs
+            assert call_kwargs.get("base_url") is None
     finally:
         # Restore original values
         if original_base_url is not None:
@@ -181,15 +177,13 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
             del os.environ["LMNR_FORCE_HTTP"]
 
         with patch("lmnr.Laminar") as mock_laminar:
-            with patch("lmnr.LaminarLiteLLMCallback"):
-                with patch("litellm.callbacks", new=MagicMock()):
-                    mock_laminar.is_initialized.return_value = False
-                    from openhands.sdk.observability.laminar import maybe_init_laminar
+            mock_laminar.is_initialized.return_value = False
+            from openhands.sdk.observability.laminar import maybe_init_laminar
 
-                    maybe_init_laminar()
+            maybe_init_laminar()
 
-                    call_kwargs = mock_laminar.initialize.call_args.kwargs
-                    assert call_kwargs.get("force_http") == expected_force_http
+            call_kwargs = mock_laminar.initialize.call_args.kwargs
+            assert call_kwargs.get("force_http") == expected_force_http
     finally:
         if original_key is not None:
             os.environ["LMNR_PROJECT_API_KEY"] = original_key

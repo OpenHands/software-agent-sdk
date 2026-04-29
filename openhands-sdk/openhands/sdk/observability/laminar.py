@@ -76,8 +76,7 @@ def maybe_init_laminar():
         )
         return
 
-    import litellm
-    from lmnr import Instruments, Laminar, LaminarLiteLLMCallback
+    from lmnr import Instruments, Laminar
 
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
@@ -99,7 +98,6 @@ def maybe_init_laminar():
             ],
             force_http=force_http,
         )
-    litellm.callbacks.append(LaminarLiteLLMCallback())
 
 
 def observe[**P, R](
