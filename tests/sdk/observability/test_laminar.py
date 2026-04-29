@@ -62,13 +62,10 @@ def test_lmnr_base_url_passed_to_laminar():
         os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
         os.environ["LMNR_BASE_URL"] = "https://custom.lmnr.ai"
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()
@@ -99,13 +96,10 @@ def test_lmnr_base_url_not_passed_when_empty():
         if "LMNR_BASE_URL" in os.environ:
             del os.environ["LMNR_BASE_URL"]
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()
@@ -186,13 +180,10 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
         elif "LMNR_FORCE_HTTP" in os.environ:
             del os.environ["LMNR_FORCE_HTTP"]
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()
