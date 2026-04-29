@@ -39,24 +39,30 @@ def select_responses_options(
 
     # Include encrypted reasoning only when the user enables it on the LLM,
     # and only for stateless calls (store=False). Respect user choice.
-    include_list = list(include) if include is not None else []
+    # Note: include and reasoning are not supported in subscription mode
+    # (the Codex subscription endpoint silently returns empty output when
+    # these parameters are present).
+    if not llm.is_subscription:
+        include_list = list(include) if include is not None else []
 
-    if not out.get("store", False) and llm.enable_encrypted_reasoning:
-        if "reasoning.encrypted_content" not in include_list:
-            include_list.append("reasoning.encrypted_content")
-    if include_list:
-        out["include"] = include_list
+        if not out.get("store", False) and llm.enable_encrypted_reasoning:
+            if "reasoning.encrypted_content" not in include_list:
+                include_list.append("reasoning.encrypted_content")
+        if include_list:
+            out["include"] = include_list
 
-    # Include reasoning effort only if explicitly set
-    if llm.reasoning_effort:
-        out["reasoning"] = {"effort": llm.reasoning_effort}
-        # Optionally include summary if explicitly set (requires verified org)
-        if llm.reasoning_summary:
-            out["reasoning"]["summary"] = llm.reasoning_summary
+        # Include reasoning effort only if explicitly set
+        if llm.reasoning_effort:
+            out["reasoning"] = {"effort": llm.reasoning_effort}
+            # Optionally include summary if explicitly set (requires verified org)
+            if llm.reasoning_summary:
+                out["reasoning"]["summary"] = llm.reasoning_summary
 
     # Send prompt_cache_retention only if model supports it
+    # Note: prompt_cache_retention is not supported in subscription mode
     if (
-        get_features(llm.model).supports_prompt_cache_retention
+        not llm.is_subscription
+        and get_features(llm.model).supports_prompt_cache_retention
         and llm.prompt_cache_retention
     ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
@@ -64,5 +70,8 @@ def select_responses_options(
     # Pass through user-provided extra_body unchanged
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
+
+    if llm._prompt_cache_key:
+        out["prompt_cache_key"] = llm._prompt_cache_key
 
     return out

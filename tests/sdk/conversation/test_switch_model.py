@@ -93,6 +93,23 @@ def test_switch_nonexistent_raises(profile_store):
     assert conv.state.agent.llm.model == "default-model"
 
 
+def test_switch_profile_preserves_prompt_cache_key(profile_store):
+    """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
+    conv = _make_conversation()
+    expected = str(conv.id)
+    assert conv.agent.llm._prompt_cache_key == expected
+
+    conv.switch_profile("fast")
+    assert conv.agent.llm._prompt_cache_key == expected
+
+    conv.switch_profile("slow")
+    assert conv.agent.llm._prompt_cache_key == expected
+
+    # Switching back to a cached registry entry must still carry the key.
+    conv.switch_profile("fast")
+    assert conv.agent.llm._prompt_cache_key == expected
+
+
 def test_switch_then_send_message(profile_store):
     """switch_profile followed by send_message doesn't crash on registry collision."""
     conv = _make_conversation()

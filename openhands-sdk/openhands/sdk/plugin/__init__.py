@@ -8,15 +8,30 @@ available plugins with their metadata and source locations.
 
 Additionally, it provides utilities for managing installed plugins in the
 user's home directory (~/.openhands/plugins/installed/).
+
+Note: Marketplace classes have been moved to ``openhands.sdk.marketplace``.
+They are still importable from this module for backward compatibility, but
+importing them from here will emit a deprecation warning.
 """
 
+from typing import Any
+
+# Import marketplace classes from new location for internal use
+# (no deprecation warning since we're importing from the canonical location)
+from openhands.sdk.marketplace import (
+    Marketplace as _Marketplace,
+    MarketplaceEntry as _MarketplaceEntry,
+    MarketplaceMetadata as _MarketplaceMetadata,
+    MarketplaceOwner as _MarketplaceOwner,
+    MarketplacePluginEntry as _MarketplacePluginEntry,
+    MarketplacePluginSource as _MarketplacePluginSource,
+)
 from openhands.sdk.plugin.fetch import (
     PluginFetchError,
     fetch_plugin_with_resolution,
 )
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
-    InstalledPluginsMetadata,
     disable_plugin,
     enable_plugin,
     get_installed_plugin,
@@ -38,17 +53,38 @@ from openhands.sdk.plugin.source import (
 )
 from openhands.sdk.plugin.types import (
     CommandDefinition,
-    Marketplace,
-    MarketplaceEntry,
-    MarketplaceMetadata,
-    MarketplaceOwner,
-    MarketplacePluginEntry,
-    MarketplacePluginSource,
     PluginAuthor,
     PluginManifest,
     PluginSource,
     ResolvedPluginSource,
 )
+
+
+# Deprecated marketplace names that trigger warnings when accessed
+_DEPRECATED_MARKETPLACE_NAMES = {
+    "Marketplace": _Marketplace,
+    "MarketplaceEntry": _MarketplaceEntry,
+    "MarketplaceMetadata": _MarketplaceMetadata,
+    "MarketplaceOwner": _MarketplaceOwner,
+    "MarketplacePluginEntry": _MarketplacePluginEntry,
+    "MarketplacePluginSource": _MarketplacePluginSource,
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Provide deprecated marketplace names with warnings."""
+    if name in _DEPRECATED_MARKETPLACE_NAMES:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            f"Importing {name} from openhands.sdk.plugin",
+            deprecated_in="1.16.0",
+            removed_in="1.21.0",
+            details="Import from openhands.sdk.marketplace instead.",
+            stacklevel=3,
+        )
+        return _DEPRECATED_MARKETPLACE_NAMES[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
@@ -63,7 +99,7 @@ __all__ = [
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
-    # Marketplace classes
+    # Marketplace classes (deprecated - import from openhands.sdk.marketplace)
     "Marketplace",
     "MarketplaceEntry",
     "MarketplaceOwner",
@@ -78,7 +114,6 @@ __all__ = [
     "resolve_source_path",
     # Installed plugins management
     "InstalledPluginInfo",
-    "InstalledPluginsMetadata",
     "install_plugin",
     "uninstall_plugin",
     "list_installed_plugins",

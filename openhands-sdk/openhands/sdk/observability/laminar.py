@@ -32,6 +32,18 @@ def _get_int_env(key: str) -> int | None:
     return None
 
 
+def _get_bool_env(key: str) -> bool:
+    """Read an environment variable as a boolean.
+
+    Returns True if the value is 'true', '1', 'yes', 'on' (case-insensitive).
+    Returns False otherwise.
+    """
+    val = get_env(key)
+    if val is None:
+        return False
+    return val.lower() in ("true", "1", "yes", "on")
+
+
 def maybe_init_laminar():
     """Initialize Laminar if the environment variables are set.
 
@@ -49,15 +61,24 @@ def maybe_init_laminar():
     OTEL_EXPORTER=otlp_http # or otlp_grpc
     ```
 
-    For self-hosted Laminar, set the ports via environment variables:
+    For self-hosted Laminar, set the base URL and ports via environment variables:
+    LMNR_BASE_URL=https://api.lmnr.ai  # optional, defaults to https://api.lmnr.ai
     LMNR_HTTP_PORT=8000
     LMNR_GRPC_PORT=8001
+
+    To force HTTP instead of gRPC for Laminar communication:
+    LMNR_FORCE_HTTP=true  # or 1, yes, on
     """
+    base_url = get_env("LMNR_BASE_URL") or None
+    force_http = _get_bool_env("LMNR_FORCE_HTTP")
+
     if should_enable_observability():
         if _is_otel_backend_laminar():
             Laminar.initialize(
+                base_url=base_url,
                 http_port=_get_int_env("LMNR_HTTP_PORT"),
                 grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+                force_http=force_http,
             )
         else:
             # Do not enable browser session replays for non-laminar backends
@@ -67,6 +88,7 @@ def maybe_init_laminar():
                     Instruments.PATCHRIGHT,
                     Instruments.PLAYWRIGHT,
                 ],
+                force_http=force_http,
             )
         litellm.callbacks.append(LaminarLiteLLMCallback())
     else:
@@ -90,6 +112,7 @@ def observe[**P, R](
     metadata: dict[str, Any] | None = None,
     tags: list[str] | None = None,
     preserve_global_context: bool = False,
+    rollout_entrypoint: bool = False,
     **kwargs: dict[str, Any],
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -106,6 +129,7 @@ def observe[**P, R](
             metadata=metadata,
             tags=tags,
             preserve_global_context=preserve_global_context,
+            rollout_entrypoint=rollout_entrypoint,
             **kwargs,
         )(func)
 
@@ -186,3 +210,39 @@ def end_active_span() -> None:
     except Exception:
         logger.debug("Error ending active span")
         pass
+
+
+def init_laminar_for_external():
+    """Initialize Laminar for external callers and return parent span context.
+
+    This is a convenience function for integrations (e.g., GitHub, Slack webhooks)
+    that need to:
+    1. Initialize Laminar if env vars are set (via maybe_init_laminar)
+    2. Capture the parent span context from the external trigger
+
+    Returns:
+        The parent span context if observability is enabled, None otherwise.
+
+    Example:
+        ```python
+        from openhands.sdk.observability import init_laminar_for_external
+        from lmnr import Laminar
+
+        # At the start of handling an external event (webhook, etc.)
+        laminar_span_context = init_laminar_for_external()
+
+        if laminar_span_context:
+            with Laminar.start_as_current_span(
+                name='my-integration',
+                parent_span_context=laminar_span_context,
+            ):
+                # Do work - traces will be children of the external trigger
+                await do_something()
+        else:
+            await do_something()
+        ```
+    """
+    maybe_init_laminar()
+    if should_enable_observability():
+        return Laminar.get_laminar_span_context()
+    return None

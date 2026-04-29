@@ -240,21 +240,23 @@ cd .github/run-eval
 MODEL_IDS="your-model-id" GITHUB_OUTPUT=/tmp/output.txt python resolve_model_config.py
 ```
 
-## Step 6: Run Integration Tests (Required Before PR)
+## Step 6: Create Draft PR
 
-**Mandatory**: Integration tests must pass before creating PR.
+Push your branch and create a draft PR. Note the PR number returned - you'll need it for the integration tests.
 
-### Via GitHub Actions
+## Step 7: Run Integration Tests
 
-1. Push branch: `git push origin your-branch-name`
-2. Navigate to: https://github.com/OpenHands/software-agent-sdk/actions/workflows/integration-runner.yml
-3. Click "Run workflow"
-4. Configure:
-   - **Branch**: Select your branch
-   - **model_ids**: `your-model-id`
-   - **Reason**: "Testing model-id"
-5. Wait for completion
-6. **Save run URL** - required for PR description
+Trigger integration tests on your PR branch:
+
+```bash
+gh workflow run integration-runner.yml \
+  -f model_ids=your-model-id \
+  -f reason="Testing new model from PR #<pr-number>" \
+  -f issue_number=<pr-number> \
+  --ref your-branch-name
+```
+
+Results will be posted back to the PR as a comment.
 
 ### Expected Results
 
@@ -262,7 +264,20 @@ MODEL_IDS="your-model-id" GITHUB_OUTPUT=/tmp/output.txt python resolve_model_con
 - Duration: 5-10 minutes per model
 - Tests: 8 total (basic commands, file ops, code editing, reasoning, errors, tools, context, vision)
 
-## Step 7: Create PR
+## Step 8: Fix Issues and Rerun (if needed)
+
+If tests fail, see [Common Issues](#common-issues) below. After fixing:
+
+1. Push the fix: `git add . && git commit && git push`
+2. Rerun integration tests with the same command from Step 7 (using the same PR number)
+
+## Step 9: Mark PR Ready
+
+When tests pass, mark the PR as ready for review:
+
+```bash
+gh pr ready <pr-number>
+```
 
 ### Required in PR Description
 
@@ -379,3 +394,4 @@ Fixes #[issue-number]
 - Recent model additions: #2102, #2153, #2207, #2233, #2269
 - Common issues: #2147 (hangs), #2137 (parameters), #2110 (vision), #2233 (variants), #2193 (preflight)
 - Integration test workflow: `.github/workflows/integration-runner.yml`
+- Integration tests can be triggered via: `gh workflow run integration-runner.yml --ref <branch>`

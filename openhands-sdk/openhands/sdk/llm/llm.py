@@ -30,6 +30,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
+    from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -62,6 +63,7 @@ from litellm.types.llms.openai import (
     RefusalDeltaEvent,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from litellm.types.utils import (
     Delta,
@@ -178,7 +180,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
-        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     api_version: str | None = Field(
         default=None,
@@ -449,6 +451,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
+    _prompt_cache_key: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -523,18 +526,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
-        # Metrics + Telemetry wiring
+        # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
+        # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
+        # and replacing _telemetry would silently drop any callback callers
+        # have attached via telemetry.set_*_callback().
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
 
-        self._telemetry = Telemetry(
-            model_name=self.model,
-            log_enabled=self.log_completions,
-            log_dir=self.log_completions_folder if self.log_completions else None,
-            input_cost_per_token=self.input_cost_per_token,
-            output_cost_per_token=self.output_cost_per_token,
-            metrics=self._metrics,
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self._metrics,
+            )
 
         # Tokenizer
         if self.custom_tokenizer:
@@ -657,6 +664,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+        # Keep telemetry in sync so post-resume LLM calls record into
+        # the restored metrics object, not the stale one from __init__.
+        if self._telemetry is not None:
+            self._telemetry.metrics = metrics
 
     def reset_metrics(self) -> None:
         """Reset metrics and telemetry to fresh instances.
@@ -771,7 +782,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"for model {self.model}"
             )
             formatted_messages, kwargs = self.pre_request_prompt_mock(
-                formatted_messages, cc_tools or [], kwargs
+                formatted_messages,
+                cc_tools or [],
+                kwargs,
+                include_security_params=add_security_risk_prediction,
             )
 
         # 3) normalize provider params
@@ -820,7 +834,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
                 resp = self.post_response_prompt_mock(
-                    resp, nonfncall_msgs=formatted_messages, tools=cc_tools
+                    resp,
+                    nonfncall_msgs=formatted_messages,
+                    tools=cc_tools,
+                    include_security_params=add_security_risk_prediction,
                 )
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
@@ -995,7 +1012,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         stream_callback = on_token if user_enable_streaming else None
+                        # Collect output items from streaming events.
+                        # Some endpoints (e.g., Codex subscription) send output
+                        # items as separate events but the final response.completed
+                        # event has output=[].  We accumulate them here and patch
+                        # the completed response if needed.
+                        collected_output_items: list[Any] = []
                         for event in ret:
+                            if event is None:
+                                continue
+                            # Collect finished output items
+                            evt_type = getattr(event, "type", None)
+                            if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                                item = getattr(event, "item", None)
+                                if item is not None:
+                                    collected_output_items.append(item)
                             if stream_callback is None:
                                 continue
                             if isinstance(
@@ -1029,6 +1060,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         completed_resp = completed_event.response
+
+                        # Patch empty output with items collected from stream
+                        if not completed_resp.output and collected_output_items:
+                            completed_resp.output = collected_output_items
 
                         self._telemetry.on_response(completed_resp)
                         return completed_resp
@@ -1132,6 +1167,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
@@ -1210,6 +1252,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    # Guard: if max_output_tokens >= the context window,
+                    # requesting that many output tokens would leave zero
+                    # room for input and strict providers (e.g. AWS Bedrock)
+                    # will reject every call. Halve it so input has
+                    # headroom. We check both max_input_tokens and
+                    # max_tokens since either may represent the context
+                    # window depending on the provider.
+                    context_window = self.max_input_tokens or self._model_info.get(
+                        "max_tokens"
+                    )
+                    if (
+                        context_window is not None
+                        and self.max_output_tokens is not None
+                        and self.max_output_tokens >= context_window
+                    ):
+                        capped = self.max_output_tokens // 2
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s "
+                            "for %s (max_output_tokens >= context "
+                            "window %s)",
+                            self.max_output_tokens,
+                            capped,
+                            self.model,
+                            context_window,
+                        )
+                        self.max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting
@@ -1388,6 +1456,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         msgs = copy.deepcopy(messages)
 
+        # Subscription mode (store=false): strip reasoning items from prior
+        # assistant turns. The Codex endpoint doesn't persist items, so
+        # referencing their IDs in follow-up requests causes a 404.
+        if self.is_subscription:
+            for m in msgs:
+                if m.role == "assistant" and m.responses_reasoning_item is not None:
+                    m.responses_reasoning_item = None
+
         # Determine vision based on model detection
         vision_active = self.vision_is_active()
 
@@ -1512,6 +1588,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model: str,
         force_login: bool = False,
         open_browser: bool = True,
+        auth_method: OpenAIAuthMethod = "browser",
         **llm_kwargs,
     ) -> LLM:
         """Authenticate with a subscription service and return an LLM instance.
@@ -1538,6 +1615,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 credentials exist.
             open_browser: Whether to automatically open the browser for the
                 OAuth login flow.
+            auth_method: Login method to use: "browser" or "device_code".
             **llm_kwargs: Additional arguments to pass to the LLM constructor.
 
         Returns:
@@ -1565,5 +1643,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=model,
             force_login=force_login,
             open_browser=open_browser,
+            auth_method=auth_method,
             **llm_kwargs,
         )

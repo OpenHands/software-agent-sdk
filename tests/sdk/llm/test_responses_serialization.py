@@ -11,14 +11,18 @@ from openhands.sdk.llm.message import (
 def test_function_call_and_output_paired():
     # Assistant emits a function_call; tool returns an output for same id
     tc = MessageToolCall(
-        id="abc123", name="apply_patch", arguments="{}", origin="responses"
+        id="call_xyz789",
+        responses_item_id="fc_abc123",
+        name="apply_patch",
+        arguments="{}",
+        origin="responses",
     )
     m_assistant = Message(
         role="assistant", content=[TextContent(text="")], tool_calls=[tc]
     )
     m_tool = Message(
         role="tool",
-        tool_call_id="abc123",
+        tool_call_id="call_xyz789",
         name="apply_patch",
         content=[TextContent(text="done")],
     )
@@ -26,15 +30,13 @@ def test_function_call_and_output_paired():
     llm = LLM(model="gpt-5-mini")
     _, inputs = llm.format_messages_for_responses([m_assistant, m_tool])
 
-    # Find function_call and function_call_output
     fcs = [it for it in inputs if it.get("type") == "function_call"]
     outs = [it for it in inputs if it.get("type") == "function_call_output"]
 
     assert len(fcs) == 1 and len(outs) == 1
-    fc = fcs[0]
-    out = outs[0]
-    assert fc["call_id"].startswith("fc_")
-    assert out["call_id"] == fc["call_id"]
+    assert fcs[0]["id"] == "fc_abc123"
+    assert fcs[0]["call_id"] == "call_xyz789"
+    assert outs[0]["call_id"] == fcs[0]["call_id"]
 
 
 def test_system_to_responses_value_instructions_concat():
@@ -117,7 +119,13 @@ assistant_text = "Here is the result"
 
 def test_assistant_to_responses_dict_with_text_and_tool_calls():
     # assistant prior text becomes output_text in message item
-    tc = MessageToolCall(id="123", name="foo", arguments="{}", origin="responses")
+    tc = MessageToolCall(
+        id="call_xyz789",
+        responses_item_id="fc_abc123",
+        name="foo",
+        arguments="{}",
+        origin="responses",
+    )
     m = Message(
         role="assistant", content=[TextContent(text=assistant_text)], tool_calls=[tc]
     )
@@ -131,22 +139,21 @@ def test_assistant_to_responses_dict_with_text_and_tool_calls():
 
     fc_items = [item for item in out if item["type"] == "function_call"]
     assert len(fc_items) == 1
-    assert fc_items[0]["id"].startswith("fc_") and fc_items[0]["call_id"].startswith(
-        "fc_"
-    )
+    assert fc_items[0]["id"] == "fc_abc123"
+    assert fc_items[0]["call_id"] == "call_xyz789"
 
 
-def test_tool_to_responses_emits_function_call_output_with_fc_prefix():
+def test_tool_to_responses_emits_function_call_output_with_verbatim_call_id():
     # tool result requires tool_call_id and outputs function_call_output entries
     m = Message(
         role="tool",
-        tool_call_id="abc",
+        tool_call_id="call_xyz789",
         name="foo",
         content=[TextContent(text="result1"), TextContent(text="result2")],
     )
     out = m.to_responses_dict(vision_enabled=False)
     assert all(item["type"] == "function_call_output" for item in out)
-    assert all(item["call_id"].startswith("fc_") for item in out)
+    assert all(item["call_id"] == "call_xyz789" for item in out)
 
 
 def test_tool_to_responses_truncates_output_over_limit():
@@ -175,7 +182,7 @@ def test_tool_to_responses_includes_images_in_function_call_output_when_vision_e
     url = "data:image/png;base64,AAAA"
     m = Message(
         role="tool",
-        tool_call_id="abc",
+        tool_call_id="call_xyz789",
         name="foo",
         content=[ImageContent(image_urls=[url])],
     )
@@ -183,7 +190,7 @@ def test_tool_to_responses_includes_images_in_function_call_output_when_vision_e
     out = m.to_responses_dict(vision_enabled=True)
 
     assert all(item["type"] == "function_call_output" for item in out)
-    assert all(item["call_id"].startswith("fc_") for item in out)
+    assert all(item["call_id"] == "call_xyz789" for item in out)
     assert not any(item["type"] == "message" for item in out)
 
     first = out[0]

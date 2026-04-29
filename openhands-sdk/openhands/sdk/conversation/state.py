@@ -128,6 +128,15 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
+            "which tracks trigger-based activations."
+        ),
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
@@ -295,11 +304,16 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if persistence_dir:
+            file_store = LocalFileStore(
+                persistence_dir, cache_limit_size=max_iterations
+            )
+        else:
+            logger.warning(
+                "No persistence_dir provided; falling back to InMemoryFileStore. "
+                "EventLog data will not persist across requests."
+            )
+            file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)

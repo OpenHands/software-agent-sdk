@@ -297,8 +297,12 @@ def run_evaluation(
             result = process_instance(instance, llm_config, tool_preset)
             results.append(result)
     else:
-        # Parallel execution
-        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        # Parallel execution – avoid ProcessPoolExecutor context manager
+        # because worker processes that spawn browser/Chrome subprocesses
+        # may not exit cleanly, causing shutdown(wait=True) to hang
+        # indefinitely.
+        executor = ProcessPoolExecutor(max_workers=num_workers)
+        try:
             future_to_instance = {
                 executor.submit(
                     process_instance, instance, llm_config, tool_preset
@@ -309,6 +313,8 @@ def run_evaluation(
             for future in as_completed(future_to_instance):
                 result = future.result()
                 results.append(result)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     return results
 
