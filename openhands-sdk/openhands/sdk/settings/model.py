@@ -1023,12 +1023,12 @@ class LLMAgentSettings(OpenHandsAgentSettings):
         ),
     )
 
-    def model_post_init(self, __context: Any) -> None:
-        # Only warn when constructing LLMAgentSettings directly, not subclasses
-        # (AgentSettings inherits from LLMAgentSettings and emits its own warning).
-        if type(self) is LLMAgentSettings:
-            from openhands.sdk.utils.deprecation import warn_deprecated
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        from openhands.sdk.utils.deprecation import warn_deprecated
 
+        # Guard so AgentSettings (which inherits from LLMAgentSettings) does not
+        # emit two warnings: one from LLMAgentSettings.__init__ and one from its own.
+        if type(self) is LLMAgentSettings:
             warn_deprecated(
                 "LLMAgentSettings",
                 deprecated_in="1.19.0",
@@ -1038,7 +1038,7 @@ class LLMAgentSettings(OpenHandsAgentSettings):
                     "``LLMAgentSettings`` was renamed in v1.19.0."
                 ),
             )
-        super().model_post_init(__context)
+        super().__init__(*args, **kwargs)
 
 
 def _agent_settings_discriminator(value: Any) -> str:
@@ -1138,12 +1138,6 @@ class AgentSettings(LLMAgentSettings):
         return validate_agent_settings(payload)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        # pydantic v2 generates __init__; this stub exists so the API-breakage
-        # checker does not flag AgentSettings.__init__ as removed. The
-        # deprecation warning is emitted via model_post_init instead.
-        super().__init__(*args, **kwargs)
-
-    def model_post_init(self, __context: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
 
         warn_deprecated(
@@ -1157,7 +1151,7 @@ class AgentSettings(LLMAgentSettings):
                 "either variant."
             ),
         )
-        super().model_post_init(__context)
+        super().__init__(*args, **kwargs)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
