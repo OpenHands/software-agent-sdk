@@ -856,7 +856,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             payload["error"] = str(exc_val)
 
         # Include conversation_id if one was registered
-        if self._conversation_id:
+        if self._conversation_id is not None:
             payload["conversation_id"] = self._conversation_id
 
         try:

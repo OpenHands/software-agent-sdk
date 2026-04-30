@@ -180,25 +180,3 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             NotImplementedError: If the workspace type does not support resuming.
         """
         raise NotImplementedError(f"{type(self).__name__} does not support resume()")
-
-    def register_conversation(self, conversation_id: str) -> None:
-        """Register a conversation ID with this workspace.
-
-        Called by RemoteConversation after creation to associate the conversation
-        with the workspace. Subclasses can override to track conversation IDs
-        for callbacks or other purposes.
-
-        Args:
-            conversation_id: The conversation ID to register
-        """
-        # Default implementation is a no-op
-        pass
-
-    @property
-    def conversation_id(self) -> str | None:
-        """Get the most recently registered conversation ID.
-
-        Returns:
-            The conversation ID if one has been registered, None otherwise.
-        """
-        return None
