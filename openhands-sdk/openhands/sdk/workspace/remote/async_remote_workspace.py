@@ -149,6 +149,41 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         result = await self._execute(generator)
         return result
 
+    async def execute_tool(
+        self,
+        conversation_id: str,
+        tool_name: str,
+        action: dict[str, Any],
+        timeout: float = 600.0,
+    ) -> dict[str, Any]:
+        """Execute a tool on a conversation through the agent server.
+
+        This calls the agent server's execute_tool endpoint, which runs the tool
+        through the conversation's tool executor (e.g., the persistent terminal
+        session). This is useful for pre-run setup operations like running
+        .openhands/setup.sh where environment changes need to persist.
+
+        Args:
+            conversation_id: The conversation ID (hex string)
+            tool_name: The name of the tool to execute (e.g., 'terminal')
+            action: The action parameters as a dictionary
+            timeout: Timeout in seconds
+
+        Returns:
+            The response dict with 'observation' and 'is_error' keys
+        """
+        payload = {
+            "tool_name": tool_name,
+            "action": action,
+        }
+        response = await self.client.post(
+            f"/api/conversations/{conversation_id}/execute_tool",
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     @property
     def alive(self) -> bool:
         """Check if the remote workspace is alive by querying the health endpoint.

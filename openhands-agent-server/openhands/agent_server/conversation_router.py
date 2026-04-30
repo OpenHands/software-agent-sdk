@@ -1,5 +1,6 @@
 """Conversation router for OpenHands SDK."""
 
+import logging
 from typing import Annotated
 from uuid import UUID
 
@@ -18,6 +19,8 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    ExecuteToolRequest,
+    ExecuteToolResponse,
     ForkConversationRequest,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
@@ -32,6 +35,8 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
 
+
+logger = logging.getLogger(__name__)
 
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
 
@@ -366,6 +371,47 @@ async def condense_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/execute_tool",
+    responses={
+        400: {"description": "Tool not found or invalid parameters"},
+        404: {"description": "Conversation not found"},
+        500: {"description": "Internal server error during tool execution"},
+    },
+)
+async def execute_tool(
+    conversation_id: UUID,
+    request: ExecuteToolRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ExecuteToolResponse:
+    """Execute a tool directly on a conversation without going through the agent loop.
+
+    This is useful for pre-run setup operations like running setup scripts
+    through the agent's terminal tool so environment changes persist in the
+    agent's session.
+    """
+    try:
+        result = await conversation_service.execute_tool(
+            conversation_id, request.tool_name, request.action
+        )
+    except KeyError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        logger.exception("Unexpected error executing tool")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during tool execution",
+        )
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    return ExecuteToolResponse(
+        observation=result,
+        is_error=result.get("is_error", False),
+    )
 
 
 @conversation_router.post(
