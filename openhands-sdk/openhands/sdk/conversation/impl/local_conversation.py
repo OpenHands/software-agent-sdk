@@ -649,17 +649,15 @@ class LocalConversation(BaseConversation):
             ValueError: If the profile is corrupted or invalid.
         """
         usage_id = f"profile:{profile_name}"
-        if llm is not None:
-            new_llm = llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry._usage_to_llm.pop(usage_id, None)
-            self.llm_registry.add(new_llm)
-        else:
-            try:
-                new_llm = self.llm_registry.get(usage_id)
-            except KeyError:
+        try:
+            new_llm = self.llm_registry.get(usage_id)
+        except KeyError:
+            if llm is not None:
+                new_llm = llm.model_copy(update={"usage_id": usage_id})
+            else:
                 new_llm = self._profile_store.load(profile_name)
                 new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-                self.llm_registry.add(new_llm)
+            self.llm_registry.add(new_llm)
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent

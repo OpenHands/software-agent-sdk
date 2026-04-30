@@ -1602,6 +1602,41 @@ def test_switch_conversation_profile_corrupted_profile(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_conversation_profile_with_inline_llm(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Inline llm body is forwarded to switch_profile, bypassing the store."""
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    llm_payload = {
+        "model": "openai/gpt-4o",
+        "api_key": "sk-test",
+        "usage_id": "ignored",
+    }
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_profile",
+            json={"profile_name": "inline", "llm": llm_payload},
+        )
+
+        assert response.status_code == 200
+        mock_conversation.switch_profile.assert_called_once()
+        call_args = mock_conversation.switch_profile.call_args
+        assert call_args.args == ("inline",)
+        forwarded_llm = call_args.kwargs["llm"]
+        assert isinstance(forwarded_llm, LLM)
+        assert forwarded_llm.model == "openai/gpt-4o"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_fork_conversation_success(
     client, mock_conversation_service, sample_conversation_info, sample_conversation_id
 ):
