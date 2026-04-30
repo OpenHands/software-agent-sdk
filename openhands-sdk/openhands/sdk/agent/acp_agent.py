@@ -44,6 +44,7 @@ from acp.transports import default_environment
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.settings.acp_providers import detect_acp_provider_by_agent_name
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -138,12 +139,10 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
-# Known ACP server name → bypass-permissions mode ID mappings.
-_BYPASS_MODE_MAP: dict[str, str] = {
-    "claude-agent": "bypassPermissions",
-    "codex-acp": "full-access",
-    "gemini-cli": "yolo",
-}
+# Fallback session mode used when no registered provider matches the
+# runtime agent name.  ``full-access`` is the most permissive neutral
+# default (codex-acp uses it; other servers that don't recognise it will
+# silently ignore the request).
 _DEFAULT_BYPASS_MODE = "full-access"
 
 # ACP auth method ID → environment variable that supplies the credential.
@@ -187,17 +186,12 @@ def _select_auth_method(
 def _resolve_bypass_mode(agent_name: str) -> str:
     """Return the session mode ID that bypasses all permission prompts.
 
-    Different ACP servers use different mode IDs for the same concept:
-    - claude-agent-acp → ``bypassPermissions``
-    - codex-acp        → ``full-access``
-    - gemini-cli       → ``yolo``
-
-    Falls back to ``full-access`` for unknown servers.
+    Looks up the provider via :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
+    and returns its :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.default_session_mode`.
+    Falls back to :data:`_DEFAULT_BYPASS_MODE` for unknown servers.
     """
-    for key, mode in _BYPASS_MODE_MAP.items():
-        if key in agent_name.lower():
-            return mode
-    return _DEFAULT_BYPASS_MODE
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    return provider.default_session_mode if provider is not None else _DEFAULT_BYPASS_MODE
 
 
 def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
@@ -217,12 +211,16 @@ async def _maybe_set_session_model(
     session_id: str,
     acp_model: str | None,
 ) -> None:
-    """Apply a protocol-level session model override when the server supports it."""
+    """Apply a protocol-level session model override when the server supports it.
+
+    Uses :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
+    to check whether the server supports ``set_session_model``.
+    claude-agent-acp uses session ``_meta`` instead (see :func:`_build_session_meta`).
+    """
     if not acp_model:
         return
-    # codex-acp, gemini-cli: model selection via set_session_model protocol method
-    # claude-agent-acp: uses session _meta instead (see _build_session_meta)
-    if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
@@ -785,7 +783,24 @@ class ACPAgent(AgentBase):
             except Exception:
                 logger.debug("Stats update callback failed", exc_info=True)
 
-    # -- Override base properties to be no-ops for ACP ---------------------
+    # -- Capability helpers ------------------------------------------------
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``False`` — the ACP server manages its own toolset."""
+        return False
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``False`` — MCP configuration is owned by the ACP subprocess."""
+        return False
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``False`` — the ACP server manages its own context window."""
+        return False
+
+    # -- ACP-specific runtime properties -----------------------------------
 
     @property
     def agent_name(self) -> str:

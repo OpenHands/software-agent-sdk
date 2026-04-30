@@ -13,6 +13,7 @@ from openhands.sdk import (
     ACPAgentSettings,
     Agent,
     AgentSettings,
+    AgentSettingsBase,
     ConversationSettings,
     OpenHandsAgentSettings,
     SettingProminence,
@@ -674,3 +675,102 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
         agent_settings=ACPAgentSettings(acp_command=["x"]),
     )
     assert isinstance(acp_conv.agent_settings, ACPAgentSettings)
+
+
+# ---------------------------------------------------------------------------
+# AgentSettingsBase — shared interface
+# ---------------------------------------------------------------------------
+
+
+def test_agent_settings_base_is_parent_of_both_variants() -> None:
+    assert issubclass(OpenHandsAgentSettings, AgentSettingsBase)
+    assert issubclass(ACPAgentSettings, AgentSettingsBase)
+
+
+def test_agent_settings_base_schema_version_inherited() -> None:
+    openhands = OpenHandsAgentSettings()
+    acp = ACPAgentSettings(acp_command=["x"])
+    assert openhands.schema_version == 1
+    assert acp.schema_version == 1
+
+
+def test_agent_settings_base_export_schema_works_on_both_variants() -> None:
+    openhands_schema = OpenHandsAgentSettings.export_schema()
+    acp_schema = ACPAgentSettings.export_schema()
+    assert openhands_schema.model_name == "OpenHandsAgentSettings"
+    assert acp_schema.model_name == "ACPAgentSettings"
+
+
+def test_agent_settings_base_create_agent_is_callable_via_interface() -> None:
+    """Both variants expose create_agent() through the shared base type."""
+    settings: AgentSettingsBase = OpenHandsAgentSettings(llm=LLM(model="test-model"))
+    agent = settings.create_agent()
+    assert isinstance(agent, Agent)
+
+    acp_settings: AgentSettingsBase = ACPAgentSettings(acp_command=["x"])
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    acp_agent = acp_settings.create_agent()
+    assert isinstance(acp_agent, ACPAgent)
+
+
+# ---------------------------------------------------------------------------
+# ACPAgentSettings — provider registry integration
+# ---------------------------------------------------------------------------
+
+
+def test_acp_settings_provider_info_returns_registry_entry() -> None:
+    settings = ACPAgentSettings(acp_server="claude-code")
+    info = settings.provider_info
+    assert info is not None
+    assert info.key == "claude-code"
+    assert info.display_name == "Claude Code"
+
+
+def test_acp_settings_provider_info_returns_none_for_custom() -> None:
+    settings = ACPAgentSettings(acp_server="custom", acp_command=["x"])
+    assert settings.provider_info is None
+
+
+def test_acp_settings_api_key_env_var_from_registry() -> None:
+    assert ACPAgentSettings(acp_server="claude-code").api_key_env_var == "ANTHROPIC_API_KEY"
+    assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
+    assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
+    assert ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
+
+
+def test_acp_settings_base_url_env_var_from_registry() -> None:
+    assert ACPAgentSettings(acp_server="claude-code").base_url_env_var is None
+    assert ACPAgentSettings(acp_server="codex").base_url_env_var is None
+    assert ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
+    assert ACPAgentSettings(acp_server="custom", acp_command=["x"]).base_url_env_var is None
+
+
+def test_acp_resolve_command_uses_registry_defaults() -> None:
+    from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+    for server_key in ("claude-code", "codex", "gemini-cli"):
+        settings = ACPAgentSettings(acp_server=server_key)
+        expected = ACP_PROVIDERS[server_key].default_command
+        assert settings.resolve_acp_command() == expected
+
+
+# ---------------------------------------------------------------------------
+# Agent capability helpers
+# ---------------------------------------------------------------------------
+
+
+def test_regular_agent_supports_all_capabilities() -> None:
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
+    assert agent.supports_openhands_tools is True
+    assert agent.supports_openhands_mcp is True
+    assert agent.supports_condenser is True
+
+
+def test_acp_agent_reports_no_openhands_capabilities() -> None:
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    agent = ACPAgent(acp_command=["x"])
+    assert agent.supports_openhands_tools is False
+    assert agent.supports_openhands_mcp is False
+    assert agent.supports_condenser is False
