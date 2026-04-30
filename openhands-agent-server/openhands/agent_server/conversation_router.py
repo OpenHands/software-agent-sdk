@@ -319,6 +319,28 @@ async def switch_conversation_profile(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/switch_llm",
+    responses={404: {"description": "Conversation not found"}},
+)
+async def switch_conversation_llm(
+    conversation_id: UUID,
+    llm: LLM = Body(..., embed=True),  # noqa: B008
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Swap the conversation's LLM to a caller-supplied object.
+
+    Used by app-servers that own the LLM directly and don't push profiles
+    to the agent-server's filesystem (see #3017).
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    conversation = event_service.get_conversation()
+    conversation.switch_llm(llm)
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
