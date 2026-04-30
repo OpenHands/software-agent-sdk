@@ -1,5 +1,6 @@
 """Tests for Laminar observability configuration."""
 
+import inspect
 import os
 from unittest.mock import MagicMock, patch
 
@@ -170,6 +171,28 @@ def test_get_bool_env(env_value, expected):
             os.environ["TEST_BOOL_VAR"] = original
         elif "TEST_BOOL_VAR" in os.environ:
             del os.environ["TEST_BOOL_VAR"]
+
+
+def test_observe_preserves_async_signature():
+    """@observe must keep an async function async so introspection works.
+
+    Regression test for a bug where the lazy wrapper was unconditionally
+    sync, causing `inspect.iscoroutinefunction` to return False for
+    decorated async methods. That broke `MCPToolExecutor.__call__`, which
+    relies on `iscoroutinefunction` in `run_async` to dispatch the call.
+    """
+    from openhands.sdk.observability.laminar import observe
+
+    @observe(name="async_fn")
+    async def async_fn(x: int) -> int:
+        return x + 1
+
+    @observe(name="sync_fn")
+    def sync_fn(x: int) -> int:
+        return x + 1
+
+    assert inspect.iscoroutinefunction(async_fn)
+    assert not inspect.iscoroutinefunction(sync_fn)
 
 
 @pytest.mark.parametrize(
