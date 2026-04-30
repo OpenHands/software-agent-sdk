@@ -104,13 +104,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "finish_and_message",
         "all_actions",
     ]
-    assert v_fields["verification.issue_threshold"].depends_on == [
-        "verification.critic_enabled",
-        "verification.enable_iterative_refinement",
-    ]
-    assert (
-        v_fields["verification.issue_threshold"].prominence is SettingProminence.MINOR
-    )
+    assert "verification.issue_threshold" not in v_fields
     assert v_fields["verification.confirmation_mode"].value_type == "boolean"
     assert v_fields["verification.confirmation_mode"].default is False
     assert (
@@ -471,7 +465,6 @@ def test_llm_create_agent_critic_with_iterative_refinement() -> None:
             critic_enabled=True,
             enable_iterative_refinement=True,
             critic_threshold=0.8,
-            issue_threshold=0.9,
             max_refinement_iterations=5,
         ),
     )
@@ -480,7 +473,6 @@ def test_llm_create_agent_critic_with_iterative_refinement() -> None:
     ir = agent.critic.iterative_refinement
     assert isinstance(ir, IterativeRefinementConfig)
     assert ir.success_threshold == 0.8
-    assert ir.issue_threshold == 0.9
     assert ir.max_iterations == 5
 
 

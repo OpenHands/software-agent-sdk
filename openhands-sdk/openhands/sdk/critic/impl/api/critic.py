@@ -4,13 +4,19 @@ import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from pydantic import Field
+
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
 from openhands.sdk.critic.impl.api.taxonomy import categorize_features
+from openhands.sdk.critic.refinement import IterativeRefinementDecision
 
 
 if TYPE_CHECKING:
     from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+
+
+DEFAULT_AGENT_ISSUE_THRESHOLD = 0.75
 
 
 def _format_feature_list(features: list[dict[str, Any]]) -> str:
@@ -25,7 +31,39 @@ def _format_feature_list(features: list[dict[str, Any]]) -> str:
     return ", ".join(items)
 
 
+def _get_high_probability_agent_issues(
+    critic_result: CriticResult,
+    issue_threshold: float,
+) -> tuple[dict[str, Any], ...]:
+    if not critic_result.metadata:
+        return ()
+
+    categorized = critic_result.metadata.get("categorized_features", {})
+    if not isinstance(categorized, dict):
+        return ()
+
+    high_probability_issues = [
+        issue
+        for issue in categorized.get("agent_behavioral_issues", [])
+        if isinstance(issue, dict) and issue.get("probability", 0) >= issue_threshold
+    ]
+    high_probability_issues.sort(
+        key=lambda issue: issue.get("probability", 0), reverse=True
+    )
+    return tuple(high_probability_issues)
+
+
 class APIBasedCritic(CriticBase, CriticClient):
+    issue_threshold: float = Field(
+        default=DEFAULT_AGENT_ISSUE_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "APIBasedCritic-specific probability threshold for agent issue "
+            "labels that should trigger iterative refinement."
+        ),
+    )
+
     def evaluate(
         self,
         events: Sequence[LLMConvertibleEvent],
@@ -102,6 +140,26 @@ class APIBasedCritic(CriticBase, CriticClient):
                 "categorized_features": categorized,
             },
         )
+
+    def evaluate_refinement(
+        self, critic_result: CriticResult | None
+    ) -> IterativeRefinementDecision:
+        """Use API critic taxonomy signals in addition to the score threshold."""
+        decision = super().evaluate_refinement(critic_result)
+        if critic_result is None or self.iterative_refinement is None:
+            return decision
+
+        triggered_issues = _get_high_probability_agent_issues(
+            critic_result,
+            self.issue_threshold,
+        )
+        if triggered_issues:
+            return IterativeRefinementDecision(
+                should_refine=True,
+                triggered_issues=triggered_issues,
+            )
+
+        return decision
 
     def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:
         """Generate a detailed follow-up prompt with rubrics predictions.

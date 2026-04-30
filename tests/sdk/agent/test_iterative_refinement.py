@@ -14,6 +14,7 @@ from openhands.sdk.critic.base import (
     CriticResult,
     IterativeRefinementConfig,
 )
+from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -212,10 +213,10 @@ class TestCheckIterativeRefinement:
 
     def test_high_probability_issue_continues_even_when_score_meets_threshold(self):
         """High-probability agent issues should also trigger refinement."""
-        critic = MockCritic()
-        critic.iterative_refinement = IterativeRefinementConfig(
-            success_threshold=0.6,
+        critic = APIBasedCritic(
+            api_key="test-key",
             issue_threshold=0.75,
+            iterative_refinement=IterativeRefinementConfig(success_threshold=0.6),
         )
         mixin = MockCriticMixin(critic=critic)
         conversation = create_mock_conversation()

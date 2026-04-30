@@ -21,7 +21,6 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
-from openhands.sdk.critic.refinement import DEFAULT_ISSUE_THRESHOLD
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.plugin import PluginSource
@@ -183,22 +182,6 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-    issue_threshold: float = Field(
-        default=DEFAULT_ISSUE_THRESHOLD,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Trigger iterative refinement when a critic-detected agent issue "
-            "exceeds this probability threshold."
-        ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Issue threshold",
-                prominence=SettingProminence.MINOR,
-                depends_on=("critic_enabled", "enable_iterative_refinement"),
-            ).model_dump()
-        },
-    )
     max_refinement_iterations: int = Field(
         default=3,
         ge=1,
@@ -284,7 +267,6 @@ class VerificationSettings(BaseModel):
 
         return IterativeRefinementConfig(
             success_threshold=self.critic_threshold,
-            issue_threshold=self.issue_threshold,
             max_iterations=self.max_refinement_iterations,
         )
 
