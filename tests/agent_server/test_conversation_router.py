@@ -1519,7 +1519,7 @@ def test_switch_conversation_profile_success(
             sample_conversation_id
         )
         mock_event_service.get_conversation.assert_called_once()
-        mock_conversation.switch_profile.assert_called_once_with("gpt")
+        mock_conversation.switch_profile.assert_called_once_with("gpt", llm=None)
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1571,7 +1571,7 @@ def test_switch_conversation_profile_nonexistent_profile(
 
         assert response.status_code == 404
         assert "missing" in response.json()["detail"]
-        mock_conversation.switch_profile.assert_called_once_with("missing")
+        mock_conversation.switch_profile.assert_called_once_with("missing", llm=None)
     finally:
         client.app.dependency_overrides.clear()
 
@@ -1597,7 +1597,7 @@ def test_switch_conversation_profile_corrupted_profile(
 
         assert response.status_code == 400
         assert "Invalid profile format" in response.json()["detail"]
-        mock_conversation.switch_profile.assert_called_once_with("corrupted")
+        mock_conversation.switch_profile.assert_called_once_with("corrupted", llm=None)
     finally:
         client.app.dependency_overrides.clear()
 

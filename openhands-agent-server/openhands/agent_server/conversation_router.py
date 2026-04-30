@@ -297,6 +297,7 @@ async def set_conversation_security_analyzer(
 async def switch_conversation_profile(
     conversation_id: UUID,
     profile_name: str = Body(..., embed=True),
+    llm: LLM | None = Body(None, embed=True),  # noqa: B008
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
     """Switch the conversation's LLM profile to a named profile."""
@@ -305,7 +306,7 @@ async def switch_conversation_profile(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     conversation = event_service.get_conversation()
     try:
-        conversation.switch_profile(profile_name)
+        conversation.switch_profile(profile_name, llm=llm)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
