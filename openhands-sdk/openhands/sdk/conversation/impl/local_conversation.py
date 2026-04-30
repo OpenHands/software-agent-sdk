@@ -632,17 +632,36 @@ class LocalConversation(BaseConversation):
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
 
-    def switch_profile(self, profile_name: str, llm: LLM | None = None) -> None:
-        """Switch the agent's LLM to a named profile.
+    def switch_llm(self, llm: LLM) -> None:
+        """Swap the agent's LLM to the given object.
 
-        If ``llm`` is provided it is used directly (tagged as
-        ``profile:{profile_name}``) and the profile store is skipped.
-        Otherwise the profile is loaded from :class:`LLMProfileStore`
-        (cached in the registry after the first load).
+        The caller owns ``llm.usage_id``; it is the registry key. If an
+        entry with that key already exists, the cached LLM is reused and
+        the passed ``llm`` is dropped — matching the rest of the
+        registry's "first-write-wins" contract.
+
+        Args:
+            llm: LLM to install on the agent.
+        """
+        try:
+            new_llm = self.llm_registry.get(llm.usage_id)
+        except KeyError:
+            new_llm = llm
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
+            self._pin_prompt_cache_key()
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a profile loaded from disk.
+
+        Loads the profile from :class:`LLMProfileStore` (cached in the
+        registry under ``profile:{profile_name}`` after first load) and
+        delegates the swap to :meth:`switch_llm`.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
-            llm: Optional LLM to use directly, bypassing the profile store.
 
         Raises:
             FileNotFoundError: If the profile does not exist.
@@ -650,18 +669,11 @@ class LocalConversation(BaseConversation):
         """
         usage_id = f"profile:{profile_name}"
         try:
-            new_llm = self.llm_registry.get(usage_id)
+            cached = self.llm_registry.get(usage_id)
         except KeyError:
-            if llm is not None:
-                new_llm = llm
-            else:
-                new_llm = self._profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
-        with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
-            self._state.agent = self.agent
-            self._pin_prompt_cache_key()
+            loaded = self._profile_store.load(profile_name)
+            cached = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(cached)
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:

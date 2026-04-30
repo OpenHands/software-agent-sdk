@@ -131,95 +131,84 @@ def empty_profile_store(tmp_path, monkeypatch):
     return profile_dir
 
 
-def test_switch_profile_inline_llm_when_store_is_empty(empty_profile_store):
-    """Real app-server case: profile is unknown to the sandbox FS, the
-    app-server supplies the LLM inline, and the swap succeeds without a 404.
+def test_switch_llm_swaps_when_store_empty(empty_profile_store):
+    """Real app-server case (#3017): profile is unknown to the sandbox FS,
+    the app-server supplies the LLM directly, and the swap succeeds.
     """
     conv = _make_conversation()
     inline = _make_llm("inline-model", "caller-supplied-id")
 
-    # Without `llm`, this would raise FileNotFoundError.
-    conv.switch_profile("from-app-server", llm=inline)
+    conv.switch_llm(inline)
 
     assert conv.agent.llm.model == "inline-model"
     # State must agree — agent_server reads agent.llm via _state.
     assert conv.state.agent.llm.model == "inline-model"
-    # usage_id is canonicalised so future store-path lookups hit the cache.
-    assert conv.agent.llm.usage_id == "profile:from-app-server"
-    assert conv.llm_registry.get("profile:from-app-server").model == "inline-model"
+    # Caller's usage_id is preserved as the registry key.
+    assert conv.agent.llm.usage_id == "caller-supplied-id"
+    assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
     # Cache-key must be repinned (regression guard for #2918 on the new path).
     assert conv.agent.llm._prompt_cache_key == str(conv.id)
 
 
-def test_switch_profile_inline_llm_then_send_message(empty_profile_store):
-    """Mirrors test_switch_then_send_message for the inline path.
-
-    send_message triggers _ensure_agent_ready, which re-registers agent LLMs
-    in the registry. The inline path adds an entry under
-    ``profile:{name}``; this must not collide with the agent's own LLM
+def test_switch_llm_then_send_message(empty_profile_store):
+    """send_message triggers _ensure_agent_ready, which re-registers agent
+    LLMs in the registry. switch_llm adds an entry under the caller's
+    usage_id; this must not collide with the agent's own LLM
     re-registration on the next send_message().
     """
     conv = _make_conversation()
-    conv.switch_profile("from-app-server", llm=_make_llm("inline-model", "x"))
+    conv.switch_llm(_make_llm("inline-model", "x"))
     conv.send_message("hello")
 
 
-def test_switch_between_two_inline_profiles(empty_profile_store):
-    """The /model command flow: swap profile A inline, then profile B inline.
-
-    Each profile is registered under its own ``profile:{name}`` slot, so
-    consecutive inline swaps for *different* names must not collide in the
-    registry.
+def test_switch_between_two_llms(empty_profile_store):
+    """Consecutive switch_llm calls under distinct usage_ids each register
+    their own slot and end up as the agent's LLM.
     """
     conv = _make_conversation()
 
-    conv.switch_profile("a", llm=_make_llm("model-a", "x"))
+    conv.switch_llm(_make_llm("model-a", "x"))
     assert conv.agent.llm.model == "model-a"
 
-    conv.switch_profile("b", llm=_make_llm("model-b", "y"))
+    conv.switch_llm(_make_llm("model-b", "y"))
     assert conv.agent.llm.model == "model-b"
 
-    # Switching back to "a" without re-supplying llm hits the cached entry.
-    conv.switch_profile("a")
-    assert conv.agent.llm.model == "model-a"
 
-
-def test_switch_profile_inline_llm_cache_wins_on_repeat_call(empty_profile_store):
-    """Locks in the chosen semantics: when ``profile:{name}`` is already
-    cached, the cached LLM wins and a fresh ``llm=`` is silently ignored.
-
-    This is symmetric with the store-path behaviour
-    (``test_switch_reuses_registry_entry``). Documenting it as a test
-    so a future refactor can't change the contract unnoticed.
+def test_switch_llm_does_not_consult_store(empty_profile_store, monkeypatch):
+    """switch_llm must not hit LLMProfileStore.load — the caller is
+    authoritative. Guards against a regression where the inline path
+    silently falls through to disk IO.
     """
-    conv = _make_conversation()
-
-    conv.switch_profile("inline", llm=_make_llm("first-model", "x"))
-    # Second call with a different LLM under the same profile name —
-    # registry cache is authoritative; the new LLM is dropped.
-    conv.switch_profile("inline", llm=_make_llm("second-model", "y"))
-
-    assert conv.agent.llm.model == "first-model"
-
-
-def test_switch_profile_inline_llm_does_not_consult_store(
-    empty_profile_store, monkeypatch
-):
-    """Inline LLM must not hit LLMProfileStore.load — even if the store
-    would otherwise have content. Guards against a regression where the
-    caller-authoritative path silently falls through to disk IO.
-    """
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-
     calls: list[str] = []
 
     def _spy_load(self, name):
         calls.append(name)
-        raise FileNotFoundError(name)  # would 404 — must not be reached
+        raise FileNotFoundError(name)
 
     monkeypatch.setattr(LLMProfileStore, "load", _spy_load)
 
     conv = _make_conversation()
-    conv.switch_profile("inline", llm=_make_llm("inline-model", "x"))
+    conv.switch_llm(_make_llm("inline-model", "x"))
 
     assert calls == [], f"profile store was consulted: {calls}"
+
+
+def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):
+    """switch_profile loads from disk and delegates to switch_llm; the LLM
+    handed off carries the canonical ``profile:{name}`` usage_id.
+    """
+    conv = _make_conversation()
+    seen: list[LLM] = []
+    real_switch_llm = conv.switch_llm
+
+    def _spy(llm):
+        seen.append(llm)
+        real_switch_llm(llm)
+
+    monkeypatch.setattr(conv, "switch_llm", _spy)
+
+    conv.switch_profile("fast")
+
+    assert len(seen) == 1
+    assert seen[0].usage_id == "profile:fast"
+    assert seen[0].model == "fast-model"
