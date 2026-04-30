@@ -15,16 +15,18 @@ follow-up prompt generation, the SDK handles everything via:
    `build_refinement_message()` can be used outside a Conversation for custom
    workflows.
 
-The example uses a lightweight local critic (``FileCheckCritic``) so it runs
-without an external critic server. It checks whether the agent created the
-required files and runs the tests — returning metadata with
-``categorized_features`` so the SDK's issue-threshold logic is exercised.
-
-For production use with an API-based critic, replace ``FileCheckCritic`` with
-``APIBasedCritic`` (see the commented-out section at the bottom).
+Critic selection:
+- When running behind the All-Hands LLM proxy, an ``APIBasedCritic`` is
+  auto-configured.
+- Explicit ``CRITIC_SERVER_URL`` / ``CRITIC_API_KEY`` / ``CRITIC_MODEL_NAME``
+  env vars also produce an ``APIBasedCritic``.
+- Otherwise, the example falls back to a lightweight ``FileCheckCritic`` that
+  checks file existence and runs tests locally, so you can try the refinement
+  flow without a critic server.
 """
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -32,7 +34,11 @@ from pathlib import Path
 from typing import Any
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.sdk.critic import CriticResult, IterativeRefinementConfig
+from openhands.sdk.critic import (
+    APIBasedCritic,
+    CriticResult,
+    IterativeRefinementConfig,
+)
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.critic.refinement import (
     build_refinement_message,
@@ -63,14 +69,37 @@ def get_required_env(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Lightweight local critic — no external server needed
+# APIBasedCritic: auto-configure for All-Hands LLM proxy
+# ---------------------------------------------------------------------------
+def get_default_critic(llm: LLM) -> APIBasedCritic | None:
+    """Return an APIBasedCritic when behind the All-Hands LLM proxy.
+
+    The proxy exposes a ``/vllm`` critic endpoint with model name ``"critic"``.
+    """
+    base_url = llm.base_url
+    api_key = llm.api_key
+    if base_url is None or api_key is None:
+        return None
+
+    pattern = r"^https?://llm-proxy\.[^./]+\.all-hands\.dev"
+    if not re.match(pattern, base_url):
+        return None
+
+    return APIBasedCritic(
+        server_url=f"{base_url.rstrip('/')}/vllm",
+        api_key=api_key,
+        model_name="critic",
+    )
+
+
+# ---------------------------------------------------------------------------
+# FileCheckCritic: lightweight local fallback (no server needed)
 # ---------------------------------------------------------------------------
 class FileCheckCritic(CriticBase):
     """Critic that checks whether expected files exist and tests pass.
 
-    This gives a concrete, reproducible score without an external service
-    and populates ``categorized_features`` so the SDK refinement module's
-    issue-threshold logic gets exercised.
+    Populates ``categorized_features`` so the SDK refinement module's
+    issue-threshold logic is exercised end-to-end.
     """
 
     workspace: str
@@ -89,7 +118,6 @@ class FileCheckCritic(CriticBase):
         ]
         missing = [f for f in required_files if not (ws / f).exists()]
 
-        # Run pytest if test file exists
         tests_pass = False
         test_file = ws / "wordstats/tests/test_stats.py"
         if test_file.exists():
@@ -102,12 +130,10 @@ class FileCheckCritic(CriticBase):
             )
             tests_pass = result.returncode == 0
 
-        # Compute score: 60% for files, 40% for passing tests
         file_score = (len(required_files) - len(missing)) / len(required_files)
         test_score = 1.0 if tests_pass else 0.0
         score = 0.6 * file_score + 0.4 * test_score
 
-        # Build categorized features for the refinement module
         issues: list[dict[str, Any]] = []
         if missing:
             issues.append(
@@ -127,11 +153,10 @@ class FileCheckCritic(CriticBase):
             )
 
         metadata = {"categorized_features": {"agent_behavioral_issues": issues}}
-
         test_label = "pass" if tests_pass else "fail"
         return CriticResult(
             score=score,
-            message=f"Files: {file_score:.0%}, Tests: {test_label}",
+            message=(f"Files: {file_score:.0%}, Tests: {test_label}"),
             metadata=metadata,
         )
 
@@ -211,12 +236,12 @@ llm = LLM(
     base_url=os.getenv("LLM_BASE_URL"),
 )
 
-# Create workspace early so the critic can inspect it
+# Create workspace early so the local critic fallback can inspect it
 workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
 print(f"📁 Created workspace: {workspace}")
 
 # --- SDK refinement module: IterativeRefinementConfig ---
-# The config declares thresholds and max iterations. Its evaluate() and
+# The config declares thresholds and max iterations.  Its evaluate() and
 # build_followup_prompt() methods delegate to the refinement module's
 # evaluate_iterative_refinement() and build_refinement_message() helpers.
 iterative_config = IterativeRefinementConfig(
@@ -225,11 +250,29 @@ iterative_config = IterativeRefinementConfig(
     max_iterations=MAX_ITERATIONS,
 )
 
-# Local critic with the refinement config attached
-critic = FileCheckCritic(
-    workspace=str(workspace),
-    iterative_refinement=iterative_config,
-)
+# --- Critic selection ---
+# 1. All-Hands LLM proxy → APIBasedCritic (auto-configured)
+# 2. Explicit CRITIC_SERVER_URL env var → APIBasedCritic
+# 3. Otherwise → FileCheckCritic (local, no server needed)
+critic: CriticBase
+api_critic = get_default_critic(llm)
+if api_critic is not None:
+    critic = api_critic.model_copy(update={"iterative_refinement": iterative_config})
+    print("🔌 Using APIBasedCritic (All-Hands LLM proxy)")
+elif os.getenv("CRITIC_SERVER_URL"):
+    critic = APIBasedCritic(
+        server_url=get_required_env("CRITIC_SERVER_URL"),
+        api_key=get_required_env("CRITIC_API_KEY"),
+        model_name=get_required_env("CRITIC_MODEL_NAME"),
+        iterative_refinement=iterative_config,
+    )
+    print("🔌 Using APIBasedCritic (explicit env vars)")
+else:
+    critic = FileCheckCritic(
+        workspace=str(workspace),
+        iterative_refinement=iterative_config,
+    )
+    print("📋 Using FileCheckCritic (local fallback)")
 
 agent = Agent(
     llm=llm,
@@ -307,21 +350,3 @@ for path in sorted(workspace.rglob("*")):
 
 cost = llm.metrics.accumulated_cost
 print(f"\nEXAMPLE_COST: {cost:.4f}")
-
-# ---------------------------------------------------------------------------
-# Alternative: API-based critic for production use
-# ---------------------------------------------------------------------------
-# To use an external critic server instead of the local FileCheckCritic,
-# replace the critic setup above with:
-#
-#   from openhands.sdk.critic import APIBasedCritic
-#
-#   critic = APIBasedCritic(
-#       server_url=os.getenv("CRITIC_SERVER_URL", "https://..."),
-#       api_key=os.getenv("CRITIC_API_KEY", "..."),
-#       model_name=os.getenv("CRITIC_MODEL_NAME", "critic"),
-#       iterative_refinement=iterative_config,
-#   )
-#
-# The IterativeRefinementConfig and Conversation.run() flow work identically
-# regardless of the critic implementation.
