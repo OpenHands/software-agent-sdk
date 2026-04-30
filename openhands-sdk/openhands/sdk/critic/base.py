@@ -26,8 +26,9 @@ FollowupPromptFn = Callable[[CriticResult, int], str]
 class IterativeRefinementConfig(BaseModel):
     """Configuration for generalized critic-driven iterative refinement.
 
-    This policy evaluates critic results, decides whether refinement should
-    continue, and can build the follow-up prompt sent back to the agent.
+    This policy carries the shared score threshold and iteration limit. Critic
+    implementations can add their own refinement signals by overriding
+    ``CriticBase.evaluate_refinement()`` and ``CriticBase.get_followup_prompt()``.
 
     Example:
         critic = APIBasedCritic(
@@ -57,8 +58,8 @@ class IterativeRefinementConfig(BaseModel):
         ge=0.0,
         le=1.0,
         description=(
-            "Probability threshold for critic-detected agent issues that should "
-            "trigger refinement even when the overall score is acceptable."
+            "Probability threshold available to critics that emit agent issue "
+            "probabilities, such as APIBasedCritic."
         ),
     )
     max_iterations: int = Field(
@@ -74,25 +75,6 @@ class IterativeRefinementConfig(BaseModel):
         return evaluate_iterative_refinement(
             critic_result,
             success_threshold=self.success_threshold,
-            issue_threshold=self.issue_threshold,
-        )
-
-    def build_followup_prompt(
-        self,
-        critic_result: CriticResult,
-        iteration: int,
-        *,
-        decision: IterativeRefinementDecision | None = None,
-    ) -> str:
-        """Build the follow-up prompt for the next refinement iteration."""
-        return build_refinement_message(
-            critic_result,
-            iteration,
-            max_iterations=self.max_iterations,
-            issue_threshold=self.issue_threshold,
-            triggered_issues=(
-                decision.triggered_issues if decision is not None else None
-            ),
         )
 
 
@@ -116,8 +98,9 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
         default=None,
         description=(
             "Optional configuration for iterative refinement. When set, "
-            "Conversation.run() will automatically retry the task if the "
-            "critic score is below the success_threshold, up to max_iterations."
+            "Conversation.run() will automatically retry the task if the critic "
+            "score is below the success_threshold or critic-specific refinement "
+            "signals trigger, up to max_iterations."
         ),
     )
 
@@ -135,10 +118,27 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
         uses that policy's shared follow-up message builder so all SDK consumers
         can reuse the same refinement architecture.
         """
-        if self.iterative_refinement is not None:
-            return self.iterative_refinement.build_followup_prompt(
-                critic_result,
-                iteration,
-            )
+        max_iterations = (
+            self.iterative_refinement.max_iterations
+            if self.iterative_refinement is not None
+            else None
+        )
+        return build_refinement_message(
+            critic_result,
+            iteration,
+            max_iterations=max_iterations,
+        )
 
-        return build_refinement_message(critic_result, iteration)
+    def evaluate_refinement(
+        self, critic_result: CriticResult | None
+    ) -> IterativeRefinementDecision:
+        """Evaluate whether iterative refinement should continue.
+
+        The default implementation delegates to ``iterative_refinement`` and only
+        applies the generic score threshold. Critic implementations with richer
+        metadata can override this method to add critic-specific signals.
+        """
+        if self.iterative_refinement is None:
+            return IterativeRefinementDecision(should_refine=False)
+
+        return self.iterative_refinement.evaluate(critic_result)

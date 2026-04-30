@@ -111,7 +111,7 @@ class CriticMixin:
             logger.warning("Iterative refinement: no critic result on FinishAction")
             return False, None
 
-        decision = config.evaluate(critic_result)
+        decision = self.critic.evaluate_refinement(critic_result)
         if not decision.should_refine:
             logger.info(
                 f"Iterative refinement: success threshold "
@@ -135,9 +135,5 @@ class CriticMixin:
             f"issues={len(decision.triggered_issues)}, "
             f"iteration {new_iteration}/{config.max_iterations})"
         )
-        followup = config.build_followup_prompt(
-            critic_result,
-            new_iteration,
-            decision=decision,
-        )
+        followup = self.critic.get_followup_prompt(critic_result, new_iteration)
         return True, followup

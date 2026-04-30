@@ -6,9 +6,11 @@ import pytest
 
 from openhands.sdk.critic import (
     AgentFinishedCritic,
+    APIBasedCritic,
     CriticBase,
     CriticResult,
     EmptyPatchCritic,
+    IterativeRefinementConfig,
     PassCritic,
 )
 from openhands.sdk.event import ActionEvent
@@ -51,6 +53,74 @@ def test_critic_result_validation():
 
     with pytest.raises(Exception):  # Pydantic ValidationError
         CriticResult(score=1.1, message="Above max")
+
+
+def test_api_based_critic_refinement_triggers_on_high_probability_issue() -> None:
+    critic = APIBasedCritic(
+        api_key="test-api-key",
+        iterative_refinement=IterativeRefinementConfig(
+            success_threshold=0.6,
+            issue_threshold=0.75,
+        ),
+    )
+    result = CriticResult(
+        score=0.85,
+        message="High score with issue",
+        metadata={
+            "categorized_features": {
+                "agent_behavioral_issues": [
+                    {
+                        "name": "insufficient_testing",
+                        "display_name": "Insufficient Testing",
+                        "probability": 0.82,
+                    }
+                ]
+            }
+        },
+    )
+
+    decision = critic.evaluate_refinement(result)
+
+    assert decision.should_refine is True
+    assert decision.triggered_issues == (
+        {
+            "name": "insufficient_testing",
+            "display_name": "Insufficient Testing",
+            "probability": 0.82,
+        },
+    )
+
+
+def test_api_based_critic_followup_prompt_includes_triggered_issues() -> None:
+    critic = APIBasedCritic(
+        api_key="test-api-key",
+        iterative_refinement=IterativeRefinementConfig(
+            success_threshold=0.6,
+            issue_threshold=0.75,
+            max_iterations=3,
+        ),
+    )
+    result = CriticResult(
+        score=0.4,
+        message="Low score",
+        metadata={
+            "categorized_features": {
+                "agent_behavioral_issues": [
+                    {
+                        "name": "insufficient_testing",
+                        "display_name": "Insufficient Testing",
+                        "probability": 0.82,
+                    }
+                ]
+            }
+        },
+    )
+
+    prompt = critic.get_followup_prompt(result, iteration=2)
+
+    assert "iteration 2/3" in prompt
+    assert "Detected issues requiring attention" in prompt
+    assert "Insufficient Testing (82%)" in prompt
 
 
 def test_pass_critic_always_succeeds():

@@ -5,10 +5,10 @@ This is EXPERIMENTAL.
 This example demonstrates the SDK's critic refinement module in two parts:
 
 **Part 1 — Refinement API walkthrough** (no server/LLM needed):
-Shows the new ``IterativeRefinementConfig.evaluate()`` and
-``build_followup_prompt()`` methods with a synthetic ``CriticResult``, so you
-can see how the SDK decides whether to refine and what follow-up prompt it
-generates — including the issue-threshold logic.
+Shows ``IterativeRefinementConfig.evaluate()`` and APIBasedCritic's
+critic-specific refinement hooks with a synthetic ``CriticResult``, so you can
+see how the SDK decides whether to refine and what follow-up prompt it
+generates.
 
 **Part 2 — End-to-end with APIBasedCritic** (requires critic server + LLM):
 Wires an ``APIBasedCritic`` with the same config and lets
@@ -29,10 +29,6 @@ from openhands.sdk.critic import (
     APIBasedCritic,
     CriticResult,
     IterativeRefinementConfig,
-)
-from openhands.sdk.critic.refinement import (
-    build_refinement_message,
-    evaluate_iterative_refinement,
 )
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
@@ -100,6 +96,15 @@ print(
     f"max_iterations={iterative_config.max_iterations}"
 )
 
+# This demo critic is never sent over the network in Part 1. It only shows the
+# local refinement policy and APIBasedCritic-specific prompt generation.
+demo_critic = APIBasedCritic(
+    server_url="https://example.invalid/vllm",
+    api_key="example-api-key",
+    model_name="critic",
+    iterative_refinement=iterative_config,
+)
+
 # --- Scenario A: low score triggers refinement ---
 low_result = CriticResult(
     score=0.4,
@@ -122,7 +127,7 @@ low_result = CriticResult(
     },
 )
 
-decision_a = iterative_config.evaluate(low_result)
+decision_a = demo_critic.evaluate_refinement(low_result)
 print(f"\nScenario A — score {low_result.score}:")
 print(f"  should_refine = {decision_a.should_refine}")
 print(f"  triggered_issues ({len(decision_a.triggered_issues)}):")
@@ -131,9 +136,7 @@ for issue in decision_a.triggered_issues:
     prob = issue.get("probability", 0)
     print(f"    - {name} ({prob:.0%})")
 
-prompt_a = iterative_config.build_followup_prompt(
-    low_result, iteration=1, decision=decision_a
-)
+prompt_a = demo_critic.get_followup_prompt(low_result, iteration=1)
 print(f"  follow-up prompt:\n{prompt_a}")
 
 # --- Scenario B: high score but high-probability issue still refines ---
@@ -153,38 +156,21 @@ issue_result = CriticResult(
     },
 )
 
-decision_b = iterative_config.evaluate(issue_result)
+generic_decision_b = iterative_config.evaluate(issue_result)
+decision_b = demo_critic.evaluate_refinement(issue_result)
 print(f"Scenario B — score {issue_result.score} (above threshold):")
+print(f"  generic config should_refine = {generic_decision_b.should_refine}")
 print(
-    f"  should_refine = {decision_b.should_refine}  "
-    f"(issue >= {ISSUE_THRESHOLD:.0%} overrides)"
+    f"  APIBasedCritic should_refine = {decision_b.should_refine}  "
+    f"(agent issue >= {ISSUE_THRESHOLD:.0%} overrides)"
 )
 print(f"  triggered_issues: {[i['display_name'] for i in decision_b.triggered_issues]}")
 
 # --- Scenario C: clean pass ---
 good_result = CriticResult(score=0.92, message="All requirements met")
-decision_c = iterative_config.evaluate(good_result)
+decision_c = demo_critic.evaluate_refinement(good_result)
 print(f"\nScenario C — score {good_result.score}:")
 print(f"  should_refine = {decision_c.should_refine}")
-
-# --- Standalone helpers (same functions the config delegates to) ---
-print("\nStandalone evaluate_iterative_refinement():")
-standalone_decision = evaluate_iterative_refinement(
-    low_result,
-    success_threshold=SUCCESS_THRESHOLD,
-    issue_threshold=ISSUE_THRESHOLD,
-)
-print(f"  should_refine = {standalone_decision.should_refine}")
-
-print("\nStandalone build_refinement_message():")
-standalone_msg = build_refinement_message(
-    low_result,
-    iteration=2,
-    max_iterations=MAX_ITERATIONS,
-    issue_threshold=ISSUE_THRESHOLD,
-    triggered_issues=standalone_decision.triggered_issues,
-)
-print(f"  {standalone_msg[:80]}...")
 
 print("\n✅ Part 1 complete — refinement module works.\n")
 
@@ -303,8 +289,8 @@ print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
 print(f"Issue threshold:   {ISSUE_THRESHOLD:.0%}")
 print(f"Max iterations:    {MAX_ITERATIONS}")
 
-# Conversation.run() delegates to IterativeRefinementConfig.evaluate()
-# and build_followup_prompt() internally — no hand-written loop needed.
+# Conversation.run() delegates refinement decisions and follow-up prompts to the
+# configured critic internally, so no hand-written loop is needed.
 conversation.send_message(TASK_PROMPT)
 conversation.run()
 
