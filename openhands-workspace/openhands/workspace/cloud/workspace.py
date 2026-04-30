@@ -151,6 +151,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     _exposed_urls: list[dict[str, Any]] | None = PrivateAttr(default=None)
     _automation_callback_url: str | None = PrivateAttr(default=None)
     _automation_run_id: str | None = PrivateAttr(default=None)
+    _conversation_id: str | None = PrivateAttr(default=None)
 
     @property
     def default_conversation_tags(self) -> dict[str, str]:
@@ -796,6 +797,28 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return response
 
+    def register_conversation(self, conversation_id: str) -> None:
+        """Register a conversation ID with this workspace.
+
+        Called by RemoteConversation after creation to associate the conversation
+        with the workspace. The conversation ID is included in the completion
+        callback sent to the automation service.
+
+        Args:
+            conversation_id: The conversation ID to register
+        """
+        self._conversation_id = conversation_id
+        logger.debug(f"Registered conversation: {conversation_id}")
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Get the registered conversation ID.
+
+        Returns:
+            The conversation ID if one has been registered, None otherwise.
+        """
+        return self._conversation_id
+
     def __del__(self) -> None:
         self.cleanup()
 
@@ -813,6 +836,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         Called by ``__exit__`` before ``cleanup()``.  Does nothing when
         ``AUTOMATION_CALLBACK_URL`` env var was not set.
+
+        Includes ``conversation_id`` in the payload if one was registered via
+        ``register_conversation()``.
         """
         try:
             callback_url = self._automation_callback_url
@@ -828,6 +854,10 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             payload["run_id"] = self._automation_run_id
         if exc_val is not None:
             payload["error"] = str(exc_val)
+
+        # Include conversation_id if one was registered
+        if self._conversation_id is not None:
+            payload["conversation_id"] = self._conversation_id
 
         try:
             headers = {"Authorization": f"Bearer {self.cloud_api_key}"}

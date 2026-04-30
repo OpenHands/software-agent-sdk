@@ -1274,8 +1274,7 @@ class ACPAgent(AgentBase):
             # ACPToolCallEvents were already emitted live from
             # _OpenHandsACPBridge.session_update as each ToolCallStart /
             # ToolCallProgress notification arrived — no end-of-turn fan-out
-            # here. The final MessageEvent + FinishAction still close out
-            # the turn below.
+            # here. FinishAction closes out the turn below.
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -1283,18 +1282,6 @@ class ACPAgent(AgentBase):
 
             if not response_text:
                 response_text = "(No response from ACP server)"
-
-            message = Message(
-                role="assistant",
-                content=[TextContent(text=response_text)],
-                reasoning_content=thought_text if thought_text else None,
-            )
-
-            msg_event = MessageEvent(
-                source="agent",
-                llm_message=message,
-            )
-            on_event(msg_event)
 
             # ACP step() boundaries are full remote assistant turns, not
             # partial planning steps. Emit FinishAction to delimit that
@@ -1304,6 +1291,7 @@ class ACPAgent(AgentBase):
             action_event = ActionEvent(
                 source="agent",
                 thought=[],
+                reasoning_content=thought_text or None,
                 action=finish_action,
                 tool_name="finish",
                 tool_call_id=tc_id,
