@@ -55,7 +55,7 @@ jobs:
               run: |
                   gh release create "v${VERSION}" \
                     --repo "${{ github.repository }}" \
-                    --target main \
+                    --target "${{ github.event.pull_request.merge_commit_sha }}" \
                     --title "v${VERSION}" \
                     --generate-notes
 
