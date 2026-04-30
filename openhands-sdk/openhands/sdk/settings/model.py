@@ -19,8 +19,6 @@ from pydantic import (
 )
 from pydantic.fields import FieldInfo
 
-from .acp_providers import ACPProviderInfo, get_acp_provider
-
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
 from openhands.sdk.hooks import HookConfig
@@ -30,6 +28,7 @@ from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
 
+from .acp_providers import ACPProviderInfo, get_acp_provider
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -329,13 +328,14 @@ class AgentSettingsBase(BaseModel):
         """Build an agent from these settings.
 
         Subclasses (:class:`OpenHandsAgentSettings`, :class:`ACPAgentSettings`)
-        override this to return the appropriate :class:`~openhands.sdk.agent.base.AgentBase`
-        subclass. Calling this on the base class directly raises
-        :exc:`NotImplementedError`.
+        override this to return the appropriate
+        :class:`~openhands.sdk.agent.base.AgentBase` subclass.
+        Calling this on the base class directly raises :exc:`NotImplementedError`.
         """
         raise NotImplementedError(
             f"{type(self).__name__} must implement create_agent()"
         )
+
 
 PersistedSettingsMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
