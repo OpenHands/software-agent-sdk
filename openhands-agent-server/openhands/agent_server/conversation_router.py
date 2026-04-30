@@ -18,8 +18,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    GenerateTitleRequest,
-    GenerateTitleResponse,
+    ForkConversationRequest,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
@@ -339,31 +338,6 @@ async def update_conversation(
 
 
 @conversation_router.post(
-    "/{conversation_id}/generate_title",
-    responses={404: {"description": "Item not found"}},
-    deprecated=True,
-)
-async def generate_conversation_title(
-    conversation_id: UUID,
-    request: GenerateTitleRequest,
-    conversation_service: ConversationService = Depends(get_conversation_service),
-) -> GenerateTitleResponse:
-    """Generate a title for the conversation using LLM.
-
-    Deprecated since v1.11.5 and scheduled for removal in v1.19.0.
-
-    Prefer enabling `autotitle` in `StartConversationRequest` to have the server
-    generate and persist the title automatically from the first user message.
-    """
-    title = await conversation_service.generate_conversation_title(
-        conversation_id, request.max_length, request.llm
-    )
-    if title is None:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
-    return GenerateTitleResponse(title=title)
-
-
-@conversation_router.post(
     "/{conversation_id}/ask_agent",
     responses={404: {"description": "Item not found"}},
 )
@@ -392,3 +366,43 @@ async def condense_conversation(
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/fork",
+    responses={
+        201: {"description": "Forked conversation created"},
+        404: {"description": "Source conversation not found"},
+        409: {"description": "Fork ID already in use"},
+    },
+    status_code=status.HTTP_201_CREATED,
+)
+async def fork_conversation(
+    conversation_id: UUID,
+    request: Annotated[ForkConversationRequest, Body()] = ForkConversationRequest(),  # noqa: B008
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> ConversationInfo:
+    """Fork a conversation, deep-copying its event history.
+
+    The fork starts in ``idle`` status with a fresh event loop.
+    Calling ``run`` on the fork resumes from the copied state, meaning
+    the agent has full event memory of the source conversation.
+    """
+    try:
+        info = await conversation_service.fork_conversation(
+            conversation_id,
+            fork_id=request.id,
+            title=request.title,
+            tags=request.tags if request.tags is not None else None,
+            reset_metrics=request.reset_metrics,
+        )
+    except ValueError as exc:
+        if "already exists" in str(exc):
+            raise HTTPException(status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise
+    if info is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="Source conversation not found",
+        )
+    return info

@@ -6,6 +6,7 @@ integration test requirements.
 """
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from openhands.sdk.llm.auth.openai import (
     CONSENT_BANNER,
     ISSUER,
     OPENAI_CODEX_MODELS,
+    DeviceCode,
     OpenAISubscriptionAuth,
     _build_authorize_url,
     _display_consent_and_confirm,
@@ -23,6 +25,8 @@ from openhands.sdk.llm.auth.openai import (
     _get_consent_marker_path,
     _has_acknowledged_consent,
     _mark_consent_acknowledged,
+    _poll_device_code,
+    _request_device_code,
 )
 
 
@@ -201,6 +205,170 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     assert llm.extra_headers is not None
     # Uses codex_cli_rs to match official Codex CLI for compatibility
     assert llm.extra_headers.get("originator") == "codex_cli_rs"
+
+
+class _FakeAsyncClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.posts = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def _response(status_code=200, payload=None):
+    return SimpleNamespace(
+        status_code=status_code,
+        is_success=200 <= status_code < 300,
+        json=lambda: payload or {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_success():
+    """Test requesting an OpenAI device code."""
+    fake_client = _FakeAsyncClient(
+        [
+            _response(
+                payload={
+                    "device_auth_id": "device-auth-123",
+                    "user_code": "ABCD-1234",
+                    "interval": "2",
+                }
+            )
+        ]
+    )
+
+    with patch("openhands.sdk.llm.auth.openai.AsyncClient", return_value=fake_client):
+        device_code = await _request_device_code()
+
+    assert device_code == DeviceCode(
+        verification_url=f"{ISSUER}/codex/device",
+        user_code="ABCD-1234",
+        device_auth_id="device-auth-123",
+        interval=2,
+    )
+    assert fake_client.posts == [
+        (
+            f"{ISSUER}/api/accounts/deviceauth/usercode",
+            {
+                "json": {"client_id": CLIENT_ID},
+                "headers": {"Content-Type": "application/json"},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_poll_device_code_retries_pending_then_succeeds():
+    """Test polling the OpenAI device auth token endpoint."""
+    fake_client = _FakeAsyncClient(
+        [
+            _response(status_code=403),
+            _response(
+                payload={
+                    "authorization_code": "auth-code",
+                    "code_verifier": "verifier",
+                    "code_challenge": "challenge",
+                }
+            ),
+        ]
+    )
+    device_code = DeviceCode(
+        verification_url=f"{ISSUER}/codex/device",
+        user_code="ABCD-1234",
+        device_auth_id="device-auth-123",
+        interval=1,
+    )
+
+    with (
+        patch("openhands.sdk.llm.auth.openai.AsyncClient", return_value=fake_client),
+        patch("openhands.sdk.llm.auth.openai.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        result = await _poll_device_code(device_code)
+
+    assert result["authorization_code"] == "auth-code"
+    assert fake_client.posts == [
+        (
+            f"{ISSUER}/api/accounts/deviceauth/token",
+            {
+                "json": {
+                    "device_auth_id": "device-auth-123",
+                    "user_code": "ABCD-1234",
+                },
+                "headers": {"Content-Type": "application/json"},
+            },
+        ),
+        (
+            f"{ISSUER}/api/accounts/deviceauth/token",
+            {
+                "json": {
+                    "device_auth_id": "device-auth-123",
+                    "user_code": "ABCD-1234",
+                },
+                "headers": {"Content-Type": "application/json"},
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_subscription_auth_login_device_code(tmp_path):
+    """Test device-code login stores OAuth credentials."""
+    store = CredentialStore(credentials_dir=tmp_path)
+    auth = OpenAISubscriptionAuth(credential_store=store)
+    device_code = DeviceCode(
+        verification_url=f"{ISSUER}/codex/device",
+        user_code="ABCD-1234",
+        device_auth_id="device-auth-123",
+        interval=1,
+    )
+
+    with (
+        patch(
+            "openhands.sdk.llm.auth.openai._request_device_code",
+            new_callable=AsyncMock,
+        ) as mock_request,
+        patch(
+            "openhands.sdk.llm.auth.openai._poll_device_code",
+            new_callable=AsyncMock,
+        ) as mock_poll,
+        patch(
+            "openhands.sdk.llm.auth.openai._exchange_code_for_tokens",
+            new_callable=AsyncMock,
+        ) as mock_exchange,
+    ):
+        mock_request.return_value = device_code
+        mock_poll.return_value = {
+            "authorization_code": "auth-code",
+            "code_verifier": "verifier",
+            "code_challenge": "challenge",
+        }
+        mock_exchange.return_value = {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 3600,
+        }
+
+        credentials = await auth.login(auth_method="device_code")
+
+    assert credentials.access_token == "access"
+    assert store.get("openai") is not None
+    mock_exchange.assert_called_once_with(
+        "auth-code",
+        f"{ISSUER}/deviceauth/callback",
+        "verifier",
+    )
 
 
 @pytest.mark.asyncio

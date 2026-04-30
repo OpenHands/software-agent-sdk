@@ -1,10 +1,19 @@
 """Tests for TerminalTool auto-detection functionality."""
 
+import platform
 import tempfile
 import uuid
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
+
+
+if platform.system() == "Windows":
+    pytest.skip(
+        "TerminalTool auto-detection currently has only Unix terminal backends",
+        allow_module_level=True,
+    )
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState

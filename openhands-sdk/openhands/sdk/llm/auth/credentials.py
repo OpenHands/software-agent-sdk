@@ -83,7 +83,7 @@ class CredentialStore:
             return None
 
         try:
-            with open(creds_file) as f:
+            with open(creds_file, encoding="utf-8") as f:
                 data = json.load(f)
             return OAuthCredentials.model_validate(data)
         except (json.JSONDecodeError, ValueError):
@@ -98,7 +98,7 @@ class CredentialStore:
             credentials: The OAuth credentials to save
         """
         creds_file = self._get_credentials_file(credentials.vendor)
-        with open(creds_file, "w") as f:
+        with open(creds_file, "w", encoding="utf-8") as f:
             json.dump(credentials.model_dump(), f, indent=2)
         # Set restrictive permissions (owner read/write only)
         # Note: On Windows, NTFS ACLs should be used instead

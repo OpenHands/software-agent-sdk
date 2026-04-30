@@ -152,3 +152,139 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
 
     # Only working secret should be returned
     assert env_vars == {"WORKING_SECRET": "working-value"}
+
+
+def test_get_secret_value_static():
+    """Test get_secret_value with static string values."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "test-api-key",
+            "DATABASE_URL": "postgresql://localhost/test",
+        }
+    )
+
+    assert secret_registry.get_secret_value("API_KEY") == "test-api-key"
+    assert (
+        secret_registry.get_secret_value("DATABASE_URL")
+        == "postgresql://localhost/test"
+    )
+    assert secret_registry.get_secret_value("NONEXISTENT") is None
+
+
+def test_get_secret_value_callable():
+    """Test get_secret_value with callable values."""
+    secret_registry = SecretRegistry()
+
+    class MyTokenSource(SecretSource):
+        def get_value(self):
+            return "dynamic-token-456"
+
+    secret_registry.update_secrets(
+        {
+            "STATIC_KEY": "static-value",
+            "DYNAMIC_TOKEN": MyTokenSource(),
+        }
+    )
+
+    assert secret_registry.get_secret_value("STATIC_KEY") == "static-value"
+    assert secret_registry.get_secret_value("DYNAMIC_TOKEN") == "dynamic-token-456"
+
+
+def test_get_secret_value_handles_exceptions():
+    """Test that get_secret_value handles exceptions from callables gracefully."""
+    secret_registry = SecretRegistry()
+
+    class MyFailingTokenSource(SecretSource):
+        def get_value(self):
+            raise ValueError("Secret retrieval failed")
+
+    class MyWorkingTokenSource(SecretSource):
+        def get_value(self):
+            return "working-value"
+
+    secret_registry.update_secrets(
+        {
+            "FAILING_SECRET": MyFailingTokenSource(),
+            "WORKING_SECRET": MyWorkingTokenSource(),
+        }
+    )
+
+    # Should not raise exception, should return None for failing secret
+    assert secret_registry.get_secret_value("FAILING_SECRET") is None
+    assert secret_registry.get_secret_value("WORKING_SECRET") == "working-value"
+
+
+def test_get_secret_value_empty_registry():
+    """Test get_secret_value with empty registry."""
+    secret_registry = SecretRegistry()
+    assert secret_registry.get_secret_value("ANY_KEY") is None
+
+
+def test_get_secret_value_as_callback():
+    """Test using get_secret_value as a callback for dict-like lookup."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "test-api-key",
+            "TOKEN": "test-token",
+        }
+    )
+
+    # This is how it's used with expand_mcp_variables
+    get_secret = secret_registry.get_secret_value
+
+    assert get_secret("API_KEY") == "test-api-key"
+    assert get_secret("TOKEN") == "test-token"
+    assert get_secret("MISSING") is None
+
+
+def test_get_secret_value_tracks_for_masking():
+    """Test that get_secret_value adds secrets to _exported_values for masking.
+
+    Secrets retrieved via get_secret_value (e.g., for MCP expansion) should be
+    tracked so they can be masked in command outputs.
+    """
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_TOKEN": "super-secret-token-123",
+            "DB_PASSWORD": "db-pass-456",
+        }
+    )
+
+    # Initially, no exported values
+    assert secret_registry._exported_values == {}
+
+    # Retrieve a secret via get_secret_value
+    value = secret_registry.get_secret_value("API_TOKEN")
+    assert value == "super-secret-token-123"
+
+    # The secret should now be tracked for masking
+    assert "API_TOKEN" in secret_registry._exported_values
+    assert secret_registry._exported_values["API_TOKEN"] == "super-secret-token-123"
+
+    # Masking should work on the tracked secret
+    output = "Response: super-secret-token-123"
+    masked = secret_registry.mask_secrets_in_output(output)
+    assert masked == "Response: <secret-hidden>"
+
+    # Retrieve another secret
+    secret_registry.get_secret_value("DB_PASSWORD")
+    assert "DB_PASSWORD" in secret_registry._exported_values
+
+    # Both should be masked now
+    output2 = "API: super-secret-token-123, DB: db-pass-456"
+    masked2 = secret_registry.mask_secrets_in_output(output2)
+    assert masked2 == "API: <secret-hidden>, DB: <secret-hidden>"
+
+
+def test_get_secret_value_missing_not_tracked():
+    """Test that missing secrets don't get added to _exported_values."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"EXISTING": "value"})
+
+    # Look up a missing key
+    result = secret_registry.get_secret_value("NONEXISTENT")
+    assert result is None
+    assert "NONEXISTENT" not in secret_registry._exported_values

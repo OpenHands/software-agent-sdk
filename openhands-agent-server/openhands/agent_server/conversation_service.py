@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ACPConversationInfo,
@@ -159,6 +160,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -659,10 +661,78 @@ class ConversationService:
         await event_service.condense()
         return True
 
+    async def fork_conversation(
+        self,
+        source_id: UUID,
+        *,
+        fork_id: UUID | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> ConversationInfo | None:
+        """Fork an existing conversation, deep-copying its event history.
+
+        The fork is persisted to disk and then loaded as a new EventService,
+        so the forked conversation is fully independent from the source.
+
+        Returns ``None`` when *source_id* does not exist.
+
+        Raises:
+            ValueError: If *fork_id* is already taken by an active
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        # Reject duplicate fork IDs early to avoid clobbering an active
+        # conversation or leaking an EventService reference.
+        if fork_id is not None and fork_id in self._event_services:
+            raise ValueError(f"Conversation with id {fork_id} already exists")
+
+        source_service = self._event_services.get(source_id)
+        if source_service is None:
+            return None
+
+        source_conversation = source_service.get_conversation()
+
+        # fork() deep-copies events, state, and writes to a new persistence dir.
+        fork_conv = await asyncio.to_thread(
+            source_conversation.fork,
+            conversation_id=fork_id,
+            title=title,
+            tags=tags,
+            reset_metrics=reset_metrics,
+        )
+        # Extract the persisted data, then discard the temporary conversation.
+        fork_conv_id = fork_conv.id
+        fork_agent = cast(Agent, fork_conv.agent)
+        fork_workspace = fork_conv.workspace
+        fork_conv.delete_on_close = False
+        fork_conv.close()
+
+        # _start_event_service will resume from the persisted fork directory.
+        fork_stored = StoredConversation(
+            id=fork_conv_id,
+            agent=fork_agent,
+            workspace=fork_workspace,
+        )
+        # If the service fails to start, clean up the orphaned persistence
+        # directory so we don't leave stale state on disk.
+        fork_dir = self.conversations_dir / fork_conv_id.hex
+        try:
+            fork_event_service = await self._start_event_service(fork_stored)
+        except Exception:
+            safe_rmtree(fork_dir)
+            raise
+
+        state = await fork_event_service.get_state()
+        return _compose_conversation_info_v1(fork_event_service.stored, state)
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
+            stored: StoredConversation | None = None
             try:
                 meta_file = conversation_dir / "meta.json"
                 if not meta_file.exists():
@@ -709,6 +779,16 @@ class ConversationService:
                         context=f"resuming conversation {stored.id}",
                     )
                 await self._start_event_service(stored)
+            except ConversationLeaseHeldError as exc:
+                conversation_id = (
+                    stored.id if stored is not None else conversation_dir.name
+                )
+                logger.info(
+                    "Skipping active conversation %s owned by %s until %s",
+                    conversation_id,
+                    exc.owner_instance_id,
+                    exc.expires_at,
+                )
             except Exception:
                 logger.exception(
                     f"error_loading_event_service:{conversation_dir}", stack_info=True
@@ -758,6 +838,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
+            owner_instance_id=self.owner_instance_id,
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))

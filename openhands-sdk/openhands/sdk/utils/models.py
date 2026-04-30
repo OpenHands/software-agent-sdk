@@ -43,6 +43,35 @@ def _is_abstract(type_: type) -> bool:
         return False
 
 
+def get_handler_class_name(handler: SerializerFunctionWrapHandler) -> str:
+    """Extract the class name from a Pydantic serializer handler's repr string.
+
+    WARNING: This is a fragile approach that relies on Pydantic's internal
+    repr format for SerializerFunctionWrapHandler. The handler is a Pydantic
+    wrapper around a Rust function that provides no public API for determining
+    which class it serializes. Parsing the repr string is the only available
+    mechanism.
+
+    Expected format: `SerializationCallable(serializer=<ClassName>)`
+
+    If Pydantic changes this format, multiple unit tests will fail immediately,
+    including tests in test_discriminated_union.py that verify serialization
+    behavior across the class hierarchy.
+
+    Args:
+        handler: The Pydantic serializer function wrap handler
+
+    Returns:
+        The class name extracted from the handler's repr string
+    """
+    repr_str = str(handler)
+    # Format is `SerializationCallable(serializer=<NAME>)`
+    # Get everything after =
+    _, name = repr_str.split("=", 1)
+    # Cut off the trailing )
+    return name[:-1]
+
+
 def kind_of(obj) -> str:
     """Get the string value for the kind tag"""
     if isinstance(obj, dict):
@@ -175,31 +204,12 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def _is_handler_for_current_class(
         self, handler: SerializerFunctionWrapHandler
     ) -> bool:
-        """Check if the handler is for this class by parsing its repr string.
+        """Check if the handler is for this class.
 
-        WARNING: This is a fragile approach that relies on Pydantic's internal
-        repr format for SerializerFunctionWrapHandler. The handler is a Pydantic
-        wrapper around a Rust function that provides no public API for determining
-        which class it serializes. Parsing the repr string is the only available
-        mechanism.
-
-        Expected format: `SerializationCallable(serializer=<ClassName>)`
-
-        If Pydantic changes this format, multiple unit tests will fail immediately,
-        including tests in test_discriminated_union.py that verify serialization
-        behavior across the class hierarchy.
+        See get_handler_class_name() for details on the fragile string parsing
+        this relies on.
         """
-        # should be in the format `SerializationCallable(serializer=<NAME>)`
-        repr_str = str(handler)
-
-        # Get everything after =
-        _, name = repr_str.split("=", 1)
-
-        # Cut off the )
-        name = name[:-1]
-
-        result = self.__class__.__name__ == name
-        return result
+        return self.__class__.__name__ == get_handler_class_name(handler)
 
     @classmethod
     def __get_pydantic_json_schema__(

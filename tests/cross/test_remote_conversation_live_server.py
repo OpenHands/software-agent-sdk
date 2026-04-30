@@ -5,6 +5,7 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Generator
@@ -139,6 +140,7 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
             "app": app,
             "conversation_service": app.state.conversation_service,
             "host": f"http://127.0.0.1:{port}",
+            "workspace_path": workspace_path,
         }
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
@@ -437,6 +439,10 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
 def test_bash_command_endpoint_with_live_server(server_env):
     """Integration test for bash command execution through live server.
 
@@ -503,7 +509,8 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     test_file.write_text(test_content)
 
     # Define the destination path (must be absolute for the server)
-    destination = "/tmp/test_workspace/uploaded_file.txt"
+    destination = server_env["workspace_path"] / "uploaded_file.txt"
+    destination_remote = destination.as_posix()
 
     # Upload the file
     result = workspace.file_upload(str(test_file), destination)
@@ -516,25 +523,19 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     assert result.source_path == str(test_file), (
         f"Expected source_path to be {test_file}, got {result.source_path}"
     )
-    assert result.destination_path == destination, (
-        f"Expected destination_path to be {destination}, got {result.destination_path}"
+    assert result.destination_path == destination_remote, (
+        f"Expected destination_path to be {destination_remote}, "
+        f"got {result.destination_path}"
     )
 
-    # Verify the file exists at the destination with correct content
-    # Use bash command to check file existence and read content
-    check_cmd = f"test -f {destination} && cat {destination}"
-    check_result = workspace.execute_command(check_cmd, timeout=5.0)
-
-    assert check_result.exit_code == 0, (
-        f"File does not exist at destination or could not be read. "
-        f"Exit code: {check_result.exit_code}, "
-        f"stderr: {check_result.stderr}"
+    downloaded_file = tmp_path / "downloaded_upload.txt"
+    download_result = workspace.file_download(destination, downloaded_file)
+    assert download_result.success is True, (
+        f"File download failed. Error: {download_result.error}, "
+        f"Source: {download_result.source_path}, "
+        f"Destination: {download_result.destination_path}"
     )
-
-    # Verify the content matches what we uploaded
-    assert check_result.stdout == test_content, (
-        f"File content mismatch. Expected:\n{test_content}\nGot:\n{check_result.stdout}"
-    )
+    assert downloaded_file.read_text() == test_content
 
 
 def test_conversation_stats_with_live_server(
@@ -1620,8 +1621,9 @@ def test_remote_state_exposes_invoked_skills(
     ]
     assert skill_observations, "No ObservationEvent emitted for invoke_skill"
     obs_text = skill_observations[-1].observation.text
-    assert str(skill_dir.resolve()) in obs_text, (
-        f"Footer missing skill directory {skill_dir.resolve()!s}: {obs_text!r}"
+    skill_dir_display = skill_dir.resolve().as_posix()
+    assert skill_dir_display in obs_text, (
+        f"Footer missing skill directory {skill_dir_display}: {obs_text!r}"
     )
     assert obs_text.rstrip().endswith("relative to that directory.")
 

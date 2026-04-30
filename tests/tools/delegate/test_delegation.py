@@ -522,7 +522,9 @@ def test_spawn_inherits_persistence_dir_from_parent():
     sub_persistence_dir = sub_conv._state.persistence_dir
     assert sub_persistence_dir is not None
     assert Path(sub_persistence_dir).exists()
-    assert "/tmp/conversations/abc123/subagents" in sub_persistence_dir
+    assert Path(sub_persistence_dir).parent == (
+        Path(parent_conversation.state.persistence_dir) / "subagents"
+    )
 
 
 def test_spawn_no_persistence_when_parent_has_none():

@@ -1,4 +1,5 @@
 import atexit
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -52,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -188,6 +190,8 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
+        self._pin_prompt_cache_key()
+
         # Default callback: persist every event to state
         def _default_callback(e):
             # This callback runs while holding the conversation state's lock
@@ -307,6 +311,109 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
+
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
+
+            # Deep-copy events from source → fork so the source stays
+            # immutable.
+            for event in self._state.events:
+                fork_conv._state.events.append(event.model_copy(deep=True))
+
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
+
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({event_count} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -328,14 +435,16 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        merged_context = self.agent.agent_context
+        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Track whether we have plugins or MCP config to process
+        has_mcp_config = bool(merged_mcp)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -359,6 +468,7 @@ class LocalConversation(BaseConversation):
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                has_mcp_config = has_mcp_config or bool(merged_mcp)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -368,7 +478,28 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Expand MCP config variables with per-conversation secrets
+        # This handles ${VAR} and ${VAR:-default} placeholders:
+        # - Variables referencing secrets injected via API are expanded to secret values
+        # - Variables with defaults that don't have secrets fall back to their defaults
+        # - This is the ONLY place where defaults are applied (plugin loading preserves
+        #   placeholders with expand_defaults=False to avoid double-expansion)
+        if merged_mcp:
+            # Pass the registry's lookup method as a callback - secrets are retrieved
+            # lazily, one at a time, only when actually referenced in the config
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
+            )
+            logger.debug("Expanded MCP config variables")
+
+        # Update agent with merged content only if we have plugins or MCP config
+        # Skip update when nothing changed to avoid unnecessary agent state mutations
+        if self._plugin_specs or has_mcp_config:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -379,8 +510,6 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -495,6 +624,14 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
+    def _pin_prompt_cache_key(self) -> None:
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
+        # Skip if a key is already set: sub-agent LLMs inherit the parent's
+        # via model_copy, and overwriting would put each sub-agent on its own
+        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
+        if self.agent.llm._prompt_cache_key is None:
+            self.agent.llm._prompt_cache_key = str(self._state.id)
+
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a named profile.
 
@@ -518,6 +655,7 @@ class LocalConversation(BaseConversation):
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
+            self._pin_prompt_cache_key()
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
