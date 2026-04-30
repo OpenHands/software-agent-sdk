@@ -10,9 +10,12 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    field_serializer,
     field_validator,
 )
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+
+from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 from .chat_template import ChatTemplateRenderer
 
@@ -156,17 +159,17 @@ class CriticClient(BaseModel):
     # ---------------------
     @field_validator("api_key", mode="before")
     @classmethod
-    def _validate_and_convert_api_key(cls, v: str | SecretStr) -> SecretStr:
-        """Convert str to SecretStr and validate non-empty."""
-        if isinstance(v, SecretStr):
-            secret_value = v.get_secret_value()
-        else:
-            secret_value = v
-
-        if not secret_value or not secret_value.strip():
+    def _validate_and_convert_api_key(cls, v: str | SecretStr, info) -> SecretStr:
+        """Validate api_key and decrypt it when needed."""
+        secret = validate_secret(v, info)
+        if secret is None:
             raise ValueError("api_key must be non-empty")
+        return secret
 
-        return SecretStr(secret_value) if isinstance(v, str) else v
+    @field_serializer("api_key", when_used="always")
+    def _serialize_api_key(self, v: str | SecretStr, info):
+        secret = v if isinstance(v, SecretStr) else SecretStr(v)
+        return serialize_secret(secret, info)
 
     # ---------------------
     # Label helpers
