@@ -18,7 +18,7 @@ from openhands.tools.file_editor.utils.constants import (
     DIRECTORY_CONTENT_TRUNCATED_NOTICE,
     TEXT_FILE_CONTENT_TRUNCATED_NOTICE,
 )
-from tests.path_utils import symlink_or_skip
+from tests.platform_utils import symlink_or_skip
 
 from .conftest import (
     assert_successful_result,

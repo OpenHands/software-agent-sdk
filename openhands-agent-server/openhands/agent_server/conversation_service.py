@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
+from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ACPConversationInfo,
@@ -159,6 +160,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
+    owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -730,6 +732,7 @@ class ConversationService:
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
+            stored: StoredConversation | None = None
             try:
                 meta_file = conversation_dir / "meta.json"
                 if not meta_file.exists():
@@ -776,6 +779,16 @@ class ConversationService:
                         context=f"resuming conversation {stored.id}",
                     )
                 await self._start_event_service(stored)
+            except ConversationLeaseHeldError as exc:
+                conversation_id = (
+                    stored.id if stored is not None else conversation_dir.name
+                )
+                logger.info(
+                    "Skipping active conversation %s owned by %s until %s",
+                    conversation_id,
+                    exc.owner_instance_id,
+                    exc.expires_at,
+                )
             except Exception:
                 logger.exception(
                     f"error_loading_event_service:{conversation_dir}", stack_info=True
@@ -825,6 +838,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
+            owner_instance_id=self.owner_instance_id,
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
