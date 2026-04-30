@@ -7,10 +7,6 @@ from typing import TYPE_CHECKING, Any
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
 from openhands.sdk.critic.impl.api.taxonomy import categorize_features
-from openhands.sdk.critic.refinement import (
-    DEFAULT_ISSUE_THRESHOLD,
-    IterativeRefinementDecision,
-)
 
 
 if TYPE_CHECKING:
@@ -27,39 +23,6 @@ def _format_feature_list(features: list[dict[str, Any]]) -> str:
         prob = f.get("probability", 0)
         items.append(f"{name} ({prob:.0%})")
     return ", ".join(items)
-
-
-def _format_feature_for_prompt(feature: dict[str, Any]) -> str:
-    name = feature.get("display_name", feature.get("name", "Unknown"))
-    probability = feature.get("probability", 0)
-    return f"{name} ({probability:.0%})"
-
-
-def _get_categorized_features(critic_result: CriticResult) -> dict[str, Any]:
-    if not critic_result.metadata:
-        return {}
-
-    categorized = critic_result.metadata.get("categorized_features", {})
-    if isinstance(categorized, dict):
-        return categorized
-    return {}
-
-
-def _get_high_probability_agent_issues(
-    critic_result: CriticResult,
-    issue_threshold: float,
-) -> tuple[dict[str, Any], ...]:
-    categorized = _get_categorized_features(critic_result)
-    agent_issues = categorized.get("agent_behavioral_issues", [])
-    high_probability_issues = [
-        issue
-        for issue in agent_issues
-        if isinstance(issue, dict) and issue.get("probability", 0) >= issue_threshold
-    ]
-    high_probability_issues.sort(
-        key=lambda issue: issue.get("probability", 0), reverse=True
-    )
-    return tuple(high_probability_issues)
 
 
 class APIBasedCritic(CriticBase, CriticClient):
@@ -140,31 +103,6 @@ class APIBasedCritic(CriticBase, CriticClient):
             },
         )
 
-    def evaluate_refinement(
-        self, critic_result: CriticResult | None
-    ) -> IterativeRefinementDecision:
-        """Use API critic taxonomy signals in addition to the score threshold."""
-        decision = super().evaluate_refinement(critic_result)
-        if critic_result is None:
-            return decision
-
-        issue_threshold = (
-            self.iterative_refinement.issue_threshold
-            if self.iterative_refinement is not None
-            else DEFAULT_ISSUE_THRESHOLD
-        )
-        triggered_issues = _get_high_probability_agent_issues(
-            critic_result,
-            issue_threshold,
-        )
-        if triggered_issues:
-            return IterativeRefinementDecision(
-                should_refine=True,
-                triggered_issues=triggered_issues,
-            )
-
-        return decision
-
     def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:
         """Generate a detailed follow-up prompt with rubrics predictions.
 
@@ -180,41 +118,18 @@ class APIBasedCritic(CriticBase, CriticClient):
             A detailed follow-up prompt string with rubrics predictions.
         """
         score_percent = critic_result.score * 100
-        if self.iterative_refinement is None:
-            iteration_label = f"iteration {iteration}"
-            issue_threshold = DEFAULT_ISSUE_THRESHOLD
-        else:
-            iteration_label = (
-                f"iteration {iteration}/{self.iterative_refinement.max_iterations}"
-            )
-            issue_threshold = self.iterative_refinement.issue_threshold
-
         lines = [
-            f"The task appears incomplete ({iteration_label}, "
+            f"The task appears incomplete (iteration {iteration}, "
             f"predicted success likelihood: {score_percent:.1f}%).",
             "",
         ]
 
-        categorized = _get_categorized_features(critic_result)
-        triggered_issues = _get_high_probability_agent_issues(
-            critic_result,
-            issue_threshold,
-        )
-        if triggered_issues:
-            lines.append("**Detected issues requiring attention:**")
-            for issue in triggered_issues:
-                lines.append(f"- {_format_feature_for_prompt(issue)}")
-            lines.append("")
-
         # Extract detailed rubrics from categorized features
-        if categorized:
+        if critic_result.metadata and "categorized_features" in critic_result.metadata:
+            categorized = critic_result.metadata["categorized_features"]
+
             # Agent behavioral issues
             agent_issues = categorized.get("agent_behavioral_issues", [])
-            agent_issues = [
-                issue
-                for issue in agent_issues
-                if isinstance(issue, dict) and issue not in triggered_issues
-            ]
             if agent_issues:
                 lines.append(
                     f"Potential agent issues: {_format_feature_list(agent_issues)}"

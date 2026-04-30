@@ -111,7 +111,7 @@ class CriticMixin:
             logger.warning("Iterative refinement: no critic result on FinishAction")
             return False, None
 
-        decision = self.critic.evaluate_refinement(critic_result)
+        decision = config.evaluate(critic_result)
         if not decision.should_refine:
             logger.info(
                 f"Iterative refinement: success threshold "
