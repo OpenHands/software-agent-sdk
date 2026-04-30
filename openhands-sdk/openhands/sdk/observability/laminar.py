@@ -1,4 +1,5 @@
 import functools
+import inspect
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
@@ -126,37 +127,58 @@ def observe[**P, R](
     imports `lmnr` and caches the wrapped function.
     """
 
+    def _build_wrapped(func: Any) -> Any:
+        from lmnr import observe as laminar_observe
+
+        return laminar_observe(
+            name=name,
+            session_id=session_id,
+            user_id=user_id,
+            ignore_input=ignore_input,
+            ignore_output=ignore_output,
+            span_type=span_type,
+            ignore_inputs=ignore_inputs,
+            input_formatter=input_formatter,
+            output_formatter=output_formatter,
+            metadata=metadata,
+            tags=tags,
+            preserve_global_context=preserve_global_context,
+            rollout_entrypoint=rollout_entrypoint,
+            **kwargs,
+        )(func)
+
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        wrapped: Callable[P, R] | None = None
+        wrapped: Any = None
+
+        # Branch on async-ness at decoration time so that
+        # inspect.iscoroutinefunction(decorated) matches the original. A sync
+        # wrapper around an async function would hide its asyncness from
+        # callers like run_async that introspect the function.
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: P.args, **fkwargs: P.kwargs) -> Any:
+                nonlocal wrapped
+                if wrapped is not None:
+                    return await wrapped(*args, **fkwargs)
+                if not should_enable_observability():
+                    return await func(*args, **fkwargs)
+                wrapped = _build_wrapped(func)
+                return await wrapped(*args, **fkwargs)
+
+            return async_wrapper  # type: ignore[return-value]
 
         @functools.wraps(func)
-        def lazy_wrapper(*args: P.args, **fkwargs: P.kwargs) -> R:
+        def sync_wrapper(*args: P.args, **fkwargs: P.kwargs) -> R:
             nonlocal wrapped
             if wrapped is not None:
                 return wrapped(*args, **fkwargs)
             if not should_enable_observability():
                 return func(*args, **fkwargs)
-            from lmnr import observe as laminar_observe
-
-            wrapped = laminar_observe(
-                name=name,
-                session_id=session_id,
-                user_id=user_id,
-                ignore_input=ignore_input,
-                ignore_output=ignore_output,
-                span_type=span_type,
-                ignore_inputs=ignore_inputs,
-                input_formatter=input_formatter,
-                output_formatter=output_formatter,
-                metadata=metadata,
-                tags=tags,
-                preserve_global_context=preserve_global_context,
-                rollout_entrypoint=rollout_entrypoint,
-                **kwargs,
-            )(func)
+            wrapped = _build_wrapped(func)
             return wrapped(*args, **fkwargs)
 
-        return lazy_wrapper
+        return sync_wrapper
 
     return decorator
 
