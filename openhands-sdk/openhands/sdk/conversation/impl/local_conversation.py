@@ -653,10 +653,10 @@ class LocalConversation(BaseConversation):
             new_llm = self.llm_registry.get(usage_id)
         except KeyError:
             if llm is not None:
-                new_llm = llm.model_copy(update={"usage_id": usage_id})
+                new_llm = llm
             else:
                 new_llm = self._profile_store.load(profile_name)
-                new_llm = new_llm.model_copy(update={"usage_id": usage_id})
+            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
             self.llm_registry.add(new_llm)
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
