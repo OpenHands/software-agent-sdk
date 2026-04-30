@@ -2,18 +2,21 @@
 
 This is EXPERIMENTAL.
 
-This example demonstrates how to use the SDK's built-in critic refinement module
-to drive iterative agent improvement. Instead of hand-writing retry loops and
-follow-up prompt generation, the SDK handles everything via:
+This example demonstrates the SDK's critic refinement module in two parts:
 
-1. **IterativeRefinementConfig** — declares success/issue thresholds and max
-   iterations; its `evaluate()` and `build_followup_prompt()` methods delegate
-   to the `openhands.sdk.critic.refinement` module.
-2. **Conversation.run()** — automatically retries when the config says
-   refinement is needed.
+**Part 1 — Refinement API walkthrough** (no server/LLM needed):
+Shows the new ``IterativeRefinementConfig.evaluate()`` and
+``build_followup_prompt()`` methods with a synthetic ``CriticResult``, so you
+can see how the SDK decides whether to refine and what follow-up prompt it
+generates — including the issue-threshold logic.
 
-For All-Hands LLM proxy (llm-proxy.*.all-hands.dev), the critic is auto-configured
-using the same base_url with /vllm suffix and "critic" as the model name.
+**Part 2 — End-to-end with APIBasedCritic** (requires critic server + LLM):
+Wires an ``APIBasedCritic`` with the same config and lets
+``Conversation.run()`` drive the refinement loop automatically.
+
+For All-Hands LLM proxy (llm-proxy.*.all-hands.dev), the critic is auto-
+configured using the same base_url with /vllm suffix and "critic" as the
+model name.
 """
 
 import os
@@ -22,7 +25,15 @@ import tempfile
 from pathlib import Path
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
-from openhands.sdk.critic import APIBasedCritic, IterativeRefinementConfig
+from openhands.sdk.critic import (
+    APIBasedCritic,
+    CriticResult,
+    IterativeRefinementConfig,
+)
+from openhands.sdk.critic.refinement import (
+    build_refinement_message,
+    evaluate_iterative_refinement,
+)
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
@@ -70,9 +81,128 @@ def get_default_critic(llm: LLM) -> APIBasedCritic | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Task prompt
-# ---------------------------------------------------------------------------
+# ===================================================================
+# Part 1: Refinement API walkthrough (runs without server or LLM)
+# ===================================================================
+print("=" * 70)
+print("Part 1 — SDK Refinement Module Walkthrough")
+print("=" * 70)
+
+# Build the config that Conversation.run() will also use later.
+iterative_config = IterativeRefinementConfig(
+    success_threshold=SUCCESS_THRESHOLD,
+    issue_threshold=ISSUE_THRESHOLD,
+    max_iterations=MAX_ITERATIONS,
+)
+print(
+    f"Config: success_threshold={iterative_config.success_threshold}, "
+    f"issue_threshold={iterative_config.issue_threshold}, "
+    f"max_iterations={iterative_config.max_iterations}"
+)
+
+# --- Scenario A: low score triggers refinement ---
+low_result = CriticResult(
+    score=0.4,
+    message="Agent left several requirements incomplete",
+    metadata={
+        "categorized_features": {
+            "agent_behavioral_issues": [
+                {
+                    "name": "incomplete_implementation",
+                    "display_name": "Incomplete Implementation",
+                    "probability": 0.9,
+                },
+                {
+                    "name": "missing_tests",
+                    "display_name": "Missing Unit Tests",
+                    "probability": 0.8,
+                },
+            ]
+        }
+    },
+)
+
+decision_a = iterative_config.evaluate(low_result)
+print(f"\nScenario A — score {low_result.score}:")
+print(f"  should_refine = {decision_a.should_refine}")
+print(f"  triggered_issues ({len(decision_a.triggered_issues)}):")
+for issue in decision_a.triggered_issues:
+    name = issue.get("display_name", issue.get("name"))
+    prob = issue.get("probability", 0)
+    print(f"    - {name} ({prob:.0%})")
+
+prompt_a = iterative_config.build_followup_prompt(
+    low_result, iteration=1, decision=decision_a
+)
+print(f"  follow-up prompt:\n{prompt_a}")
+
+# --- Scenario B: high score but high-probability issue still refines ---
+issue_result = CriticResult(
+    score=0.85,
+    message="Looks good overall but tests are flaky",
+    metadata={
+        "categorized_features": {
+            "agent_behavioral_issues": [
+                {
+                    "name": "flaky_tests",
+                    "display_name": "Flaky Test Suite",
+                    "probability": 0.82,
+                }
+            ]
+        }
+    },
+)
+
+decision_b = iterative_config.evaluate(issue_result)
+print(f"Scenario B — score {issue_result.score} (above threshold):")
+print(
+    f"  should_refine = {decision_b.should_refine}  "
+    f"(issue >= {ISSUE_THRESHOLD:.0%} overrides)"
+)
+print(f"  triggered_issues: {[i['display_name'] for i in decision_b.triggered_issues]}")
+
+# --- Scenario C: clean pass ---
+good_result = CriticResult(score=0.92, message="All requirements met")
+decision_c = iterative_config.evaluate(good_result)
+print(f"\nScenario C — score {good_result.score}:")
+print(f"  should_refine = {decision_c.should_refine}")
+
+# --- Standalone helpers (same functions the config delegates to) ---
+print("\nStandalone evaluate_iterative_refinement():")
+standalone_decision = evaluate_iterative_refinement(
+    low_result,
+    success_threshold=SUCCESS_THRESHOLD,
+    issue_threshold=ISSUE_THRESHOLD,
+)
+print(f"  should_refine = {standalone_decision.should_refine}")
+
+print("\nStandalone build_refinement_message():")
+standalone_msg = build_refinement_message(
+    low_result,
+    iteration=2,
+    max_iterations=MAX_ITERATIONS,
+    issue_threshold=ISSUE_THRESHOLD,
+    triggered_issues=standalone_decision.triggered_issues,
+)
+print(f"  {standalone_msg[:80]}...")
+
+print("\n✅ Part 1 complete — refinement module works.\n")
+
+
+# ===================================================================
+# Part 2: End-to-end with APIBasedCritic + Conversation.run()
+# ===================================================================
+# This section requires a critic server and a valid LLM API key.
+# Set SKIP_E2E=1 to run only Part 1.
+if os.getenv("SKIP_E2E", "").strip() in ("1", "true", "yes"):
+    print("SKIP_E2E is set — skipping Part 2.")
+    print("\nEXAMPLE_COST: 0")
+    raise SystemExit(0)
+
+print("=" * 70)
+print("Part 2 — End-to-end with APIBasedCritic")
+print("=" * 70)
+
 TASK_PROMPT = """\
 Create a Python word statistics tool called `wordstats` that analyzes text files.
 
@@ -132,10 +262,6 @@ Numbers like 42 and 3.14 don't count as words.
 The task is complete ONLY when all files exist and all tests pass.
 """
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 llm_api_key = get_required_env("LLM_API_KEY")
 llm_model = os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5-20251001")
 llm = LLM(
@@ -148,17 +274,6 @@ llm = LLM(
 workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
 print(f"📁 Created workspace: {workspace}")
 
-# --- SDK refinement module: IterativeRefinementConfig ---
-# The config declares thresholds and max iterations.  Its evaluate() and
-# build_followup_prompt() methods delegate to the refinement module's
-# evaluate_iterative_refinement() and build_refinement_message() helpers.
-iterative_config = IterativeRefinementConfig(
-    success_threshold=SUCCESS_THRESHOLD,
-    issue_threshold=ISSUE_THRESHOLD,
-    max_iterations=MAX_ITERATIONS,
-)
-
-# --- Critic selection ---
 # Auto-configure for All-Hands proxy or use explicit env vars
 critic = get_default_critic(llm)
 if critic is None:
@@ -184,19 +299,15 @@ agent = Agent(
 
 conversation = Conversation(agent=agent, workspace=str(workspace))
 
-print("\n" + "=" * 70)
-print("🚀 Iterative Refinement via SDK Critic Refinement Module")
-print("=" * 70)
 print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
 print(f"Issue threshold:   {ISSUE_THRESHOLD:.0%}")
 print(f"Max iterations:    {MAX_ITERATIONS}")
 
-# Conversation.run() now delegates to IterativeRefinementConfig.evaluate()
-# and build_followup_prompt() — no hand-written retry loop needed.
+# Conversation.run() delegates to IterativeRefinementConfig.evaluate()
+# and build_followup_prompt() internally — no hand-written loop needed.
 conversation.send_message(TASK_PROMPT)
 conversation.run()
 
-# Print additional info about created files
 print("\nCreated files:")
 for path in sorted(workspace.rglob("*")):
     if path.is_file():
