@@ -1,5 +1,6 @@
 """Tests for credential storage and retrieval."""
 
+import os
 import time
 from pathlib import Path
 
@@ -79,7 +80,8 @@ def test_credential_store_save_and_get(tmp_path):
     assert creds_file.exists()
 
     # Verify file permissions (owner read/write only)
-    assert (creds_file.stat().st_mode & 0o777) == 0o600
+    if os.name != "nt":
+        assert (creds_file.stat().st_mode & 0o777) == 0o600
 
     # Retrieve and verify
     retrieved = store.get("openai")

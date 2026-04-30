@@ -82,6 +82,7 @@ def mock_llm() -> LLM:
     mock_llm.output_cost_per_token = None
 
     mock_llm._metrics = None
+    mock_llm._telemetry = None
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):

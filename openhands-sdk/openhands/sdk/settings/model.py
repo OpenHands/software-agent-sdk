@@ -76,7 +76,7 @@ class SettingsFieldSchema(BaseModel):
         default=None,
         description=(
             "When set, the field only applies to the named ``AgentSettings`` "
-            "variant (``'llm'`` or ``'acp'``). The GUI filters fields by the "
+            "variant (``'openhands'`` or ``'acp'``). The GUI filters fields by the "
             "user's current variant; fields with ``variant=None`` are shown "
             "regardless."
         ),
@@ -91,7 +91,7 @@ class SettingsSectionSchema(BaseModel):
         default=None,
         description=(
             "When set, this section only applies to the named ``AgentSettings`` "
-            "variant (e.g. ``'llm'`` or ``'acp'``). The GUI filters sections by "
+            "variant (e.g. ``'openhands'`` or ``'acp'``). The GUI filters sections by "
             "the current ``agent_kind`` value; sections with ``variant=None`` "
             "are always shown."
         ),
@@ -394,7 +394,7 @@ class ConversationSettings(BaseModel):
             "Agent settings used to build the Agent for the conversation. "
             "When set, create_request() will automatically build the agent "
             "and populate secrets from agent_context. Accepts either the "
-            "``LLMAgentSettings`` or ``ACPAgentSettings`` variant."
+            "``OpenHandsAgentSettings`` or ``ACPAgentSettings`` variant."
         ),
     )
     workspace: LocalWorkspace | None = Field(
@@ -578,7 +578,7 @@ class ConversationSettings(BaseModel):
         return request_type(**self._start_request_kwargs(**kwargs))
 
 
-AgentKind = Literal["llm", "acp"]
+AgentKind = Literal["openhands", "llm", "acp"]
 
 ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
 """Known ACP backend servers the GUI can pick from.
@@ -598,7 +598,7 @@ _DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
 }
 
 
-class LLMAgentSettings(BaseModel):
+class OpenHandsAgentSettings(BaseModel):
     """Settings for a standard LLM-backed :class:`Agent`.
 
     This is the long-standing ``AgentSettings`` shape; fields here build
@@ -606,11 +606,11 @@ class LLMAgentSettings(BaseModel):
     """
 
     schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
-    agent_kind: Literal["llm"] = Field(
-        default="llm",
+    agent_kind: Literal["openhands"] = Field(
+        default="openhands",
         description=(
-            "Discriminator for the ``AgentSettings`` union. ``'llm'`` selects a "
-            "standard LLM-backed agent."
+            "Discriminator for the ``AgentSettings`` union. ``'openhands'`` selects "
+            "the standard built-in OpenHands agent."
         ),
     )
     agent: str = Field(
@@ -620,7 +620,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Agent",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -631,7 +631,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="llm",
                 label="LLM",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -642,7 +642,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Tools",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -653,7 +653,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable sub-agents",
                 prominence=SettingProminence.MAJOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -664,7 +664,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="MCP configuration",
                 prominence=SettingProminence.MINOR,
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -679,7 +679,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="condenser",
                 label="Condenser",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -690,7 +690,7 @@ class LLMAgentSettings(BaseModel):
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
                 key="verification",
                 label="Verification",
-                variant="llm",
+                variant="openhands",
             ).model_dump()
         },
     )
@@ -718,7 +718,7 @@ class LLMAgentSettings(BaseModel):
 
         Example::
 
-            settings = LLMAgentSettings(
+            settings = OpenHandsAgentSettings(
                 llm=LLM(model="m", api_key="k"),
                 tools=[Tool(name="TerminalTool")],
             )
@@ -792,7 +792,7 @@ class ACPAgentSettings(BaseModel):
     ``create_agent()`` returns an :class:`ACPAgent` that delegates to a
     subprocess ACP server.  The ACP server manages its own system prompt,
     tools, MCP, and (primary) LLM calls; those fields from
-    :class:`LLMAgentSettings` do not apply here.
+    :class:`OpenHandsAgentSettings` do not apply here.
 
     The :attr:`llm` field is kept (optional) so that cost/token metrics
     can be attributed to a real model — ``ACPAgent`` uses this purely for
@@ -1016,22 +1016,55 @@ class ACPAgentSettings(BaseModel):
         )
 
 
+class LLMAgentSettings(OpenHandsAgentSettings):
+    """Deprecated name for :class:`OpenHandsAgentSettings`.
+
+    ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
+    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
+    callers keep working. Importing this name from ``openhands.sdk.settings``
+    (or ``openhands.sdk``) emits a :class:`DeprecationWarning` via the
+    module-level ``__getattr__`` — no construction-time overhead.
+
+    Use :class:`OpenHandsAgentSettings` for all new code.
+
+    Scheduled for removal in v1.22.0.
+    """
+
+    # Keep agent_kind as Literal["llm"] so the API-breakage checker sees no
+    # field-value change compared with the PyPI release (which had this class
+    # as the primary class with agent_kind="llm").  The discriminated union
+    # routes "llm" payloads here; validate_agent_settings({}) still defaults
+    # to OpenHandsAgentSettings ("openhands").
+    agent_kind: Literal["llm"] = Field(  # type: ignore[assignment]
+        default="llm",
+        description=(
+            "Discriminator for the ``AgentSettings`` union. ``'llm'`` selects "
+            "the standard LLM-backed agent. Deprecated; use ``'openhands'``."
+        ),
+    )
+
+
 def _agent_settings_discriminator(value: Any) -> str:
-    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'llm'``.
+    """Discriminator for :data:`AgentSettingsConfig` — defaults to ``'openhands'``.
 
     Existing persisted payloads predate ``agent_kind`` and carry only
-    LLM-agent fields. Treating a missing discriminator as ``'llm'`` lets
-    those payloads validate without a migration.
+    OpenHands-agent fields. Treating a missing discriminator as ``'openhands'``
+    lets those payloads validate without a migration.
+
+    ``'llm'`` is still a valid tag, routed to the deprecated
+    :class:`LLMAgentSettings` subclass.
     """
     if isinstance(value, BaseModel):
-        return getattr(value, "agent_kind", "llm")
+        return getattr(value, "agent_kind", "openhands")
     if isinstance(value, dict):
-        return value.get("agent_kind", "llm")
-    return "llm"
+        return value.get("agent_kind", "openhands")
+    return "openhands"
 
 
 AgentSettingsConfig = Annotated[
-    Annotated[LLMAgentSettings, Tag("llm")] | Annotated[ACPAgentSettings, Tag("acp")],
+    Annotated[OpenHandsAgentSettings, Tag("openhands")]
+    | Annotated[LLMAgentSettings, Tag("llm")]
+    | Annotated[ACPAgentSettings, Tag("acp")],
     Discriminator(_agent_settings_discriminator),
 ]
 """Discriminated union over the agent-settings variants.
@@ -1046,14 +1079,14 @@ compatibility with v1.17.x callers — see :class:`AgentSettings`.
 """
 
 
-_AGENT_SETTINGS_ADAPTER: TypeAdapter[LLMAgentSettings | ACPAgentSettings] = TypeAdapter(
-    AgentSettingsConfig
-)
+_AGENT_SETTINGS_ADAPTER: TypeAdapter[
+    OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings
+] = TypeAdapter(AgentSettingsConfig)
 
 
 def validate_agent_settings(
     data: Any,
-) -> LLMAgentSettings | ACPAgentSettings:
+) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
     """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
 
     This is the drop-in replacement for the old
@@ -1063,20 +1096,26 @@ def validate_agent_settings(
 
 
 class AgentSettings(LLMAgentSettings):
-    """Deprecated legacy name for :class:`LLMAgentSettings`.
+    """Deprecated legacy name for :class:`OpenHandsAgentSettings`.
 
     Before the discriminated-union redesign, ``AgentSettings`` was the
     single concrete class for agent configuration. It is kept as a
-    :class:`LLMAgentSettings` subclass so every v1.17 attribute and
+    :class:`LLMAgentSettings` subclass (which itself is a
+    :class:`OpenHandsAgentSettings` subclass) so every v1.17 attribute and
     method (``agent``, ``llm``, ``tools``, ``mcp_config``,
     ``condenser``, ``verification``, ``build_condenser``,
     ``build_critic``, ``create_agent``, …) resolves through
     inheritance — existing callers keep working, though direct
     construction now emits a :class:`DeprecationWarning`.
 
+    Inherits from :class:`LLMAgentSettings` so that ``agent_kind`` remains
+    ``"llm"`` (matching the PyPI 1.19.x API surface seen by the breakage
+    checker), while new code should use :class:`OpenHandsAgentSettings`
+    directly.
+
     For new code:
 
-    * Use :class:`LLMAgentSettings` to build an explicit LLM-backed
+    * Use :class:`OpenHandsAgentSettings` to build an explicit LLM-backed
       agent, or :class:`ACPAgentSettings` for an ACP-delegating one.
     * Use :data:`AgentSettingsConfig` as the type for fields that may
       hold either variant (FastAPI / Pydantic pick the variant from
@@ -1089,7 +1128,9 @@ class AgentSettings(LLMAgentSettings):
     """
 
     @classmethod
-    def from_persisted(cls, data: Any) -> LLMAgentSettings | ACPAgentSettings:
+    def from_persisted(
+        cls, data: Any
+    ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
         """Load persisted agent settings, applying any schema migrations."""
         payload = _apply_persisted_migrations(
             data,
@@ -1102,16 +1143,12 @@ class AgentSettings(LLMAgentSettings):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
 
-        # ``deprecated_in`` matches the current SDK version that ships
-        # this refactor so warn_deprecated() actually fires (its gate is
-        # current_version >= deprecated_in). ``removed_in`` is 5 minor
-        # releases later per the repo's API-breakage policy.
         warn_deprecated(
             "AgentSettings",
             deprecated_in="1.17.0",
             removed_in="1.22.0",
             details=(
-                "Use ``LLMAgentSettings`` (for an LLM agent) or "
+                "Use ``OpenHandsAgentSettings`` (for an LLM agent) or "
                 "``ACPAgentSettings`` (for an ACP agent) directly; use "
                 "``AgentSettingsConfig`` as the type for fields that accept "
                 "either variant."
@@ -1120,17 +1157,17 @@ class AgentSettings(LLMAgentSettings):
         super().__init__(*args, **kwargs)
 
 
-def default_agent_settings() -> LLMAgentSettings:
-    """Return a default :class:`LLMAgentSettings` instance.
+def default_agent_settings() -> OpenHandsAgentSettings:
+    """Return a default :class:`OpenHandsAgentSettings` instance.
 
     This is the drop-in replacement for the old bare ``AgentSettings()``
     constructor call — the default-ever-since variant is the LLM agent.
     """
-    return LLMAgentSettings()
+    return OpenHandsAgentSettings()
 
 
 def create_agent_from_settings(
-    settings: LLMAgentSettings | ACPAgentSettings,
+    settings: OpenHandsAgentSettings | ACPAgentSettings,
 ) -> AgentBase:
     """Dispatch to the variant's ``create_agent()`` method.
 
@@ -1148,10 +1185,10 @@ def export_agent_settings_schema() -> SettingsSchema:
     (``agent_kind``) is intentionally **not** emitted as a schema field
     — each variant lives on its own settings page in the GUI, and the
     page injects the correct ``agent_kind`` value on save. Sections
-    carry a ``variant`` tag (``'llm'``, ``'acp'``, or ``None`` for
+    carry a ``variant`` tag (``'openhands'``, ``'acp'``, or ``None`` for
     shared) so the frontend can filter by the page's variant.
     """
-    llm_schema = LLMAgentSettings.export_schema()
+    llm_schema = OpenHandsAgentSettings.export_schema()
     acp_schema = ACPAgentSettings.export_schema()
 
     merged_sections: list[SettingsSectionSchema] = []
@@ -1178,7 +1215,7 @@ def export_agent_settings_schema() -> SettingsSchema:
                     if field.key not in seen_keys:
                         existing.fields.append(field)
 
-    _merge(llm_schema, default_variant="llm")
+    _merge(llm_schema, default_variant="openhands")
     _merge(acp_schema, default_variant="acp")
 
     return SettingsSchema(model_name="AgentSettings", sections=merged_sections)

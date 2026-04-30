@@ -14,7 +14,7 @@ from openhands.sdk import (
     Agent,
     AgentSettings,
     ConversationSettings,
-    LLMAgentSettings,
+    OpenHandsAgentSettings,
     SettingProminence,
     Tool,
     default_agent_settings,
@@ -41,9 +41,9 @@ _LLM_EXCLUDED_FIELDS = {name for name, fi in LLM.model_fields.items() if fi.excl
 
 
 def test_llm_agent_settings_export_schema_groups_sections() -> None:
-    schema = LLMAgentSettings.export_schema()
+    schema = OpenHandsAgentSettings.export_schema()
 
-    assert schema.model_name == "LLMAgentSettings"
+    assert schema.model_name == "OpenHandsAgentSettings"
     section_keys = [section.key for section in schema.sections]
     assert section_keys == [
         "general",
@@ -179,7 +179,7 @@ def test_conversation_settings_create_request() -> None:
         security_analyzer="llm",
     )
     workspace = LocalWorkspace(working_dir="/tmp")
-    agent = LLMAgentSettings(llm=LLM(model="test-model")).create_agent()
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
 
     request = settings.create_request(
         StartConversationRequest,
@@ -241,7 +241,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     by_keyvariant = {(s.key, s.variant): s for s in schema.sections}
 
     # Shared general section contains LLM-only top-level fields with
-    # field-level variant="llm" tags (so they hide on the ACP page).
+    # field-level variant="openhands" tags (so they hide on the ACP page).
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
@@ -250,14 +250,14 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
     for f in general.fields:
-        assert f.variant == "llm", (
-            f"expected field {f.key} variant=llm, got {f.variant}"
+        assert f.variant == "openhands", (
+            f"expected field {f.key} variant=openhands, got {f.variant}"
         )
 
     # LLM-variant sections.
-    assert ("llm", "llm") in by_keyvariant
-    assert ("condenser", "llm") in by_keyvariant
-    assert ("verification", "llm") in by_keyvariant
+    assert ("llm", "openhands") in by_keyvariant
+    assert ("condenser", "openhands") in by_keyvariant
+    assert ("verification", "openhands") in by_keyvariant
 
     # ACP-variant sections.
     acp_section = by_keyvariant.get(("acp", "acp"))
@@ -286,22 +286,34 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_agent_settings_returns_llm_variant() -> None:
+def test_default_agent_settings_returns_openhands_variant() -> None:
     s = default_agent_settings()
-    assert isinstance(s, LLMAgentSettings)
-    assert s.agent_kind == "llm"
+    assert isinstance(s, OpenHandsAgentSettings)
+    assert s.agent_kind == "openhands"
 
 
-def test_validate_agent_settings_defaults_to_llm_when_discriminator_missing() -> None:
+def test_validate_agent_settings_defaults_to_openhands_when_discriminator_missing() -> (
+    None
+):
     """Existing persisted payloads predate ``agent_kind`` — they must round-trip."""
     v = validate_agent_settings({"llm": {"model": "test-model"}})
-    assert isinstance(v, LLMAgentSettings)
+    assert isinstance(v, OpenHandsAgentSettings)
     assert v.llm.model == "test-model"
 
 
 def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
-    llm = validate_agent_settings({"agent_kind": "llm", "llm": {"model": "m"}})
-    assert isinstance(llm, LLMAgentSettings)
+    openhands = validate_agent_settings(
+        {"agent_kind": "openhands", "llm": {"model": "m"}}
+    )
+    assert isinstance(openhands, OpenHandsAgentSettings)
+    assert openhands.agent_kind == "openhands"
+
+    legacy_llm = validate_agent_settings(
+        {"agent_kind": "llm", "llm": {"model": "legacy-model"}}
+    )
+    assert isinstance(legacy_llm, OpenHandsAgentSettings)
+    assert legacy_llm.agent_kind == "llm"
+    assert legacy_llm.llm.model == "legacy-model"
 
     acp = validate_agent_settings(
         {
@@ -317,9 +329,9 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
 def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
     settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
 
-    assert isinstance(settings, LLMAgentSettings)
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == 1
-    assert settings.agent_kind == "llm"
+    assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
 
@@ -363,7 +375,7 @@ def test_conversation_settings_from_persisted_rejects_newer_schema_version() -> 
 def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
     llm = LLM(model="test-model")
     tools = [Tool(name="TerminalTool")]
-    settings = LLMAgentSettings(llm=llm, tools=tools)
+    settings = OpenHandsAgentSettings(llm=llm, tools=tools)
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
     assert agent.llm is llm
@@ -371,7 +383,7 @@ def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
 
 
 def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
-    settings = LLMAgentSettings.model_validate(
+    settings = OpenHandsAgentSettings.model_validate(
         {
             "mcp_config": {
                 "mcpServers": {
@@ -391,7 +403,7 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
     mcp_config = MCPConfig.model_validate(
         {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
-    settings = LLMAgentSettings(mcp_config=mcp_config)
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
 
     agent = settings.create_agent()
 
@@ -401,7 +413,7 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
-    settings = LLMAgentSettings(
+    settings = OpenHandsAgentSettings(
         condenser=CondenserSettings(enabled=True, max_size=100),
     )
     agent = settings.create_agent()
@@ -410,7 +422,7 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
 
 
 def test_llm_create_agent_no_condenser_when_disabled() -> None:
-    settings = LLMAgentSettings(
+    settings = OpenHandsAgentSettings(
         condenser=CondenserSettings(enabled=False),
     )
     agent = settings.create_agent()
@@ -418,7 +430,7 @@ def test_llm_create_agent_no_condenser_when_disabled() -> None:
 
 
 def test_llm_create_agent_builds_critic_when_enabled() -> None:
-    settings = LLMAgentSettings(
+    settings = OpenHandsAgentSettings(
         llm=LLM(model="m", api_key=SecretStr("k")),
         verification=VerificationSettings(
             critic_enabled=True,
@@ -432,7 +444,7 @@ def test_llm_create_agent_builds_critic_when_enabled() -> None:
 
 
 def test_llm_create_agent_no_critic_without_api_key() -> None:
-    settings = LLMAgentSettings(
+    settings = OpenHandsAgentSettings(
         llm=LLM(model="m", api_key=None),
         verification=VerificationSettings(critic_enabled=True),
     )
@@ -441,7 +453,7 @@ def test_llm_create_agent_no_critic_without_api_key() -> None:
 
 
 def test_llm_create_agent_critic_with_iterative_refinement() -> None:
-    settings = LLMAgentSettings(
+    settings = OpenHandsAgentSettings(
         llm=LLM(model="m", api_key=SecretStr("k")),
         verification=VerificationSettings(
             critic_enabled=True,
@@ -459,9 +471,9 @@ def test_llm_create_agent_critic_with_iterative_refinement() -> None:
 
 
 def test_llm_roundtrip_preserves_llm_model() -> None:
-    settings = LLMAgentSettings(llm=LLM(model="test-model"))
+    settings = OpenHandsAgentSettings(llm=LLM(model="test-model"))
     data = settings.model_dump()
-    restored = LLMAgentSettings.model_validate(data)
+    restored = OpenHandsAgentSettings.model_validate(data)
     assert restored.llm.model == "test-model"
 
 
@@ -537,7 +549,7 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
 
 
 def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
-    """``AgentSettings(...)`` is retained (deprecated) as a LLMAgentSettings subclass.
+    """``AgentSettings(...)`` is retained as a deprecated OpenHandsAgentSettings.
 
     All v1.17.0 attributes must remain reachable so the API breakage
     check does not flag them as removed.
@@ -552,8 +564,11 @@ def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
         f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
     )
 
-    # It remains a LLMAgentSettings subclass so existing code paths work.
-    assert isinstance(settings, LLMAgentSettings)
+    # It remains a LLMAgentSettings (and thus OpenHandsAgentSettings) subclass
+    # so existing code paths work.
+    assert isinstance(settings, OpenHandsAgentSettings)
+    # agent_kind stays "llm" because AgentSettings inherits from LLMAgentSettings
+    # — this keeps the published API surface unchanged for the breakage checker.
     assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
 
@@ -578,6 +593,27 @@ def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
         assert hasattr(AgentSettings, name), f"missing: AgentSettings.{name}"
 
 
+def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
+    """Importing ``LLMAgentSettings`` emits DeprecationWarning at import time."""
+    import openhands.sdk.settings as _settings_mod
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        cls = getattr(_settings_mod, "LLMAgentSettings")
+
+    assert any("LLMAgentSettings" in str(w.message) for w in caught), (
+        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
+    )
+    assert issubclass(cls, OpenHandsAgentSettings)
+    # Construction itself does not emit a second warning.
+    settings = cls(llm=LLM(model="test-model"))
+    assert isinstance(settings, OpenHandsAgentSettings)
+    # LLMAgentSettings keeps its own agent_kind="llm" so the API-breakage
+    # checker sees no field-value change vs the published PyPI release.
+    assert settings.agent_kind == "llm"
+    assert settings.llm.model == "test-model"
+
+
 # ---------------------------------------------------------------------------
 # ConversationSettings.create_request — dispatches on variant
 # ---------------------------------------------------------------------------
@@ -590,7 +626,7 @@ def test_conversation_settings_create_request_for_llm_variant() -> None:
         security_analyzer="llm",
     )
     workspace = LocalWorkspace(working_dir="/tmp")
-    agent = LLMAgentSettings(llm=LLM(model="test-model")).create_agent()
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
 
     request = settings.create_request(
         StartConversationRequest,
@@ -630,9 +666,9 @@ def test_conversation_settings_create_request_for_acp_variant() -> None:
 def test_conversation_settings_agent_settings_field_accepts_both_variants() -> None:
     """The agent_settings runtime field should accept either variant."""
     llm_conv = ConversationSettings(
-        agent_settings=LLMAgentSettings(llm=LLM(model="m")),
+        agent_settings=OpenHandsAgentSettings(llm=LLM(model="m")),
     )
-    assert isinstance(llm_conv.agent_settings, LLMAgentSettings)
+    assert isinstance(llm_conv.agent_settings, OpenHandsAgentSettings)
 
     acp_conv = ConversationSettings(
         agent_settings=ACPAgentSettings(acp_command=["x"]),
