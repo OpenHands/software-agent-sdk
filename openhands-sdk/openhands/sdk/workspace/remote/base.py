@@ -210,3 +210,25 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             Dictionary of tag key-value pairs, or None if no default tags.
         """
         return None
+
+    def register_conversation(self, conversation_id: str) -> None:
+        """Register a conversation ID with this workspace.
+
+        Called by RemoteConversation after creation to associate the conversation
+        with the workspace. Subclasses can override to track conversation IDs
+        for callbacks or other purposes.
+
+        Args:
+            conversation_id: The conversation ID to register
+        """
+        # Default implementation is a no-op
+        pass
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Get the most recently registered conversation ID.
+
+        Returns:
+            The conversation ID if one has been registered, None otherwise.
+        """
+        return None
