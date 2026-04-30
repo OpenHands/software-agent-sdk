@@ -41,19 +41,42 @@ class HookType(str, Enum):
 
     COMMAND = "command"  # Shell command executed via subprocess
     PROMPT = "prompt"  # LLM-based evaluation (future)
+    AGENT = "agent"  # Agent-based evaluation with tool access
 
 
 class HookDefinition(BaseModel):
     """A single hook definition."""
 
     type: HookType = HookType.COMMAND
-    command: str
+    command: str | None = None
+    prompt: str | None = None
     timeout: int = 60
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
     }
+
+    @model_validator(mode="after")
+    def _validate_type_fields(self) -> "HookDefinition":
+        if self.type == HookType.COMMAND and self.command is None:
+            raise ValueError("'command' is required when type is 'command'")
+        if self.type == HookType.AGENT and self.command is not None:
+            raise ValueError(
+                "'command' must not be set when type is 'agent'; use 'prompt' instead"
+            )
+        if self.type == HookType.AGENT and self.async_:
+            raise ValueError("'async' is not supported for agent hooks")
+        return self
+
+    @property
+    def display_command(self) -> str:
+        """Human-readable label for this hook used in logs and events."""
+        return (
+            self.command
+            if self.command is not None
+            else f"agent-hook:{self.type.value}"
+        )
 
 
 class HookMatcher(BaseModel):

@@ -3,12 +3,15 @@
 import json
 import subprocess
 from unittest import mock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk.hooks.config import HookDefinition
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
+from openhands.sdk.llm import LLM
 from tests.command_utils import python_command
 
 
@@ -421,3 +424,216 @@ class TestAsyncProcessManager:
 
         # Clean up for test teardown
         process.terminate()
+
+
+class TestAgentHookExecution:
+    """Tests for HookType.AGENT execution path."""
+
+    # Patch at the package/module level so lazy `from X import Y` picks up the mock.
+    _AGENT_PATH = "openhands.sdk.agent.Agent"
+    _CONV_PATH = "openhands.sdk.conversation.impl.local_conversation.LocalConversation"
+    _RESPONSE_PATH = (
+        "openhands.sdk.conversation.response_utils.get_agent_final_response"
+    )
+
+    @pytest.fixture
+    def mock_llm(self):
+        return LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test")
+
+    @pytest.fixture
+    def executor(self, tmp_path, mock_llm):
+        return HookExecutor(working_dir=str(tmp_path), llm=mock_llm)
+
+    @pytest.fixture
+    def executor_no_llm(self, tmp_path):
+        return HookExecutor(working_dir=str(tmp_path), llm=None)
+
+    @pytest.fixture
+    def sample_event(self):
+        return HookEvent(
+            event_type=HookEventType.STOP,
+            session_id="test-session",
+        )
+
+    def test_execute_dispatches_to_agent_hook(self, executor, sample_event):
+        """execute() routes AGENT type to _execute_agent_hook, not subprocess."""
+        from openhands.sdk.hooks.executor import HookResult
+
+        hook = HookDefinition(type="agent", prompt="Verify task completion")
+
+        with patch.object(
+            executor,
+            "_execute_agent_hook",
+            return_value=HookResult(
+                success=True, decision=HookDecision.ALLOW, reason="ok"
+            ),
+        ) as mock_agent:
+            result = executor.execute(hook, sample_event)
+            mock_agent.assert_called_once_with(hook, sample_event)
+
+        assert result.decision == HookDecision.ALLOW
+        assert result.should_continue
+
+    def test_no_llm_defaults_to_allow(self, executor_no_llm, sample_event):
+        """Agent hook with no LLM configured defaults to allow without error."""
+        hook = HookDefinition(type="agent", prompt="Check something")
+        result = executor_no_llm.execute(hook, sample_event)
+
+        assert result.success
+        assert result.decision == HookDecision.ALLOW
+        assert not result.blocked
+
+    def test_deny_decision_blocks(self, executor, sample_event):
+        """_execute_agent_hook parsing deny JSON produces a blocked HookResult."""
+        deny_json = '{"decision": "deny", "reason": "Tasks not complete"}'
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=deny_json),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent", prompt="Check tasks")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert result.blocked
+        assert result.decision == HookDecision.DENY
+        assert result.reason == "Tasks not complete"
+        assert not result.should_continue
+
+    def test_allow_decision_passes(self, executor, sample_event):
+        """_execute_agent_hook parsing allow JSON produces a non-blocking HookResult."""
+        allow_json = '{"decision": "allow", "reason": "Looks safe"}'
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=allow_json),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert result.reason == "Looks safe"
+
+    def test_invalid_json_defaults_to_allow(self, executor, sample_event):
+        """_execute_agent_hook with non-JSON LLM response defaults to allow."""
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value="I think you should allow this."),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert result.should_continue
+
+    def test_sub_conversation_failure_defaults_to_allow(self, executor, sample_event):
+        """_execute_agent_hook when sub-conversation raises defaults to allow."""
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH, side_effect=RuntimeError("workspace error")),
+        ):
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert result.error is not None
+
+    def test_empty_response_defaults_to_allow(self, executor, sample_event):
+        """_execute_agent_hook when agent produces no response defaults to allow."""
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=""),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert result.success is False
+
+    def test_timeout_enforced(self, executor, sample_event):
+        """Agent hook respects hook.timeout via ThreadPoolExecutor."""
+        import time
+
+        def slow_run():
+            time.sleep(10)
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+        ):
+            mock_conv = MagicMock()
+            mock_conv.run = slow_run
+            mock_conv_cls.return_value = mock_conv
+
+            hook = HookDefinition(type="agent", timeout=1)
+            start = time.time()
+            result = executor._execute_agent_hook(hook, sample_event)
+            elapsed = time.time() - start
+
+        assert elapsed < 5
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert "timed out" in (result.reason or "")
+
+    def test_metrics_are_isolated_from_parent_llm(self, executor, sample_event):
+        """model_copy + reset_metrics ensures hook tokens don't pollute parent LLM."""
+        captured_llm = {}
+
+        def capture_agent_init(**kwargs):
+            captured_llm["llm"] = kwargs.get("llm")
+            return MagicMock()
+
+        with (
+            patch(self._AGENT_PATH, side_effect=capture_agent_init),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")),
+        ):
+            hook = HookDefinition(type="agent")
+            executor._execute_agent_hook(hook, sample_event)
+
+        hook_llm = captured_llm.get("llm")
+        assert hook_llm is not None
+        assert hook_llm is not executor.llm
+        assert hook_llm.usage_id == "hook-agent-evaluator"
+
+
+class TestPromptHookNotImplemented:
+    """HookType.PROMPT is a future stub — execution defaults to allow, never crashes."""
+
+    @pytest.fixture
+    def executor(self, tmp_path):
+        return HookExecutor(working_dir=str(tmp_path))
+
+    @pytest.fixture
+    def sample_event(self):
+        return HookEvent(event_type=HookEventType.PRE_TOOL_USE, tool_name="BashTool")
+
+    def test_prompt_hook_defaults_to_allow(self, executor, sample_event):
+        """Executing a PROMPT hook returns allow instead of crashing."""
+        hook = HookDefinition(type="prompt")
+        result = executor.execute(hook, sample_event)
+        assert result.decision == HookDecision.ALLOW
+        assert result.success is False
+        assert "not yet implemented" in (result.reason or "")
+
+    def test_prompt_hook_does_not_block(self, executor, sample_event):
+        """PROMPT hook must not block the operation while unimplemented."""
+        hook = HookDefinition(type="prompt")
+        result = executor.execute(hook, sample_event)
+        assert result.blocked is False
+        assert result.should_continue is True
+
+    def test_prompt_hook_without_command_validates(self):
+        """PROMPT hook with no command is valid at config time (future use)."""
+        hook = HookDefinition(type="prompt")
+        assert hook.command is None

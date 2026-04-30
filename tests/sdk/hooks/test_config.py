@@ -3,8 +3,72 @@
 import json
 import tempfile
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+import pytest
+
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher, HookType
 from openhands.sdk.hooks.types import HookEventType
+
+
+class TestHookDefinitionValidation:
+    """Tests for HookDefinition type-specific field validation."""
+
+    def test_command_hook_requires_command(self):
+        """COMMAND type must have a command field."""
+        with pytest.raises(Exception, match="'command' is required"):
+            HookDefinition(type="command")
+
+    def test_command_hook_valid(self):
+        """COMMAND type with command is valid."""
+        h = HookDefinition(command="echo hi")
+        assert h.type == HookType.COMMAND
+        assert h.command == "echo hi"
+
+    def test_agent_hook_valid_with_prompt(self):
+        """AGENT type with prompt (no command) is valid."""
+        h = HookDefinition(type="agent", prompt="Block writes to /etc")
+        assert h.type == HookType.AGENT
+        assert h.prompt == "Block writes to /etc"
+        assert h.command is None
+
+    def test_agent_hook_valid_without_prompt(self):
+        """AGENT type without prompt is valid (prompt is optional)."""
+        h = HookDefinition(type="agent")
+        assert h.type == HookType.AGENT
+        assert h.prompt is None
+
+    def test_agent_hook_rejects_command_field(self):
+        """AGENT type must not have command set alongside it."""
+        with pytest.raises(
+            Exception, match="'command' must not be set when type is 'agent'"
+        ):
+            HookDefinition(type="agent", command="echo hi")
+
+    def test_agent_hook_rejects_async(self):
+        """AGENT type does not support async_=True."""
+        with pytest.raises(Exception, match="not supported for agent hooks"):
+            HookDefinition.model_validate({"type": "agent", "async": True})
+
+    def test_agent_hook_from_json(self):
+        """AGENT hook can be loaded from JSON config."""
+        data = {
+            "stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "agent",
+                            "prompt": "Verify all tasks are done",
+                            "timeout": 30,
+                        }
+                    ]
+                }
+            ]
+        }
+        config = HookConfig.from_dict(data)
+        hooks = config.get_hooks_for_event(HookEventType.STOP)
+        assert len(hooks) == 1
+        assert hooks[0].type == HookType.AGENT
+        assert hooks[0].prompt == "Verify all tasks are done"
+        assert hooks[0].timeout == 30
 
 
 class TestHookMatcher:
