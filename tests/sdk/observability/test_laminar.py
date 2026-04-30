@@ -6,6 +6,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _reset_observability_cache():
+    """Reset the module-level _observability_enabled flag between tests.
+
+    The flag is sticky-True by design (see laminar.py docstring), so it
+    leaks across tests. This fixture isolates each test from prior state.
+    """
+    from openhands.sdk.observability import laminar
+
+    laminar._observability_enabled = False
+    yield
+    laminar._observability_enabled = False
+
+
 @pytest.mark.parametrize(
     ("env_value", "expected"),
     [

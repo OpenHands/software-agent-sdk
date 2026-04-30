@@ -1,7 +1,7 @@
 import functools
 import sys
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
@@ -18,6 +18,14 @@ logger = get_logger(__name__)
 # is enabled (via env vars or a user-side Laminar.initialize() call), it stays
 # enabled for the lifetime of the process.
 _observability_enabled: bool = False
+
+
+_OBSERVABILITY_ENV_KEYS: Final[tuple[str, ...]] = (
+    "LMNR_PROJECT_API_KEY",
+    "OTEL_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+)
 
 
 def _get_int_env(key: str) -> int | None:
@@ -159,14 +167,6 @@ def observe[**P, R](
         return lazy_wrapper
 
     return decorator
-
-
-_OBSERVABILITY_ENV_KEYS = (
-    "LMNR_PROJECT_API_KEY",
-    "OTEL_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
 
 
 def should_enable_observability() -> bool:
