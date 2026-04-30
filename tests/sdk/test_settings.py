@@ -733,17 +733,27 @@ def test_acp_settings_provider_info_returns_none_for_custom() -> None:
 
 
 def test_acp_settings_api_key_env_var_from_registry() -> None:
-    assert ACPAgentSettings(acp_server="claude-code").api_key_env_var == "ANTHROPIC_API_KEY"
+    assert (
+        ACPAgentSettings(acp_server="claude-code").api_key_env_var
+        == "ANTHROPIC_API_KEY"
+    )
     assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
     assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
-    assert ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
+    assert (
+        ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
+    )
 
 
 def test_acp_settings_base_url_env_var_from_registry() -> None:
     assert ACPAgentSettings(acp_server="claude-code").base_url_env_var is None
     assert ACPAgentSettings(acp_server="codex").base_url_env_var is None
-    assert ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
-    assert ACPAgentSettings(acp_server="custom", acp_command=["x"]).base_url_env_var is None
+    assert (
+        ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
+    )
+    assert (
+        ACPAgentSettings(acp_server="custom", acp_command=["x"]).base_url_env_var
+        is None
+    )
 
 
 def test_acp_resolve_command_uses_registry_defaults() -> None:
