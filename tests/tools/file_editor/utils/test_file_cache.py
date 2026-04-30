@@ -4,6 +4,7 @@ import tempfile
 import pytest
 
 from openhands.tools.file_editor.utils.file_cache import FileCache
+from tests.platform_utils import supports_posix_execute_bits
 
 
 @pytest.fixture
@@ -161,13 +162,12 @@ def test_size_limit():
 
 
 def test_file_permissions(file_cache):
-    if os.name == "nt":
-        pytest.skip("POSIX execute bits are not meaningful on Windows")
     file_cache.set("test_key", "test_value")
     file_path = file_cache._get_file_path("test_key")
     assert os.access(file_path, os.R_OK)
     assert os.access(file_path, os.W_OK)
-    assert not os.access(file_path, os.X_OK)
+    if supports_posix_execute_bits():
+        assert not os.access(file_path, os.X_OK)
 
 
 def test_unicode_keys_and_values(file_cache):

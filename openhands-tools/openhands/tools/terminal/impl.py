@@ -1,4 +1,4 @@
-import json
+import re
 import threading
 import time
 from typing import TYPE_CHECKING, Literal
@@ -32,6 +32,10 @@ from openhands.tools.terminal.terminal.tmux_pane_pool import (
 
 logger = get_logger(__name__)
 
+# Environment variable names must be alphanumeric + underscores, starting with
+# a letter or underscore. This guards against shell injection via key names.
+_ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     shell_path: str | None
@@ -41,7 +45,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         working_dir: str,
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
-        terminal_type: Literal["tmux", "subprocess"] | None = None,
+        terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
@@ -49,14 +53,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
         Args:
-            working_dir: Working directory for bash commands
-            username: Optional username for the bash session
+            working_dir: Working directory for shell commands
+            username: Optional username for the shell session
             no_change_timeout_seconds: Timeout for no output change
             terminal_type: Force a specific session type:
-                         ('tmux', 'subprocess').
-                         If None, auto-detect based on system capabilities
-            shell_path: Path to the shell binary (for subprocess terminal type only).
-                       If None, will auto-detect bash from PATH.
+                         ('tmux', 'subprocess', or 'powershell').
+                         If None, auto-detect based on system capabilities.
+            shell_path: Path to the shell binary. On Unix this applies to the
+                       subprocess backend; on Windows it can point to a
+                       PowerShell executable.
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
@@ -197,6 +202,49 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         session.prev_status = None
         session.prev_output = ""
 
+    @staticmethod
+    def _powershell_quote(value: str) -> str:
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
+    @staticmethod
+    def _bash_quote(value: str) -> str:
+        """Quote a value for bash using $'...' ANSI-C quoting."""
+        escaped = value.replace("\\", "\\\\")
+        escaped = escaped.replace("'", "\\'")
+        escaped = escaped.replace("\n", "\\n")
+        escaped = escaped.replace("\r", "\\r")
+        escaped = escaped.replace("\t", "\\t")
+        return f"$'{escaped}'"
+
+    @classmethod
+    def _build_env_exports(
+        cls,
+        env_vars: dict[str, str],
+        session: TerminalSession,
+    ) -> str:
+        valid: dict[str, str] = {}
+        for key, value in env_vars.items():
+            if _ENV_VAR_NAME_RE.match(key):
+                valid[key] = value
+            else:
+                logger.warning("Skipping secret with invalid env var name: %r", key)
+
+        if not valid:
+            return ""
+
+        if session.terminal.is_powershell():
+            assignments = [
+                f"$env:{key} = {cls._powershell_quote(value)}"
+                for key, value in valid.items()
+            ]
+            return "; ".join(assignments)
+
+        assignments = [
+            f"export {key}={cls._bash_quote(value)}" for key, value in valid.items()
+        ]
+        return " && ".join(assignments)
+
     # ------------------------------------------------------------------
     # Env export / secret masking
     # ------------------------------------------------------------------
@@ -225,14 +273,13 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         if not env_vars:
             return
 
-        export_statements = []
-        for key, value in env_vars.items():
-            export_statements.append(f"export {key}={json.dumps(value)}")
-        exports_cmd = " && ".join(export_statements)
+        target = session or self.session
+        exports_cmd = self._build_env_exports(env_vars, target)
+
+        if not exports_cmd:
+            return
 
         logger.debug(f"Exporting {len(env_vars)} environment variables before command")
-
-        target = session or self.session
         # Execute the export command separately to persist env in the session
         _ = target.execute(
             TerminalAction(

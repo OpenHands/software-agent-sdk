@@ -18,7 +18,7 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
-from openhands.sdk.agent import Agent
+from openhands.sdk.agent import Agent, utils as agent_utils
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -309,7 +309,10 @@ def test_shell_tool_name_does_not_fall_back_without_terminal(tmp_path):
     assert errors[0].tool_name == "ls"
 
 
-@pytest.mark.skipif(os.name == "nt", reason="grep fallback emits a Unix command")
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="covered by dedicated Windows command-generation tests",
+)
 def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     test_file = tmp_path / "needle.txt"
     test_file.write_text("needle\n")
@@ -328,8 +331,60 @@ def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     assert not errors
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
-    assert "grep -RIn" in getattr(action_event.action, "command")
+    command = getattr(action_event.action, "command")
+    assert command.startswith(
+        ("rg ", '"rg" ', "grep ", '"grep" ', "python ", '"python" ')
+    )
+    assert "needle" in command
     assert "needle.txt" in observation_event.observation.text
+
+
+def test_grep_terminal_command_prefers_ripgrep(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        agent_utils.shutil,
+        "which",
+        lambda name: "/bin/tool" if name == "rg" else None,
+    )
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path), "include": "*.py"}
+    )
+
+    assert command is not None
+    assert command.startswith(("rg ", '"rg" '))
+    assert "--sortr=modified" in command
+    assert "*.py" in command
+
+
+def test_grep_terminal_command_falls_back_to_grep(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        agent_utils.shutil,
+        "which",
+        lambda name: "/bin/grep" if name == "grep" else None,
+    )
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path), "include": "*.py"}
+    )
+
+    assert command is not None
+    assert command.startswith(("grep ", '"grep" '))
+    assert "--include=*.py" in command
+    assert "python -c" not in command
+
+
+def test_grep_terminal_command_falls_back_to_python_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(agent_utils.shutil, "which", lambda _: None)
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path)}
+    )
+
+    assert command is not None
+    assert command.startswith(("python ", '"python" '))
+    assert "grep -RIn" not in command
+    assert "\n" not in command
 
 
 def test_security_risk_typo_normalized(tmp_path):
