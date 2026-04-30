@@ -36,6 +36,37 @@ class TestHookDefinitionValidation:
         assert h.type == HookType.AGENT
         assert h.prompt is None
 
+    def test_display_command_uses_command_for_command_hooks(self):
+        h = HookDefinition(command="block.sh")
+        assert h.display_command == "block.sh"
+
+    def test_display_command_uses_name_when_set(self):
+        h = HookDefinition(type="agent", name="block-deletions", prompt="Block rm -rf")
+        assert h.display_command == "agent-hook:block-deletions"
+
+    def test_display_command_falls_back_to_prompt_prefix(self):
+        h = HookDefinition(type="agent", prompt="Block network calls to external IPs")
+        assert h.display_command == "agent-hook:Block network calls "
+
+    def test_display_command_truncates_long_prompt(self):
+        long_prompt = "A" * 100
+        h = HookDefinition(type="agent", prompt=long_prompt)
+        assert h.display_command == f"agent-hook:{'A' * 20}"
+
+    def test_display_command_fallback_when_no_name_no_prompt(self):
+        h = HookDefinition(type="agent")
+        assert h.display_command == "agent-hook:agent"
+
+    def test_three_hooks_are_distinguishable(self):
+        """Multiple agent hooks without names get unique labels via prompt prefix."""
+        hooks = [
+            HookDefinition(type="agent", name="block-deletions", prompt="Block rm -rf"),
+            HookDefinition(type="agent", prompt="Block network calls to external IPs"),
+            HookDefinition(type="agent", prompt="Verify all tasks are complete"),
+        ]
+        labels = [h.display_command for h in hooks]
+        assert len(set(labels)) == 3  # all distinct
+
     def test_agent_hook_rejects_command_field(self):
         """AGENT type must not have command set alongside it."""
         with pytest.raises(

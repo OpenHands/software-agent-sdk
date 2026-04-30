@@ -48,6 +48,7 @@ class HookDefinition(BaseModel):
     """A single hook definition."""
 
     type: HookType = HookType.COMMAND
+    name: str | None = None
     command: str | None = None
     prompt: str | None = None
     timeout: int = 60
@@ -72,11 +73,13 @@ class HookDefinition(BaseModel):
     @property
     def display_command(self) -> str:
         """Human-readable label for this hook used in logs and events."""
-        return (
-            self.command
-            if self.command is not None
-            else f"agent-hook:{self.type.value}"
-        )
+        if self.command is not None:
+            return self.command
+        if self.name is not None:
+            return f"agent-hook:{self.name}"
+        if self.prompt:
+            return f"agent-hook:{self.prompt[:20]}"
+        return "agent-hook:agent"
 
 
 class HookMatcher(BaseModel):
