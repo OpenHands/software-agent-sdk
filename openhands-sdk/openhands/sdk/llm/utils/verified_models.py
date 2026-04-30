@@ -88,44 +88,7 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-coder-480b",
 ]
 
-VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5",
-    "claude-opus-4-5-20251101",
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "gpt-5.4",
-    "gpt-5.2",
-    "gpt-5.2-codex",
-    "minimax-m2.1",
-    "minimax-m2.5",
-    "minimax-m2.7",
-    "gemini-3.1-pro",
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash",
-    "gemini-3-pro",
-    "deepseek-chat",
-    "deepseek-v3.2-reasoner",
-    "kimi-k2-thinking",
-    "kimi-k2.5",
-    "devstral-medium-2512",
-    "devstral-2512",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1",
-    "glm-4.7",
-    "glm-5",
-    "glm-5.1",
-    "nemotron-3-nano",
-    "nemotron-3-super",
-    "qwen3-6-plus",
-    "qwen3-coder-480b",
-]
-
-
-VERIFIED_MODELS = {
-    "openhands": VERIFIED_OPENHANDS_MODELS,
+_PROVIDER_VERIFIED_MODELS = {
     "anthropic": VERIFIED_ANTHROPIC_MODELS,
     "openai": VERIFIED_OPENAI_MODELS,
     "mistral": VERIFIED_MISTRAL_MODELS,
@@ -137,3 +100,12 @@ VERIFIED_MODELS = {
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
 }
+
+# The OpenHands provider aggregates every model verified in any upstream provider,
+# so adding a model to any provider list automatically makes it available via
+# OpenHands as well.  Do NOT maintain a separate manual list here.
+VERIFIED_OPENHANDS_MODELS = sorted(
+    {m for models in _PROVIDER_VERIFIED_MODELS.values() for m in models}
+)
+
+VERIFIED_MODELS = {"openhands": VERIFIED_OPENHANDS_MODELS, **_PROVIDER_VERIFIED_MODELS}

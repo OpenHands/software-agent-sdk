@@ -83,17 +83,19 @@ def test_list_bedrock_models_with_boto3(monkeypatch):
     assert result == ["bedrock/anthropic.claude-3"]
 
 
-def test_openhands_models_all_have_provider_list():
-    """Every model in VERIFIED_OPENHANDS_MODELS must also appear in at least one
-    provider-specific list so that the UI can display it under its actual provider.
+def test_openhands_models_equals_union_of_all_providers():
+    """VERIFIED_OPENHANDS_MODELS must be exactly the union of every other
+    provider's verified list so that any model verified in *any* provider
+    is also available through the OpenHands provider.
     """
-    provider_models = set()
+    all_provider_models = set()
     for provider, models in VERIFIED_MODELS.items():
         if provider == "openhands":
             continue
-        provider_models.update(models)
+        all_provider_models.update(models)
 
-    missing = [m for m in VERIFIED_OPENHANDS_MODELS if m not in provider_models]
-    assert not missing, (
-        f"Models in VERIFIED_OPENHANDS_MODELS missing from any provider list: {missing}"
+    assert set(VERIFIED_OPENHANDS_MODELS) == all_provider_models, (
+        "VERIFIED_OPENHANDS_MODELS must be the union of all provider lists."
+        f" Extra: {set(VERIFIED_OPENHANDS_MODELS) - all_provider_models},"
+        f" Missing: {all_provider_models - set(VERIFIED_OPENHANDS_MODELS)}"
     )
