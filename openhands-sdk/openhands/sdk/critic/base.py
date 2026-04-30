@@ -4,11 +4,6 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.critic.refinement import (
-    IterativeRefinementDecision,
-    build_refinement_message,
-    evaluate_iterative_refinement,
-)
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
@@ -23,10 +18,10 @@ FollowupPromptFn = Callable[[CriticResult, int], str]
 
 
 class IterativeRefinementConfig(BaseModel):
-    """Configuration for generalized critic-driven iterative refinement.
+    """Configuration for iterative refinement based on critic feedback.
 
-    This policy evaluates critic results and decides whether refinement should
-    continue.
+    When attached to a CriticBase, the Conversation.run() method will
+    automatically retry the task if the critic score is below the threshold.
 
     Example:
         critic = APIBasedCritic(
@@ -41,7 +36,7 @@ class IterativeRefinementConfig(BaseModel):
         agent = Agent(llm=llm, tools=tools, critic=critic)
         conversation = Conversation(agent=agent, workspace=workspace)
         conversation.send_message("Create a calculator module...")
-        conversation.run()
+        conversation.run()  # Will automatically retry if critic score < 0.7
     """
 
     success_threshold: float = Field(
@@ -55,15 +50,8 @@ class IterativeRefinementConfig(BaseModel):
         ge=1,
         description="Maximum number of iterations before giving up.",
     )
-
-    def evaluate(
-        self, critic_result: CriticResult | None
-    ) -> IterativeRefinementDecision:
-        """Evaluate whether a critic result should trigger another iteration."""
-        return evaluate_iterative_refinement(
-            critic_result,
-            success_threshold=self.success_threshold,
-        )
+    # Note: followup_prompt_fn is not serializable, so we use a default
+    # Users can override by subclassing or using the IterativeRefinement class directly
 
 
 class CriticBase(DiscriminatedUnionMixin, abc.ABC):
@@ -101,25 +89,26 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
         """Generate a follow-up prompt for iterative refinement.
 
         Subclasses can override this method to provide custom follow-up prompts.
-        When iterative refinement configuration is present, the default prompt
-        includes the configured maximum iteration count.
+
+        Args:
+            critic_result: The critic result from the previous iteration.
+            iteration: The current iteration number (1-indexed).
+
+        Returns:
+            A follow-up prompt string to send to the agent.
         """
-        max_iterations = (
-            self.iterative_refinement.max_iterations
-            if self.iterative_refinement is not None
-            else None
-        )
-        return build_refinement_message(
-            critic_result,
-            iteration,
-            max_iterations=max_iterations,
+        score_percent = critic_result.score * 100
+
+        return (
+            f"The task appears incomplete (iteration {iteration}, "
+            f"predicted success likelihood: {score_percent:.1f}%).\n\n"
+            "Please review what you've done and verify each requirement is met.\n"
+            "List what's working and what needs fixing, then complete the task.\n"
         )
 
-    def evaluate_refinement(
-        self, critic_result: CriticResult | None
-    ) -> IterativeRefinementDecision:
+    def should_refine(self, critic_result: CriticResult) -> bool:
         """Evaluate whether iterative refinement should continue."""
         if self.iterative_refinement is None:
-            return IterativeRefinementDecision(should_refine=False)
+            return False
 
-        return self.iterative_refinement.evaluate(critic_result)
+        return critic_result.score < self.iterative_refinement.success_threshold

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
-    from openhands.sdk.critic.base import CriticBase, IterativeRefinementConfig
+    from openhands.sdk.critic.base import CriticBase
 
 
 SettingsValueType = Literal[
@@ -255,20 +255,6 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-
-    def build_iterative_refinement_config(
-        self,
-    ) -> IterativeRefinementConfig | None:
-        """Build runtime iterative refinement policy from verification settings."""
-        if not self.enable_iterative_refinement:
-            return None
-
-        from openhands.sdk.critic.base import IterativeRefinementConfig
-
-        return IterativeRefinementConfig(
-            success_threshold=self.critic_threshold,
-            max_iterations=self.max_refinement_iterations,
-        )
 
     @field_validator("confirmation_mode", mode="before")
     @classmethod
@@ -776,9 +762,15 @@ class OpenHandsAgentSettings(BaseModel):
         if api_key is None:
             return None
 
+        from openhands.sdk.critic.base import IterativeRefinementConfig
         from openhands.sdk.critic.impl.api import APIBasedCritic
 
-        iterative_refinement = self.verification.build_iterative_refinement_config()
+        iterative_refinement = None
+        if self.verification.enable_iterative_refinement:
+            iterative_refinement = IterativeRefinementConfig(
+                success_threshold=self.verification.critic_threshold,
+                max_iterations=self.verification.max_refinement_iterations,
+            )
 
         overrides: dict[str, Any] = {}
         if self.verification.critic_server_url is not None:

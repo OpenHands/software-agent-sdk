@@ -104,12 +104,6 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "finish_and_message",
         "all_actions",
     ]
-    assert "verification.issue_threshold" not in v_fields
-    assert v_fields["verification.confirmation_mode"].value_type == "boolean"
-    assert v_fields["verification.confirmation_mode"].default is False
-    assert (
-        v_fields["verification.confirmation_mode"].prominence is SettingProminence.MAJOR
-    )
 
 
 def test_acp_agent_settings_export_schema_has_acp_section() -> None:

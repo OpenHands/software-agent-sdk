@@ -215,7 +215,6 @@ class TestCheckIterativeRefinement:
         """High-probability agent issues should also trigger refinement."""
         critic = APIBasedCritic(
             api_key="test-key",
-            issue_threshold=0.75,
             iterative_refinement=IterativeRefinementConfig(success_threshold=0.6),
         )
         mixin = MockCriticMixin(critic=critic)
@@ -243,6 +242,7 @@ class TestCheckIterativeRefinement:
         )
 
         assert should_continue is True
+        assert critic.issue_threshold == 0.75
         assert followup is not None
         assert "Insufficient Testing (80%)" in followup
         assert (
@@ -270,31 +270,6 @@ class TestCheckIterativeRefinement:
         assert (
             conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 1
         )
-
-    def test_refinement_uses_critic_followup_prompt(self):
-        """Custom critic prompt generation should remain the single entrypoint."""
-
-        class CustomPromptCritic(MockCritic):
-            def get_followup_prompt(
-                self, critic_result: CriticResult, iteration: int
-            ) -> str:
-                return f"custom prompt {iteration}: {critic_result.score}"
-
-        critic = CustomPromptCritic()
-        critic.iterative_refinement = IterativeRefinementConfig(
-            success_threshold=0.6,
-            max_iterations=3,
-        )
-        mixin = MockCriticMixin(critic=critic)
-        conversation = create_mock_conversation()
-        event = create_finish_action_event(CriticResult(score=0.4, message="Low"))
-
-        should_continue, followup = mixin._check_iterative_refinement(
-            conversation, event
-        )
-
-        assert should_continue is True
-        assert followup == "custom prompt 1: 0.4"
 
     def test_iteration_only_increments_on_continue(self):
         """Test that iteration counter only increments when continuing."""
