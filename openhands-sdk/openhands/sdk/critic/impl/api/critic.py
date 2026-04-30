@@ -27,6 +27,23 @@ def _format_feature_list(features: list[dict[str, Any]]) -> str:
     return ", ".join(items)
 
 
+def _get_high_probability_agent_issues(
+    critic_result: CriticResult, issue_threshold: float
+) -> tuple[dict[str, Any], ...]:
+    if not critic_result.metadata:
+        return ()
+
+    categorized = critic_result.metadata.get("categorized_features", {})
+    if not isinstance(categorized, dict):
+        return ()
+
+    return tuple(
+        issue
+        for issue in categorized.get("agent_behavioral_issues", [])
+        if isinstance(issue, dict) and issue.get("probability", 0) >= issue_threshold
+    )
+
+
 class APIBasedCritic(CriticBase, CriticClient):
     issue_threshold: float = Field(
         default=0.75,
@@ -119,17 +136,11 @@ class APIBasedCritic(CriticBase, CriticClient):
         """Use API critic taxonomy signals in addition to the score threshold."""
         if super().should_refine(critic_result):
             return True
-        if self.iterative_refinement is None or not critic_result.metadata:
+        if self.iterative_refinement is None:
             return False
 
-        categorized = critic_result.metadata.get("categorized_features", {})
-        if not isinstance(categorized, dict):
-            return False
-
-        return any(
-            isinstance(issue, dict)
-            and issue.get("probability", 0) >= self.issue_threshold
-            for issue in categorized.get("agent_behavioral_issues", [])
+        return bool(
+            _get_high_probability_agent_issues(critic_result, self.issue_threshold)
         )
 
     def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:
