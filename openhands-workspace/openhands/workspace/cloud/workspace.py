@@ -566,9 +566,64 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         return f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}/settings"
 
     @property
+    def _user_config_url(self) -> str:
+        """URL for fetching user-level configuration (LLM, MCP).
+
+        In Cloud mode, uses the user's SaaS account endpoint.
+        In local agent-server mode, uses the agent-server's persisted settings.
+        """
+        if self.local_agent_server_mode:
+            return f"{self.host}/api/settings"
+        return f"{self.cloud_api_url}/api/v1/users/me"
+
+    @property
     def _session_headers(self) -> dict[str, str]:
         """Headers for settings requests (SESSION_API_KEY auth)."""
         return {"X-Session-API-Key": self._session_api_key or ""}
+
+    def _fetch_user_config(self, *, expose_secrets: bool = False) -> dict[str, Any]:
+        """Fetch user config and normalize to a common structure.
+
+        Returns a dict with:
+            - llm: {model, api_key, base_url}
+            - mcp_config: raw MCP config data (if any)
+
+        Both local and cloud modes return the same normalized structure.
+        """
+        if not self.local_agent_server_mode and not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        params = {"expose_secrets": "true"} if expose_secrets else {}
+        resp = self._send_api_request(
+            "GET",
+            self._user_config_url,
+            params=params if params else None,
+            headers=self._session_headers,
+        )
+        data = resp.json()
+
+        if self.local_agent_server_mode:
+            # Local mode: extract from agent_settings structure
+            agent_settings = data.get("agent_settings", {})
+            llm_settings = agent_settings.get("llm", {})
+            return {
+                "llm": {
+                    "model": llm_settings.get("model"),
+                    "api_key": llm_settings.get("api_key"),
+                    "base_url": llm_settings.get("base_url"),
+                },
+                "mcp_config": agent_settings.get("mcp_config"),
+            }
+        else:
+            # Cloud mode: extract from flat structure
+            return {
+                "llm": {
+                    "model": data.get("llm_model"),
+                    "api_key": data.get("llm_api_key"),
+                    "base_url": data.get("llm_base_url"),
+                },
+                "mcp_config": data.get("mcp_config"),
+            }
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),
@@ -608,47 +663,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         """
         from openhands.sdk.llm.llm import LLM
 
-        kwargs: dict[str, Any] = {}
+        config = self._fetch_user_config(expose_secrets=True)
+        llm_config = config["llm"]
 
-        if self.local_agent_server_mode:
-            # Local mode: fetch from agent-server's persisted settings
-            resp = self._send_api_request(
-                "GET",
-                f"{self.host}/api/settings",
-                params={"expose_secrets": "true"},
-                headers=self._session_headers,
-            )
-            data = resp.json()
-
-            # Extract LLM config from agent_settings.llm
-            agent_settings = data.get("agent_settings", {})
-            llm_settings = agent_settings.get("llm", {})
-
-            if llm_settings.get("model"):
-                kwargs["model"] = llm_settings["model"]
-            if llm_settings.get("api_key"):
-                kwargs["api_key"] = llm_settings["api_key"]
-            if llm_settings.get("base_url"):
-                kwargs["base_url"] = llm_settings["base_url"]
-        else:
-            # Cloud mode: fetch from user's SaaS account
-            if not self._sandbox_id:
-                raise RuntimeError("Sandbox is not running")
-
-            resp = self._send_api_request(
-                "GET",
-                f"{self.cloud_api_url}/api/v1/users/me",
-                params={"expose_secrets": "true"},
-                headers={"X-Session-API-Key": self._session_api_key or ""},
-            )
-            data = resp.json()
-
-            if data.get("llm_model"):
-                kwargs["model"] = data["llm_model"]
-            if data.get("llm_api_key"):
-                kwargs["api_key"] = data["llm_api_key"]
-            if data.get("llm_base_url"):
-                kwargs["base_url"] = data["llm_base_url"]
+        # Build kwargs from fetched config (only include non-None values)
+        kwargs: dict[str, Any] = {k: v for k, v in llm_config.items() if v is not None}
 
         # User-provided kwargs take precedence
         kwargs.update(llm_kwargs)
@@ -803,30 +822,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             ...     from fastmcp.mcp_config import MCPConfig
             ...     config = MCPConfig.model_validate(mcp_config)
         """
-        if self.local_agent_server_mode:
-            # Local mode: fetch from agent-server's persisted settings
-            resp = self._send_api_request(
-                "GET",
-                f"{self.host}/api/settings",
-                headers=self._session_headers,
-            )
-            data = resp.json()
-
-            # Extract MCP config from agent_settings.mcp_config
-            agent_settings = data.get("agent_settings", {})
-            mcp_config_data = agent_settings.get("mcp_config")
-        else:
-            # Cloud mode: fetch from user's SaaS account
-            if not self._sandbox_id:
-                raise RuntimeError("Sandbox is not running")
-
-            resp = self._send_api_request(
-                "GET",
-                f"{self.cloud_api_url}/api/v1/users/me",
-                headers={"X-Session-API-Key": self._session_api_key or ""},
-            )
-            data = resp.json()
-            mcp_config_data = data.get("mcp_config")
+        config = self._fetch_user_config()
+        mcp_config_data = config.get("mcp_config")
 
         if not mcp_config_data:
             return {}

@@ -57,7 +57,6 @@ class TestPersistedSettings:
     def test_update_agent_settings(self):
         """update() should merge agent_settings_diff."""
         settings = PersistedSettings()
-        original_model = settings.agent_settings.llm.model
 
         settings.update({"agent_settings_diff": {"llm": {"model": "gpt-4-turbo"}}})
         assert settings.agent_settings.llm.model == "gpt-4-turbo"
@@ -194,7 +193,11 @@ class TestFileSettingsStore:
         assert loaded is not None
         api_key = loaded.agent_settings.llm.api_key
         assert api_key is not None
-        assert api_key.get_secret_value() == "my-secret-api-key"
+        # api_key is str | SecretStr - get the raw value
+        api_key_value = (
+            api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
+        )
+        assert api_key_value == "my-secret-api-key"
 
 
 class TestFileSecretsStore:
@@ -248,6 +251,7 @@ class TestFileSecretsStore:
         assert store.get_secret("KEY1") == "updated"
 
         loaded = store.load()
+        assert loaded is not None
         assert loaded.custom_secrets["KEY1"].description == "Updated"
 
     def test_delete_secret(self, temp_dir):
