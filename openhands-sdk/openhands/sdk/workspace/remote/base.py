@@ -1,6 +1,6 @@
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
 import httpx
@@ -10,6 +10,11 @@ from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.secret import LookupSecret
 
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
@@ -232,3 +237,192 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             The conversation ID if one has been registered, None otherwise.
         """
         return None
+
+    # -----------------------------------------------------------------
+    # Settings methods - fetch configuration from agent-server
+    # -----------------------------------------------------------------
+
+    def get_llm(self, **llm_kwargs: Any) -> "LLM":
+        """Fetch LLM settings from the agent-server and return an LLM instance.
+
+        Calls ``GET /api/settings?expose_secrets=true`` to retrieve LLM
+        configuration (model, api_key, base_url) from the agent-server's
+        persisted settings.
+
+        Args:
+            **llm_kwargs: Additional keyword arguments passed to the LLM
+                constructor, allowing overrides of any LLM parameter
+                (e.g. ``model``, ``temperature``).
+
+        Returns:
+            An LLM instance configured with the fetched credentials.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+
+        Example:
+            >>> workspace = RemoteWorkspace(host="http://localhost:60000", ...)
+            >>> llm = workspace.get_llm()
+            >>> agent = Agent(llm=llm, tools=get_default_tools())
+        """
+        from openhands.sdk.llm.llm import LLM
+
+        response = self.client.get("/api/settings", params={"expose_secrets": "true"})
+        response.raise_for_status()
+        data = response.json()
+
+        # Extract from agent_settings structure
+        agent_settings = data.get("agent_settings", {})
+        llm_settings = agent_settings.get("llm", {})
+
+        # Build kwargs from fetched config (only include non-None values)
+        kwargs: dict[str, Any] = {
+            k: v
+            for k, v in {
+                "model": llm_settings.get("model"),
+                "api_key": llm_settings.get("api_key"),
+                "base_url": llm_settings.get("base_url"),
+            }.items()
+            if v is not None
+        }
+
+        # User-provided kwargs take precedence
+        kwargs.update(llm_kwargs)
+
+        return LLM(**kwargs)
+
+    def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:
+        """Build ``LookupSecret`` references for secrets from the agent-server.
+
+        Fetches the list of available secret **names** from the agent-server
+        (no raw values) and returns a dict of ``LookupSecret`` objects whose
+        URLs point to per-secret endpoints. The agent-server resolves each
+        ``LookupSecret`` lazily, so raw values **never** transit through
+        the SDK client.
+
+        The returned dict is compatible with ``conversation.update_secrets()``.
+
+        Args:
+            names: Optional list of secret names to include. If ``None``,
+                all available secrets are returned.
+
+        Returns:
+            A dictionary mapping secret names to ``LookupSecret`` instances.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+
+        Example:
+            >>> workspace = RemoteWorkspace(host="http://localhost:60000", ...)
+            >>> secrets = workspace.get_secrets()
+            >>> conversation.update_secrets(secrets)
+        """
+        from openhands.sdk.secret import LookupSecret
+
+        response = self.client.get("/api/settings/secrets")
+        response.raise_for_status()
+        data = response.json()
+
+        result: dict[str, LookupSecret] = {}
+        for item in data.get("secrets", []):
+            name = item["name"]
+            if names is not None and name not in names:
+                continue
+            result[name] = LookupSecret(
+                url=f"{self.host}/api/settings/secrets/{name}",
+                headers=self._headers,
+                description=item.get("description"),
+            )
+
+        return result
+
+    def get_mcp_config(self) -> dict[str, Any]:
+        """Fetch MCP configuration from the agent-server.
+
+        Calls ``GET /api/settings`` to retrieve the MCP configuration
+        and transforms it into the format expected by the SDK Agent and
+        ``fastmcp.mcp_config.MCPConfig``.
+
+        Returns:
+            A dictionary with ``mcpServers`` key containing server configurations
+            (compatible with ``MCPConfig.model_validate()``), or an empty dict
+            if no MCP config is set.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+
+        Example:
+            >>> workspace = RemoteWorkspace(host="http://localhost:60000", ...)
+            >>> mcp_config = workspace.get_mcp_config()
+            >>> agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
+        """
+        response = self.client.get("/api/settings")
+        response.raise_for_status()
+        data = response.json()
+
+        # Extract from agent_settings structure
+        agent_settings = data.get("agent_settings", {})
+        mcp_config_data = agent_settings.get("mcp_config")
+
+        if not mcp_config_data:
+            return {}
+
+        mcp_servers = self._transform_mcp_config_to_servers(mcp_config_data)
+
+        if not mcp_servers:
+            return {}
+
+        return {"mcpServers": mcp_servers}
+
+    def _transform_mcp_config_to_servers(
+        self, mcp_config_data: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        """Transform MCP config data to mcpServers format.
+
+        Args:
+            mcp_config_data: Raw MCP config with sse_servers, shttp_servers,
+                and stdio_servers lists.
+
+        Returns:
+            Dictionary of server configurations for MCPConfig.model_validate()
+        """
+        mcp_servers: dict[str, dict[str, Any]] = {}
+
+        # Transform SSE servers → RemoteMCPServer format
+        for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
+            server_config: dict[str, Any] = {
+                "url": sse_server["url"],
+                "transport": "sse",
+            }
+            if sse_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {sse_server['api_key']}"
+                }
+            # SSE servers don't have names, use index
+            mcp_servers[f"sse_{i}"] = server_config
+
+        # Transform SHTTP servers → RemoteMCPServer format
+        for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
+            server_config = {
+                "url": shttp_server["url"],
+                "transport": "streamable-http",
+            }
+            if shttp_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {shttp_server['api_key']}"
+                }
+            # SHTTP servers don't have names, use index
+            mcp_servers[f"shttp_{i}"] = server_config
+
+        # Transform STDIO servers → StdioMCPServer format
+        for stdio_server in mcp_config_data.get("stdio_servers") or []:
+            server_config = {
+                "command": stdio_server["command"],
+                "args": stdio_server.get("args", []),
+            }
+            if stdio_server.get("env"):
+                server_config["env"] = stdio_server["env"]
+            # STDIO servers have an explicit name field
+            mcp_servers[stdio_server["name"]] = server_config
+
+        return mcp_servers

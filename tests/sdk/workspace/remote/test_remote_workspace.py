@@ -402,3 +402,168 @@ def test_alive_with_normalized_host(mock_urlopen):
 def test_alive_is_property():
     """Test that alive is a property, not a method."""
     assert isinstance(RemoteWorkspace.alive, property)
+
+
+# -----------------------------------------------------------------
+# Settings methods tests
+# -----------------------------------------------------------------
+
+
+def test_get_llm_fetches_from_agent_server():
+    """Test get_llm fetches settings and returns an LLM."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "api_key": "sk-test-key-123",
+                "base_url": "https://litellm.example.com",
+            }
+        }
+    }
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm()
+
+    mock_client.get.assert_called_once_with(
+        "/api/settings", params={"expose_secrets": "true"}
+    )
+    assert llm.model == "anthropic/claude-sonnet-4-20250514"
+    assert llm.base_url == "https://litellm.example.com"
+
+
+def test_get_llm_allows_overrides():
+    """Test get_llm allows kwargs to override fetched values."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "api_key": "sk-test-key",
+            }
+        }
+    }
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm(model="gpt-4o", temperature=0.5)
+
+    assert llm.model == "gpt-4o"
+    assert llm.temperature == 0.5
+
+
+def test_get_secrets_returns_lookup_secrets():
+    """Test get_secrets returns LookupSecret objects."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub API token"},
+            {"name": "SLACK_TOKEN", "description": None},
+        ]
+    }
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets()
+
+    mock_client.get.assert_called_once_with("/api/settings/secrets")
+    assert len(secrets) == 2
+    assert "GITHUB_TOKEN" in secrets
+    assert "SLACK_TOKEN" in secrets
+
+    # Verify LookupSecret structure
+    gh_secret = secrets["GITHUB_TOKEN"]
+    assert gh_secret.url == "http://localhost:8000/api/settings/secrets/GITHUB_TOKEN"
+    assert gh_secret.headers == {"X-Session-API-Key": "test-key"}
+    assert gh_secret.description == "GitHub API token"
+
+
+def test_get_secrets_filters_by_name():
+    """Test get_secrets filters to requested names only."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub API token"},
+            {"name": "SLACK_TOKEN", "description": None},
+            {"name": "OTHER_TOKEN", "description": None},
+        ]
+    }
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets(names=["GITHUB_TOKEN"])
+
+    assert len(secrets) == 1
+    assert "GITHUB_TOKEN" in secrets
+    assert "SLACK_TOKEN" not in secrets
+
+
+def test_get_mcp_config_transforms_servers():
+    """Test get_mcp_config transforms MCP config to mcpServers format."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "mcp_config": {
+                "sse_servers": [
+                    {"url": "https://sse.example.com/mcp", "api_key": "sse-key-123"}
+                ],
+                "shttp_servers": [],
+                "stdio_servers": [],
+            }
+        }
+    }
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    mcp_config = workspace.get_mcp_config()
+
+    mock_client.get.assert_called_once_with("/api/settings")
+    assert "mcpServers" in mcp_config
+    servers = mcp_config["mcpServers"]
+    assert "sse_0" in servers
+    assert servers["sse_0"]["url"] == "https://sse.example.com/mcp"
+    assert servers["sse_0"]["transport"] == "sse"
+    assert servers["sse_0"]["headers"]["Authorization"] == "Bearer sse-key-123"
+
+
+def test_get_mcp_config_returns_empty_when_no_config():
+    """Test get_mcp_config returns empty dict when no MCP config."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"agent_settings": {}}
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    mcp_config = workspace.get_mcp_config()
+
+    assert mcp_config == {}

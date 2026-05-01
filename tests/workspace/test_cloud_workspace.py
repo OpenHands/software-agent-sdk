@@ -386,118 +386,35 @@ def test_resume_existing_sandbox_sets_internal_id():
     workspace.cleanup()
 
 
-# --- local_agent_server_mode tests ---
+# --- Helper for tests requiring a mock workspace ---
 
 _CLOUD_URL = "https://app.all-hands.dev"
 _CLOUD_KEY = "test-key"
 
 
-def _make_local_workspace(**overrides):
-    """Helper to create an OpenHandsCloudWorkspace in local_agent_server_mode."""
+def _make_mock_workspace(**overrides):
+    """Helper to create an OpenHandsCloudWorkspace with mocked sandbox lifecycle."""
     from openhands.workspace import OpenHandsCloudWorkspace
 
-    kwargs = {
-        "local_agent_server_mode": True,
-        "cloud_api_url": _CLOUD_URL,
-        "cloud_api_key": _CLOUD_KEY,
-        **overrides,
-    }
-    return OpenHandsCloudWorkspace(**kwargs)
+    # Skip the actual sandbox provisioning
+    with patch.object(
+        OpenHandsCloudWorkspace, "model_post_init", lambda self, ctx: None
+    ):
+        kwargs = {
+            "cloud_api_url": _CLOUD_URL,
+            "cloud_api_key": _CLOUD_KEY,
+            "host": "http://localhost:60000",
+            **overrides,
+        }
+        workspace = OpenHandsCloudWorkspace(**kwargs)
 
+    # Set up private attrs that would be set during sandbox init
+    workspace._sandbox_id = overrides.get("_sandbox_id")
+    workspace._automation_callback_url = overrides.get("_automation_callback_url")
+    workspace._automation_run_id = overrides.get("_automation_run_id")
+    workspace._conversation_id = overrides.get("_conversation_id")
 
-def test_local_agent_server_mode_skips_sandbox_creation():
-    """In local_agent_server_mode, no sandbox is created or resumed."""
-    workspace = _make_local_workspace()
-
-    assert workspace.local_agent_server_mode is True
-    assert workspace.host == "http://localhost:60000"
-    # Without SANDBOX_ID env var or constructor param, _sandbox_id is None
-    assert workspace._sandbox_id is None
-
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_sandbox_id_from_constructor():
-    """sandbox_id constructor param populates _sandbox_id in local_agent_server_mode."""
-    workspace = _make_local_workspace(sandbox_id="sb-123")
-
-    assert workspace._sandbox_id == "sb-123"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_sandbox_id_from_env(monkeypatch):
-    """SANDBOX_ID env var populates _sandbox_id in local_agent_server_mode."""
-    monkeypatch.setenv("SANDBOX_ID", "sb-env-456")
-    workspace = _make_local_workspace()
-
-    assert workspace._sandbox_id == "sb-env-456"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_session_key_from_env(monkeypatch):
-    """SESSION_API_KEY populates _session_api_key and api_key."""
-    monkeypatch.setenv("SESSION_API_KEY", "sess-key-abc")
-    workspace = _make_local_workspace()
-
-    assert workspace._session_api_key == "sess-key-abc"
-    # api_key must also be set so the shared HTTP client includes X-Session-API-Key
-    assert workspace.api_key == "sess-key-abc"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_session_key_fallback(monkeypatch):
-    """Falls back to OH_SESSION_API_KEYS_0 if SESSION_API_KEY is unset."""
-    monkeypatch.delenv("SESSION_API_KEY", raising=False)
-    monkeypatch.setenv("OH_SESSION_API_KEYS_0", "oh-key-xyz")
-    workspace = _make_local_workspace()
-
-    assert workspace._session_api_key == "oh-key-xyz"
-    assert workspace.api_key == "oh-key-xyz"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_custom_port():
-    """Custom agent_server_port is reflected in host URL."""
-    workspace = _make_local_workspace(agent_server_port=9999)
-
-    assert workspace.host == "http://localhost:9999"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_port_from_env(monkeypatch):
-    """AGENT_SERVER_PORT env var overrides agent_server_port."""
-    monkeypatch.setenv("AGENT_SERVER_PORT", "7777")
-    workspace = _make_local_workspace()
-
-    assert workspace.host == "http://localhost:7777"
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_cloud_credentials_available():
-    """Cloud API fields are available for get_llms / get_secrets."""
-    workspace = _make_local_workspace(
-        cloud_api_url="https://app.all-hands.dev/",
-        cloud_api_key="my-key",
-    )
-
-    assert workspace.cloud_api_url == "https://app.all-hands.dev"
-    assert workspace._api_headers == {"Authorization": "Bearer my-key"}
-    workspace.cleanup()
-
-
-def test_local_agent_server_mode_cleanup_does_not_delete_sandbox():
-    """cleanup() in local_agent_server_mode should not call any Cloud API."""
-    workspace = _make_local_workspace()
-
-    with patch.object(workspace, "_send_api_request") as mock_req:
-        workspace.cleanup()
-        mock_req.assert_not_called()
-
-
-def test_local_agent_server_mode_context_manager():
-    """Context manager works in local_agent_server_mode without side effects."""
-    with _make_local_workspace() as ws:
-        assert ws.host == "http://localhost:60000"
+    return workspace
 
 
 # --- completion callback tests ---
@@ -505,9 +422,10 @@ def test_local_agent_server_mode_context_manager():
 
 def test_callback_on_successful_exit(monkeypatch):
     """__exit__ POSTs COMPLETED status to callback URL on clean exit."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace(
+        _automation_callback_url="https://svc.test/complete",
+        _automation_run_id="run-42",
+    )
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -530,11 +448,12 @@ def test_callback_on_successful_exit(monkeypatch):
         assert "error" not in payload
 
 
-def test_callback_on_exception_exit(monkeypatch):
+def test_callback_on_exception_exit():
     """__exit__ POSTs FAILED status with error detail on exception."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-99")
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace(
+        _automation_callback_url="https://svc.test/complete",
+        _automation_run_id="run-99",
+    )
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -557,7 +476,7 @@ def test_callback_on_exception_exit(monkeypatch):
 
 def test_no_callback_when_url_not_set():
     """No HTTP call when AUTOMATION_CALLBACK_URL env var is not set."""
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace()
     assert ws._automation_callback_url is None
 
     with patch("httpx.Client") as MockClient:
@@ -565,10 +484,11 @@ def test_no_callback_when_url_not_set():
         MockClient.assert_not_called()
 
 
-def test_callback_failure_does_not_raise(monkeypatch):
+def test_callback_failure_does_not_raise():
     """Callback errors are swallowed — cleanup still runs."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace(
+        _automation_callback_url="https://svc.test/complete",
+    )
 
     with patch("httpx.Client") as MockClient:
         mock_client = MagicMock()
@@ -586,7 +506,7 @@ def test_callback_failure_does_not_raise(monkeypatch):
 
 def test_register_conversation_sets_conversation_id():
     """register_conversation sets the _conversation_id attribute."""
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace()
 
     ws.register_conversation("conv-123")
 
@@ -596,16 +516,17 @@ def test_register_conversation_sets_conversation_id():
 
 def test_conversation_id_property_returns_none_initially():
     """conversation_id property returns None when no conversation registered."""
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace()
 
     assert ws.conversation_id is None
 
 
-def test_callback_includes_conversation_id_when_registered(monkeypatch):
+def test_callback_includes_conversation_id_when_registered():
     """Callback payload includes conversation_id when registered."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace(
+        _automation_callback_url="https://svc.test/complete",
+        _automation_run_id="run-42",
+    )
 
     # Register a conversation
     ws.register_conversation("conv-xyz")
@@ -630,11 +551,12 @@ def test_callback_includes_conversation_id_when_registered(monkeypatch):
         assert payload["conversation_id"] == "conv-xyz"
 
 
-def test_callback_omits_conversation_id_when_not_registered(monkeypatch):
+def test_callback_omits_conversation_id_when_not_registered():
     """Callback payload omits conversation_id when not registered."""
-    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
-    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
-    ws = _make_local_workspace()
+    ws = _make_mock_workspace(
+        _automation_callback_url="https://svc.test/complete",
+        _automation_run_id="run-42",
+    )
 
     # Do not register a conversation
 
