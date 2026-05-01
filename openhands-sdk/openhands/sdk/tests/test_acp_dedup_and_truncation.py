@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 import threading
 import unittest
-
 from unittest.mock import MagicMock, patch
 
 from openhands.sdk.agent.acp_agent import MAX_ACP_CONTENT_CHARS, _serialize_tool_content
@@ -109,7 +108,7 @@ class TestACPToolCallDeduplication(unittest.TestCase):
         self.assertEqual(self.events._acp_tool_call_id_to_event_id["tc-1"], ev2.id)
 
     def test_thread_safety_concurrent_updates(self) -> None:
-        """Multiple threads racing to update the same tool_call_id must not corrupt state."""
+        """Concurrent updates to the same tool_call_id must not corrupt state."""
         errors: list[Exception] = []
 
         def updater(i: int) -> None:
@@ -175,7 +174,7 @@ class TestSerializeToolContentTruncation(unittest.TestCase):
         self.assertEqual(len(result[1]["url"]), MAX_ACP_CONTENT_CHARS + 1_000)
 
     def test_pydantic_model_content_is_serialized(self) -> None:
-        """Content blocks that have model_dump() are serialized before truncation check."""
+        """Blocks with model_dump() are serialized before the truncation check."""
 
         class FakeBlock:
             def model_dump(self, **_kwargs: object) -> dict:
