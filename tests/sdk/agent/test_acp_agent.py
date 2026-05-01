@@ -420,15 +420,15 @@ class TestImageUrlToAcpBlock:
         import zlib
 
         # Minimal valid 1x1 red PNG
-        sig = b'\x89PNG\r\n\x1a\n'
-        ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
-        ihdr_crc = zlib.crc32(b'IHDR' + ihdr_data) & 0xffffffff
-        ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data + struct.pack('>I', ihdr_crc)
-        raw = zlib.compress(b'\x00\xff\x00\x00')
-        idat_crc = zlib.crc32(b'IDAT' + raw) & 0xffffffff
-        idat = struct.pack('>I', len(raw)) + b'IDAT' + raw + struct.pack('>I', idat_crc)
-        iend_crc = zlib.crc32(b'IEND') & 0xffffffff
-        iend = struct.pack('>I', 0) + b'IEND' + struct.pack('>I', iend_crc)
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data) & 0xFFFFFFFF
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
+        raw = zlib.compress(b"\x00\xff\x00\x00")
+        idat_crc = zlib.crc32(b"IDAT" + raw) & 0xFFFFFFFF
+        idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
+        iend_crc = zlib.crc32(b"IEND") & 0xFFFFFFFF
+        iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
         png_bytes = sig + ihdr + idat + iend
 
         b64_data = base64.b64encode(png_bytes).decode()
@@ -439,7 +439,7 @@ class TestImageUrlToAcpBlock:
         assert block.mime_type == "image/png"
         decoded = base64.b64decode(block.data)
         assert decoded == png_bytes
-        assert decoded[:4] == b'\x89PNG'
+        assert decoded[:4] == b"\x89PNG"
 
 
 # ---------------------------------------------------------------------------
@@ -903,7 +903,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
-        prompt_text = "\n\n".join(b.text for b in prompt_call.args[0] if hasattr(b, "text"))
+        prompt_text = "\n\n".join(
+            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+        )
         assert "Review this PR." in prompt_text
         assert "<REPO_CONTEXT>" in prompt_text
         assert "Always follow repository-specific review rules." in prompt_text
@@ -956,7 +958,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
-        prompt_text = "\n\n".join(b.text for b in prompt_call.args[0] if hasattr(b, "text"))
+        prompt_text = "\n\n".join(
+            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+        )
         assert "Legacy triggered review instructions." in prompt_text
         assert "AgentSkills triggered review instructions." in prompt_text
         assert "<name>agentskill-review</name>" in prompt_text
