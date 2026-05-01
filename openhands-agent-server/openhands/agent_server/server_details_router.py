@@ -7,11 +7,14 @@ from importlib.metadata import version
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
+from openhands.sdk.tool.registry import list_registered_tools
+
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
 _last_event_time = time.time()
 _initialization_complete = asyncio.Event()
+_BROWSER_TOOL_SET_NAME = "browser_tool_set"
 
 
 def _package_version(dist_name: str) -> str:
@@ -19,6 +22,24 @@ def _package_version(dist_name: str) -> str:
         return version(dist_name)
     except Exception:
         return "unknown"
+
+
+def _browser_tool_available() -> bool:
+    try:
+        from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+        return BrowserToolExecutor.check_chromium_available() is not None
+    except Exception:
+        return False
+
+
+def _list_available_tools() -> list[str]:
+    tools = list_registered_tools()
+    if _BROWSER_TOOL_SET_NAME not in tools:
+        return tools
+    if _browser_tool_available():
+        return tools
+    return [tool for tool in tools if tool != _BROWSER_TOOL_SET_NAME]
 
 
 class ServerInfo(BaseModel):
@@ -44,6 +65,7 @@ class ServerInfo(BaseModel):
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
     python_version: str = Field(default_factory=lambda: sys.version)
+    available_tools: list[str] = Field(default_factory=_list_available_tools)
 
     docs: str = "/docs"
     redoc: str = "/redoc"
