@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.request import urlopen
 
 import httpx
@@ -554,27 +554,63 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     # Settings helpers
     # -----------------------------------------------------------------
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Route paths - all endpoints in one place for easy reference
+    # ─────────────────────────────────────────────────────────────────────────
+    # Local agent-server paths (relative to self.host)
+    _LOCAL_SETTINGS: ClassVar[str] = "/api/settings"
+    _LOCAL_SECRETS: ClassVar[str] = "/api/settings/secrets"
+    _LOCAL_SECRET: ClassVar[str] = "/api/settings/secrets/{name}"  # .format(name=...)
+
+    # Cloud API paths (relative to self.cloud_api_url)
+    _CLOUD_USER_CONFIG: ClassVar[str] = "/api/v1/users/me"
+    _CLOUD_SANDBOX_SETTINGS: ClassVar[str] = "/api/v1/sandboxes/{sandbox_id}/settings"
+    _CLOUD_SECRETS: ClassVar[str] = "/api/v1/sandboxes/{sandbox_id}/settings/secrets"
+    _CLOUD_SECRET: ClassVar[str] = (
+        "/api/v1/sandboxes/{sandbox_id}/settings/secrets/{name}"
+    )
+
+    def _route_url(self, route: str, **kwargs: str) -> str:
+        """Build URL for a route, auto-selecting local vs cloud paths.
+
+        Args:
+            route: One of "settings", "user_config", "secrets", "secret"
+            **kwargs: Format args (e.g., name="MY_SECRET" for secret route)
+
+        Returns:
+            Full URL for the route
+        """
+        fmt = {"sandbox_id": self._sandbox_id or "", **kwargs}
+
+        if self.local_agent_server_mode:
+            paths = {
+                "settings": self._LOCAL_SETTINGS,
+                "user_config": self._LOCAL_SETTINGS,  # Same endpoint in local mode
+                "secrets": self._LOCAL_SECRETS,
+                "secret": self._LOCAL_SECRET,
+            }
+            base = self.host
+        else:
+            paths = {
+                "settings": self._CLOUD_SANDBOX_SETTINGS,
+                "user_config": self._CLOUD_USER_CONFIG,
+                "secrets": self._CLOUD_SECRETS,
+                "secret": self._CLOUD_SECRET,
+            }
+            base = self.cloud_api_url
+
+        # Format the selected path with placeholders
+        return f"{base}{paths[route].format(**fmt)}"
+
     @property
     def _settings_base_url(self) -> str:
-        """Base URL for sandbox-scoped settings endpoints.
-
-        In Cloud mode, uses the Cloud API sandbox-scoped endpoint.
-        In local agent-server mode, uses the local agent-server.
-        """
-        if self.local_agent_server_mode:
-            return f"{self.host}/api/settings"
-        return f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}/settings"
+        """Base URL for sandbox-scoped settings endpoints."""
+        return self._route_url("settings")
 
     @property
     def _user_config_url(self) -> str:
-        """URL for fetching user-level configuration (LLM, MCP).
-
-        In Cloud mode, uses the user's SaaS account endpoint.
-        In local agent-server mode, uses the agent-server's persisted settings.
-        """
-        if self.local_agent_server_mode:
-            return f"{self.host}/api/settings"
-        return f"{self.cloud_api_url}/api/v1/users/me"
+        """URL for fetching user-level configuration (LLM, MCP)."""
+        return self._route_url("user_config")
 
     @property
     def _session_headers(self) -> dict[str, str]:
@@ -730,7 +766,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not self.local_agent_server_mode and not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
 
-        resp = self._send_settings_request("GET", f"{self._settings_base_url}/secrets")
+        resp = self._send_settings_request("GET", self._route_url("secrets"))
         data = resp.json()
 
         result: dict[str, LookupSecret] = {}
@@ -739,7 +775,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             if names is not None and name not in names:
                 continue
             result[name] = LookupSecret(
-                url=f"{self._settings_base_url}/secrets/{name}",
+                url=self._route_url("secret", name=name),
                 headers=self._session_headers,
                 description=item.get("description"),
             )
