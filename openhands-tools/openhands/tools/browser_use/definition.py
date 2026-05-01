@@ -789,7 +789,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     _shared_executor_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
-    def is_usable(cls) -> bool:
+    def is_available(cls) -> bool:
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         return BrowserToolExecutor.check_chromium_available() is not None

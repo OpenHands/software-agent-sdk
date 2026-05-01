@@ -59,14 +59,14 @@ def test_browser_tool_usable_listing_respects_chromium_availability(
 
     monkeypatch.setattr(
         BrowserToolSet,
-        "is_usable",
+        "is_available",
         classmethod(lambda cls: False),
     )
     assert "browser_tool_set" not in list_usable_tools()
 
     monkeypatch.setattr(
         BrowserToolSet,
-        "is_usable",
+        "is_available",
         classmethod(lambda cls: True),
     )
     assert "browser_tool_set" in list_usable_tools()

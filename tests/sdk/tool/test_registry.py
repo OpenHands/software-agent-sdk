@@ -2,12 +2,13 @@ from collections.abc import Sequence
 from unittest.mock import MagicMock
 
 import pytest
+from deprecation import DeprecatedWarning
 
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.registry import resolve_tool
+from openhands.sdk.tool.registry import list_usable_tools, resolve_tool
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolExecutor
@@ -88,11 +89,14 @@ def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
 
 
 def test_register_and_resolve_callable_factory():
-    register_tool("say_hello", _hello_tool_factory)
+    with pytest.warns(DeprecatedWarning, match=r"register_tool\(callable_factory\)"):
+        register_tool("say_hello", _hello_tool_factory)
+
     tools = resolve_tool(Tool(name="say_hello"), _create_mock_conv_state())
     assert len(tools) == 1
     assert isinstance(tools[0], ToolDefinition)
     assert tools[0].name == "__simple_hello"
+    assert "say_hello" in list_usable_tools()
 
 
 def test_register_tool_instance_rejects_params():
