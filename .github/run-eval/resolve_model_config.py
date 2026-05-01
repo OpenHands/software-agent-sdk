@@ -77,7 +77,7 @@ MODELS = {
         "id": "kimi-k2.6",
         "display_name": "Kimi K2.6",
         "llm_config": {
-            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "model": "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc",
             "temperature": 1.0,
         },
     },
