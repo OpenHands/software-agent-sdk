@@ -46,7 +46,7 @@ class ServerInfo(BaseModel):
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
     python_version: str = Field(default_factory=lambda: sys.version)
-    available_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
+    usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
 
     docs: str = "/docs"
     redoc: str = "/redoc"

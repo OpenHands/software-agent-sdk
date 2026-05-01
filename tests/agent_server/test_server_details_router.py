@@ -61,4 +61,4 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
     response = client.get("/server_info")
 
     assert response.status_code == 200
-    assert response.json()["available_tools"] == ["terminal", "file_editor"]
+    assert response.json()["usable_tools"] == ["terminal", "file_editor"]
