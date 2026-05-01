@@ -273,6 +273,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _action_timeout_seconds: float
 
     @staticmethod
+    @functools.cache
     def check_chromium_available() -> str | None:
         """Check if a Chromium/Chrome binary is available.
 

@@ -240,9 +240,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     )
 
     @classmethod
-    def is_available(cls) -> bool:
+    def is_usable(cls) -> bool:
         """Return whether the tool can be used in the current environment."""
         return True
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """Backward-compatible alias for ``is_usable()``."""
+        return cls.is_usable()
 
     @classmethod
     @abstractmethod

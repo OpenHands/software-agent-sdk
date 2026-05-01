@@ -119,17 +119,29 @@ def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
     return _resolve
 
 
+def _call_tool_usable_hook(cls: type[ToolDefinition]) -> bool:
+    for base in cls.__mro__:
+        if base is ToolDefinition:
+            break
+        if "is_usable" in base.__dict__:
+            return cls.is_usable()
+        if "is_available" in base.__dict__:
+            return cls.is_available()
+    return cls.is_usable()
+
+
 def _availability_from_instance(tool: ToolDefinition) -> AvailabilityChecker:
-    return lambda: tool.__class__.is_available()
+    return lambda: _call_tool_usable_hook(tool.__class__)
 
 
 def _availability_from_subclass(cls: type[ToolDefinition]) -> AvailabilityChecker:
-    return lambda: cls.is_available()
+    return lambda: _call_tool_usable_hook(cls)
 
 
 def _availability_from_callable(
     _factory: Callable[..., Sequence[ToolDefinition]],
 ) -> AvailabilityChecker:
+    # Callable factories are deprecated and have no usability hook.
     return lambda: True
 
 
