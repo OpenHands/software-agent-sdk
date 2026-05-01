@@ -364,7 +364,9 @@ class RemoteEventsList(EventsListBase):
                         self._cached_events[i] = event
                         self._cached_event_ids.discard(existing_id)
                         self._cached_event_ids.add(event.id)
-                        self._acp_tool_call_id_to_event_id[event.tool_call_id] = event.id
+                        self._acp_tool_call_id_to_event_id[event.tool_call_id] = (
+                            event.id
+                        )
                         logger.debug(
                             f"Replaced ACP tool call event {existing_id} -> {event.id} "
                             f"(tool_call_id={event.tool_call_id})"
