@@ -372,6 +372,15 @@ class RemoteEventsList(EventsListBase):
                             f"(tool_call_id={event.tool_call_id})"
                         )
                         return
+                # Index pointed to an event that is no longer in _cached_events;
+                # clean up the stale entry so we don't carry it forward.
+                logger.warning(
+                    f"Stale ACP tool-call index entry: tool_call_id={event.tool_call_id} "
+                    f"pointed to event {existing_id} which is not in _cached_events. "
+                    "Removing stale entry and adding event normally."
+                )
+                self._cached_event_ids.discard(existing_id)
+                del self._acp_tool_call_id_to_event_id[event.tool_call_id]
 
         # Use bisect with key function for O(log N) insertion
         # This ensures events are always ordered correctly even if

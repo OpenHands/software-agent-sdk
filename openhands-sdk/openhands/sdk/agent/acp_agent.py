@@ -282,18 +282,24 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     if not content:
         return None
     result = []
-    for c in content:
-        d = c.model_dump(mode="json") if hasattr(c, "model_dump") else c
+    for content_block in content:
+        block_dict = (
+            content_block.model_dump(mode="json")
+            if hasattr(content_block, "model_dump")
+            else content_block
+        )
         if (
-            isinstance(d, dict)
-            and d.get("type") == "text"
-            and isinstance(d.get("text"), str)
+            isinstance(block_dict, dict)
+            and block_dict.get("type") == "text"
+            and isinstance(block_dict.get("text"), str)
         ):
-            d = {
-                **d,
-                "text": maybe_truncate(d["text"], truncate_after=MAX_ACP_CONTENT_CHARS),
+            block_dict = {
+                **block_dict,
+                "text": maybe_truncate(
+                    block_dict["text"], truncate_after=MAX_ACP_CONTENT_CHARS
+                ),
             }
-        result.append(d)
+        result.append(block_dict)
     return result
 
 
