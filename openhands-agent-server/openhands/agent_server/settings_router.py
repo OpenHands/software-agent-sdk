@@ -23,6 +23,14 @@ from openhands.sdk.settings import (
 
 logger = get_logger(__name__)
 
+# ── Route Path Constants ─────────────────────────────────────────────────
+# These are relative to the router prefix (/settings).
+# When mounted on /api, full paths become /api/settings, /api/settings/secrets, etc.
+# Import these from RemoteWorkspace to keep client/server routes in sync.
+SETTINGS_PATH = ""  # -> /api/settings
+SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
+SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
+
 settings_router = APIRouter(prefix="/settings", tags=["Settings"])
 
 # Validation pattern for secret names
@@ -111,7 +119,7 @@ class SettingsUpdateRequest(BaseModel):
     conversation_settings_diff: dict[str, Any] | None = None
 
 
-@settings_router.get("", response_model=SettingsResponse)
+@settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
 async def get_settings(
     request: Request,
     expose_secrets: bool = False,
@@ -149,7 +157,7 @@ async def get_settings(
     )
 
 
-@settings_router.patch("", response_model=SettingsResponse)
+@settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
 async def update_settings(
     request: Request, payload: SettingsUpdateRequest
 ) -> SettingsResponse:
@@ -184,7 +192,7 @@ async def update_settings(
 # ── Secrets CRUD Endpoints ───────────────────────────────────────────────
 
 
-@settings_router.get("/secrets", response_model=SecretsResponse)
+@settings_router.get(SECRETS_PATH, response_model=SecretsResponse)
 async def list_secrets(request: Request) -> SecretsResponse:
     """List all available secrets (names and descriptions only, no values)."""
     config = _get_config(request)
@@ -202,7 +210,7 @@ async def list_secrets(request: Request) -> SecretsResponse:
     )
 
 
-@settings_router.get("/secrets/{name}")
+@settings_router.get(SECRET_VALUE_PATH)
 async def get_secret_value(request: Request, name: str) -> Response:
     """Get a single secret value by name.
 
@@ -231,7 +239,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     return Response(content=value, media_type="text/plain")
 
 
-@settings_router.put("/secrets", response_model=CustomSecretResponse)
+@settings_router.put(SECRETS_PATH, response_model=CustomSecretResponse)
 async def create_secret(
     request: Request, secret: CustomSecretCreate
 ) -> CustomSecretResponse:
@@ -261,7 +269,7 @@ async def create_secret(
     return CustomSecretResponse(name=secret.name, description=secret.description)
 
 
-@settings_router.delete("/secrets/{name}")
+@settings_router.delete(SECRET_VALUE_PATH)
 async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 

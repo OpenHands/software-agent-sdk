@@ -16,6 +16,13 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.secret import LookupSecret
 
+# ── Agent-Server Settings API Routes ─────────────────────────────────────
+# These route paths match the agent-server's settings_router endpoints.
+# The router is mounted at /api/settings, so full paths are /api/settings/*.
+# Keep in sync with openhands.agent_server.settings_router route constants.
+_SETTINGS_API_BASE = "/api/settings"
+_SECRETS_API_PATH = f"{_SETTINGS_API_BASE}/secrets"
+
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """Remote workspace implementation that connects to an OpenHands agent server.
@@ -267,7 +274,9 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """
         from openhands.sdk.llm.llm import LLM
 
-        response = self.client.get("/api/settings", params={"expose_secrets": "true"})
+        response = self.client.get(
+            _SETTINGS_API_BASE, params={"expose_secrets": "true"}
+        )
         response.raise_for_status()
         data = response.json()
 
@@ -319,7 +328,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """
         from openhands.sdk.secret import LookupSecret
 
-        response = self.client.get("/api/settings/secrets")
+        response = self.client.get(_SECRETS_API_PATH)
         response.raise_for_status()
         data = response.json()
 
@@ -329,7 +338,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if names is not None and name not in names:
                 continue
             result[name] = LookupSecret(
-                url=f"{self.host}/api/settings/secrets/{name}",
+                url=f"{self.host}{_SECRETS_API_PATH}/{name}",
                 headers=self._headers,
                 description=item.get("description"),
             )
@@ -356,7 +365,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             >>> mcp_config = workspace.get_mcp_config()
             >>> agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
         """
-        response = self.client.get("/api/settings")
+        response = self.client.get(_SETTINGS_API_BASE)
         response.raise_for_status()
         data = response.json()
 
