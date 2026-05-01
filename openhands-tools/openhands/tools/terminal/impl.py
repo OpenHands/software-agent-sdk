@@ -487,6 +487,13 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                     f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
                 )
 
+                if not action.command.strip():
+                    return TerminalObservation.from_text(
+                        text=reset_text,
+                        command="[RESET]",
+                        exit_code=0,
+                    )
+
             session = self._wrap_session(handle.terminal)
             self._prepare_pooled_session(session)
 
