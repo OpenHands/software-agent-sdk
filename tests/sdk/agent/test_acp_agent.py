@@ -413,6 +413,34 @@ class TestImageUrlToAcpBlock:
         block = _image_url_to_acp_block("data:broken")
         assert block is None
 
+    def test_real_png_round_trips(self):
+        """Verify a real PNG image survives the full conversion path."""
+        import base64
+        import struct
+        import zlib
+
+        # Minimal valid 1x1 red PNG
+        sig = b'\x89PNG\r\n\x1a\n'
+        ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b'IHDR' + ihdr_data) & 0xffffffff
+        ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data + struct.pack('>I', ihdr_crc)
+        raw = zlib.compress(b'\x00\xff\x00\x00')
+        idat_crc = zlib.crc32(b'IDAT' + raw) & 0xffffffff
+        idat = struct.pack('>I', len(raw)) + b'IDAT' + raw + struct.pack('>I', idat_crc)
+        iend_crc = zlib.crc32(b'IEND') & 0xffffffff
+        iend = struct.pack('>I', 0) + b'IEND' + struct.pack('>I', iend_crc)
+        png_bytes = sig + ihdr + idat + iend
+
+        b64_data = base64.b64encode(png_bytes).decode()
+        data_uri = f"data:image/png;base64,{b64_data}"
+
+        block = _image_url_to_acp_block(data_uri)
+        assert block is not None
+        assert block.mime_type == "image/png"
+        decoded = base64.b64decode(block.data)
+        assert decoded == png_bytes
+        assert decoded[:4] == b'\x89PNG'
+
 
 # ---------------------------------------------------------------------------
 # init_state
