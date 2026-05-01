@@ -504,6 +504,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
+        # Fix base_url for direct OpenAI - API expects /v1 suffix
+        # If base_url is "https://api.openai.com", set to None to use LiteLLM default
+        if model_val.startswith("openai/"):
+            base = d.get("base_url")
+            if base == "https://api.openai.com" or base == "https://api.openai.com/":
+                d["base_url"] = None  # Let LiteLLM use its default which includes /v1
+
         return d
 
     @model_validator(mode="after")
