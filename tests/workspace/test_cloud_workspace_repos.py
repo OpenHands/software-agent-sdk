@@ -451,7 +451,7 @@ class TestCloudWorkspaceRepoMethods:
             workspace = OpenHandsCloudWorkspace(
                 cloud_api_url="https://test.com",
                 cloud_api_key="test-key",
-                local_agent_server_mode=True,
+                host="http://localhost:60000",
             )
             workspace._sandbox_id = "test-sandbox"
             workspace._session_api_key = "test-session"
@@ -491,7 +491,7 @@ class TestCloudWorkspaceRepoMethods:
             workspace = OpenHandsCloudWorkspace(
                 cloud_api_url="https://test.com",
                 cloud_api_key="test-key",
-                local_agent_server_mode=True,
+                host="http://localhost:60000",
             )
             workspace._sandbox_id = "test-sandbox"
             workspace._session_api_key = "test-session"
@@ -520,7 +520,7 @@ class TestCloudWorkspaceRepoMethods:
             workspace = OpenHandsCloudWorkspace(
                 cloud_api_url="https://test.com",
                 cloud_api_key="test-key",
-                local_agent_server_mode=True,
+                host="http://localhost:60000",
             )
             workspace.working_dir = "/workspace/project"
 
