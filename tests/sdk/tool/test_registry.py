@@ -90,12 +90,6 @@ class _UnavailableHelloTool(_SimpleHelloTool):
         return False
 
 
-class _LegacyUnavailableHelloTool(_SimpleHelloTool):
-    @classmethod
-    def is_available(cls) -> bool:
-        return False
-
-
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
@@ -115,12 +109,6 @@ def test_register_tool_type_respects_is_usable():
     register_tool("say_hello_unusable", _UnavailableHelloTool)
 
     assert "say_hello_unusable" not in list_usable_tools()
-
-
-def test_register_tool_type_supports_legacy_is_available():
-    register_tool("say_hello_legacy_unavailable", _LegacyUnavailableHelloTool)
-
-    assert "say_hello_legacy_unavailable" not in list_usable_tools()
 
 
 def test_register_tool_instance_rejects_params():

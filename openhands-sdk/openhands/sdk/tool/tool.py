@@ -245,11 +245,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         return True
 
     @classmethod
-    def is_available(cls) -> bool:
-        """Backward-compatible alias for ``is_usable()``."""
-        return cls.is_usable()
-
-    @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:
         """Create a sequence of Tool instances.

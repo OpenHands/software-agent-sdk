@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 # A resolver produces ToolDefinition instances for given params.
 Resolver = Callable[[dict[str, Any], "ConversationState"], Sequence[ToolDefinition]]
-AvailabilityChecker = Callable[[], bool]
+UsabilityChecker = Callable[[], bool]
 """A resolver produces ToolDefinition instances for given params.
 
 Args:
@@ -31,7 +31,7 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
-_AVAILABILITY_REG: dict[str, AvailabilityChecker] = {}
+_USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 
 
@@ -119,38 +119,27 @@ def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
     return _resolve
 
 
-def _call_tool_usable_hook(cls: type[ToolDefinition]) -> bool:
-    for base in cls.__mro__:
-        if base is ToolDefinition:
-            break
-        if "is_usable" in base.__dict__:
-            return cls.is_usable()
-        if "is_available" in base.__dict__:
-            return cls.is_available()
-    return cls.is_usable()
+def _usability_from_instance(tool: ToolDefinition) -> UsabilityChecker:
+    return lambda: tool.__class__.is_usable()
 
 
-def _availability_from_instance(tool: ToolDefinition) -> AvailabilityChecker:
-    return lambda: _call_tool_usable_hook(tool.__class__)
+def _usability_from_subclass(cls: type[ToolDefinition]) -> UsabilityChecker:
+    return lambda: cls.is_usable()
 
 
-def _availability_from_subclass(cls: type[ToolDefinition]) -> AvailabilityChecker:
-    return lambda: _call_tool_usable_hook(cls)
-
-
-def _availability_from_callable(
+def _usability_from_callable(
     _factory: Callable[..., Sequence[ToolDefinition]],
-) -> AvailabilityChecker:
+) -> UsabilityChecker:
     # Callable factories are deprecated and have no usability hook.
     return lambda: True
 
 
-def _check_tool_available(name: str, checker: AvailabilityChecker) -> bool:
+def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
     try:
         return checker()
     except Exception:
         logger.warning(
-            "Failed to determine availability for tool '%s'", name, exc_info=True
+            "Failed to determine usability for tool '%s'", name, exc_info=True
         )
         return False
 
@@ -166,10 +155,10 @@ def register_tool(
 
     if isinstance(factory, ToolDefinition):
         resolver = _resolver_from_instance(name, factory)
-        availability_checker = _availability_from_instance(factory)
+        usability_checker = _usability_from_instance(factory)
     elif isinstance(factory, type) and issubclass(factory, ToolDefinition):
         resolver = _resolver_from_subclass(name, factory)
-        availability_checker = _availability_from_subclass(factory)
+        usability_checker = _usability_from_subclass(factory)
     elif callable(factory):
         warn_deprecated(
             "register_tool(callable_factory)",
@@ -182,7 +171,7 @@ def register_tool(
             stacklevel=2,
         )
         resolver = _resolver_from_callable(name, factory)
-        availability_checker = _availability_from_callable(factory)
+        usability_checker = _usability_from_callable(factory)
     else:
         raise TypeError(
             "register_tool(...) only accepts: (1) a ToolDefinition instance with "
@@ -204,7 +193,7 @@ def register_tool(
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
-        _AVAILABILITY_REG[name] = availability_checker
+        _USABILITY_REG[name] = usability_checker
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
 
@@ -229,12 +218,12 @@ def list_registered_tools() -> list[str]:
 def list_usable_tools() -> list[str]:
     with _LOCK:
         tool_names = list(_REG.keys())
-        availability_checkers = dict(_AVAILABILITY_REG)
+        usability_checkers = dict(_USABILITY_REG)
 
     return [
         name
         for name in tool_names
-        if _check_tool_available(name, availability_checkers.get(name, lambda: True))
+        if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
     ]
 
 
