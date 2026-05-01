@@ -37,6 +37,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.event.acp_tool_call import ACPToolCallEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
@@ -259,6 +260,7 @@ class RemoteEventsList(EventsListBase):
         self._events_base_path = events_base_path
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
+        self._acp_tool_call_id_to_event_id: dict[str, str] = {}
         self._lock = threading.RLock()
         # Initial fetch to sync existing events
         self._do_full_sync()
@@ -350,6 +352,25 @@ class RemoteEventsList(EventsListBase):
 
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
+        # ACP streaming emits one ACPToolCallEvent per ToolCallProgress, each
+        # carrying the full cumulative stdout so far — O(n²) memory growth.
+        # Deduplicate by tool_call_id: replace the existing entry in-place so
+        # only the latest (most complete) snapshot is kept.
+        if isinstance(event, ACPToolCallEvent):
+            existing_id = self._acp_tool_call_id_to_event_id.get(event.tool_call_id)
+            if existing_id is not None:
+                for i, e in enumerate(self._cached_events):
+                    if e.id == existing_id:
+                        self._cached_events[i] = event
+                        self._cached_event_ids.discard(existing_id)
+                        self._cached_event_ids.add(event.id)
+                        self._acp_tool_call_id_to_event_id[event.tool_call_id] = event.id
+                        logger.debug(
+                            f"Replaced ACP tool call event {existing_id} -> {event.id} "
+                            f"(tool_call_id={event.tool_call_id})"
+                        )
+                        return
+
         # Use bisect with key function for O(log N) insertion
         # This ensures events are always ordered correctly even if
         # WebSocket delivers them out of order
@@ -358,6 +379,8 @@ class RemoteEventsList(EventsListBase):
         )
         self._cached_events.insert(insert_pos, event)
         self._cached_event_ids.add(event.id)
+        if isinstance(event, ACPToolCallEvent):
+            self._acp_tool_call_id_to_event_id[event.tool_call_id] = event.id
         logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
 
     def add_event(self, event: Event) -> None:
