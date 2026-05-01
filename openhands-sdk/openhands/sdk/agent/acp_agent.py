@@ -284,8 +284,15 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     result = []
     for c in content:
         d = c.model_dump(mode="json") if hasattr(c, "model_dump") else c
-        if isinstance(d, dict) and d.get("type") == "text" and isinstance(d.get("text"), str):
-            d = {**d, "text": maybe_truncate(d["text"], truncate_after=MAX_ACP_CONTENT_CHARS)}
+        if (
+            isinstance(d, dict)
+            and d.get("type") == "text"
+            and isinstance(d.get("text"), str)
+        ):
+            d = {
+                **d,
+                "text": maybe_truncate(d["text"], truncate_after=MAX_ACP_CONTENT_CHARS),
+            }
         result.append(d)
     return result
 
@@ -514,7 +521,9 @@ class _OpenHandsACPBridge:
         try:
             raw_output = tc.get("raw_output")
             if isinstance(raw_output, str):
-                raw_output = maybe_truncate(raw_output, truncate_after=MAX_ACP_CONTENT_CHARS)
+                raw_output = maybe_truncate(
+                    raw_output, truncate_after=MAX_ACP_CONTENT_CHARS
+                )
             event = ACPToolCallEvent(
                 tool_call_id=tc["tool_call_id"],
                 title=tc["title"],
