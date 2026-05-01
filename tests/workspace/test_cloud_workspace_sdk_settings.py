@@ -232,6 +232,7 @@ class TestGetMcpConfig:
         mock_req.assert_called_once_with(
             "GET",
             f"{CLOUD_URL}/api/v1/users/me",
+            params=None,
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
