@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
@@ -811,15 +812,24 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Add a callback that signals when run completes via WebSocket
-        # This ensures we wait for all events to be delivered before run() returns
+        # Add a callback that signals when run completes via WebSocket.
+        # This ensures we wait for all events to be delivered before run() returns.
+        # Use a weakref to avoid creating a cycle:
+        #   RemoteConversation → _ws_client → callback → self
+        # Without weakref, CPython's reference counter cannot free the conversation
+        # when it goes out of scope; it must wait for the cyclic GC instead.
+        self_ref: weakref.ref[RemoteConversation] = weakref.ref(self)
+
         def run_complete_callback(event: Event) -> None:
+            conv = self_ref()
+            if conv is None:
+                return
             if isinstance(event, ConversationStateUpdateEvent):
                 if event.key == "execution_status":
                     try:
                         status = ConversationExecutionStatus(event.value)
                         if status.is_terminal():
-                            self._terminal_status_queue.put(event.value)
+                            conv._terminal_status_queue.put(event.value)
                     except ValueError:
                         pass  # Unknown status value, ignore
 
