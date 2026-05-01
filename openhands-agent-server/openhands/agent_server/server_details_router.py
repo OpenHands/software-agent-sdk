@@ -7,6 +7,8 @@ from importlib.metadata import version
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
+from openhands.sdk.tool.registry import list_usable_tools
+
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
@@ -44,6 +46,7 @@ class ServerInfo(BaseModel):
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
     python_version: str = Field(default_factory=lambda: sys.version)
+    usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
 
     docs: str = "/docs"
     redoc: str = "/redoc"
