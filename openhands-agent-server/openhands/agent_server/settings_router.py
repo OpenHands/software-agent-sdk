@@ -76,18 +76,29 @@ class SettingsUpdateRequest(BaseModel):
 
 
 @settings_router.get("", response_model=SettingsResponse)
-async def get_settings(request: Request) -> SettingsResponse:
+async def get_settings(
+    request: Request,
+    expose_secrets: bool = False,
+) -> SettingsResponse:
     """Get current settings.
 
     Returns the persisted settings including agent configuration,
     conversation settings, and whether an LLM API key is configured.
+
+    Args:
+        expose_secrets: If True, return actual secret values instead of masked
+            placeholders. Use this for internal automation scripts that need
+            LLM API keys. Default: False (secrets are masked as "**********").
     """
     config = _get_config(request)
     store = get_settings_store(config)
     settings = store.load() or PersistedSettings()
 
+    # Build serialization context based on expose_secrets flag
+    context = {"expose_secrets": True} if expose_secrets else {}
+
     return SettingsResponse(
-        agent_settings=settings.agent_settings.model_dump(mode="json"),
+        agent_settings=settings.agent_settings.model_dump(mode="json", context=context),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
         llm_api_key_is_set=settings.llm_api_key_is_set,
     )
