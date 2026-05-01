@@ -69,7 +69,7 @@ class PersistedSettings(BaseModel):
                 ),
                 agent_update,
             )
-            object.__setattr__(self, "agent_settings", validate_agent_settings(merged))
+            self.agent_settings = validate_agent_settings(merged)
 
         conv_update = payload.get("conversation_settings_diff")
         if isinstance(conv_update, dict):
@@ -77,11 +77,7 @@ class PersistedSettings(BaseModel):
                 self.conversation_settings.model_dump(mode="json"),
                 conv_update,
             )
-            object.__setattr__(
-                self,
-                "conversation_settings",
-                ConversationSettings.model_validate(merged),
-            )
+            self.conversation_settings = ConversationSettings.model_validate(merged)
 
     @field_serializer("agent_settings")
     def agent_settings_serializer(
@@ -140,7 +136,7 @@ class Secrets(BaseModel):
 
     custom_secrets: dict[str, CustomSecret] = Field(default_factory=dict)
 
-    model_config = ConfigDict(frozen=True, validate_assignment=True)
+    model_config = ConfigDict(frozen=True)
 
     def get_env_vars(self) -> dict[str, str]:
         """Get secrets as environment variables dict."""

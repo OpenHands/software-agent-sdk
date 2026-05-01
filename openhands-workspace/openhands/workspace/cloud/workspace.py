@@ -590,20 +590,26 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         Both local and cloud modes return the same normalized structure.
         """
-        if not self.local_agent_server_mode and not self._sandbox_id:
-            raise RuntimeError("Sandbox is not running")
+        # Validate preconditions
+        if self.local_agent_server_mode:
+            if not self.host or self.host == "undefined":
+                raise RuntimeError("Local agent-server not initialized")
+        else:
+            if not self._sandbox_id:
+                raise RuntimeError("Sandbox is not running")
 
-        params = {"expose_secrets": "true"} if expose_secrets else {}
-        resp = self._send_api_request(
-            "GET",
-            self._user_config_url,
-            params=params if params else None,
-            headers=self._session_headers,
-        )
-        data = resp.json()
+        params = {"expose_secrets": "true"} if expose_secrets else None
 
         if self.local_agent_server_mode:
-            # Local mode: extract from agent_settings structure
+            # Local mode: use settings request (no Cloud API key)
+            resp = self._send_settings_request(
+                "GET",
+                self._user_config_url,
+                params=params,
+            )
+            data = resp.json()
+
+            # Extract from agent_settings structure
             agent_settings = data.get("agent_settings", {})
             llm_settings = agent_settings.get("llm", {})
             return {
@@ -615,7 +621,16 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 "mcp_config": agent_settings.get("mcp_config"),
             }
         else:
-            # Cloud mode: extract from flat structure
+            # Cloud mode: use API request (includes Bearer token)
+            resp = self._send_api_request(
+                "GET",
+                self._user_config_url,
+                params=params,
+                headers=self._session_headers,
+            )
+            data = resp.json()
+
+            # Extract from flat structure
             return {
                 "llm": {
                     "model": data.get("llm_model"),

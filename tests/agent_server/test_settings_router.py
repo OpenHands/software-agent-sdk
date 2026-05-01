@@ -102,8 +102,8 @@ class TestSettingsCRUD:
         assert data["llm_api_key_is_set"] is False
 
     def test_update_settings(self, auth_client):
-        """POST /settings should update settings."""
-        response = auth_client.post(
+        """PATCH /settings should update settings."""
+        response = auth_client.patch(
             "/api/settings",
             headers=AUTH_HEADER,
             json={"agent_settings_diff": {"llm": {"model": "gpt-4-turbo"}}},
@@ -113,15 +113,22 @@ class TestSettingsCRUD:
         data = response.json()
         assert data["agent_settings"]["llm"]["model"] == "gpt-4-turbo"
 
-    def test_update_settings_persists(self, auth_client):
-        """Settings should persist across requests."""
-        auth_client.post(
+    def test_update_settings_persists(self, config_with_temp):
+        """Settings should persist across fresh app instances."""
+        # First request: update settings
+        app1 = create_app(config_with_temp)
+        client1 = TestClient(app1)
+        client1.patch(
             "/api/settings",
             headers=AUTH_HEADER,
             json={"agent_settings_diff": {"llm": {"model": "claude-3-opus"}}},
         )
 
-        response = auth_client.get("/api/settings", headers=AUTH_HEADER)
+        # Second request: verify persistence with fresh app instance
+        reset_stores()  # Clear singleton cache
+        app2 = create_app(config_with_temp)
+        client2 = TestClient(app2)
+        response = client2.get("/api/settings", headers=AUTH_HEADER)
         data = response.json()
         assert data["agent_settings"]["llm"]["model"] == "claude-3-opus"
 
@@ -136,8 +143,8 @@ class TestSecretsCRUD:
         assert response.json()["secrets"] == []
 
     def test_create_secret(self, auth_client):
-        """POST /settings/secrets should create a secret."""
-        response = auth_client.post(
+        """PUT /settings/secrets should create a secret."""
+        response = auth_client.put(
             "/api/settings/secrets",
             headers=AUTH_HEADER,
             json={"name": "MY_API_KEY", "value": "secret-value", "description": "Key"},
@@ -148,7 +155,7 @@ class TestSecretsCRUD:
 
     def test_get_secret_value(self, auth_client):
         """GET /settings/secrets/{name} should return raw value."""
-        auth_client.post(
+        auth_client.put(
             "/api/settings/secrets",
             headers=AUTH_HEADER,
             json={"name": "MY_SECRET", "value": "my-secret-value"},
@@ -169,7 +176,7 @@ class TestSecretsCRUD:
 
     def test_delete_secret(self, auth_client):
         """DELETE /settings/secrets/{name} should delete secret."""
-        auth_client.post(
+        auth_client.put(
             "/api/settings/secrets",
             headers=AUTH_HEADER,
             json={"name": "TO_DELETE", "value": "value"},
@@ -184,3 +191,21 @@ class TestSecretsCRUD:
             "/api/settings/secrets/TO_DELETE", headers=AUTH_HEADER
         )
         assert response.status_code == 404
+
+    def test_invalid_secret_name(self, auth_client):
+        """Secret names must follow naming rules."""
+        # Name starting with number
+        response = auth_client.put(
+            "/api/settings/secrets",
+            headers=AUTH_HEADER,
+            json={"name": "123_INVALID", "value": "value"},
+        )
+        assert response.status_code == 400
+
+        # Name with invalid characters
+        response = auth_client.put(
+            "/api/settings/secrets",
+            headers=AUTH_HEADER,
+            json={"name": "INVALID-NAME", "value": "value"},
+        )
+        assert response.status_code == 400

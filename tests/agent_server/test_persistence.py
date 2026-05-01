@@ -141,14 +141,16 @@ class TestFileSettingsStore:
     """Tests for FileSettingsStore."""
 
     def test_save_and_load(self, temp_dir):
-        """Should save and load settings correctly."""
-        store = FileSettingsStore(persistence_dir=temp_dir)
+        """Should save and load settings correctly with fresh instance."""
+        store1 = FileSettingsStore(persistence_dir=temp_dir)
 
         settings = PersistedSettings()
         settings.update({"agent_settings_diff": {"llm": {"model": "claude-3-opus"}}})
+        store1.save(settings)
 
-        store.save(settings)
-        loaded = store.load()
+        # Create fresh store instance to verify persistence
+        store2 = FileSettingsStore(persistence_dir=temp_dir)
+        loaded = store2.load()
 
         assert loaded is not None
         assert loaded.agent_settings.llm.model == "claude-3-opus"
@@ -180,16 +182,18 @@ class TestFileSettingsStore:
         assert decrypted.get_secret_value() == "my-secret-api-key"
 
     def test_decrypts_api_key_on_load(self, temp_dir, cipher):
-        """Should decrypt API key when loading."""
-        store = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
+        """Should decrypt API key when loading with fresh instance."""
+        store1 = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
 
         settings = PersistedSettings()
         settings.update(
             {"agent_settings_diff": {"llm": {"api_key": "my-secret-api-key"}}}
         )
-        store.save(settings)
+        store1.save(settings)
 
-        loaded = store.load()
+        # Create fresh store instance to verify decryption works
+        store2 = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
+        loaded = store2.load()
         assert loaded is not None
         api_key = loaded.agent_settings.llm.api_key
         assert api_key is not None
@@ -204,8 +208,8 @@ class TestFileSecretsStore:
     """Tests for FileSecretsStore."""
 
     def test_save_and_load(self, temp_dir):
-        """Should save and load secrets correctly."""
-        store = FileSecretsStore(persistence_dir=temp_dir)
+        """Should save and load secrets correctly with fresh instance."""
+        store1 = FileSecretsStore(persistence_dir=temp_dir)
 
         secrets = Secrets(
             custom_secrets={
@@ -216,8 +220,11 @@ class TestFileSecretsStore:
                 )
             }
         )
-        store.save(secrets)
-        loaded = store.load()
+        store1.save(secrets)
+
+        # Create fresh store instance to verify persistence
+        store2 = FileSecretsStore(persistence_dir=temp_dir)
+        loaded = store2.load()
 
         assert loaded is not None
         assert "MY_SECRET" in loaded.custom_secrets
@@ -250,7 +257,9 @@ class TestFileSecretsStore:
         store.set_secret("KEY1", "updated", "Updated")
         assert store.get_secret("KEY1") == "updated"
 
-        loaded = store.load()
+        # Verify with fresh instance
+        store2 = FileSecretsStore(persistence_dir=temp_dir)
+        loaded = store2.load()
         assert loaded is not None
         assert loaded.custom_secrets["KEY1"].description == "Updated"
 
@@ -283,12 +292,13 @@ class TestFileSecretsStore:
         assert decrypted.get_secret_value() == "super-secret-value"
 
     def test_decrypts_secrets_on_load(self, temp_dir, cipher):
-        """Should decrypt secrets when loading."""
-        store = FileSecretsStore(persistence_dir=temp_dir, cipher=cipher)
-        store.set_secret("API_KEY", "super-secret-value")
+        """Should decrypt secrets when loading with fresh instance."""
+        store1 = FileSecretsStore(persistence_dir=temp_dir, cipher=cipher)
+        store1.set_secret("API_KEY", "super-secret-value")
 
-        # Load and verify decryption
-        loaded = store.load()
+        # Create fresh store instance to verify decryption
+        store2 = FileSecretsStore(persistence_dir=temp_dir, cipher=cipher)
+        loaded = store2.load()
         assert loaded is not None
         assert (
             loaded.custom_secrets["API_KEY"].secret.get_secret_value()

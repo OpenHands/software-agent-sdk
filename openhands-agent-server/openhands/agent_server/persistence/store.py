@@ -6,9 +6,13 @@ and FileSecretsStore for consistency.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import stat
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +33,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# File permission constants (owner read/write only)
+_DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
+_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
+
 
 def _encrypt_value(cipher: Cipher | None, value: str | None) -> str | None:
     """Encrypt a plain string value using cipher."""
@@ -43,6 +51,35 @@ def _decrypt_value(cipher: Cipher | None, value: str | None) -> str | None:
         return value
     result = cipher.decrypt(value)
     return result.get_secret_value() if result else None
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Context manager for file-based locking (Unix fcntl).
+
+    Provides exclusive lock to prevent race conditions during
+    read-modify-write operations.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON atomically with secure permissions.
+
+    Uses write-to-temp-then-rename pattern to prevent corruption
+    if interrupted. Sets owner-only permissions on the file.
+    """
+    tmp_path = path.with_suffix(".tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    tmp_path.chmod(_FILE_MODE)
+    tmp_path.replace(path)  # Atomic on POSIX
 
 
 # Default storage directory (relative to working directory)
@@ -90,6 +127,11 @@ class FileSettingsStore(SettingsStore):
 
     Stores settings as JSON in a configurable directory.
     Secrets within settings are encrypted using the provided cipher.
+
+    Security features:
+        - Files created with owner-only permissions (0o600)
+        - Directory created with owner-only permissions (0o700)
+        - Atomic writes to prevent corruption
     """
 
     def __init__(
@@ -102,6 +144,7 @@ class FileSettingsStore(SettingsStore):
         self.cipher = cipher
         self.filename = filename
         self._path = self.persistence_dir / filename
+        self._lock_path = self.persistence_dir / ".settings.lock"
 
     def load(self) -> PersistedSettings | None:
         """Load settings from file."""
@@ -110,7 +153,7 @@ class FileSettingsStore(SettingsStore):
             return None
 
         try:
-            with self._path.open("r") as f:
+            with self._path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
             # Decrypt secrets if cipher is available
@@ -123,13 +166,14 @@ class FileSettingsStore(SettingsStore):
                         agent_settings["llm"]["api_key"] = decrypted
 
             return PersistedSettings.model_validate(data)
-        except Exception as e:
-            logger.error(f"Failed to load settings: {e}")
+        except Exception:
+            logger.error("Failed to load settings", exc_info=True)
             return None
 
     def save(self, settings: PersistedSettings) -> None:
-        """Save settings to file."""
+        """Save settings to file atomically with secure permissions."""
         self.persistence_dir.mkdir(parents=True, exist_ok=True)
+        self.persistence_dir.chmod(_DIR_MODE)
 
         data = settings.model_dump(mode="json", context={"expose_secrets": True})
 
@@ -143,9 +187,7 @@ class FileSettingsStore(SettingsStore):
                         self.cipher, api_key
                     )
 
-        with self._path.open("w") as f:
-            json.dump(data, f, indent=2)
-
+        _atomic_write_json(self._path, data)
         logger.debug(f"Settings saved to {self._path}")
 
 
@@ -154,6 +196,12 @@ class FileSecretsStore(SecretsStore):
 
     Stores secrets as encrypted JSON in a configurable directory.
     All secret values are encrypted using the provided cipher.
+
+    Security features:
+        - Files created with owner-only permissions (0o600)
+        - Directory created with owner-only permissions (0o700)
+        - Atomic writes to prevent corruption
+        - File locking to prevent race conditions
     """
 
     def __init__(
@@ -166,6 +214,7 @@ class FileSecretsStore(SecretsStore):
         self.cipher = cipher
         self.filename = filename
         self._path = self.persistence_dir / filename
+        self._lock_path = self.persistence_dir / ".secrets.lock"
 
     def load(self) -> Secrets | None:
         """Load secrets from file."""
@@ -174,7 +223,7 @@ class FileSecretsStore(SecretsStore):
             return None
 
         try:
-            with self._path.open("r") as f:
+            with self._path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
             # Decrypt all secret values
@@ -187,13 +236,14 @@ class FileSecretsStore(SecretsStore):
                             secret_data["secret"] = decrypted or ""
 
             return Secrets.model_validate(data)
-        except Exception as e:
-            logger.error(f"Failed to load secrets: {e}")
+        except Exception:
+            logger.error("Failed to load secrets", exc_info=True)
             return None
 
     def save(self, secrets: Secrets) -> None:
-        """Save secrets to file."""
+        """Save secrets to file atomically with secure permissions."""
         self.persistence_dir.mkdir(parents=True, exist_ok=True)
+        self.persistence_dir.chmod(_DIR_MODE)
 
         data = secrets.model_dump(mode="json", context={"expose_secrets": True})
 
@@ -205,9 +255,7 @@ class FileSecretsStore(SecretsStore):
                     if value:
                         secret_data["secret"] = _encrypt_value(self.cipher, value)
 
-        with self._path.open("w") as f:
-            json.dump(data, f, indent=2)
-
+        _atomic_write_json(self._path, data)
         logger.debug(f"Secrets saved to {self._path}")
 
     def get_secret(self, name: str) -> str | None:
@@ -219,29 +267,31 @@ class FileSecretsStore(SecretsStore):
         return secret.secret.get_secret_value() if secret else None
 
     def set_secret(self, name: str, value: str, description: str | None = None) -> None:
-        """Set a single secret."""
-        secrets = self.load() or Secrets()
+        """Set a single secret with file locking to prevent race conditions."""
+        with _file_lock(self._lock_path):
+            secrets = self.load() or Secrets()
 
-        # Create new secrets dict with updated value
-        new_secrets = dict(secrets.custom_secrets)
-        new_secrets[name] = CustomSecret(
-            name=name,
-            secret=SecretStr(value),
-            description=description,
-        )
+            # Create new secrets dict with updated value
+            new_secrets = dict(secrets.custom_secrets)
+            new_secrets[name] = CustomSecret(
+                name=name,
+                secret=SecretStr(value),
+                description=description,
+            )
 
-        # Save with frozen model copy
-        self.save(Secrets(custom_secrets=new_secrets))
+            # Save with frozen model copy
+            self.save(Secrets(custom_secrets=new_secrets))
 
     def delete_secret(self, name: str) -> bool:
-        """Delete a secret. Returns True if it existed."""
-        secrets = self.load()
-        if secrets is None or name not in secrets.custom_secrets:
-            return False
+        """Delete a secret with file locking. Returns True if it existed."""
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None or name not in secrets.custom_secrets:
+                return False
 
-        new_secrets = {k: v for k, v in secrets.custom_secrets.items() if k != name}
-        self.save(Secrets(custom_secrets=new_secrets))
-        return True
+            new_secrets = {k: v for k, v in secrets.custom_secrets.items() if k != name}
+            self.save(Secrets(custom_secrets=new_secrets))
+            return True
 
 
 # ── Global Store Access ──────────────────────────────────────────────────
