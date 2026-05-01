@@ -3,6 +3,8 @@ import threading
 import time
 from typing import TYPE_CHECKING, Literal
 
+from libtmux.exc import LibTmuxException
+
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
@@ -35,6 +37,10 @@ logger = get_logger(__name__)
 # Environment variable names must be alphanumeric + underscores, starting with
 # a letter or underscore. This guards against shell injection via key names.
 _ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _is_tmux_server_unavailable(exc: Exception) -> bool:
+    return isinstance(exc, LibTmuxException) and "no server running" in str(exc)
 
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
@@ -71,6 +77,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._username = username
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._terminal_type = terminal_type
+        self._max_panes = max_panes
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -165,6 +172,60 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 session._closed = True
                 # Also mark the terminal so the pooled close() is a no-op
                 terminal._closed = True
+
+    def _discard_all_pooled_sessions(self) -> None:
+        """Mark cached pooled sessions closed before dropping references."""
+        with self._sessions_lock:
+            for session in self._sessions.values():
+                session._closed = True
+                session.terminal._closed = True
+            self._sessions.clear()
+
+    def _reset_pooled_pool(self) -> TerminalObservation:
+        """Recreate the pooled tmux session from scratch."""
+        assert self._pool is not None
+        self._discard_all_pooled_sessions()
+        self._pool.close()
+        self._pool = TmuxPanePool(
+            self._working_dir,
+            self._username,
+            max_panes=self._max_panes,
+        )
+        self._pool.initialize()
+
+        logger.info(
+            "Terminal pane pool reset successfully with working_dir: %s",
+            self._working_dir,
+        )
+        return TerminalObservation.from_text(
+            text=self._RESET_TEXT,
+            command="[RESET]",
+            exit_code=0,
+        )
+
+    def _compose_reset_observation(
+        self,
+        reset_result: TerminalObservation,
+        action: TerminalAction,
+        conversation: "LocalConversation | None",
+    ) -> TerminalObservation:
+        if not action.command.strip():
+            return self._mask_observation(reset_result, conversation)
+
+        command_action = TerminalAction(
+            command=action.command,
+            timeout=action.timeout,
+            is_input=False,
+        )
+        observation = self._execute_pooled(command_action, conversation)
+        return observation.model_copy(
+            update={
+                "content": [
+                    TextContent(text=f"{reset_result.text}\n\n{observation.text}")
+                ],
+                "command": f"[RESET] {action.command}",
+            }
+        )
 
     @staticmethod
     def _prepare_pooled_session(session: TerminalSession) -> None:
@@ -321,6 +382,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
 
     def reset(self) -> TerminalObservation:
         """Public reset – delegates to the appropriate backend."""
+        if self._pool is not None:
+            return self._reset_pooled_pool()
         return self._reset_single_session()
 
     def _reset_single_session(self) -> TerminalObservation:
@@ -411,23 +474,18 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         managed by the pool's context manager so there is exactly one
         checkout and one checkin per call.
         """
-        with self._pool.pane() as handle:  # type: ignore[union-attr]
+        assert self._pool is not None
+
+        with self._pool.pane() as handle:
             reset_text: str | None = None
 
             if action.reset or handle.terminal._closed:
                 self._discard_session(handle.terminal)
-                handle.terminal = self._pool.replace(handle.terminal)  # type: ignore[union-attr]
+                handle.terminal = self._pool.replace(handle.terminal)
                 reset_text = self._RESET_TEXT
                 logger.info(
                     f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
                 )
-
-                if not action.command.strip():
-                    return TerminalObservation.from_text(
-                        text=reset_text,
-                        command="[RESET]",
-                        exit_code=0,
-                    )
 
             session = self._wrap_session(handle.terminal)
             self._prepare_pooled_session(session)
@@ -465,7 +523,31 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             raise ValueError("Cannot use reset=True with is_input=True")
 
         if self._pool is not None:
-            return self._execute_pooled(action, conversation)
+            try:
+                return self._execute_pooled(action, conversation)
+            except Exception as exc:
+                if not _is_tmux_server_unavailable(exc):
+                    raise
+                logger.warning(
+                    "Tmux server became unavailable; recreating terminal pane pool",
+                    exc_info=True,
+                )
+                reset_result = self._reset_pooled_pool()
+                if action.reset:
+                    return self._compose_reset_observation(
+                        reset_result,
+                        action,
+                        conversation,
+                    )
+                return TerminalObservation.from_text(
+                    text=(
+                        "Terminal session became unavailable and has been reset. "
+                        "Please rerun the command if needed."
+                    ),
+                    command=action.command,
+                    exit_code=-1,
+                    is_error=True,
+                )
         else:
             return self._execute_single_session(action, conversation)
 

@@ -33,6 +33,13 @@ logger = get_logger(__name__)
 DEFAULT_MAX_PANES: Final[int] = 4
 
 
+def _safe_pane_id(terminal: PooledTmuxTerminal) -> str:
+    try:
+        return str(terminal.pane.pane_id)
+    except Exception:
+        return "<unavailable>"
+
+
 class PooledTmuxTerminal(TmuxTerminal):
     """A TmuxTerminal variant used inside a pane pool.
 
@@ -197,7 +204,9 @@ class TmuxPanePool:
         terminal._initialized = True
         terminal.clear_screen()
 
-        logger.debug(f"Created pooled pane #{len(self._all_panes)}: {active_pane}")
+        logger.debug(
+            f"Created pooled pane #{len(self._all_panes)}: {active_pane.pane_id}"
+        )
         return terminal
 
     def checkout(self, timeout: float | None = None) -> PooledTmuxTerminal:
@@ -226,13 +235,13 @@ class TmuxPanePool:
         with self._lock:
             if self._available:
                 terminal = self._available.popleft()
-                logger.debug(f"Checked out existing pane: {terminal.pane}")
+                logger.debug(f"Checked out existing pane: {_safe_pane_id(terminal)}")
                 return terminal
 
             # Create a new pane (still under max_panes thanks to semaphore)
             terminal = self._create_pane()
             self._all_panes.append(terminal)
-            logger.debug(f"Checked out new pane: {terminal.pane}")
+            logger.debug(f"Checked out new pane: {_safe_pane_id(terminal)}")
             return terminal
 
     def checkin(self, terminal: PooledTmuxTerminal) -> None:
@@ -245,7 +254,7 @@ class TmuxPanePool:
                 self._available.append(terminal)
 
         self._semaphore.release()
-        logger.debug(f"Checked in pane: {terminal.pane}")
+        logger.debug(f"Checked in pane: {_safe_pane_id(terminal)}")
 
     def replace(self, old_terminal: PooledTmuxTerminal) -> PooledTmuxTerminal:
         """Replace a checked-out pane with a fresh one.
@@ -268,8 +277,8 @@ class TmuxPanePool:
                 self._available.remove(old_terminal)
 
         # Capture IDs before killing (repr would fail after kill).
-        old_pane_id = old_terminal.pane.pane_id
-        new_pane_id = new_terminal.pane.pane_id
+        old_pane_id = _safe_pane_id(old_terminal)
+        new_pane_id = _safe_pane_id(new_terminal)
 
         # Only destroy the old terminal's window — NOT terminal.close()
         # which would kill the entire shared tmux session.

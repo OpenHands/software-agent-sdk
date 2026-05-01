@@ -109,3 +109,79 @@ class TestConcurrentExecution:
         assert elapsed < serial_time, (
             f"Expected parallel execution under {serial_time}s, took {elapsed:.1f}s"
         )
+
+
+def test_explicit_reset_recovers_after_tmux_server_exits(tmp_path, monkeypatch):
+    """A killed tmux server should not make reset=True unusable."""
+    tmux_tmpdir = tmp_path / "tmux"
+    tmux_tmpdir.mkdir()
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmux_tmpdir))
+
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        terminal_type="tmux",
+        max_panes=1,
+    )
+    try:
+        timed_out = executor(
+            TerminalAction(
+                command="tmux -L openhands kill-server; sleep 10",
+                timeout=1,
+            )
+        )
+        assert timed_out.exit_code == -1
+        assert timed_out.metadata is not None
+        assert "timed out after 1" in timed_out.metadata.suffix
+
+        recovered = executor(
+            TerminalAction(command="echo recovered", reset=True, timeout=5)
+        )
+        assert recovered.exit_code == 0
+        assert "Terminal session has been reset" in recovered.text
+        assert "recovered" in recovered.text
+    finally:
+        executor.close()
+
+
+def test_explicit_reset_does_not_interrupt_other_pooled_panes(
+    tmp_path,
+    monkeypatch,
+):
+    """A normal reset should replace one pane, not the whole pool."""
+    tmux_tmpdir = tmp_path / "tmux-normal-reset"
+    tmux_tmpdir.mkdir()
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmux_tmpdir))
+
+    executor = TerminalExecutor(
+        working_dir=str(tmp_path),
+        terminal_type="tmux",
+        max_panes=2,
+    )
+    errors: list[Exception] = []
+    results: list[str] = []
+
+    def run_long_command() -> None:
+        try:
+            obs = executor(
+                TerminalAction(command="sleep 2 && echo still_running", timeout=5)
+            )
+            results.append(obs.text)
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_long_command)
+    thread.start()
+    time.sleep(0.5)
+    try:
+        reset = executor(
+            TerminalAction(command="echo reset_done", reset=True, timeout=5)
+        )
+        thread.join(timeout=6)
+
+        assert reset.exit_code == 0
+        assert "reset_done" in reset.text
+        assert not thread.is_alive()
+        assert not errors
+        assert results == ["still_running"]
+    finally:
+        executor.close()
