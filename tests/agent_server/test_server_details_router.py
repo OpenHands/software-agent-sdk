@@ -50,37 +50,15 @@ def test_ready_resets_after_new_event(client):
     assert response.status_code == 503
 
 
-def test_server_info_filters_browser_tool_when_unavailable(
-    client, monkeypatch: pytest.MonkeyPatch
-):
+def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatch):
+    """/server_info should expose the registry-filtered usable tool list."""
     monkeypatch.setattr(
         sdr,
-        "list_registered_tools",
-        lambda: ["terminal", "file_editor", "browser_tool_set"],
+        "list_usable_tools",
+        lambda: ["terminal", "file_editor"],
     )
-    monkeypatch.setattr(sdr, "_browser_tool_available", lambda: False)
 
     response = client.get("/server_info")
 
     assert response.status_code == 200
     assert response.json()["available_tools"] == ["terminal", "file_editor"]
-
-
-def test_server_info_keeps_browser_tool_when_available(
-    client, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(
-        sdr,
-        "list_registered_tools",
-        lambda: ["terminal", "file_editor", "browser_tool_set"],
-    )
-    monkeypatch.setattr(sdr, "_browser_tool_available", lambda: True)
-
-    response = client.get("/server_info")
-
-    assert response.status_code == 200
-    assert response.json()["available_tools"] == [
-        "terminal",
-        "file_editor",
-        "browser_tool_set",
-    ]
