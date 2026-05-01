@@ -20,6 +20,8 @@ from .repo import CloneResult, RepoMapping, RepoSource, clone_repos, get_repos_c
 
 if TYPE_CHECKING:
     from openhands.sdk.context import AgentContext
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.secret import LookupSecret
     from openhands.sdk.skills import Skill
 
 
@@ -30,6 +32,9 @@ AGENT_SERVER = "AGENT_SERVER"
 
 # Number of retry attempts for transient API failures
 _MAX_RETRIES = 3
+
+# Default port the agent-server listens on inside a Cloud Runtime
+DEFAULT_AGENT_SERVER_PORT = 60000
 
 
 def _is_retryable_error(error: BaseException) -> bool:
@@ -43,10 +48,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     """Remote workspace using OpenHands Cloud API.
 
     This workspace connects to OpenHands Cloud (app.all-hands.dev) to provision
-    and manage sandboxed environments for agent execution. After the sandbox
-    is provisioned, it inherits all settings methods from ``RemoteWorkspace``
-    (``get_llm()``, ``get_secrets()``, ``get_mcp_config()``) which fetch
-    configuration from the agent-server's persisted settings.
+    and manage sandboxed environments for agent execution.
+
+    When ``local_agent_server_mode=True``, the workspace assumes it is already
+    running inside an OpenHands Cloud Runtime sandbox.  Instead of creating or
+    managing a sandbox via the Cloud API it connects directly to the local
+    agent-server at ``http://localhost:<agent_server_port>``.
 
     Example:
         workspace = OpenHandsCloudWorkspace(
@@ -61,10 +68,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             sandbox_spec_id="ghcr.io/openhands/agent-server:main-python",
         )
 
-    Note:
-        If you're running **inside** an OpenHands Cloud Runtime and want to
-        access settings from the local agent-server, use ``RemoteWorkspace``
-        directly with ``host="http://localhost:60000"``.
+        # Running inside an OpenHands Cloud Runtime (local agent-server mode)
+        workspace = OpenHandsCloudWorkspace(
+            local_agent_server_mode=True,
+            cloud_api_url="https://app.all-hands.dev",
+            cloud_api_key=os.environ["OPENHANDS_API_KEY"],
+        )
     """
 
     # Parent fields
@@ -77,12 +86,36 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         description=("The agent server URL. Set automatically after sandbox starts."),
     )
 
+    # Local agent-server mode
+    local_agent_server_mode: bool = Field(
+        default=False,
+        description=(
+            "When True, assume the SDK is running inside an OpenHands Cloud "
+            "Runtime and connect to the local agent-server instead of "
+            "provisioning a sandbox via the Cloud API."
+        ),
+    )
+    agent_server_port: int = Field(
+        default=DEFAULT_AGENT_SERVER_PORT,
+        description=(
+            "Port of the local agent-server. "
+            "Only used when local_agent_server_mode=True."
+        ),
+    )
+
     # Cloud API fields
     cloud_api_url: str = Field(
-        description="Base URL of OpenHands Cloud API (e.g., https://app.all-hands.dev).",
+        description=(
+            "Base URL of OpenHands Cloud API "
+            "(e.g., https://app.all-hands.dev). "
+            "Required in all modes — used for get_llms / get_secrets."
+        ),
     )
     cloud_api_key: str = Field(
-        description="API key for authenticating with OpenHands Cloud.",
+        description=(
+            "API key for authenticating with OpenHands Cloud. "
+            "Required in all modes — used for get_llms / get_secrets."
+        ),
     )
     sandbox_spec_id: str | None = Field(
         default=None,
@@ -192,12 +225,68 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def model_post_init(self, context: Any) -> None:
         """Set up the sandbox and initialize the workspace."""
         self.cloud_api_url = self.cloud_api_url.rstrip("/")
-        try:
-            self._start_sandbox()
-            super().model_post_init(context)
-        except Exception:
-            self.cleanup()
-            raise
+
+        if self.local_agent_server_mode:
+            self._init_local_agent_server_mode()
+        else:
+            try:
+                self._start_sandbox()
+                super().model_post_init(context)
+            except Exception:
+                self.cleanup()
+                raise
+
+    def _init_local_agent_server_mode(self) -> None:
+        """Initialize in local agent-server mode — connect to local agent-server.
+
+        Reads sandbox identity and automation callback settings from
+        environment variables so that ``get_llm()`` and ``get_secrets()``
+        can call the Cloud API's sandbox-scoped settings endpoints.
+
+        Expected env vars (injected by the automation dispatcher):
+          ``SANDBOX_ID``                — this sandbox's Cloud API identifier
+          ``SESSION_API_KEY``           — session key for sandbox settings auth
+          ``AUTOMATION_CALLBACK_URL``   — completion callback endpoint (optional)
+          ``AUTOMATION_RUN_ID``         — run ID for callback payload (optional)
+
+        Falls back to ``OH_SESSION_API_KEYS_0`` (set by the runtime)
+        if ``SESSION_API_KEY`` is not present.
+        """
+        port = os.environ.get("AGENT_SERVER_PORT", str(self.agent_server_port))
+        self.host = f"http://localhost:{port}"
+        logger.info(
+            f"Local agent-server mode: connecting to agent-server at {self.host}"
+        )
+
+        # Discover sandbox identity from env vars
+        self._sandbox_id = self.sandbox_id or os.environ.get("SANDBOX_ID")
+        self._session_api_key = os.environ.get(
+            "SESSION_API_KEY", os.environ.get("OH_SESSION_API_KEYS_0")
+        )
+
+        # Automation callback settings from env vars
+        self._automation_callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
+        self._automation_run_id = os.environ.get("AUTOMATION_RUN_ID")
+
+        if not self._sandbox_id:
+            logger.warning(
+                "SANDBOX_ID env var not set — get_llm()/get_secrets() "
+                "will not work. Set SANDBOX_ID or pass sandbox_id= to "
+                "the constructor."
+            )
+        if not self._session_api_key:
+            logger.warning(
+                "SESSION_API_KEY env var not set — sandbox settings "
+                "API calls will fail."
+            )
+
+        # Propagate to RemoteWorkspaceMixin.api_key so the shared HTTP
+        # client (used by RemoteConversation) includes X-Session-API-Key.
+        self.api_key = self._session_api_key
+
+        self.reset_client()
+        # Trigger parent mixin init (strips trailing slash, etc.)
+        super().model_post_init(None)
 
     def _start_sandbox(self) -> None:
         """Start a new sandbox or resume an existing one via Cloud API.
@@ -413,7 +502,26 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         return response
 
     def cleanup(self) -> None:
-        """Clean up the sandbox by deleting it."""
+        """Clean up the sandbox by deleting it.
+
+        In local agent-server mode the sandbox is managed externally, so only
+        the HTTP client is closed.
+        """
+        # Guard against __del__ on partially-constructed instances
+        # (e.g. when validation fails before all fields are initialised).
+        try:
+            local_mode = self.local_agent_server_mode
+        except AttributeError:
+            return
+
+        if local_mode:
+            try:
+                if self._client:
+                    self._client.close()
+            except Exception:
+                pass
+            return
+
         if not self._sandbox_id:
             return
 
@@ -442,9 +550,252 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             except Exception:
                 pass
 
-    # Settings methods (get_llm, get_secrets, get_mcp_config) are inherited
-    # from RemoteWorkspace, which fetches from the agent-server's /api/settings
-    # endpoints after the sandbox is provisioned.
+    # -----------------------------------------------------------------
+    # Settings helpers
+    # -----------------------------------------------------------------
+
+    @property
+    def _settings_base_url(self) -> str:
+        """Base URL for sandbox-scoped settings endpoints."""
+        return f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}/settings"
+
+    @property
+    def _session_headers(self) -> dict[str, str]:
+        """Headers for settings requests (SESSION_API_KEY auth)."""
+        return {"X-Session-API-Key": self._session_api_key or ""}
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_llm(self, **llm_kwargs: Any) -> LLM:
+        """Fetch LLM settings from the user's SaaS account and return an LLM.
+
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's LLM configuration (model, api_key, base_url) and returns a
+        fully usable ``LLM`` instance.  Retries up to 3 times on transient
+        errors (network issues, server 5xx).
+
+        Args:
+            **llm_kwargs: Additional keyword arguments passed to the LLM
+                constructor, allowing overrides of any LLM parameter
+                (e.g. ``model``, ``temperature``).
+
+        Returns:
+            An LLM instance configured with the user's SaaS credentials.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     agent = Agent(llm=llm, tools=get_default_tools())
+        """
+        from openhands.sdk.llm.llm import LLM
+
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": self._session_api_key or ""},
+        )
+        data = resp.json()
+
+        kwargs: dict[str, Any] = {}
+        if data.get("llm_model"):
+            kwargs["model"] = data["llm_model"]
+        if data.get("llm_api_key"):
+            kwargs["api_key"] = data["llm_api_key"]
+        if data.get("llm_base_url"):
+            kwargs["base_url"] = data["llm_base_url"]
+
+        # User-provided kwargs take precedence
+        kwargs.update(llm_kwargs)
+
+        return LLM(**kwargs)
+
+    def get_secrets(self, names: list[str] | None = None) -> dict[str, LookupSecret]:
+        """Build ``LookupSecret`` references for the user's SaaS secrets.
+
+        Fetches the list of available secret **names** from the SaaS (no raw
+        values) and returns a dict of ``LookupSecret`` objects whose URLs
+        point to per-secret endpoints.  The agent-server resolves each
+        ``LookupSecret`` lazily, so raw values **never** transit through
+        the SDK client.
+
+        The returned dict is compatible with ``conversation.update_secrets()``.
+
+        Args:
+            names: Optional list of secret names to include. If ``None``,
+                all available secrets are returned.
+
+        Returns:
+            A dictionary mapping secret names to ``LookupSecret`` instances.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     secrets = workspace.get_secrets()
+            ...     conversation.update_secrets(secrets)
+            ...
+            ...     # Or a subset
+            ...     gh = workspace.get_secrets(names=["GITHUB_TOKEN"])
+            ...     conversation.update_secrets(gh)
+        """
+        from openhands.sdk.secret import LookupSecret
+
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_settings_request("GET", f"{self._settings_base_url}/secrets")
+        data = resp.json()
+
+        result: dict[str, LookupSecret] = {}
+        for item in data.get("secrets", []):
+            name = item["name"]
+            if names is not None and name not in names:
+                continue
+            result[name] = LookupSecret(
+                url=f"{self._settings_base_url}/secrets/{name}",
+                headers={"X-Session-API-Key": self._session_api_key or ""},
+                description=item.get("description"),
+            )
+
+        return result
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_mcp_config(self) -> dict[str, Any]:
+        """Fetch MCP configuration from the user's SaaS account.
+
+        Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
+        and transforms it into the format expected by the SDK Agent and
+        ``fastmcp.mcp_config.MCPConfig``.
+
+        Returns:
+            A dictionary with ``mcpServers`` key containing server configurations
+            (compatible with ``MCPConfig.model_validate()``), or an empty dict
+            if no MCP config is set.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the sandbox is not running.
+
+        Example:
+            >>> with OpenHandsCloudWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     mcp_config = workspace.get_mcp_config()
+            ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
+            ...
+            ...     # Or validate as MCPConfig:
+            ...     from fastmcp.mcp_config import MCPConfig
+            ...     config = MCPConfig.model_validate(mcp_config)
+        """
+        if not self._sandbox_id:
+            raise RuntimeError("Sandbox is not running")
+
+        resp = self._send_api_request(
+            "GET",
+            f"{self.cloud_api_url}/api/v1/users/me",
+            headers={"X-Session-API-Key": self._session_api_key or ""},
+        )
+        data = resp.json()
+
+        mcp_config_data = data.get("mcp_config")
+        if not mcp_config_data:
+            return {}
+
+        mcp_servers: dict[str, dict[str, Any]] = {}
+
+        # Transform SSE servers → RemoteMCPServer format
+        for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
+            server_config: dict[str, Any] = {
+                "url": sse_server["url"],
+                "transport": "sse",
+            }
+            if sse_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {sse_server['api_key']}"
+                }
+            server_name = f"sse_{i}"
+            mcp_servers[server_name] = server_config
+
+        # Transform SHTTP servers → RemoteMCPServer format
+        for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
+            server_config = {
+                "url": shttp_server["url"],
+                "transport": "streamable-http",
+            }
+            if shttp_server.get("api_key"):
+                server_config["headers"] = {
+                    "Authorization": f"Bearer {shttp_server['api_key']}"
+                }
+            if shttp_server.get("timeout"):
+                server_config["timeout"] = shttp_server["timeout"]
+            server_name = f"shttp_{i}"
+            mcp_servers[server_name] = server_config
+
+        # Transform STDIO servers → StdioMCPServer format
+        for stdio_server in mcp_config_data.get("stdio_servers") or []:
+            server_config = {
+                "command": stdio_server["command"],
+                "args": stdio_server.get("args", []),
+            }
+            if stdio_server.get("env"):
+                server_config["env"] = stdio_server["env"]
+            # STDIO servers have an explicit name field
+            mcp_servers[stdio_server["name"]] = server_config
+
+        if not mcp_servers:
+            return {}
+
+        return {"mcpServers": mcp_servers}
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def _send_settings_request(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        """Send a request to sandbox settings endpoints (SESSION_API_KEY auth).
+
+        Retries up to 3 times on transient errors (network issues, server 5xx).
+        """
+        headers = kwargs.pop("headers", {})
+        headers.update(self._session_headers)
+
+        timeout = kwargs.pop("timeout", self.api_timeout)
+        with httpx.Client(timeout=timeout) as api_client:
+            response = api_client.request(method, url, headers=headers, **kwargs)
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            try:
+                error_detail = response.json()
+                logger.error(f"Settings request failed: {error_detail}")
+            except Exception:
+                logger.error(f"Settings request failed: {response.text}")
+            raise
+
+        return response
 
     def register_conversation(self, conversation_id: str) -> None:
         """Register a conversation ID with this workspace.
@@ -519,7 +870,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     # --- Repository Cloning Methods ---
 
     def _get_secret_value(self, name: str) -> str | None:
-        """Fetch a secret value directly from the agent-server settings API.
+        """Fetch a secret value directly from the sandbox settings API.
 
         Unlike get_secrets() which returns LookupSecret references, this method
         fetches the actual secret value for use in operations like git cloning.
@@ -531,6 +882,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Returns:
             The secret value as a string, or None if not found or an error occurred.
         """
+        if not self._sandbox_id or not self._session_api_key:
+            return None
+
         # Validate secret name to prevent path traversal
         if not name or "/" in name or ".." in name:
             logger.warning(f"Invalid secret name: {name}")
@@ -544,11 +898,12 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             reraise=True,
         )
         def _fetch_secret() -> httpx.Response:
-            return self.client.get(f"/api/settings/secrets/{name}")
+            return self._send_settings_request(
+                "GET", f"{self._settings_base_url}/secrets/{name}"
+            )
 
         try:
             resp = _fetch_secret()
-            resp.raise_for_status()
             return resp.text
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
