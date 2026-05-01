@@ -123,6 +123,8 @@ When reviewing code, provide constructive feedback:
 
 - Remote workspace git operations should call `/api/git/changes` and `/api/git/diff` via the `path` query parameter with slash-normalized strings; building those URLs with `pathlib.Path` leaks host-platform separators and breaks Windows paths. The grep tool now prefers `rg`, then system `grep`, then Python; both the real grep executor and the SDK's terminal-command compatibility fallback should keep that order. For grep parity, the Python fallback should hide dotfiles by default but still let explicit `include` globs surface files like `.env`, matching ripgrep. For glob parity, any symlink-preservation regression test should force the Python fallback path, because ripgrep availability changes whether the fallback implementation runs at all.
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
+- Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
+
 
 
 

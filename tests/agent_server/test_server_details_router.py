@@ -48,3 +48,17 @@ def test_ready_resets_after_new_event(client):
     sdr._initialization_complete = asyncio.Event()
     response = client.get("/ready")
     assert response.status_code == 503
+
+
+def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatch):
+    """/server_info should expose the registry-filtered usable tool list."""
+    monkeypatch.setattr(
+        sdr,
+        "list_usable_tools",
+        lambda: ["terminal", "file_editor"],
+    )
+
+    response = client.get("/server_info")
+
+    assert response.status_code == 200
+    assert response.json()["usable_tools"] == ["terminal", "file_editor"]

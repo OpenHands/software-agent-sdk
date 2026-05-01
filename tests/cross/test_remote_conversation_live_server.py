@@ -1497,6 +1497,16 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
     conv.close()
 
 
+def test_server_info_exposes_usable_tools(server_env):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get("/server_info", timeout=10.0)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload.get("usable_tools"), list)
+    assert "terminal" in payload["usable_tools"]
+
+
 def test_remote_state_exposes_invoked_skills(
     server_env,
     monkeypatch: pytest.MonkeyPatch,

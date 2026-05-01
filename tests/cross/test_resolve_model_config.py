@@ -644,3 +644,12 @@ def test_gpt_5_5_config():
     assert model["display_name"] == "GPT-5.5"
     assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.5"
     assert model["llm_config"]["reasoning_effort"] == "high"
+
+
+def test_deepseek_v4_flash_config():
+    """Test that deepseek-v4-flash has correct configuration."""
+    model = MODELS["deepseek-v4-flash"]
+
+    assert model["id"] == "deepseek-v4-flash"
+    assert model["display_name"] == "DeepSeek V4 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
