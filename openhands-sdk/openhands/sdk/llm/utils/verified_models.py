@@ -1,4 +1,5 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
@@ -95,6 +96,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-7",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.2",
     "gpt-5.2-codex",
