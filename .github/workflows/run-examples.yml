@@ -30,7 +30,7 @@ jobs:
               if: github.event_name == 'pull_request'
               uses: lewagon/wait-on-check-action@v1.7.0
               with:
-                  ref: ${{ github.event.pull_request.head.ref }}
+                  ref: ${{ github.event.pull_request.head.sha }}
                   check-name: Build & Push (python-amd64)
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
                   wait-interval: 10
@@ -38,7 +38,7 @@ jobs:
             - name: Checkout
               uses: actions/checkout@v6
               with:
-                  ref: ${{ github.event.pull_request.head.ref }}
+                  ref: ${{ github.event.pull_request.head.sha }}
                   repository: ${{ github.event.pull_request.head.repo.full_name }}
 
             - name: Install uv
