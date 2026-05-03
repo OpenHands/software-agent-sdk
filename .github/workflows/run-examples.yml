@@ -27,7 +27,11 @@ jobs:
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
-              if: github.event_name == 'pull_request'
+              # Skip for fork PRs — the Build & Push job is skipped for forks
+              # (they cannot push to GHCR), so this check would never appear.
+              if: >
+                  github.event_name == 'pull_request' &&
+                  !github.event.pull_request.head.repo.fork
               uses: lewagon/wait-on-check-action@v1.7.0
               with:
                   ref: ${{ github.event.pull_request.head.sha }}
