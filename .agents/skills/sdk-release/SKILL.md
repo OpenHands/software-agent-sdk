@@ -163,7 +163,6 @@ When the release PR is merged, the following happens automatically:
    - `openhands-agent-server`
 3. **`version-bump-prs.yml`** triggers after successful PyPI publish and
    creates downstream version bump PRs.
-4. **Slack notification** is sent automatically by the version-bump workflow.
 
 ### ⏸ Checkpoint — Verify PyPI Publication
 
@@ -176,6 +175,10 @@ done
 ```
 
 All should return `200`.
+
+## Phase 7: Post-Release Announcements
+
+Send a Slack notification to announce the release. This is a human step.
 
 See `references/post-release-checklist.md` for details on reviewing
 downstream PRs and handling any issues.
@@ -194,3 +197,4 @@ downstream PRs and handling any issues.
 - [ ] _(Automated)_ Packages published to PyPI
 - [ ] _(Automated)_ Downstream version bump PRs created
 - [ ] Verify packages appear on PyPI
+- [ ] Send Slack notification announcing the release
