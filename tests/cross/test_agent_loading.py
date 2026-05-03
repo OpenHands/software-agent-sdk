@@ -1,5 +1,6 @@
 """Test agent loading (conversation restart) behavior."""
 
+import sys
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -20,6 +21,12 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import get_default_agent
 from openhands.tools.terminal import TerminalTool
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
 
 
 register_tool("TerminalTool", TerminalTool)

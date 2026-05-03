@@ -34,7 +34,8 @@ def _sigterm_handler(signum: int, _frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
-signal.signal(signal.SIGALRM, _sigterm_handler)
+if sigalrm := getattr(signal, "SIGALRM", None):
+    signal.signal(sigalrm, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
@@ -69,6 +70,15 @@ MODELS = {
             "model": "litellm_proxy/moonshot/kimi-k2.5",
             "temperature": 1.0,
             "top_p": 0.95,
+        },
+    },
+    # https://www.kimi.com/blog/kimi-k2-6
+    "kimi-k2.6": {
+        "id": "kimi-k2.6",
+        "display_name": "Kimi K2.6",
+        "llm_config": {
+            "model": "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc",
+            "temperature": 1.0,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
@@ -110,6 +120,13 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-opus-4-6",
             "temperature": 0.0,
+        },
+    },
+    "claude-opus-4-7": {
+        "id": "claude-opus-4-7",
+        "display_name": "Claude Opus 4.7",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-7",
         },
     },
     "claude-sonnet-4-6": {
@@ -167,6 +184,14 @@ MODELS = {
             "reasoning_effort": "high",
         },
     },
+    "gpt-5.5": {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.5",
+            "reasoning_effort": "high",
+        },
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
@@ -206,6 +231,12 @@ MODELS = {
         "display_name": "DeepSeek V3.2 Reasoner",
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
+    # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"},
+    },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
@@ -239,6 +270,16 @@ MODELS = {
             "model": "litellm_proxy/openrouter/z-ai/glm-5",
             "temperature": 0.0,
             # OpenRouter glm-5 is text-only despite LiteLLM reporting vision support
+            "disable_vision": True,
+        },
+    },
+    "glm-5.1": {
+        "id": "glm-5.1",
+        "display_name": "GLM-5.1",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/z-ai/glm-5.1",
+            "temperature": 0.0,
+            # OpenRouter glm-5.1 is text-only despite LiteLLM reporting vision support
             "disable_vision": True,
         },
     },

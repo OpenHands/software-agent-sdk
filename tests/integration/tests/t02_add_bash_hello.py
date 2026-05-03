@@ -3,8 +3,7 @@
 import os
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool
-from tests.integration.base import BaseIntegrationTest, TestResult, get_tools_for_preset
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 INSTRUCTION = "Write a shell script 'shell/hello.sh' that prints 'hello'."
@@ -21,11 +20,6 @@ class BashHelloTest(BaseIntegrationTest):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.script_path: str = os.path.join(self.workspace, "shell", "hello.sh")
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent based on configured tool preset."""
-        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:
         """Setup is not needed - agent will create directories as needed."""

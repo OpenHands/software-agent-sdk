@@ -1,9 +1,14 @@
 import contextlib
 import json
 import logging
+import os
 import re
+import shlex
+import shutil
+import subprocess
+import textwrap
 import types
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import (
     Annotated,
     Any,
@@ -150,7 +155,7 @@ def fix_malformed_tool_arguments(
                     fixed_arguments[data_key] = parsed_value
             except (json.JSONDecodeError, ValueError):
                 # LLMs sometimes append trailing garbage (e.g. XML tags)
-                # after valid JSON.  Truncate at the last } or ] and retry.
+                # after valid JSON. Truncate at the last } or ] and retry.
                 for end_char in ("}", "]"):
                     idx = value.rfind(end_char)
                     if idx == -1:
@@ -166,8 +171,275 @@ def fix_malformed_tool_arguments(
                             )
                             fixed_arguments[data_key] = parsed_value
                             break
-
     return fixed_arguments
+
+
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "bash": "terminal",
+    "command": "terminal",
+    "execute": "terminal",
+    "execute_bash": "terminal",
+    "str_replace": "file_editor",
+    "str_replace_editor": "file_editor",
+}
+
+# This fallback is intentionally tiny: it only accepts exact, bare command names
+# that are useful as read-only defaults when some models emit them as tool names.
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+
+# Typo normalization for common mistakes in security_risk field
+_SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
+
+
+def _normalize_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common typos and inconsistencies in tool arguments."""
+    normalized = arguments.copy()
+
+    # Fix security_risk typos
+    for typo in _SECURITY_RISK_TYPOS:
+        if typo in normalized:
+            normalized["security_risk"] = normalized.pop(typo)
+            break
+
+    # Remove any arguments that are clearly not valid (None values, etc.)
+    # but keep all others to preserve tool-specific arguments
+    return {k: v for k, v in normalized.items() if v is not None}
+
+
+def parse_tool_call_arguments(raw_arguments: str) -> dict[str, Any]:
+    """Parse tool call arguments, sanitizing raw control chars only on fallback."""
+    try:
+        parsed = json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        sanitized_args = sanitize_json_control_chars(raw_arguments)
+        parsed = json.loads(sanitized_args)
+
+    result = parsed if isinstance(parsed, dict) else {}
+    return _normalize_arguments(result)
+
+
+def _infer_file_editor_command(arguments: dict[str, Any]) -> str | None:
+    if "command" in arguments:
+        return None
+    if "old_str" in arguments:
+        return "str_replace"
+    if "insert_line" in arguments:
+        return "insert"
+    if "file_text" in arguments:
+        return "create"
+    if "path" in arguments:
+        return "view"
+    return None
+
+
+def _has_file_editor_hint(arguments: dict[str, Any]) -> bool:
+    """Check if arguments contain any hint that this is a file_editor call."""
+    file_editor_hints = frozenset(
+        {
+            "old_str",
+            "new_str",
+            "insert_line",
+            "file_text",
+            "path",
+            "view_range",
+        }
+    )
+    return bool(arguments and any(k in arguments for k in file_editor_hints))
+
+
+_GREP_FALLBACK_SCRIPT = textwrap.dedent(
+    """
+    import fnmatch
+    import pathlib
+    import re
+    import sys
+
+    pattern = sys.argv[1]
+    root = pathlib.Path(sys.argv[2])
+    include = sys.argv[3] if len(sys.argv) > 3 else None
+    regex = re.compile(pattern, re.IGNORECASE)
+
+    if root.is_file():
+        candidates = [root]
+    else:
+        candidates = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative_parts = path.relative_to(root).parts
+            except ValueError:
+                relative_parts = (path.name,)
+            if any(part.startswith(".") for part in relative_parts[:-1]):
+                continue
+            if include:
+                if not fnmatch.fnmatch(path.name, include):
+                    continue
+            elif path.name.startswith("."):
+                continue
+            candidates.append(path)
+        candidates.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+
+    for path in candidates:
+        if root.is_file():
+            if include and not fnmatch.fnmatch(path.name, include):
+                continue
+            if not include and path.name.startswith("."):
+                continue
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if regex.search(line):
+                        sys.stdout.write(f"{path}:{line_number}:{line}")
+        except OSError:
+            continue
+    """
+).strip()
+
+
+def _join_shell_command(parts: list[str]) -> str:
+    """Join a command list using the current platform's shell quoting rules."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
+def _build_ripgrep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["rg", "-n", "-i", pattern, search_path, "--sortr=modified"]
+    if include:
+        command_parts.extend(["-g", include])
+    return _join_shell_command(command_parts)
+
+
+def _build_system_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["grep", "-R", "-I", "-n", "-i", pattern, search_path]
+    if include:
+        command_parts.append(f"--include={include}")
+    return _join_shell_command(command_parts)
+
+
+def _build_python_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
+    command_parts.append(search_path)
+    if include:
+        command_parts.append(include)
+    return _join_shell_command(command_parts)
+
+
+def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
+    """Return a portable terminal command for structured grep fallbacks.
+
+    Returning ``None`` keeps malformed grep payloads on the normal "tool not
+    found" path instead of broadening terminal execution.
+    """
+    pattern = arguments.get("pattern")
+    if not isinstance(pattern, str) or not pattern.strip():
+        return None
+
+    path = arguments.get("path")
+    search_path = path if isinstance(path, str) and path.strip() else "."
+
+    include = arguments.get("include")
+    include_pattern = include if isinstance(include, str) and include.strip() else None
+
+    if shutil.which("rg") is not None:
+        return _build_ripgrep_terminal_command(pattern, search_path, include_pattern)
+    if shutil.which("grep") is not None:
+        return _build_system_grep_terminal_command(
+            pattern, search_path, include_pattern
+        )
+    return _build_python_grep_terminal_command(pattern, search_path, include_pattern)
+
+
+def _maybe_rewrite_as_terminal_command(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str | None:
+    """Return a narrow terminal fallback for shell-style tool names.
+
+    Aliases are handled before this helper, so Anthropic-style names like
+    ``str_replace`` normalize to canonical SDK tools instead of being treated as
+    shell commands. This helper only runs for otherwise-unknown names when the
+    agent already exposes ``terminal``.
+    """
+    if tool_name == "grep":
+        return _build_grep_terminal_command(arguments)
+
+    if arguments or tool_name not in _SHELL_TOOL_FALLBACK_COMMANDS:
+        return None
+
+    return tool_name
+
+
+def normalize_tool_call(
+    tool_name: str,
+    arguments: dict[str, Any],
+    available_tools: Collection[str],
+) -> tuple[str, dict[str, Any]]:
+    """Normalize legacy tool names and Anthropic-style argument shapes.
+
+    Precedence is intentional: preserve explicitly registered tools first,
+    then apply legacy aliases for unknown names, terminal fallback only
+    applies to still-unknown names, and file_editor command inference runs
+    after the canonical tool name is known.
+    """
+    normalized_tool_name = tool_name
+    normalized_arguments = arguments.copy()
+
+    # Only apply aliases for tool names that are not explicitly registered.
+    # This prevents hijacking legitimate tools that share names with aliases.
+    if tool_name not in available_tools:
+        alias_target = TOOL_NAME_ALIASES.get(tool_name)
+        if alias_target and alias_target in available_tools:
+            normalized_tool_name = alias_target
+        elif "terminal" in available_tools:
+            terminal_command = _maybe_rewrite_as_terminal_command(
+                tool_name,
+                normalized_arguments,
+            )
+            if terminal_command is not None:
+                normalized_tool_name = "terminal"
+                # Preserve only terminal-relevant arguments (security_risk, summary)
+                # along with the generated command
+                normalized_arguments = {
+                    key: value
+                    for key, value in normalized_arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                normalized_arguments["command"] = terminal_command
+
+    if normalized_tool_name == "file_editor":
+        inferred_command = _infer_file_editor_command(normalized_arguments)
+        if inferred_command is not None:
+            normalized_arguments = {
+                "command": inferred_command,
+                **normalized_arguments,
+            }
+        elif not normalized_arguments or (
+            "command" not in normalized_arguments
+            and not _has_file_editor_hint(normalized_arguments)
+        ):
+            raise ValueError(
+                f"Cannot infer 'command' for tool '{normalized_tool_name}' "
+                f"from empty arguments {normalized_arguments!r}. "
+                f"Expected one of: str_replace, insert, create, view with "
+                f"appropriate arguments (e.g., old_str for str_replace, "
+                f"path for view)."
+            )
+
+    return normalized_tool_name, normalized_arguments
 
 
 @overload

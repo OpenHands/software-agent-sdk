@@ -35,11 +35,14 @@ def register_default_tools(enable_browser: bool = True) -> None:
 
 def get_default_tools(
     enable_browser: bool = True,
+    enable_sub_agents: bool = False,
 ) -> list[Tool]:
     """Get the default set of tool specifications for the standard experience.
 
     Args:
         enable_browser: Whether to include browser tools.
+        enable_sub_agents: Whether to include the TaskToolSet for
+            sub-agent delegation.
     """
     register_default_tools(enable_browser=enable_browser)
 
@@ -57,6 +60,10 @@ def get_default_tools(
         from openhands.tools.browser_use import BrowserToolSet
 
         tools.append(Tool(name=BrowserToolSet.name))
+    if enable_sub_agents:
+        from openhands.tools.task import TaskToolSet
+
+        tools.append(Tool(name=TaskToolSet.name))
     return tools
 
 

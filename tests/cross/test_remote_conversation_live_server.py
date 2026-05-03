@@ -5,6 +5,7 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import sys
 import threading
 import time
 from collections.abc import Generator
@@ -16,7 +17,7 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -32,6 +33,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -138,6 +140,7 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
             "app": app,
             "conversation_service": app.state.conversation_service,
             "host": f"http://127.0.0.1:{port}",
+            "workspace_path": workspace_path,
         }
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
@@ -428,6 +431,10 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
 def test_bash_command_endpoint_with_live_server(server_env):
     """Integration test for bash command execution through live server.
 
@@ -494,7 +501,8 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     test_file.write_text(test_content)
 
     # Define the destination path (must be absolute for the server)
-    destination = "/tmp/test_workspace/uploaded_file.txt"
+    destination = server_env["workspace_path"] / "uploaded_file.txt"
+    destination_remote = destination.as_posix()
 
     # Upload the file
     result = workspace.file_upload(str(test_file), destination)
@@ -507,25 +515,19 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     assert result.source_path == str(test_file), (
         f"Expected source_path to be {test_file}, got {result.source_path}"
     )
-    assert result.destination_path == destination, (
-        f"Expected destination_path to be {destination}, got {result.destination_path}"
+    assert result.destination_path == destination_remote, (
+        f"Expected destination_path to be {destination_remote}, "
+        f"got {result.destination_path}"
     )
 
-    # Verify the file exists at the destination with correct content
-    # Use bash command to check file existence and read content
-    check_cmd = f"test -f {destination} && cat {destination}"
-    check_result = workspace.execute_command(check_cmd, timeout=5.0)
-
-    assert check_result.exit_code == 0, (
-        f"File does not exist at destination or could not be read. "
-        f"Exit code: {check_result.exit_code}, "
-        f"stderr: {check_result.stderr}"
+    downloaded_file = tmp_path / "downloaded_upload.txt"
+    download_result = workspace.file_download(destination, downloaded_file)
+    assert download_result.success is True, (
+        f"File download failed. Error: {download_result.error}, "
+        f"Source: {download_result.source_path}, "
+        f"Destination: {download_result.destination_path}"
     )
-
-    # Verify the content matches what we uploaded
-    assert check_result.stdout == test_content, (
-        f"File content mismatch. Expected:\n{test_content}\nGot:\n{check_result.stdout}"
-    )
+    assert downloaded_file.read_text() == test_content
 
 
 def test_conversation_stats_with_live_server(
@@ -1491,5 +1493,140 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
             timeout=10.0,
         )
         assert resp_404.status_code == 404
+
+    conv.close()
+
+
+def test_server_info_exposes_usable_tools(server_env):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get("/server_info", timeout=10.0)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload.get("usable_tools"), list)
+    assert "terminal" in payload["usable_tools"]
+
+
+def test_remote_state_exposes_invoked_skills(
+    server_env,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """End-to-end coverage for the `invoke_skill` tool on the remote agent-server.
+
+    Patches the LLM to emit an `invoke_skill(name=...)` tool call on the first
+    turn and a stop message on the second, then asserts:
+
+    1. The server records the invocation and `RemoteState.invoked_skills`
+       surfaces it through the REST response model.
+    2. The tool's ObservationEvent includes the location footer with the real
+       skill directory, proving the footer logic works through the remote
+       execution path (skill source resolves on disk server-side).
+    """
+    call_count = {"count": 0}
+
+    # Real on-disk SKILL.md so the footer resolves to a real directory.
+    skill_dir = tmp_path / "frobnitz-converter"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("placeholder")
+
+    def fake_completion(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_invoke",
+                            "type": "function",
+                            "function": {
+                                "name": "invoke_skill",
+                                "arguments": '{"name": "frobnitz-converter"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+    skill = Skill(
+        name="frobnitz-converter",
+        content="Convert frobs to meters.",
+        description="Fake skill for remote-server test.",
+        source=str(skill_md),
+        is_agentskills_format=True,
+    )
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[], agent_context=AgentContext(skills=[skill]))
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    assert conv.state.invoked_skills == []
+
+    conv.send_message("Please run the frobnitz-converter skill.")
+    conv.run()
+
+    # Bust the WS-populated cache so the assertion exercises the REST
+    # `ConversationInfo` response model end-to-end.
+    conv.state.refresh_from_server()
+    assert conv.state.invoked_skills == ["frobnitz-converter"]
+    assert call_count["count"] >= 2, (
+        "Expected the agent to make a follow-up LLM call after the tool "
+        "observation, proving the invoke_skill tool actually executed."
+    )
+
+    # Find the invoke_skill ObservationEvent and confirm the footer points at
+    # the skill's real on-disk directory.
+    skill_observations = [
+        e
+        for e in conv.state.events
+        if isinstance(e, ObservationEvent) and e.tool_name == "invoke_skill"
+    ]
+    assert skill_observations, "No ObservationEvent emitted for invoke_skill"
+    obs_text = skill_observations[-1].observation.text
+    skill_dir_display = skill_dir.resolve().as_posix()
+    assert skill_dir_display in obs_text, (
+        f"Footer missing skill directory {skill_dir_display}: {obs_text!r}"
+    )
+    assert obs_text.rstrip().endswith("relative to that directory.")
 
     conv.close()

@@ -11,6 +11,12 @@ from openhands.sdk.tool.builtins.finish import (
     FinishObservation,
     FinishTool,
 )
+from openhands.sdk.tool.builtins.invoke_skill import (
+    InvokeSkillAction,
+    InvokeSkillExecutor,
+    InvokeSkillObservation,
+    InvokeSkillTool,
+)
 from openhands.sdk.tool.builtins.think import (
     ThinkAction,
     ThinkExecutor,
@@ -19,10 +25,18 @@ from openhands.sdk.tool.builtins.think import (
 )
 
 
+# Tools attached to every agent by default. `InvokeSkillTool` is deliberately
+# *not* here: it's auto-attached by `Agent._initialize` only when an
+# AgentSkills-format skill is loaded (see BUILT_IN_TOOL_CLASSES below).
 BUILT_IN_TOOLS = [FinishTool, ThinkTool]
 
-# Mapping of built-in tool class names to their classes, generated dynamically
-BUILT_IN_TOOL_CLASSES = {tool.__name__: tool for tool in BUILT_IN_TOOLS}
+# Map of built-in tool class names to their classes. Includes
+# `InvokeSkillTool` so it can be resolved by name from `include_default_tools`
+# and the conditional wiring in `Agent._initialize`.
+BUILT_IN_TOOL_CLASSES = {
+    **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
+    InvokeSkillTool.__name__: InvokeSkillTool,
+}
 
 __all__ = [
     "BUILT_IN_TOOLS",
@@ -31,6 +45,10 @@ __all__ = [
     "FinishAction",
     "FinishObservation",
     "FinishExecutor",
+    "InvokeSkillTool",
+    "InvokeSkillAction",
+    "InvokeSkillObservation",
+    "InvokeSkillExecutor",
     "ThinkTool",
     "ThinkAction",
     "ThinkObservation",

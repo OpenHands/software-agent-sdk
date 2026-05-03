@@ -98,11 +98,12 @@ def test_write_file_empty_content(tmp_path):
 def test_declared_resources_locks_on_file_path(fake_conv_state):
     """declared_resources returns a file-path key for per-file locking."""
     tool = WriteFileTool.create(conv_state=fake_conv_state)[0]
-    action = WriteFileAction(file_path="/a/b.py", content="x")
+    absolute_path = Path(fake_conv_state.workspace.working_dir) / "a" / "b.py"
+    action = WriteFileAction(file_path=str(absolute_path), content="x")
     resources = tool.declared_resources(action)
     assert resources.declared is True
     assert len(resources.keys) == 1
-    assert resources.keys[0] == f"file:{Path('/a/b.py').resolve()}"
+    assert resources.keys[0] == f"file:{absolute_path.resolve()}"
 
 
 def test_declared_resources_different_files_different_keys(fake_conv_state):

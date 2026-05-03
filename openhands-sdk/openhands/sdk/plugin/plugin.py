@@ -8,12 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills import Skill
-from openhands.sdk.context.skills.utils import (
-    discover_skill_resources,
-    find_skill_md,
-    load_mcp_config,
-)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.fetch import fetch_plugin
@@ -22,7 +16,14 @@ from openhands.sdk.plugin.types import (
     PluginAuthor,
     PluginManifest,
 )
+from openhands.sdk.skills.skill import Skill
+from openhands.sdk.skills.utils import (
+    discover_skill_resources,
+    find_skill_md,
+    load_mcp_config,
+)
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -325,7 +326,7 @@ class Plugin(BaseModel):
 
         return cls(
             manifest=manifest,
-            path=str(plugin_dir),
+            path=to_posix_path(plugin_dir),
             skills=skills,
             hooks=hooks,
             mcp_config=mcp_config,
@@ -378,7 +379,7 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
     if manifest_path:
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Handle author field - can be string or object
@@ -457,13 +458,24 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
 
 def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
-    """Load MCP configuration from .mcp.json."""
+    """Load MCP configuration from .mcp.json.
+
+    Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
+    is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
+    are preserved as placeholders to be expanded later when per-conversation
+    secrets are available (in LocalConversation._ensure_plugins_loaded()).
+
+    This prevents the double-expansion bug where defaults would be applied
+    during plugin loading before secrets are available.
+    """
     mcp_json = plugin_dir / ".mcp.json"
     if not mcp_json.exists():
         return None
 
     try:
-        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        # expand_defaults=False: preserve ${VAR:-default} placeholders for later
+        # expansion with per-conversation secrets. Only SKILL_ROOT is expanded now.
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir, expand_defaults=False)
         if config and "mcpServers" in config:
             server_names = list(config["mcpServers"].keys())
             logger.info(

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ logger = get_logger(__name__)
 
 # A resolver produces ToolDefinition instances for given params.
 Resolver = Callable[[dict[str, Any], "ConversationState"], Sequence[ToolDefinition]]
+UsabilityChecker = Callable[[], bool]
 """A resolver produces ToolDefinition instances for given params.
 
 Args:
@@ -29,6 +31,7 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
+_USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 
 
@@ -116,6 +119,31 @@ def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
     return _resolve
 
 
+def _usability_from_instance(tool: ToolDefinition) -> UsabilityChecker:
+    return lambda: tool.__class__.is_usable()
+
+
+def _usability_from_subclass(cls: type[ToolDefinition]) -> UsabilityChecker:
+    return lambda: cls.is_usable()
+
+
+def _usability_from_callable(
+    _factory: Callable[..., Sequence[ToolDefinition]],
+) -> UsabilityChecker:
+    # Callable factories are deprecated and have no usability hook.
+    return lambda: True
+
+
+def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
+    try:
+        return checker()
+    except Exception:
+        logger.warning(
+            "Failed to determine usability for tool '%s'", name, exc_info=True
+        )
+        return False
+
+
 def register_tool(
     name: str,
     factory: ToolDefinition
@@ -127,10 +155,23 @@ def register_tool(
 
     if isinstance(factory, ToolDefinition):
         resolver = _resolver_from_instance(name, factory)
+        usability_checker = _usability_from_instance(factory)
     elif isinstance(factory, type) and issubclass(factory, ToolDefinition):
         resolver = _resolver_from_subclass(name, factory)
+        usability_checker = _usability_from_subclass(factory)
     elif callable(factory):
+        warn_deprecated(
+            "register_tool(callable_factory)",
+            deprecated_in="1.19.1",
+            removed_in="1.24.0",
+            details=(
+                "Register a ToolDefinition subclass with create(...) or a "
+                "ToolDefinition instance instead."
+            ),
+            stacklevel=2,
+        )
         resolver = _resolver_from_callable(name, factory)
+        usability_checker = _usability_from_callable(factory)
     else:
         raise TypeError(
             "register_tool(...) only accepts: (1) a ToolDefinition instance with "
@@ -152,6 +193,7 @@ def register_tool(
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
+        _USABILITY_REG[name] = usability_checker
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
 
@@ -171,6 +213,18 @@ def resolve_tool(
 def list_registered_tools() -> list[str]:
     with _LOCK:
         return list(_REG.keys())
+
+
+def list_usable_tools() -> list[str]:
+    with _LOCK:
+        tool_names = list(_REG.keys())
+        usability_checkers = dict(_USABILITY_REG)
+
+    return [
+        name
+        for name in tool_names
+        if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
+    ]
 
 
 def get_tool_module_qualnames() -> dict[str, str]:

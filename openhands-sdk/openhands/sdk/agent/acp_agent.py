@@ -3,7 +3,9 @@
 The Agent Client Protocol (ACP) lets OpenHands power conversations using
 ACP-compatible servers (Claude Code, Gemini CLI, etc.) instead of direct
 LLM calls.  The ACP server manages its own LLM, tools, and execution;
-the ACPAgent simply relays user messages and collects the response.
+the ACPAgent relays user messages and collects the response. OpenHands
+can still append prompt-only context, such as a skill catalog, to the
+user message before it is sent to the ACP server.
 
 Unlike the built-in Agent, one ACP ``step()`` maps to one complete remote
 assistant turn. ACPAgent therefore emits a terminal ``FinishAction`` at the
@@ -21,6 +23,7 @@ import threading
 import time
 import uuid
 from collections.abc import Generator
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
@@ -53,6 +56,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 
@@ -109,10 +113,24 @@ _STREAM_READER_LIMIT: int = 100 * 1024 * 1024  # 100 MiB
 # well below the ~20 min runtime-api kill threshold.
 _ACTIVITY_SIGNAL_INTERVAL: float = 30.0
 
+# ACP tool-call statuses that represent a terminal outcome.  Non-terminal
+# statuses (``pending``, ``in_progress``) mean the call is still in flight
+# and, if the turn aborts before it reaches a terminal state, the live-
+# emitted event on state.events will otherwise be orphaned forever.
+_TERMINAL_TOOL_CALL_STATUSES: frozenset[str] = frozenset({"completed", "failed"})
+
+
+# Stable identifier stamped onto the sentinel LLM so downstream code
+# (e.g. title_utils) can detect "this LLM cannot be called" without
+# relying on the model name — which we overwrite with the real model
+# once ``acp_model`` is known, so logs and serialized state show the
+# actual model rather than "acp-managed".
+ACP_SENTINEL_USAGE_ID = "acp-managed"
+
 
 def _make_dummy_llm() -> LLM:
     """Create a dummy LLM that should never be called directly."""
-    return LLM(model="acp-managed")
+    return LLM(model="acp-managed", usage_id=ACP_SENTINEL_USAGE_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +148,7 @@ _DEFAULT_BYPASS_MODE = "full-access"
 
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
-# required env var is set.
+# required credential source is present.
 # Note: claude-login is intentionally NOT included because Claude Code ACP
 # uses bypassPermissions mode instead of API key authentication.
 _AUTH_METHOD_ENV_MAP: dict[str, str] = {
@@ -138,18 +156,28 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "openai-api-key": "OPENAI_API_KEY",
     "gemini-api-key": "GEMINI_API_KEY",
 }
+_CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
 
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
 ) -> str | None:
-    """Pick an auth method whose required env var is present.
+    """Pick an auth method whose required credentials are present.
 
     Returns the ``id`` of the first matching method, or ``None`` if no
-    env-var-based method is available (the server may not require auth).
+    supported credential source is available (the server may not require auth).
+
+    ChatGPT subscription login (device-code flow stored in
+    ``~/.codex/auth.json``) is checked first so it takes precedence over
+    explicit API keys, which serve as the fallback.
     """
     method_ids = {m.id for m in auth_methods}
+    # Prefer ChatGPT subscription login when the auth file is present.
+    if "chatgpt" in method_ids:
+        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+            return "chatgpt"
+    # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
             return method_id
@@ -286,6 +314,46 @@ class _OpenHandsACPBridge:
     """Bridge between OpenHands and ACP that accumulates session updates.
 
     Implements the ``Client`` protocol from ``agent_client_protocol``.
+
+    Concurrency model — ``on_event`` / ``on_token`` / ``on_activity`` are
+    fired synchronously from ``session_update``, which runs on the
+    ``AsyncExecutor`` portal thread.  The guarantees that keep callbacks
+    serialized within a single turn rely on the combination of two things,
+    not the GIL alone:
+
+    1. ``LocalConversation.run()`` calls ``agent.step(...)`` while holding
+       the reentrant ``ConversationState`` lock (a ``FIFOLock``) — see
+       ``local_conversation.py`` where ``self.agent.step(...)`` sits inside
+       ``with self._state:``.  The caller thread owns that lock for the
+       entire duration of ``step()``, so no other thread can append to
+       ``state.events`` during the turn.
+    2. ``portal.call(_prompt)`` blocks the caller thread until ``prompt()``
+       returns.  Live ``on_event`` calls happen on the portal thread while
+       the caller thread is parked inside ``portal.call()`` still owning
+       the state lock; the final ``MessageEvent`` / ``FinishAction`` run
+       on the caller thread after ``prompt()`` returns.  The two phases
+       never overlap in time.
+
+    The caller's state-lock ownership is what excludes *other* threads
+    (hook workers, remote-conversation push layers, visualizers spawned
+    elsewhere) from racing with either phase.  The ordering between the
+    two phases is what keeps a single consumer's cross-callback state
+    (e.g. hook processors that read-then-write) consistent.
+
+    Two invariants callers rely on:
+
+    * ``on_event`` handlers MUST NOT acquire the conversation state lock
+      (``with conversation.state:``).  The bridge fires them on the portal
+      thread while the caller thread is parked inside ``portal.call()``
+      owning that lock, and ``FIFOLock`` is thread-bound — a lock-acquire
+      on the portal thread would deadlock rather than re-enter.
+    * Tool-call → final-message ordering depends on the ACP server
+      draining every ``session_update`` notification for a turn *before*
+      the prompt response returns.  Verified against
+      ``claude-agent-acp@0.29.0``; servers that interleave trailing
+      ``ToolCallProgress`` after the prompt response would invert the
+      order a consumer sees, and dedupe-by-id+"last-seen wins" would
+      treat the post-message event as authoritative.
     """
 
     def __init__(self) -> None:
@@ -293,6 +361,11 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts: list[str] = []
         self.accumulated_tool_calls: list[dict[str, Any]] = []
         self.on_token: Any = None  # ConversationTokenCallbackType | None
+        # Live event sink — fired from session_update as ACP tool-call
+        # updates arrive, so the event stream reflects real subprocess
+        # progress instead of a single end-of-turn burst. Set by
+        # ACPAgent.step() for the duration of one prompt() round-trip.
+        self.on_event: ConversationCallbackType | None = None
         # Activity heartbeat — called (throttled) during session_update to
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
@@ -317,6 +390,7 @@ class _OpenHandsACPBridge:
         self.accumulated_thoughts.clear()
         self.accumulated_tool_calls.clear()
         self.on_token = None
+        self.on_event = None
         self.on_activity = None
         self._turn_usage_updates.clear()
         self._usage_received.clear()
@@ -378,21 +452,22 @@ class _OpenHandsACPBridge:
             if event is not None:
                 event.set()
         elif isinstance(update, ToolCallStart):
-            self.accumulated_tool_calls.append(
-                {
-                    "tool_call_id": update.tool_call_id,
-                    "title": update.title,
-                    "tool_kind": update.kind,
-                    "status": update.status,
-                    "raw_input": update.raw_input,
-                    "raw_output": update.raw_output,
-                    "content": _serialize_tool_content(update.content),
-                }
-            )
+            entry = {
+                "tool_call_id": update.tool_call_id,
+                "title": update.title,
+                "tool_kind": update.kind,
+                "status": update.status,
+                "raw_input": update.raw_input,
+                "raw_output": update.raw_output,
+                "content": _serialize_tool_content(update.content),
+            }
+            self.accumulated_tool_calls.append(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            self._emit_tool_call_event(entry)
             self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
             # Find the existing tool call entry and merge updates
+            target: dict[str, Any] | None = None
             for tc in self.accumulated_tool_calls:
                 if tc["tool_call_id"] == update.tool_call_id:
                     if update.title is not None:
@@ -407,11 +482,40 @@ class _OpenHandsACPBridge:
                         tc["raw_output"] = update.raw_output
                     if update.content is not None:
                         tc["content"] = _serialize_tool_content(update.content)
+                    target = tc
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            if target is not None:
+                self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _emit_tool_call_event(self, tc: dict[str, Any]) -> None:
+        """Emit an ACPToolCallEvent reflecting the current state of ``tc``.
+
+        Called from ``session_update`` on each ``ToolCallStart`` /
+        ``ToolCallProgress`` so downstream consumers see tool cards appear
+        and update as the subprocess runs.  The same ``tool_call_id`` is
+        reused on every emission — consumers should dedupe by id and treat
+        the last-seen event as authoritative.
+        """
+        if self.on_event is None:
+            return
+        try:
+            event = ACPToolCallEvent(
+                tool_call_id=tc["tool_call_id"],
+                title=tc["title"],
+                status=tc.get("status"),
+                tool_kind=tc.get("tool_kind"),
+                raw_input=tc.get("raw_input"),
+                raw_output=tc.get("raw_output"),
+                content=tc.get("content"),
+                is_error=tc.get("status") == "failed",
+            )
+            self.on_event(event)
+        except Exception:
+            logger.debug("on_event callback failed", exc_info=True)
 
     def _maybe_signal_activity(self) -> None:
         """Signal activity to the agent-server's idle tracker (throttled).
@@ -575,10 +679,13 @@ class ACPAgent(AgentBase):
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
-        # Propagate the actual model name to metrics so that cost/token
-        # entries are attributed to the real model, not the sentinel
-        # "acp-managed" placeholder.
+        # Propagate the actual model name to the sentinel LLM and its
+        # metrics so that logs, serialized state, and cost/token entries
+        # show the real model instead of the "acp-managed" placeholder.
+        # The ACP-sentinel marker lives on ``llm.usage_id`` and is
+        # independent of the model name.
         if self.acp_model:
+            self.llm.model = self.acp_model
             self.llm.metrics.model_name = self.acp_model
             if self.llm.metrics.accumulated_token_usage is not None:
                 self.llm.metrics.accumulated_token_usage.model = self.acp_model
@@ -717,7 +824,10 @@ class ACPAgent(AgentBase):
             )
         )
 
-        # Validate no unsupported features
+        # Validate unsupported execution features. agent_context is allowed
+        # because it contributes prompt-only extensions to user messages; ACP
+        # server tools, MCP configuration, and context-window management remain
+        # owned by the server.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
@@ -733,11 +843,8 @@ class ACPAgent(AgentBase):
                 "ACPAgent does not support condenser; "
                 "the ACP server manages its own context"
             )
-        if self.agent_context is not None:
-            raise NotImplementedError(
-                "ACPAgent does not support agent_context; "
-                "configure the ACP server directly"
-            )
+        if self.agent_context:
+            self.agent_context.validate_acp_compatibility()
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -752,12 +859,22 @@ class ACPAgent(AgentBase):
 
         self._initialized = True
 
-        # Store agent info in agent_state so it's accessible from remote
-        # conversations (PrivateAttrs aren't serialized in state updates).
+        # Persist agent info + the ACP session id + its cwd in agent_state.
+        # Keeping these here (rather than on the frozen ACPAgent model) means
+        # ConversationState's existing base_state.json persistence carries
+        # them across agent-server restarts, and ``_start_acp_server`` on the
+        # next launch reads them back to call ``load_session`` instead of
+        # starting from scratch.  We record ``acp_session_cwd`` alongside the
+        # id because ACP servers key their persistence by ``cwd``: resuming
+        # in a different working directory would at best silently miss the
+        # prior session and at worst load a different session that happens to
+        # exist at the new cwd.
         state.agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
+            "acp_session_id": self._session_id,
+            "acp_session_cwd": self._working_dir,
         }
 
     def _start_acp_server(self, state: ConversationState) -> None:
@@ -769,6 +886,20 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
+        # Inject secrets from agent_context. acp_env entries take precedence
+        # (already set above), so we only fill keys not already present.
+        # SecretSource.get_value() is synchronous; calling it here is safe
+        # because _start_acp_server is a regular (non-async) method.
+        if self.agent_context and self.agent_context.secrets:
+            for name, secret in self.agent_context.secrets.items():
+                if name not in env:
+                    value = (
+                        secret.get_value()
+                        if isinstance(secret, SecretSource)
+                        else str(secret)
+                    )
+                    if value:
+                        env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -776,6 +907,27 @@ class ACPAgent(AgentBase):
         args = list(self.acp_command[1:]) + list(self.acp_args)
 
         working_dir = str(state.workspace.working_dir)
+
+        # Prior ACP session id — survives agent-server restarts via
+        # ConversationState.agent_state (serialized into base_state.json).
+        # Its presence is the signal to resume; its absence means fresh start.
+        # ACP servers key persistence by ``cwd``; if the workspace moved we
+        # drop the id so we don't accidentally resume (or silently load) a
+        # session the server associates with a different directory.
+        prior_session_id: str | None = state.agent_state.get("acp_session_id")
+        prior_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        if prior_session_id is not None and prior_session_cwd not in (
+            None,
+            working_dir,
+        ):
+            logger.warning(
+                "ACP session %s was created with cwd=%s; current cwd=%s differs, "
+                "starting a fresh session instead of resuming",
+                prior_session_id,
+                prior_session_cwd,
+                working_dir,
+            )
+            prior_session_id = None
 
         async def _init() -> tuple[Any, Any, Any, str, str, str]:
             # Spawn the subprocess directly so we can install a
@@ -845,14 +997,43 @@ class ACPAgent(AgentBase):
                         [m.id for m in auth_methods],
                     )
 
-            # Build _meta content for session options (e.g. model selection).
-            # Extra kwargs to new_session() become the _meta dict in the
-            # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-            session_meta = _build_session_meta(agent_name, self.acp_model)
+            # Resume the prior ACP session if we have its id.  If the server
+            # has forgotten it (state wiped, new host, etc.) fall through to
+            # new_session so the conversation still starts cleanly.
+            #
+            # We only swallow ACPRequestError here: that is the protocol-level
+            # "I don't know this session" signal and is recoverable by
+            # starting fresh.  Transport failures (broken pipe, EOF, timeout,
+            # subprocess crash) propagate — there is no working connection to
+            # fall back on, and the outer init_state handler cleans up.
+            session_id: str | None = None
+            if prior_session_id is not None:
+                try:
+                    await conn.load_session(
+                        cwd=working_dir,
+                        session_id=prior_session_id,
+                        mcp_servers=[],
+                    )
+                    session_id = prior_session_id
+                    logger.info(
+                        "Resumed ACP session: %s (cwd=%s)",
+                        session_id,
+                        working_dir,
+                    )
+                except ACPRequestError as e:
+                    logger.warning(
+                        "ACP load_session(%s) failed (%s); starting a fresh session",
+                        prior_session_id,
+                        e,
+                    )
 
-            # Create a new session
-            response = await conn.new_session(cwd=working_dir, **session_meta)
-            session_id = response.session_id
+            if session_id is None:
+                # Build _meta content for session options (e.g. model selection).
+                # Extra kwargs to new_session() become the _meta dict in the
+                # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+                session_meta = _build_session_meta(agent_name, self.acp_model)
+                response = await conn.new_session(cwd=working_dir, **session_meta)
+                session_id = response.session_id
             await _maybe_set_session_model(
                 conn,
                 agent_name,
@@ -883,6 +1064,88 @@ class ACPAgent(AgentBase):
         ) = result
         self._working_dir = working_dir
 
+    def _reset_client_for_turn(
+        self,
+        on_token: ConversationTokenCallbackType | None,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Reset per-turn client state and (re)wire live callbacks.
+
+        Called at the start of ``step()`` and again on each retry inside the
+        prompt loop so that the three callbacks (``on_token``, ``on_event``,
+        ``on_activity``) stay in sync with the fresh turn after ``reset()``
+        clears them.  ``on_event`` is fired from inside
+        ``_OpenHandsACPBridge.session_update`` as tool-call notifications
+        arrive, so consumers see ACPToolCallEvents streamed live instead of
+        a single end-of-turn burst.
+        """
+        self._client.reset()
+        self._client.on_token = on_token
+        self._client.on_event = on_event
+        self._client.on_activity = self._on_activity
+
+    def _cancel_inflight_tool_calls(self) -> None:
+        """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
+        in the accumulator that has not reached a terminal status yet.
+
+        ACP servers mint fresh ``tool_call_id``s on a retried turn, so any
+        ``pending`` / ``in_progress`` events already streamed during the
+        failed attempt would otherwise be orphaned on ``state.events`` —
+        no later notification reuses their id, and consumers that dedupe
+        by ``tool_call_id`` + "last-seen status wins" would keep them
+        spinning forever.  This method closes those cards before we wipe
+        the in-memory accumulator on retry / turn abort.
+
+        Uses the bridge's ``on_event`` directly (the same callback driving
+        live emissions); call this *before* ``_reset_client_for_turn`` so
+        the callback is still wired up.  No-op if ``on_event`` was never
+        set (e.g. during tests exercising the bridge in isolation).
+        """
+        on_event = self._client.on_event
+        if on_event is None:
+            return
+        for tc in self._client.accumulated_tool_calls:
+            status = tc.get("status")
+            if status in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            try:
+                on_event(
+                    ACPToolCallEvent(
+                        tool_call_id=tc["tool_call_id"],
+                        title=tc["title"],
+                        status="failed",
+                        tool_kind=tc.get("tool_kind"),
+                        raw_input=tc.get("raw_input"),
+                        raw_output=tc.get("raw_output"),
+                        content=tc.get("content"),
+                        is_error=True,
+                    )
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit supersede event for %s",
+                    tc.get("tool_call_id"),
+                    exc_info=True,
+                )
+
+    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
+        """Build the prompt text for one ACP user turn."""
+        message = event.to_llm_message()
+        # Preserve all text blocks produced by the conversation layer, including
+        # any extended_content it already attached to the user turn.
+        text_parts = [
+            content.text
+            for content in message.content
+            if isinstance(content, TextContent) and content.text.strip()
+        ]
+        if self.agent_context:
+            acp_prompt_context = self.agent_context.to_acp_prompt_context()
+            if acp_prompt_context:
+                text_parts.append(acp_prompt_context)
+        if not text_parts:
+            return None
+        return "\n\n".join(text_parts)
+
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
         self,
@@ -893,15 +1156,13 @@ class ACPAgent(AgentBase):
         """Send the latest user message to the ACP server and emit the response."""
         state = conversation.state
 
-        # Find the latest user message
+        # Find the latest user message. Conversation implementations already
+        # attach per-turn AgentContext extensions to MessageEvent.extended_content;
+        # MessageEvent.to_llm_message() merges those extensions with the user text.
         user_message = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                # Extract text from the message
-                for content in event.llm_message.content:
-                    if isinstance(content, TextContent) and content.text.strip():
-                        user_message = content.text
-                        break
+                user_message = self._build_acp_prompt(event)
                 if user_message:
                     break
 
@@ -910,10 +1171,7 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        # Reset client accumulators
-        self._client.reset()
-        self._client.on_token = on_token
-        self._client.on_activity = self._on_activity
+        self._reset_client_for_turn(on_token, on_event)
 
         t0 = time.monotonic()
         try:
@@ -971,8 +1229,8 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
                 except ACPRequestError as e:
@@ -996,8 +1254,8 @@ class ACPAgent(AgentBase):
                             e,
                         )
                         time.sleep(delay)
-                        self._client.reset()
-                        self._client.on_token = on_token
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
                     else:
                         raise
 
@@ -1013,19 +1271,10 @@ class ACPAgent(AgentBase):
                 usage_update=usage_update,
             )
 
-            # Emit ACPToolCallEvents for each accumulated tool call
-            for tc in self._client.accumulated_tool_calls:
-                tc_event = ACPToolCallEvent(
-                    tool_call_id=tc["tool_call_id"],
-                    title=tc["title"],
-                    status=tc.get("status"),
-                    tool_kind=tc.get("tool_kind"),
-                    raw_input=tc.get("raw_input"),
-                    raw_output=tc.get("raw_output"),
-                    content=tc.get("content"),
-                    is_error=tc.get("status") == "failed",
-                )
-                on_event(tc_event)
+            # ACPToolCallEvents were already emitted live from
+            # _OpenHandsACPBridge.session_update as each ToolCallStart /
+            # ToolCallProgress notification arrived — no end-of-turn fan-out
+            # here. FinishAction closes out the turn below.
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -1033,18 +1282,6 @@ class ACPAgent(AgentBase):
 
             if not response_text:
                 response_text = "(No response from ACP server)"
-
-            message = Message(
-                role="assistant",
-                content=[TextContent(text=response_text)],
-                reasoning_content=thought_text if thought_text else None,
-            )
-
-            msg_event = MessageEvent(
-                source="agent",
-                llm_message=message,
-            )
-            on_event(msg_event)
 
             # ACP step() boundaries are full remote assistant turns, not
             # partial planning steps. Emit FinishAction to delimit that
@@ -1054,6 +1291,7 @@ class ACPAgent(AgentBase):
             action_event = ActionEvent(
                 source="agent",
                 thought=[],
+                reasoning_content=thought_text or None,
                 action=finish_action,
                 tool_name="finish",
                 tool_call_id=tc_id,
@@ -1101,11 +1339,16 @@ class ACPAgent(AgentBase):
                     )
                 ],
             )
+            # Close any tool cards left in flight from the timed-out attempt.
+            self._cancel_inflight_tool_calls()
             on_event(MessageEvent(source="agent", llm_message=error_message))
             state.execution_status = ConversationExecutionStatus.ERROR
         except Exception as e:
             logger.error("ACP prompt failed: %s", e, exc_info=True)
             error_str = str(e)
+
+            # Close any tool cards left in flight before surfacing the error.
+            self._cancel_inflight_tool_calls()
 
             # Emit error as an agent message (existing behavior, preserved for
             # consumers that inspect MessageEvents)
@@ -1136,6 +1379,17 @@ class ACPAgent(AgentBase):
             # breaks the loop, emits ConversationErrorEvent, and raises
             # ConversationRunError — matching how the regular Agent works
             raise
+        finally:
+            # Unwire the per-turn callbacks now that this step has finished
+            # emitting everything it's going to emit.  If the ACP subprocess
+            # later dispatches a trailing ``session_update`` (e.g. between
+            # turns), it fires on the portal thread with no FIFOLock held
+            # by anyone — firing a stale ``on_event`` there would race
+            # with other threads mutating ``state.events``.  Clearing the
+            # callbacks turns any such late update into a no-op emit.
+            self._client.on_event = None
+            self._client.on_token = None
+            self._client.on_activity = None
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""

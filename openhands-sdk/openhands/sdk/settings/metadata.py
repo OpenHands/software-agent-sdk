@@ -19,12 +19,17 @@ class SettingProminence(str, Enum):
 class SettingsSectionMetadata(BaseModel):
     key: str
     label: str | None = None
+    variant: str | None = None
 
 
 class SettingsFieldMetadata(BaseModel):
     label: str | None = None
     prominence: SettingProminence = SettingProminence.MINOR
     depends_on: tuple[str, ...] = ()
+    variant: str | None = None
+    """When set, the field only applies to the named ``AgentSettings``
+    variant (``"openhands"`` or ``"acp"``). Fields with ``variant=None`` are
+    shown regardless of the active ``agent_kind``."""
 
 
 def field_meta(

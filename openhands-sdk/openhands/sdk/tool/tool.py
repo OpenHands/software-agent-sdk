@@ -240,6 +240,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     )
 
     @classmethod
+    def is_usable(cls) -> bool:
+        """Return whether the tool can be used in the current environment."""
+        return True
+
+    @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:
         """Create a sequence of Tool instances.
@@ -422,7 +427,12 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         # Always add summary field for transparency and explainability
         action_type = _create_action_type_with_summary(action_type)
 
-        return action_type.to_mcp_schema()
+        schema = action_type.to_mcp_schema()
+        _prioritize_schema_fields(
+            schema=schema,
+            priority=("security_risk", "summary"),
+        )
+        return schema
 
     def to_openai_tool(
         self,
@@ -520,6 +530,24 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             f"schema has not been cached."
         )
         raise ValueError(error_msg)
+
+
+def _prioritize_schema_fields(
+    schema: dict[str, Any], priority: tuple[str, ...]
+) -> None:
+    """Move *priority* fields to the front of ``schema["properties"]``.
+
+    This ensures the LLM generates short metadata fields before large content
+    parameters, so output-token truncation does not cut required fields.
+    See https://github.com/OpenHands/software-agent-sdk/issues/1911
+    """
+    if "properties" not in schema:
+        return
+    props = schema["properties"]
+    priority_set = set(priority)
+    ordered = {k: props[k] for k in priority if k in props}
+    ordered.update({k: v for k, v in props.items() if k not in priority_set})
+    schema["properties"] = ordered
 
 
 def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:

@@ -1,16 +1,14 @@
+from __future__ import annotations
+
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
     AgentBase,
 )
 from openhands.sdk.banner import _print_banner
-from openhands.sdk.context import (
-    AgentContext,
-    load_project_skills,
-    load_skills_from_dir,
-    load_user_skills,
-)
+from openhands.sdk.context import AgentContext
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -50,20 +48,36 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
+    ACPAgentSettings,
     AgentSettings,
+    AgentSettingsConfig,
     CondenserSettings,
+    ConversationSettings,
+    OpenHandsAgentSettings,
     SettingsChoice,
     SettingsFieldSchema,
     SettingsSchema,
     SettingsSectionSchema,
     VerificationSettings,
+    default_agent_settings,
+    export_agent_settings_schema,
     export_settings_schema,
+    validate_agent_settings,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.settings import LLMAgentSettings
 from openhands.sdk.settings.metadata import (
     SettingProminence,
     SettingsFieldMetadata,
     SettingsSectionMetadata,
     field_meta,
+)
+from openhands.sdk.skills import (
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
 )
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
@@ -97,6 +111,36 @@ except PackageNotFoundError:
 
 # Print startup banner
 _print_banner(__version__)
+
+_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
+    "LLMAgentSettings": {
+        "deprecated_in": "1.19.0",
+        "removed_in": "1.22.0",
+        "details": (
+            "Use ``OpenHandsAgentSettings`` directly. "
+            "``LLMAgentSettings`` was renamed in v1.19.0."
+        ),
+    },
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_SDK_EXPORTS:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        info = _DEPRECATED_SDK_EXPORTS[name]
+        warn_deprecated(
+            f"Importing {name!r} from openhands.sdk",
+            deprecated_in=info["deprecated_in"],
+            removed_in=info["removed_in"],
+            details=info["details"],
+            stacklevel=3,
+        )
+        from openhands.sdk import settings as _settings
+
+        return getattr(_settings, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "LLM",
@@ -137,8 +181,16 @@ __all__ = [
     "AgentContext",
     "LLMSummarizingCondenser",
     "CondenserSettings",
+    "ConversationSettings",
     "VerificationSettings",
+    "ACPAgentSettings",
     "AgentSettings",
+    "AgentSettingsConfig",
+    "LLMAgentSettings",
+    "OpenHandsAgentSettings",
+    "default_agent_settings",
+    "export_agent_settings_schema",
+    "validate_agent_settings",
     "SettingsChoice",
     "SettingProminence",
     "SettingsFieldMetadata",

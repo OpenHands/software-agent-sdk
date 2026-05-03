@@ -148,15 +148,15 @@ def main() -> None:
         else:
             sys.exit(1)
 
-    print(f"🙌 Starting OpenHands Agent Server on {args.host}:{args.port}")
-    print(f"📖 API docs will be available at http://{args.host}:{args.port}/docs")
-    print(f"🔄 Auto-reload: {'enabled' if args.reload else 'disabled'}")
+    print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
+    print(f"API docs will be available at http://{args.host}:{args.port}/docs")
+    print(f"Auto-reload: {'enabled' if args.reload else 'disabled'}")
 
     # Show debug mode status
     if DEBUG:
-        print("🐛 DEBUG mode: ENABLED (stack traces will be shown)")
+        print("DEBUG mode: ENABLED (stack traces will be shown)")
     else:
-        print("🔒 DEBUG mode: DISABLED")
+        print("DEBUG mode: DISABLED")
     print()
 
     # Configure uvicorn logging based on DEBUG environment variable

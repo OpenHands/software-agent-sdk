@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import threading
 import time
@@ -8,8 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from litellm.types.utils import ChatCompletionMessageToolCall, Function
 from pydantic import SecretStr
 
+from openhands.agent_server.conversation_lease import (
+    LEASE_FILE_NAME,
+    ConversationOwnershipLostError,
+)
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationContractMismatchError,
@@ -32,11 +38,16 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
 
 @pytest.fixture
@@ -61,6 +72,36 @@ def sample_stored_conversation():
     )
 
 
+def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
+    tool_call = MessageToolCall.from_chat_tool_call(
+        ChatCompletionMessageToolCall(
+            id=tool_call_id,
+            type="function",
+            function=Function(
+                name="terminal",
+                arguments='{"command": "sleep 30"}',
+            ),
+        )
+    )
+    return ActionEvent(
+        thought=[TextContent(text="run sleep")],
+        action=TerminalAction(command="sleep 30"),
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+        tool_call=tool_call,
+        llm_response_id="response_1",
+        security_risk=SecurityRisk.LOW,
+        summary="run sleep",
+    )
+
+
+def _expire_conversation_lease(conversations_dir: Path, conversation_id) -> None:
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    payload = json.loads(lease_path.read_text())
+    payload["expires_at"] = 0
+    lease_path.write_text(json.dumps(payload))
+
+
 @pytest.fixture
 def conversation_service():
     """Create a ConversationService instance for testing."""
@@ -71,6 +112,111 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.mark.asyncio
+async def test_second_service_does_not_resume_active_running_conversation(tmp_path):
+    """A second service should not attach to a live running conversation."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            assert secondary._event_services is not None
+            assert conversation_info.id not in secondary._event_services
+
+            primary_state.events.append(
+                ObservationEvent(
+                    observation=TerminalObservation.from_text(
+                        "done",
+                        command="sleep 30",
+                        exit_code=0,
+                    ),
+                    action_id=running_action.id,
+                    tool_name="terminal",
+                    tool_call_id=running_action.tool_call_id,
+                )
+            )
+
+        events = primary_state.events[:]
+        assert [type(event).__name__ for event in events] == [
+            "ActionEvent",
+            "ConversationStateUpdateEvent",
+            "ObservationEvent",
+        ]
+        assert not any(isinstance(event, AgentErrorEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+        _expire_conversation_lease(conversations_dir, conversation_info.id)
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            assert secondary._event_services is not None
+            secondary_event_service = secondary._event_services[conversation_info.id]
+            secondary_state = await secondary_event_service.get_state()
+
+            assert any(
+                isinstance(event, AgentErrorEvent)
+                for event in secondary_state.events[:]
+            )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.events.append(
+                    ObservationEvent(
+                        observation=TerminalObservation.from_text(
+                            "late result",
+                            command="sleep 30",
+                            exit_code=0,
+                        ),
+                        action_id=running_action.id,
+                        tool_name="terminal",
+                        tool_call_id=running_action.tool_call_id,
+                    )
+                )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.execution_status = ConversationExecutionStatus.ERROR
 
 
 class TestConversationServiceSearchConversations:
@@ -119,6 +265,55 @@ class TestConversationServiceSearchConversations:
         assert result.items[0].id == conversation_id
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
         assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_conversations_with_critic_redacts_api_key(
+        self, conversation_service
+    ):
+        """ConversationInfo should serialize critic secrets without rejecting them."""
+        agent = Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("llm-secret")),
+            tools=[],
+            critic=APIBasedCritic(
+                api_key=SecretStr("critic-secret"),
+                server_url="https://critic.example.com",
+                model_name="critic",
+            ),
+        )
+        stored_conv = StoredConversation(
+            id=uuid4(),
+            agent=agent,
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conv
+        mock_service.get_state.return_value = ConversationState(
+            id=stored_conv.id,
+            agent=stored_conv.agent,
+            workspace=stored_conv.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conv.confirmation_policy,
+        )
+        conversation_service._event_services[stored_conv.id] = mock_service
+
+        result = await conversation_service.search_conversations()
+
+        info = result.items[0]
+        assert isinstance(info.agent.critic, APIBasedCritic)
+        assert info.agent.critic.api_key is None
+
+        payload = info.model_dump(mode="json")
+        assert payload["agent"]["llm"]["api_key"] is None
+        assert payload["agent"]["critic"]["api_key"] is None
+        assert "llm-secret" not in str(payload)
+        assert "critic-secret" not in str(payload)
+        assert "critic-secret" not in str(info)
 
     @pytest.mark.asyncio
     async def test_search_conversations_status_filter(self, conversation_service):
@@ -1656,16 +1851,21 @@ class TestAutoTitle:
     )
 
     def _make_service(
-        self, title: str | None = None, llm_model: str = "gpt-4o"
+        self,
+        title: str | None = None,
+        title_llm_profile: str | None = None,
+        llm_model: str = "gpt-4o",
+        llm_usage_id: str = "test-llm",
     ) -> AsyncMock:
         stored = StoredConversation(
             id=uuid4(),
-            agent=Agent(llm=LLM(model=llm_model, usage_id="test-llm"), tools=[]),
+            agent=Agent(llm=LLM(model=llm_model, usage_id=llm_usage_id), tools=[]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
             metrics=None,
             title=title,
+            title_llm_profile=title_llm_profile,
         )
         service = AsyncMock(spec=EventService)
         service.stored = stored
@@ -1683,6 +1883,22 @@ class TestAutoTitle:
             source="user",
             llm_message=Message(role="user", content=[TextContent(text=text)]),
         )
+
+    @staticmethod
+    async def _drain_title_task(
+        predicate=lambda: True, max_iterations: int = 50, step: float = 0.02
+    ) -> None:
+        """Yield to the event loop until the background title task completes.
+
+        `AutoTitleSubscriber` schedules generation via `run_in_executor`, so a
+        single `await asyncio.sleep(0)` is not enough to let the executor
+        thread finish. Poll with a short sleep until `predicate()` becomes
+        truthy or the timeout elapses.
+        """
+        for _ in range(max_iterations):
+            await asyncio.sleep(step)
+            if predicate():
+                return
 
     @pytest.mark.asyncio
     async def test_autotitle_sets_title_on_first_user_message(self):
@@ -1765,15 +1981,204 @@ class TestAutoTitle:
         assert service.stored.title is None
 
     @pytest.mark.asyncio
+    async def test_autotitle_uses_llm_profile_when_configured(self):
+        """Profile LLM takes precedence over agent.llm when configured."""
+        service = self._make_service(title_llm_profile="cheap-model")
+        mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.return_value = mock_llm
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            MockStore.assert_called_once_with()
+            mock_store_instance.load.assert_called_once_with("cheap-model")
+            # Profile-loaded LLM wins over agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is mock_llm
+
+        assert service.stored.title == "✨ Profile LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_falls_back_to_agent_llm_when_profile_not_found(self):
+        """Missing profile → fall back to agent.llm (non-breaking behavior)."""
+        service = self._make_service(title_llm_profile="nonexistent-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = FileNotFoundError(
+                "Profile 'nonexistent-profile' not found"
+            )
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # Failed profile load → falls back to agent.llm
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_no_profile_uses_agent_llm(self):
+        """No profile configured → use agent.llm (preserves existing behavior)."""
+        service = self._make_service(title_llm_profile=None)
+        agent_llm = service._conversation.agent.llm
+
+        with patch(
+            self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+        ) as mock_generate_title:
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            # No profile → agent.llm is used (backwards compatible)
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_handles_profile_load_value_error(self):
+        """Profile load ValueError → fall back to agent.llm."""
+        service = self._make_service(title_llm_profile="corrupted-profile")
+        agent_llm = service._conversation.agent.llm
+
+        with (
+            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
+            ) as mock_generate_title,
+        ):
+            mock_store_instance = MockStore.return_value
+            mock_store_instance.load.side_effect = ValueError("Invalid profile format")
+
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event())
+            await self._drain_title_task(lambda: service.stored.title is not None)
+
+            assert mock_generate_title.called
+            assert mock_generate_title.call_args.args[1] is agent_llm
+
+        assert service.stored.title == "✨ Agent LLM Title"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_autotitle_falls_back_for_acp_managed_llm(self):
-        """ACP-managed agents should skip LLM title generation and fall back."""
-        service = self._make_service(llm_model="acp-managed")
+        """ACP-managed agents with no title profile → truncation fallback."""
+        service = self._make_service(llm_usage_id="acp-managed")
         subscriber = AutoTitleSubscriber(service=service)
 
         await subscriber(self._user_message_event("Fix the login bug"))
-        await asyncio.sleep(0)
+        await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "Fix the login bug"
+        service.save_meta.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autotitle_integration_routes_through_profile_store(self, tmp_path):
+        """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
+
+        Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
+        to LLM.completion. Only the network boundary (LLM.completion) is mocked,
+        so this catches regressions in profile loading, LLM passthrough, and the
+        agent-server → SDK integration — the unit tests above only exercise
+        AutoTitleSubscriber in isolation.
+        """
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
+
+        from openhands.sdk.llm import LLMResponse, MetricsSnapshot
+        from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+        # Persist a real LLM profile to disk with a distinctive usage_id so we
+        # can tell the title LLM apart from the agent's LLM in the assertion.
+        profile_dir = tmp_path / "profiles"
+        title_llm_on_disk = LLM(
+            usage_id="title-llm",
+            model="claude-haiku-4-5",
+            api_key=SecretStr("title-key"),
+        )
+        LLMProfileStore(base_dir=profile_dir).save(
+            "title-fast", title_llm_on_disk, include_secrets=True
+        )
+
+        service = self._make_service(title_llm_profile="title-fast")
+
+        calls: list[str] = []
+
+        def fake_completion(self_llm, _messages, **_kwargs):
+            calls.append(self_llm.usage_id)
+            msg = LiteLLMMessage(content="✨ Generated", role="assistant")
+            choice = Choices(finish_reason="stop", index=0, message=msg)
+            raw = ModelResponse(
+                id="resp-1",
+                choices=[choice],
+                created=0,
+                model=self_llm.model,
+                object="chat.completion",
+                usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            )
+            return LLMResponse(
+                message=Message.from_llm_chat_message(choice["message"]),
+                metrics=MetricsSnapshot(
+                    model_name=self_llm.model,
+                    accumulated_cost=0.0,
+                    max_budget_per_task=None,
+                    accumulated_token_usage=None,
+                ),
+                raw_response=raw,
+            )
+
+        # Point LLMProfileStore() (no args) at our tmp dir so the real
+        # _load_title_llm code path finds our on-disk profile.
+        with (
+            patch(
+                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
+            ),
+            patch(
+                "openhands.sdk.llm.llm.LLM.completion",
+                autospec=True,
+                side_effect=fake_completion,
+            ),
+        ):
+            subscriber = AutoTitleSubscriber(service=service)
+            await subscriber(self._user_message_event("Fix the login bug"))
+            # Wait for the background executor task to complete. The production
+            # code uses run_in_executor, so sleep(0) is not enough.
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if service.stored.title is not None:
+                    break
+
+        # The profile's LLM (usage_id="title-llm") was called — not agent.llm
+        # (usage_id="test-llm"). This is the regression-sensitive assertion.
+        assert calls == ["title-llm"], (
+            f"Expected only the title profile LLM to be called, got: {calls}"
+        )
+        assert service.stored.title == "✨ Generated"
         service.save_meta.assert_called_once()
 
 

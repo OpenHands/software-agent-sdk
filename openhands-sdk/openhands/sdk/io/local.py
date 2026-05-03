@@ -7,7 +7,7 @@ from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.laminar import observe
+from openhands.sdk.utils.path import to_posix_path
 
 from .base import FileStore
 
@@ -48,7 +48,7 @@ class LocalFileStore(FileStore):
         if path.startswith("/"):
             path = path[1:]
         # normalize path separators to handle both Unix (/) and Windows (\) styles
-        normalized_path = path.replace("\\", "/")
+        normalized_path = to_posix_path(path)
         full = os.path.abspath(
             os.path.normpath(os.path.join(self.root, normalized_path))
         )
@@ -58,7 +58,6 @@ class LocalFileStore(FileStore):
 
         return full
 
-    @observe(name="LocalFileStore.write", span_type="TOOL")
     def write(self, path: str, contents: str | bytes) -> None:
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -87,7 +86,6 @@ class LocalFileStore(FileStore):
         self.cache[full_path] = result
         return result
 
-    @observe(name="LocalFileStore.list", span_type="TOOL")
     def list(self, path: str) -> list[str]:
         full_path = self.get_full_path(path)
         if not os.path.exists(full_path):
@@ -102,7 +100,6 @@ class LocalFileStore(FileStore):
         files = [f + "/" if os.path.isdir(self.get_full_path(f)) else f for f in files]
         return files
 
-    @observe(name="LocalFileStore.delete", span_type="TOOL")
     def delete(self, path: str) -> None:
         try:
             full_path = self.get_full_path(path)

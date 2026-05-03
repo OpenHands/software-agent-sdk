@@ -7,17 +7,17 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
-from openhands.sdk.context.skills import (
+from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
+from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
     load_available_skills,
     to_prompt,
 )
-from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
-from openhands.sdk.logger import get_logger
-from openhands.sdk.secret import SecretSource, SecretValue
+from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
 
 
 logger = get_logger(__name__)
@@ -50,12 +50,17 @@ class AgentContext(BaseModel):
     skills: list[Skill] = Field(
         default_factory=list,
         description="List of available skills that can extend the user's input.",
+        json_schema_extra={"acp_compatible": True},
     )
     system_message_suffix: str | None = Field(
-        default=None, description="Optional suffix to append to the system prompt."
+        default=None,
+        description="Optional suffix to append to the system prompt.",
+        json_schema_extra={"acp_compatible": True},
     )
     user_message_suffix: str | None = Field(
-        default=None, description="Optional suffix to append to the user's message."
+        default=None,
+        description="Optional suffix to append to the user's message.",
+        json_schema_extra={"acp_compatible": True},
     )
     load_user_skills: bool = Field(
         default=False,
@@ -63,6 +68,7 @@ class AgentContext(BaseModel):
             "Whether to automatically load user skills from ~/.openhands/skills/ "
             "and ~/.openhands/microagents/ (for backward compatibility). "
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     load_public_skills: bool = Field(
         default=False,
@@ -71,6 +77,7 @@ class AgentContext(BaseModel):
             "skills repository at https://github.com/OpenHands/extensions. "
             "This allows you to get the latest skills without SDK updates."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     marketplace_path: str | None = Field(
         default=DEFAULT_MARKETPLACE_PATH,
@@ -78,6 +85,7 @@ class AgentContext(BaseModel):
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
@@ -87,6 +95,7 @@ class AgentContext(BaseModel):
             "Values can be either strings or SecretSource instances "
             "(str | SecretSource)."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
         default_factory=datetime.now,
@@ -97,6 +106,7 @@ class AgentContext(BaseModel):
             "included in the system prompt to give the agent awareness of "
             "the current time context. Defaults to the current datetime."
         ),
+        json_schema_extra={"acp_compatible": True},
     )
 
     @field_validator("skills")
@@ -169,6 +179,27 @@ class AgentContext(BaseModel):
             return self.current_datetime.isoformat()
         return self.current_datetime
 
+    def _partition_skills(self) -> tuple[list[Skill], list[Skill]]:
+        """Split skills into repo-context and available-skills lists.
+
+        Categorization rules (shared by system-message and ACP adapters):
+        - AgentSkills-format: always in available_skills (progressive disclosure).
+          Triggers also auto-inject via ``get_user_message_suffix``.
+        - Legacy with ``trigger=None``: full content in REPO_CONTEXT (always active).
+        - Legacy with triggers: listed in available_skills, injected on trigger.
+
+        Returns:
+            ``(repo_skills, available_skills)`` tuple.
+        """
+        repo_skills: list[Skill] = []
+        available_skills: list[Skill] = []
+        for s in self.skills:
+            if s.is_agentskills_format or s.trigger is not None:
+                available_skills.append(s)
+            else:
+                repo_skills.append(s)
+        return repo_skills, available_skills
+
     def get_system_message_suffix(
         self,
         llm_model: str | None = None,
@@ -198,23 +229,7 @@ class AgentContext(BaseModel):
         - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
         - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
-        # Categorize skills based on format and trigger:
-        # - AgentSkills-format: always in available_skills (progressive disclosure)
-        # - Legacy: trigger=None -> REPO_CONTEXT, else -> available_skills
-        repo_skills: list[Skill] = []
-        available_skills: list[Skill] = []
-
-        for s in self.skills:
-            if s.is_agentskills_format:
-                # AgentSkills: always list (triggers also auto-inject via
-                # get_user_message_suffix)
-                available_skills.append(s)
-            elif s.trigger is None:
-                # Legacy OpenHands: no trigger = full content in REPO_CONTEXT
-                repo_skills.append(s)
-            else:
-                # Legacy OpenHands: has trigger = list in available_skills
-                available_skills.append(s)
+        repo_skills, available_skills = self._partition_skills()
 
         # Gate vendor-specific repo skills based on model family.
         if llm_model or llm_model_canonical:
@@ -276,6 +291,50 @@ class AgentContext(BaseModel):
         elif self.system_message_suffix and self.system_message_suffix.strip():
             return self.system_message_suffix.strip()
         return None
+
+    def validate_acp_compatibility(self) -> None:
+        """Raise if this context uses fields unsupported by ACP prompt mode.
+
+        Compatibility is determined by the ``acp_compatible`` tag in each
+        field's ``json_schema_extra``.
+        """
+        acp_compatible = {
+            name
+            for name, info in type(self).model_fields.items()
+            if isinstance(info.json_schema_extra, dict)
+            and info.json_schema_extra.get("acp_compatible") is True
+        }
+        unsupported = set(self.model_fields_set) - acp_compatible
+        if unsupported:
+            fields = ", ".join(sorted(unsupported))
+            raise NotImplementedError(
+                f"ACP prompt context does not support AgentContext field(s): {fields}"
+            )
+
+    def to_acp_prompt_context(self) -> str | None:
+        """Return the AgentContext fields that ACP can consume as prompt text.
+
+        ACP servers own their tools, MCP servers, hooks, and execution model, so
+        this adapter only emits prompt-only context.  Unsupported AgentContext
+        fields are rejected by :meth:`validate_acp_compatibility`.
+
+        The rendering reuses :meth:`get_system_message_suffix` with the same
+        ``system_message_suffix.j2`` template so that ACP agents receive the
+        identical prompt layout as the regular agent.  This includes the
+        ``<CUSTOM_SECRETS>`` block when secrets are present, informing the ACP
+        subprocess which environment variables are available.  The actual secret
+        values are injected into the subprocess environment by
+        ``ACPAgent._start_acp_server``; the prompt block only advertises their
+        names so the agent knows to use them.
+
+        ``user_message_suffix`` is a compatible field but is not emitted here
+        because ``LocalConversation`` already applies it through
+        ``event.to_llm_message()``; including it would duplicate it.
+        """
+        self.validate_acp_compatibility()
+        # No model-specific skill filtering for ACP — delegate to the shared
+        # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
+        return self.get_system_message_suffix()
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]
