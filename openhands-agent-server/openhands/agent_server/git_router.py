@@ -4,9 +4,10 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.git.exceptions import GitError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_diff import get_git_diff
 from openhands.sdk.git.models import GitChange, GitDiff
@@ -35,7 +36,12 @@ async def git_changes_query(
     path: str = Query(..., description="The git repository path"),
 ) -> list[GitChange]:
     """Get git changes using query parameter (preferred method)."""
-    return await _get_git_changes(path)
+    try:
+        return await _get_git_changes(path)
+    except GitRepositoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except GitError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @git_router.get("/changes/{path:path}", deprecated=True)
@@ -47,7 +53,12 @@ async def git_changes_path(path: str) -> list[GitChange]:
     Prefer `/git/changes?path=...` to avoid path-encoding issues and align with
     other Git endpoints.
     """
-    return await _get_git_changes(path)
+    try:
+        return await _get_git_changes(path)
+    except GitRepositoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except GitError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @git_router.get("/diff")
@@ -55,7 +66,12 @@ async def git_diff_query(
     path: str = Query(..., description="The file path to get diff for"),
 ) -> GitDiff:
     """Get git diff using query parameter (preferred method)."""
-    return await _get_git_diff(path)
+    try:
+        return await _get_git_diff(path)
+    except GitRepositoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except GitError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @git_router.get("/diff/{path:path}", deprecated=True)
@@ -67,4 +83,9 @@ async def git_diff_path(path: str) -> GitDiff:
     Prefer `/git/diff?path=...` to avoid path-encoding issues and align with
     other Git endpoints.
     """
-    return await _get_git_diff(path)
+    try:
+        return await _get_git_diff(path)
+    except GitRepositoryError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except GitError as e:
+        raise HTTPException(status_code=400, detail=str(e))

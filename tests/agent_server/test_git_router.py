@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.models import GitChange, GitChangeStatus, GitDiff
 
 
@@ -66,15 +67,34 @@ async def test_git_changes_query_param_empty_result(client):
 
 
 @pytest.mark.asyncio
-async def test_git_changes_query_param_with_exception(client):
-    """Test git changes endpoint with query parameter when git operation fails."""
+async def test_git_changes_query_param_with_repository_error(client):
+    """Test git changes returns 404 for GitRepositoryError."""
     with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.side_effect = Exception("Git repository not found")
+        mock_git_changes.side_effect = GitRepositoryError(
+            "Directory does not exist: /workspace/project/svgeditor"
+        )
 
-        test_path = "nonexistent/repo"
-        response = client.get("/api/git/changes", params={"path": test_path})
+        response = client.get("/api/git/changes", params={"path": "nonexistent/repo"})
 
-        assert response.status_code == 500
+        assert response.status_code == 404
+        assert "Directory does not exist" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_git_changes_query_param_with_command_error(client):
+    """Test git changes returns 400 for GitCommandError."""
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.side_effect = GitCommandError(
+            message="git diff failed",
+            command=["git", "diff"],
+            exit_code=128,
+            stderr="fatal: bad revision",
+        )
+
+        response = client.get("/api/git/changes", params={"path": "broken/repo"})
+
+        assert response.status_code == 400
+        assert "git diff failed" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -145,15 +165,34 @@ async def test_git_diff_query_param_with_none_values(client):
 
 
 @pytest.mark.asyncio
-async def test_git_diff_query_param_with_exception(client):
-    """Test git diff endpoint with query parameter when git operation fails."""
+async def test_git_diff_query_param_with_repository_error(client):
+    """Test git diff returns 404 for GitRepositoryError."""
     with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.side_effect = Exception("Git diff failed")
+        mock_git_diff.side_effect = GitRepositoryError(
+            "Directory does not exist: /workspace/nonexistent"
+        )
 
-        test_path = "nonexistent/file.py"
-        response = client.get("/api/git/diff", params={"path": test_path})
+        response = client.get("/api/git/diff", params={"path": "nonexistent/file.py"})
 
-        assert response.status_code == 500
+        assert response.status_code == 404
+        assert "Directory does not exist" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_git_diff_query_param_with_command_error(client):
+    """Test git diff returns 400 for GitCommandError."""
+    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
+        mock_git_diff.side_effect = GitCommandError(
+            message="git diff failed",
+            command=["git", "diff"],
+            exit_code=128,
+            stderr="fatal: bad revision",
+        )
+
+        response = client.get("/api/git/diff", params={"path": "broken/file.py"})
+
+        assert response.status_code == 400
+        assert "git diff failed" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
