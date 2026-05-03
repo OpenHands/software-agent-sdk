@@ -26,7 +26,7 @@ jobs:
               run: |
                   if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.event.pull_request.base.repo.full_name }}" ]; then
                     echo "is_fork=true" >> $GITHUB_OUTPUT
-                    echo "::notice::Fork PR detected - cleanup is handled by the trusted follow-up workflow"
+                    echo "::notice::Fork PR detected - skipping auto-cleanup (manual removal required)"
                   else
                     echo "is_fork=false" >> $GITHUB_OUTPUT
                   fi
@@ -103,7 +103,7 @@ jobs:
               run: |
                   if [ -d ".pr" ]; then
                     echo "exists=true" >> $GITHUB_OUTPUT
-                    echo "::warning::.pr/ directory exists and will be automatically removed when the PR is approved."
+                    echo "::warning::.pr/ directory exists and will be automatically removed when the PR is approved. For fork PRs, manual removal is required before merging."
                   else
                     echo "exists=false" >> $GITHUB_OUTPUT
                   fi
@@ -119,7 +119,7 @@ jobs:
 
                       This PR contains a \`.pr/\` directory with PR-specific documents. This directory will be **automatically removed** when the PR is approved.
 
-                      > Fork PR cleanup requires maintainer edits to be enabled.
+                      > For fork PRs: Manual removal is required before merging.
                       `;
 
                       const { data: comments } = await github.rest.issues.listComments({

@@ -202,16 +202,13 @@ mkdir -p .pr
 
 1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
 2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
-3. **Fork PRs**: Auto-cleanup runs through the trusted fork-cleanup workflow
-   when maintainer edits are enabled; otherwise manual removal is required
-   before merging
+3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
 
 ## Important Notes
 
 - Do NOT put anything in `.pr/` that needs to be preserved
 - The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
-- For fork PRs without maintainer edits enabled: you must manually remove
-  `.pr/` before the PR can be merged
+- For fork PRs: You must manually remove `.pr/` before the PR can be merged
 
 ## When to Use
 
