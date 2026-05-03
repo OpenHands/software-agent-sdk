@@ -38,21 +38,6 @@ _DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
 
 
-def _encrypt_value(cipher: Cipher | None, value: str | None) -> str | None:
-    """Encrypt a plain string value using cipher."""
-    if cipher is None or value is None:
-        return value
-    return cipher.encrypt(SecretStr(value))
-
-
-def _decrypt_value(cipher: Cipher | None, value: str | None) -> str | None:
-    """Decrypt an encrypted value using cipher."""
-    if cipher is None or value is None:
-        return value
-    result = cipher.decrypt(value)
-    return result.get_secret_value() if result else None
-
-
 @contextmanager
 def _file_lock(lock_path: Path) -> Iterator[None]:
     """Context manager for file-based locking (Unix fcntl).
@@ -147,7 +132,12 @@ class FileSettingsStore(SettingsStore):
         self._lock_path = self.persistence_dir / ".settings.lock"
 
     def load(self) -> PersistedSettings | None:
-        """Load settings from file."""
+        """Load settings from file.
+
+        If a cipher is provided, secrets are decrypted via Pydantic's
+        validation context. The cipher is passed to model_validate which
+        flows through to field validators using validate_secret().
+        """
         if not self._path.exists():
             logger.debug(f"Settings file not found: {self._path}")
             return None
@@ -156,36 +146,28 @@ class FileSettingsStore(SettingsStore):
             with self._path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            # Decrypt secrets if cipher is available
-            if self.cipher and "agent_settings" in data:
-                agent_settings = data["agent_settings"]
-                if "llm" in agent_settings and "api_key" in agent_settings["llm"]:
-                    encrypted = agent_settings["llm"]["api_key"]
-                    if encrypted and not encrypted.startswith("**"):
-                        decrypted = _decrypt_value(self.cipher, encrypted)
-                        agent_settings["llm"]["api_key"] = decrypted
-
-            return PersistedSettings.model_validate(data)
+            # Pass cipher in context for automatic decryption of all secret fields
+            # This flows through to field validators using validate_secret()
+            context = {"cipher": self.cipher} if self.cipher else None
+            return PersistedSettings.model_validate(data, context=context)
         except Exception:
             logger.error("Failed to load settings", exc_info=True)
             return None
 
     def save(self, settings: PersistedSettings) -> None:
-        """Save settings to file atomically with secure permissions."""
+        """Save settings to file atomically with secure permissions.
+
+        If a cipher is provided, secrets are encrypted via Pydantic's
+        serialization context. The cipher is passed to model_dump which
+        flows through to field serializers using serialize_secret().
+        """
         self.persistence_dir.mkdir(parents=True, exist_ok=True)
         self.persistence_dir.chmod(_DIR_MODE)
 
-        data = settings.model_dump(mode="json", context={"expose_secrets": True})
-
-        # Encrypt secrets if cipher is available
-        if self.cipher and "agent_settings" in data:
-            agent_settings = data["agent_settings"]
-            if "llm" in agent_settings and "api_key" in agent_settings["llm"]:
-                api_key = agent_settings["llm"]["api_key"]
-                if api_key:
-                    agent_settings["llm"]["api_key"] = _encrypt_value(
-                        self.cipher, api_key
-                    )
+        # Pass cipher in context for automatic encryption of all secret fields
+        # This flows through to field serializers using serialize_secret()
+        context = {"cipher": self.cipher} if self.cipher else {"expose_secrets": True}
+        data = settings.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)
         logger.debug(f"Settings saved to {self._path}")
@@ -217,7 +199,12 @@ class FileSecretsStore(SecretsStore):
         self._lock_path = self.persistence_dir / ".secrets.lock"
 
     def load(self) -> Secrets | None:
-        """Load secrets from file."""
+        """Load secrets from file.
+
+        If a cipher is provided, secrets are decrypted via Pydantic's
+        validation context. The cipher is passed to model_validate which
+        flows through to field validators using validate_secret().
+        """
         if not self._path.exists():
             logger.debug(f"Secrets file not found: {self._path}")
             return None
@@ -226,34 +213,26 @@ class FileSecretsStore(SecretsStore):
             with self._path.open("r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            # Decrypt all secret values
-            if self.cipher and "custom_secrets" in data:
-                for name, secret_data in data["custom_secrets"].items():
-                    if isinstance(secret_data, dict) and "secret" in secret_data:
-                        encrypted = secret_data["secret"]
-                        if encrypted and not encrypted.startswith("**"):
-                            decrypted = _decrypt_value(self.cipher, encrypted)
-                            secret_data["secret"] = decrypted or ""
-
-            return Secrets.model_validate(data)
+            # Pass cipher in context for automatic decryption of all secret fields
+            context = {"cipher": self.cipher} if self.cipher else None
+            return Secrets.model_validate(data, context=context)
         except Exception:
             logger.error("Failed to load secrets", exc_info=True)
             return None
 
     def save(self, secrets: Secrets) -> None:
-        """Save secrets to file atomically with secure permissions."""
+        """Save secrets to file atomically with secure permissions.
+
+        If a cipher is provided, secrets are encrypted via Pydantic's
+        serialization context. The cipher is passed to model_dump which
+        flows through to field serializers using serialize_secret().
+        """
         self.persistence_dir.mkdir(parents=True, exist_ok=True)
         self.persistence_dir.chmod(_DIR_MODE)
 
-        data = secrets.model_dump(mode="json", context={"expose_secrets": True})
-
-        # Encrypt all secret values
-        if self.cipher and "custom_secrets" in data:
-            for name, secret_data in data["custom_secrets"].items():
-                if isinstance(secret_data, dict) and "secret" in secret_data:
-                    value = secret_data["secret"]
-                    if value:
-                        secret_data["secret"] = _encrypt_value(self.cipher, value)
+        # Pass cipher in context for automatic encryption of all secret fields
+        context = {"cipher": self.cipher} if self.cipher else {"expose_secrets": True}
+        data = secrets.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)
         logger.debug(f"Secrets saved to {self._path}")

@@ -15,16 +15,24 @@ from pydantic import (
     Field,
     SecretStr,
     SerializationInfo,
+    ValidationInfo,
     field_serializer,
+    field_validator,
     model_validator,
 )
 
 from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
     AgentSettings,
     AgentSettingsConfig,
     ConversationSettings,
     default_agent_settings,
 )
+from openhands.sdk.settings.model import (
+    _AGENT_SETTINGS_MIGRATIONS,
+    _apply_persisted_migrations,
+)
+from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 class PersistedSettings(BaseModel):
@@ -88,31 +96,39 @@ class PersistedSettings(BaseModel):
         agent_settings: AgentSettingsConfig,
         info: SerializationInfo,
     ) -> dict[str, Any]:
-        context = info.context or {}
-        if context.get("expose_secrets", False):
-            return agent_settings.model_dump(
-                mode="json", context={"expose_secrets": True}
-            )
-        return agent_settings.model_dump(mode="json")
+        # Pass through the full context (cipher, expose_secrets) to AgentSettings
+        # This ensures secrets are properly encrypted/exposed based on context
+        return agent_settings.model_dump(mode="json", context=info.context)
 
     @model_validator(mode="before")
     @classmethod
     def _normalize_inputs(cls, data: dict | object) -> dict | object:
         """Normalize inputs during deserialization.
 
-        Applies schema migrations via ``from_persisted()`` for both agent
-        and conversation settings, ensuring forward compatibility when
-        loading settings files saved with older schema versions.
+        Applies schema migrations for both agent and conversation settings,
+        ensuring forward compatibility when loading settings files saved with
+        older schema versions.
+
+        Note: We keep agent_settings as a dict here so that Pydantic's normal
+        validation handles it with context. This allows cipher-based decryption
+        to work properly through nested field validators (e.g., LLM._validate_secrets).
         """
         if not isinstance(data, dict):
             return data
 
-        # Apply migrations and coerce SecretStr leaves for agent_settings
+        # Apply migrations for agent_settings but keep as dict
+        # The dict will be validated by Pydantic with context for decryption
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
             coerced = _coerce_dict_secrets(agent_settings)
-            # Use from_persisted to apply schema migrations
-            data["agent_settings"] = AgentSettings.from_persisted(coerced)
+            # Apply migrations only, return dict for Pydantic to validate with context
+            migrated = _apply_persisted_migrations(
+                coerced,
+                current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+                migrations=_AGENT_SETTINGS_MIGRATIONS,
+                payload_name="AgentSettings",
+            )
+            data["agent_settings"] = migrated
 
         # Apply migrations for conversation_settings
         conv_settings = data.get("conversation_settings")
@@ -130,6 +146,17 @@ class CustomSecret(BaseModel):
     name: str
     secret: SecretStr
     description: str | None = None
+
+    @field_validator("secret")
+    @classmethod
+    def _validate_secret(
+        cls, v: str | SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        return validate_secret(v, info)
+
+    @field_serializer("secret", when_used="always")
+    def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
+        return serialize_secret(v, info)
 
     @classmethod
     def from_value(cls, value: dict[str, Any] | str) -> CustomSecret:
@@ -172,19 +199,23 @@ class Secrets(BaseModel):
     def custom_secrets_serializer(
         self, custom_secrets: dict[str, CustomSecret], info: SerializationInfo
     ) -> dict[str, dict[str, Any]]:
-        expose = info.context and info.context.get("expose_secrets", False)
+        # Delegate to CustomSecret.model_dump which uses serialize_secret
+        # This ensures cipher context flows through for encryption
         result = {}
         for name, secret in custom_secrets.items():
-            result[name] = {
-                "secret": secret.secret.get_secret_value() if expose else "**********",
-                "description": secret.description,
-            }
+            result[name] = secret.model_dump(mode="json", context=info.context)
         return result
 
     @model_validator(mode="before")
     @classmethod
     def _normalize_inputs(cls, data: dict | object) -> dict | object:
-        """Convert dict inputs to CustomSecret instances."""
+        """Normalize dict inputs to the expected structure.
+
+        Note: We deliberately keep values as raw strings/dicts here so that
+        Pydantic's field validators can handle cipher-based decryption via
+        the validation context. Wrapping in SecretStr here would bypass the
+        validate_secret() call that handles decryption.
+        """
         if not isinstance(data, dict):
             return data
 
@@ -195,15 +226,18 @@ class Secrets(BaseModel):
                 if isinstance(value, CustomSecret):
                     converted[name] = value
                 elif isinstance(value, dict):
-                    converted[name] = CustomSecret(
-                        name=name,
-                        secret=SecretStr(value.get("secret", "")),
-                        description=value.get("description"),
-                    )
+                    # Keep as dict - let Pydantic handle validation with context
+                    converted[name] = {
+                        "name": name,
+                        "secret": value.get("secret", ""),
+                        "description": value.get("description"),
+                    }
                 elif isinstance(value, str):
-                    converted[name] = CustomSecret(
-                        name=name, secret=SecretStr(value), description=None
-                    )
+                    converted[name] = {
+                        "name": name,
+                        "secret": value,
+                        "description": None,
+                    }
             data["custom_secrets"] = converted
 
         return data

@@ -203,6 +203,87 @@ class TestFileSettingsStore:
         )
         assert api_key_value == "my-secret-api-key"
 
+    def test_encrypts_all_secret_fields(self, temp_dir, cipher):
+        """Should encrypt all secret fields (api_key, AWS credentials)."""
+        store = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
+
+        aws_secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        settings = PersistedSettings()
+        settings.update(
+            {
+                "agent_settings_diff": {
+                    "llm": {
+                        "api_key": "my-secret-api-key",
+                        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                        "aws_secret_access_key": aws_secret_key,
+                        "aws_session_token": "session-token-value",
+                    }
+                }
+            }
+        )
+        store.save(settings)
+
+        # Read raw file and verify all secrets are encrypted
+        raw_data = json.loads((temp_dir / "settings.json").read_text())
+        llm_data = raw_data["agent_settings"]["llm"]
+
+        # All secret fields should be encrypted (not plaintext, not redacted)
+        for field, expected_value in [
+            ("api_key", "my-secret-api-key"),
+            ("aws_access_key_id", "AKIAIOSFODNN7EXAMPLE"),
+            ("aws_secret_access_key", aws_secret_key),
+            ("aws_session_token", "session-token-value"),
+        ]:
+            stored_value = llm_data[field]
+            assert stored_value is not None
+            assert stored_value != expected_value, f"{field} should be encrypted"
+            assert stored_value != "**********", f"{field} should not be redacted"
+
+            # Verify decryption works
+            decrypted = cipher.decrypt(stored_value)
+            assert decrypted is not None
+            assert decrypted.get_secret_value() == expected_value
+
+    def test_decrypts_all_secret_fields_on_load(self, temp_dir, cipher):
+        """Should decrypt all secret fields when loading."""
+        store1 = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
+
+        aws_secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        settings = PersistedSettings()
+        settings.update(
+            {
+                "agent_settings_diff": {
+                    "llm": {
+                        "api_key": "my-secret-api-key",
+                        "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                        "aws_secret_access_key": aws_secret_key,
+                        "aws_session_token": "session-token-value",
+                    }
+                }
+            }
+        )
+        store1.save(settings)
+
+        # Create fresh store instance to verify decryption works
+        store2 = FileSettingsStore(persistence_dir=temp_dir, cipher=cipher)
+        loaded = store2.load()
+        assert loaded is not None
+        llm = loaded.agent_settings.llm
+
+        # All secret fields should be decrypted
+        for field, expected_value in [
+            ("api_key", "my-secret-api-key"),
+            ("aws_access_key_id", "AKIAIOSFODNN7EXAMPLE"),
+            ("aws_secret_access_key", aws_secret_key),
+            ("aws_session_token", "session-token-value"),
+        ]:
+            value = getattr(llm, field)
+            assert value is not None, f"{field} should not be None"
+            value_str = (
+                value.get_secret_value() if isinstance(value, SecretStr) else value
+            )
+            assert value_str == expected_value, f"{field} should be decrypted"
+
 
 class TestFileSecretsStore:
     """Tests for FileSecretsStore."""
