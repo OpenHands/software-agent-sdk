@@ -339,6 +339,55 @@ def test_git_changes_with_gitignore():
         assert "__pycache__/module.pyc" not in paths
 
 
+def test_get_git_changes_skips_vanished_nested_repo():
+    """Test that get_git_changes skips nested repos that vanish (TOCTOU).
+
+    Simulates a directory disappearing between glob scan and
+    validate_git_repository by patching get_changes_in_repo to raise
+    GitRepositoryError for one nested directory.
+    """
+    from unittest.mock import patch
+
+    from openhands.sdk.git.exceptions import GitRepositoryError
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create a file in the main repo
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        # Create a valid nested repo
+        nested = Path(temp_dir) / "goodrepo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested file")
+
+        # Create a second nested repo that will "vanish"
+        vanished = Path(temp_dir) / "vanished"
+        vanished.mkdir()
+        (vanished / ".git").mkdir()  # just enough for glob to find it
+
+        # Patch get_changes_in_repo to raise for the vanished directory
+        original_fn = get_changes_in_repo
+
+        def patched_get_changes(repo_dir):
+            if str(Path(repo_dir).resolve()) == str(vanished.resolve()):
+                raise GitRepositoryError(f"Directory does not exist: {repo_dir}")
+            return original_fn(repo_dir)
+
+        with patch(
+            "openhands.sdk.git.git_changes.get_changes_in_repo",
+            side_effect=patched_get_changes,
+        ):
+            changes = get_git_changes(temp_dir)
+
+        paths = {str(c.path) for c in changes}
+        assert "main.txt" in paths
+        assert "goodrepo/nested.txt" in paths
+        # vanished repo should be skipped, not crash
+        assert all("vanished/" not in p for p in paths)
+
+
 def test_git_changes_with_binary_files():
     """Test git changes detection with binary files."""
     with tempfile.TemporaryDirectory() as temp_dir:
