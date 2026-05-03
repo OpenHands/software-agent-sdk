@@ -28,8 +28,16 @@ def preload_modules(modules_arg: str | None) -> None:
         module_name = module_name.strip()
         if not module_name:
             continue
-        importlib.import_module(module_name)
-        logger.info("Imported module: %s", module_name)
+        try:
+            importlib.import_module(module_name)
+            logger.info("Imported module: %s", module_name)
+        except ImportError as e:
+            logger.error(
+                "Failed to import module '%s' specified in --import-modules: %s",
+                module_name,
+                e,
+            )
+            raise
 
 
 def check_browser():
@@ -139,14 +147,15 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    preload_modules(args.import_modules)
-
-    # Handle browser check
+    # Handle browser check (should run without importing user modules)
     if args.check_browser:
         if check_browser():
             sys.exit(0)
         else:
             sys.exit(1)
+
+    # Import user modules after early-exit checks
+    preload_modules(args.import_modules)
 
     print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
     print(f"API docs will be available at http://{args.host}:{args.port}/docs")
