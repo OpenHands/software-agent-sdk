@@ -304,3 +304,102 @@ class TestFileSecretsStore:
             loaded.custom_secrets["API_KEY"].secret.get_secret_value()
             == "super-secret-value"
         )
+
+
+class TestSchemaMigration:
+    """Tests for schema migration support via from_persisted()."""
+
+    # Use a model with large context window to avoid LLMContextWindowTooSmallError
+    TEST_MODEL = "anthropic/claude-sonnet-4-20250514"
+
+    def test_load_settings_without_schema_version(self, temp_dir):
+        """Should migrate settings saved without schema_version (v0 -> v1)."""
+        store = FileSettingsStore(persistence_dir=temp_dir)
+
+        # Write a v0 settings file (no schema_version field)
+        v0_data = {
+            "agent_settings": {
+                "llm": {"model": self.TEST_MODEL},
+            },
+            "conversation_settings": {
+                "max_iterations": 100,
+            },
+        }
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        (temp_dir / "settings.json").write_text(json.dumps(v0_data))
+
+        # Load should apply migrations
+        loaded = store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.llm.model == self.TEST_MODEL
+        assert loaded.conversation_settings.max_iterations == 100
+        # After migration, schema_version should be current
+        assert loaded.agent_settings.schema_version >= 1
+        assert loaded.conversation_settings.schema_version >= 1
+
+    def test_load_settings_with_explicit_v0(self, temp_dir):
+        """Should migrate settings with explicit schema_version: 0."""
+        store = FileSettingsStore(persistence_dir=temp_dir)
+
+        v0_data = {
+            "agent_settings": {
+                "schema_version": 0,
+                "llm": {"model": self.TEST_MODEL},
+            },
+            "conversation_settings": {
+                "schema_version": 0,
+                "max_iterations": 50,
+            },
+        }
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        (temp_dir / "settings.json").write_text(json.dumps(v0_data))
+
+        loaded = store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.llm.model == self.TEST_MODEL
+        assert loaded.conversation_settings.max_iterations == 50
+        # After migration, schema_version should be current
+        assert loaded.agent_settings.schema_version >= 1
+        assert loaded.conversation_settings.schema_version >= 1
+
+    def test_update_with_old_schema_version(self):
+        """update() should handle diffs that might have old schema versions."""
+        settings = PersistedSettings()
+
+        # Simulate an update with v0 schema (no schema_version in diff)
+        settings.update(
+            {
+                "agent_settings_diff": {
+                    "llm": {"model": self.TEST_MODEL},
+                },
+                "conversation_settings_diff": {
+                    "max_iterations": 200,
+                },
+            }
+        )
+
+        assert settings.agent_settings.llm.model == self.TEST_MODEL
+        assert settings.conversation_settings.max_iterations == 200
+        # Should have current schema versions
+        assert settings.agent_settings.schema_version >= 1
+        assert settings.conversation_settings.schema_version >= 1
+
+    def test_persisted_settings_model_validate_with_v0(self):
+        """PersistedSettings.model_validate should apply migrations."""
+        v0_data = {
+            "agent_settings": {
+                "schema_version": 0,
+                "llm": {"model": self.TEST_MODEL},
+            },
+            "conversation_settings": {
+                "schema_version": 0,
+                "max_iterations": 100,
+            },
+        }
+
+        settings = PersistedSettings.model_validate(v0_data)
+        assert settings.agent_settings.llm.model == self.TEST_MODEL
+        assert settings.conversation_settings.max_iterations == 100
+        # After migration, schema_version should be current
+        assert settings.agent_settings.schema_version >= 1
+        assert settings.conversation_settings.schema_version >= 1

@@ -20,10 +20,10 @@ from pydantic import (
 )
 
 from openhands.sdk.settings import (
+    AgentSettings,
     AgentSettingsConfig,
     ConversationSettings,
     default_agent_settings,
-    validate_agent_settings,
 )
 
 
@@ -57,7 +57,8 @@ class PersistedSettings(BaseModel):
         """Apply a batch of changes from a nested dict.
 
         Accepts ``agent_settings_diff`` and ``conversation_settings_diff``
-        for partial updates.
+        for partial updates. Uses ``from_persisted()`` to apply any schema
+        migrations if the incoming diff contains an older schema version.
         """
         from openhands.agent_server.persistence.utils import deep_merge
 
@@ -69,7 +70,8 @@ class PersistedSettings(BaseModel):
                 ),
                 agent_update,
             )
-            self.agent_settings = validate_agent_settings(merged)
+            # Use from_persisted to handle potential schema migrations
+            self.agent_settings = AgentSettings.from_persisted(merged)
 
         conv_update = payload.get("conversation_settings_diff")
         if isinstance(conv_update, dict):
@@ -77,7 +79,8 @@ class PersistedSettings(BaseModel):
                 self.conversation_settings.model_dump(mode="json"),
                 conv_update,
             )
-            self.conversation_settings = ConversationSettings.model_validate(merged)
+            # Use from_persisted to handle potential schema migrations
+            self.conversation_settings = ConversationSettings.from_persisted(merged)
 
     @field_serializer("agent_settings")
     def agent_settings_serializer(
@@ -95,14 +98,28 @@ class PersistedSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalize_inputs(cls, data: dict | object) -> dict | object:
-        """Normalize inputs during deserialization."""
+        """Normalize inputs during deserialization.
+
+        Applies schema migrations via ``from_persisted()`` for both agent
+        and conversation settings, ensuring forward compatibility when
+        loading settings files saved with older schema versions.
+        """
         if not isinstance(data, dict):
             return data
 
-        # Coerce SecretStr leaves to plain strings for agent_settings
+        # Apply migrations and coerce SecretStr leaves for agent_settings
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
-            data["agent_settings"] = _coerce_dict_secrets(agent_settings)
+            coerced = _coerce_dict_secrets(agent_settings)
+            # Use from_persisted to apply schema migrations
+            data["agent_settings"] = AgentSettings.from_persisted(coerced)
+
+        # Apply migrations for conversation_settings
+        conv_settings = data.get("conversation_settings")
+        if isinstance(conv_settings, dict):
+            data["conversation_settings"] = ConversationSettings.from_persisted(
+                conv_settings
+            )
 
         return data
 
