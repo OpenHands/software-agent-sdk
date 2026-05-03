@@ -287,7 +287,7 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
             mime_type = header.split(":", 1)[1].split(";", 1)[0]
             return image_block(data=data, mime_type=mime_type)
         except (ValueError, IndexError):
-            logger.debug("Failed to parse data URI for ACP image block")
+            logger.warning("Failed to parse data URI for ACP image block")
             return None
     # Plain URL — pass as uri with a generic MIME type; the ACP server
     # can fetch and detect the actual type.
