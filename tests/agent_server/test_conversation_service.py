@@ -38,6 +38,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
@@ -264,6 +265,55 @@ class TestConversationServiceSearchConversations:
         assert result.items[0].id == conversation_id
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
         assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_conversations_with_critic_redacts_api_key(
+        self, conversation_service
+    ):
+        """ConversationInfo should serialize critic secrets without rejecting them."""
+        agent = Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("llm-secret")),
+            tools=[],
+            critic=APIBasedCritic(
+                api_key=SecretStr("critic-secret"),
+                server_url="https://critic.example.com",
+                model_name="critic",
+            ),
+        )
+        stored_conv = StoredConversation(
+            id=uuid4(),
+            agent=agent,
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conv
+        mock_service.get_state.return_value = ConversationState(
+            id=stored_conv.id,
+            agent=stored_conv.agent,
+            workspace=stored_conv.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conv.confirmation_policy,
+        )
+        conversation_service._event_services[stored_conv.id] = mock_service
+
+        result = await conversation_service.search_conversations()
+
+        info = result.items[0]
+        assert isinstance(info.agent.critic, APIBasedCritic)
+        assert info.agent.critic.api_key is None
+
+        payload = info.model_dump(mode="json")
+        assert payload["agent"]["llm"]["api_key"] is None
+        assert payload["agent"]["critic"]["api_key"] is None
+        assert "llm-secret" not in str(payload)
+        assert "critic-secret" not in str(payload)
+        assert "critic-secret" not in str(info)
 
     @pytest.mark.asyncio
     async def test_search_conversations_status_filter(self, conversation_service):

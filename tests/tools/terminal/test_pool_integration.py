@@ -109,3 +109,33 @@ class TestConcurrentExecution:
         assert elapsed < serial_time, (
             f"Expected parallel execution under {serial_time}s, took {elapsed:.1f}s"
         )
+
+
+class TestTmuxPoolRecovery:
+    def test_shell_exit_returns_actionable_error_and_rebuilds_pool(self, pool_executor):
+        obs = pool_executor(TerminalAction(command="exit 7", timeout=1.0))
+
+        assert obs.is_error
+        assert obs.exit_code == -1
+        assert "rebuilt the terminal pool" in obs.text
+        assert "top-level `exit`" in obs.text
+        assert "Original tmux error:" in obs.text
+
+        after = pool_executor(TerminalAction(command="echo after_rebuild", timeout=5.0))
+
+        assert not after.is_error
+        assert after.exit_code == 0
+        assert "after_rebuild" in after.text
+
+    def test_reset_after_shell_exit_uses_rebuilt_pool(self, pool_executor):
+        obs = pool_executor(TerminalAction(command="exit 0", timeout=1.0))
+        assert obs.is_error
+
+        reset_obs = pool_executor(
+            TerminalAction(command="pwd", reset=True, timeout=5.0)
+        )
+
+        assert not reset_obs.is_error
+        assert reset_obs.exit_code == 0
+        assert "Terminal session has been reset" in reset_obs.text
+        assert pool_executor.working_dir in reset_obs.text
