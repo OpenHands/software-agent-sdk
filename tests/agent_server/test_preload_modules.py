@@ -1,8 +1,9 @@
 """Tests for the --import-modules preloading helper."""
 
+import logging
 import sys
 import textwrap
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -96,3 +97,47 @@ class TestPreloadModules:
         preload_modules(None)
 
         assert fake_tool_module not in sys.modules
+
+    def test_import_error_is_logged_before_raising(self, caplog):
+        """Import failures should log the module name and error for
+        operator diagnostics before re-raising."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ModuleNotFoundError):
+                preload_modules("no_such_module_xyz_2771")
+
+        assert any(
+            "no_such_module_xyz_2771" in r.message and "--import-modules" in r.message
+            for r in caplog.records
+        )
+
+
+class TestMainCheckBrowserOrdering:
+    """Verify --check-browser runs independently of --import-modules."""
+
+    def test_check_browser_exits_before_preload(self):
+        """--check-browser should short-circuit before preload_modules
+        runs, so a broken user module cannot mask the browser check."""
+        mock_result = MagicMock()
+        mock_result.is_error = False
+
+        mock_executor = MagicMock()
+        mock_executor.return_value = mock_result
+
+        with (
+            patch("sys.argv", ["prog", "--check-browser", "--import-modules", "boom"]),
+            patch("openhands.tools.preset.default.register_default_tools"),
+            patch(
+                "openhands.tools.browser_use.impl.BrowserToolExecutor",
+                return_value=mock_executor,
+            ),
+            patch("openhands.agent_server.__main__.preload_modules") as mock_preload,
+        ):
+            from openhands.agent_server.__main__ import main
+
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+            # Browser check succeeded → exit 0
+            assert exc_info.value.code == 0
+            # preload_modules must NOT have been called
+            mock_preload.assert_not_called()
