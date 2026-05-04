@@ -3,11 +3,11 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
@@ -23,6 +23,8 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.persistence import PersistedSettings
+from openhands.agent_server.persistence.utils import deep_merge
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
@@ -45,6 +47,10 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class MissingSettingsError(ValueError):
+    """Raised when required settings are missing after merging."""
 
 
 class ConversationContractMismatchError(ValueError):
@@ -149,6 +155,127 @@ def _register_agent_definitions(
     )
 
 
+def _has_valid_llm_api_key(agent_data: dict[str, Any]) -> bool:
+    """Check if agent data has a valid (non-empty) LLM API key.
+
+    Args:
+        agent_data: The agent configuration dict containing an 'llm' field.
+
+    Returns:
+        True if a non-empty LLM API key is set, False otherwise.
+    """
+    llm_data = agent_data.get("llm", {})
+    if not isinstance(llm_data, dict):
+        return False
+    api_key = llm_data.get("api_key")
+    if api_key is None:
+        return False
+    if isinstance(api_key, SecretStr):
+        api_key = api_key.get_secret_value()
+    return bool(api_key and str(api_key).strip())
+
+
+def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
+    """Recursively strip None values from a dict for merge purposes.
+
+    This allows the merge logic to properly use persisted defaults when
+    the request has None/unset values. Non-dict values are passed through.
+    """
+    result: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            stripped = _strip_none_values(v)
+            if stripped:  # Only include non-empty dicts
+                result[k] = stripped
+        elif v is not None:
+            result[k] = v
+    return result
+
+
+def _merge_request_with_persisted_settings(
+    request_data: dict[str, Any],
+    persisted_settings: PersistedSettings | None,
+) -> dict[str, Any]:
+    """Merge a start conversation request with persisted settings.
+
+    Persisted settings provide defaults that are overridden by values in the
+    request. This allows users to start conversations without fully specifying
+    the agent configuration if they have previously saved settings.
+
+    The merge is selective - we only merge specific components that make sense:
+    - agent.llm: LLM configuration (model, api_key, base_url, etc.)
+    - conversation settings: max_iterations, confirmation_policy, etc.
+
+    Note that the request's Agent structure is preserved; we only fill in
+    missing LLM fields from persisted settings. This is because
+    StartConversationRequest.agent is an Agent object while
+    PersistedSettings.agent_settings is OpenHandsAgentSettings (used to
+    create agents via settings UI), and they have different structures.
+
+    Args:
+        request_data: The start conversation request as a dict.
+        persisted_settings: The persisted settings (may be None if not configured).
+
+    Returns:
+        A merged request dict with persisted defaults filled in.
+    """
+    if persisted_settings is None:
+        return request_data
+
+    result = dict(request_data)
+
+    # Merge LLM settings only (not the entire agent structure)
+    # The request contains an Agent dict, persisted contains OpenHandsAgentSettings
+    agent_data = result.get("agent", {})
+    if isinstance(agent_data, dict):
+        llm_data = agent_data.get("llm", {})
+        if isinstance(llm_data, dict):
+            # Get persisted LLM settings
+            persisted_llm = persisted_settings.agent_settings.llm.model_dump(
+                mode="json", context={"expose_secrets": True}
+            )
+
+            # Strip None values from request LLM so they don't overwrite persisted
+            llm_data_stripped = _strip_none_values(llm_data)
+
+            # Merge: persisted as base, request overlays non-None values
+            merged_llm = deep_merge(persisted_llm, llm_data_stripped)
+            agent_data["llm"] = merged_llm
+
+    # Merge conversation settings (only compatible fields)
+    # Note: security_analyzer is NOT merged because ConversationSettings uses
+    # SecurityAnalyzerType (string like "llm") while StartConversationRequest
+    # uses SecurityAnalyzerBase (a Pydantic model). They are incompatible.
+    persisted_conv = persisted_settings.conversation_settings.model_dump(mode="json")
+
+    # Apply persisted conversation settings as defaults for compatible fields
+    for key in ["max_iterations"]:
+        if key not in result or result[key] is None:
+            if key in persisted_conv and persisted_conv[key] is not None:
+                result[key] = persisted_conv[key]
+
+    return result
+
+
+def _validate_merged_agent_settings(agent_data: dict[str, Any]) -> None:
+    """Validate that merged agent settings have required configuration.
+
+    After merging request data with persisted settings, this function ensures
+    that the agent has a valid LLM API key configured.
+
+    Args:
+        agent_data: The merged agent configuration dict.
+
+    Raises:
+        MissingSettingsError: If required settings are missing.
+    """
+    if not _has_valid_llm_api_key(agent_data):
+        raise MissingSettingsError(
+            "Missing required LLM API key. Please provide an agent configuration "
+            "with a valid LLM API key, or save your LLM settings via the settings API."
+        )
+
+
 @dataclass
 class ConversationService:
     """
@@ -165,6 +292,29 @@ class ConversationService:
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+
+    def _load_persisted_settings(self) -> PersistedSettings | None:
+        """Load persisted settings from the settings store.
+
+        Uses the same persistence directory convention as the settings router:
+        ``conversations_dir parent + .openhands`` (e.g. workspace/.openhands)
+        or the OH_PERSISTENCE_DIR environment variable if set.
+
+        Returns:
+            The persisted settings if available, None otherwise.
+        """
+        # Compute persistence dir from conversations_dir
+        # conversations_dir is typically workspace/conversations,
+        # so persistence_dir is workspace/.openhands
+        persistence_dir = self.conversations_dir.parent / ".openhands"
+
+        from openhands.agent_server.persistence.store import FileSettingsStore
+
+        store = FileSettingsStore(
+            persistence_dir=persistence_dir,
+            cipher=self.cipher,
+        )
+        return store.load()
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -477,9 +627,23 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
+        request_data = request.model_dump(mode="json", context={"expose_secrets": True})
+
+        # Merge request with persisted settings (if available).
+        # This allows users to start conversations without fully specifying
+        # the agent configuration if they have previously saved settings.
+        persisted_settings = self._load_persisted_settings()
+        merged_data = _merge_request_with_persisted_settings(
+            request_data, persisted_settings
+        )
+
+        # Validate that after merging we have required settings
+        agent_data = merged_data.get("agent", {})
+        _validate_merged_agent_settings(agent_data)
+
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
+            **merged_data,
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

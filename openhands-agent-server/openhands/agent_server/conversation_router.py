@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import (
     ConversationContractMismatchError,
     ConversationService,
+    MissingSettingsError,
 )
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
@@ -151,7 +152,10 @@ async def batch_get_conversations(
 
 @conversation_router.post(
     "",
-    responses={409: {"description": "Conversation contract mismatch"}},
+    responses={
+        400: {"description": "Missing required settings"},
+        409: {"description": "Conversation contract mismatch"},
+    },
 )
 async def start_conversation(
     request: Annotated[
@@ -166,6 +170,11 @@ async def start_conversation(
     except ConversationContractMismatchError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
+    except MissingSettingsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK

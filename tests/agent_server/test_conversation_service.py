@@ -121,7 +121,10 @@ async def test_second_service_does_not_resume_active_running_conversation(tmp_pa
     workspace_dir.mkdir()
 
     request = StartConversationRequest(
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"),
+            tools=[],
+        ),
         workspace=LocalWorkspace(working_dir=str(workspace_dir)),
         confirmation_policy=NeverConfirm(),
     )
@@ -172,7 +175,10 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
     workspace_dir.mkdir()
 
     request = StartConversationRequest(
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"),
+            tools=[],
+        ),
         workspace=LocalWorkspace(working_dir=str(workspace_dir)),
         confirmation_policy=NeverConfirm(),
     )
@@ -697,7 +703,14 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 secrets=test_secrets,
@@ -760,7 +773,14 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request without secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
             )
@@ -814,7 +834,14 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -832,7 +859,14 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -843,7 +877,14 @@ class TestConversationServiceStartConversation:
             assert is_new
 
             duplicate_request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -865,7 +906,12 @@ class TestConversationServiceStartConversation:
         mock_event_service.is_open.return_value = False
         mock_event_service.stored = StoredConversation(
             id=custom_id,
-            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            agent=Agent(
+                llm=LLM(
+                    model="gpt-4o", api_key=SecretStr("test-key"), usage_id="test-llm"
+                ),
+                tools=[],
+            ),
             workspace=LocalWorkspace(working_dir="workspace/project"),
             confirmation_policy=NeverConfirm(),
             initial_message=None,
@@ -877,7 +923,14 @@ class TestConversationServiceStartConversation:
 
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+                agent=Agent(
+                    llm=LLM(
+                        model="gpt-4o",
+                        api_key=SecretStr("test-key"),
+                        usage_id="test-llm",
+                    ),
+                    tools=[],
+                ),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -2161,3 +2214,203 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+class TestSettingsMerging:
+    """Tests for merging start conversation requests with persisted settings."""
+
+    def test_has_valid_llm_api_key_with_valid_key(self):
+        """Test _has_valid_llm_api_key returns True for valid keys."""
+        from openhands.agent_server.conversation_service import _has_valid_llm_api_key
+
+        agent_data = {"llm": {"api_key": "valid-api-key", "model": "gpt-4"}}
+        assert _has_valid_llm_api_key(agent_data) is True
+
+    def test_has_valid_llm_api_key_with_secret_str(self):
+        """Test _has_valid_llm_api_key handles SecretStr."""
+        from openhands.agent_server.conversation_service import _has_valid_llm_api_key
+
+        agent_data = {"llm": {"api_key": SecretStr("valid-key"), "model": "gpt-4"}}
+        assert _has_valid_llm_api_key(agent_data) is True
+
+    def test_has_valid_llm_api_key_with_empty_key(self):
+        """Test _has_valid_llm_api_key returns False for empty keys."""
+        from openhands.agent_server.conversation_service import _has_valid_llm_api_key
+
+        assert _has_valid_llm_api_key({"llm": {"api_key": ""}}) is False
+        assert _has_valid_llm_api_key({"llm": {"api_key": "  "}}) is False
+        assert _has_valid_llm_api_key({"llm": {"api_key": None}}) is False
+        assert _has_valid_llm_api_key({"llm": {}}) is False
+        assert _has_valid_llm_api_key({}) is False
+
+    def test_merge_request_with_persisted_settings_fills_llm_from_persisted(self):
+        """Test that persisted LLM settings are used when request has no API key."""
+        from openhands.agent_server.conversation_service import (
+            _merge_request_with_persisted_settings,
+        )
+        from openhands.agent_server.persistence import PersistedSettings
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        # Request has no LLM API key (api_key is None or not present)
+        request_data = {
+            "agent": {"llm": {"model": "gpt-4", "api_key": None}},
+            "workspace": {"working_dir": "workspace/project"},
+        }
+
+        # Persisted settings have an API key
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model="claude-sonnet", api_key=SecretStr("persisted-key"))
+            )
+        )
+
+        merged = _merge_request_with_persisted_settings(request_data, persisted)
+
+        # Request model should be preserved, persisted API key should be added
+        assert merged["agent"]["llm"]["model"] == "gpt-4"
+        assert merged["agent"]["llm"]["api_key"] == "persisted-key"
+
+    def test_merge_request_with_persisted_settings_request_takes_precedence(self):
+        """Test that request settings take precedence over persisted."""
+        from openhands.agent_server.conversation_service import (
+            _merge_request_with_persisted_settings,
+        )
+        from openhands.agent_server.persistence import PersistedSettings
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        # Request has its own API key
+        request_data = {
+            "agent": {"llm": {"model": "gpt-4", "api_key": "request-key"}},
+            "workspace": {"working_dir": "workspace/project"},
+        }
+
+        # Persisted settings also have an API key
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model="claude-sonnet", api_key=SecretStr("persisted-key"))
+            )
+        )
+
+        merged = _merge_request_with_persisted_settings(request_data, persisted)
+
+        # Request values should take precedence
+        assert merged["agent"]["llm"]["model"] == "gpt-4"
+        assert merged["agent"]["llm"]["api_key"] == "request-key"
+
+    def test_merge_request_with_persisted_settings_none_returns_original(self):
+        """Test that None persisted settings returns original request."""
+        from openhands.agent_server.conversation_service import (
+            _merge_request_with_persisted_settings,
+        )
+
+        request_data = {
+            "agent": {"llm": {"model": "gpt-4"}},
+            "workspace": {"working_dir": "workspace/project"},
+        }
+
+        merged = _merge_request_with_persisted_settings(request_data, None)
+
+        assert merged == request_data
+
+    def test_validate_merged_agent_settings_raises_on_missing_key(self):
+        """Test that validation raises MissingSettingsError for missing API key."""
+        from openhands.agent_server.conversation_service import (
+            MissingSettingsError,
+            _validate_merged_agent_settings,
+        )
+
+        agent_data = {"llm": {"model": "gpt-4"}}
+
+        with pytest.raises(MissingSettingsError) as exc_info:
+            _validate_merged_agent_settings(agent_data)
+
+        assert "LLM API key" in str(exc_info.value)
+
+    def test_validate_merged_agent_settings_passes_with_valid_key(self):
+        """Test that validation passes with a valid API key."""
+        from openhands.agent_server.conversation_service import (
+            _validate_merged_agent_settings,
+        )
+
+        agent_data = {"llm": {"model": "gpt-4", "api_key": "valid-key"}}
+
+        # Should not raise
+        _validate_merged_agent_settings(agent_data)
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_merges_with_persisted_settings(tmp_path):
+    """Test that start_conversation merges request with persisted settings.
+
+    When a request doesn't include an API key but persisted settings do,
+    the conversation should start successfully (merge fills in the key).
+    Note: The returned ConversationInfo correctly redacts the API key for
+    security - we verify the merge worked by checking the conversation
+    started without MissingSettingsError.
+    """
+    import json
+
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    # Create persisted settings with LLM API key
+    settings_dir = tmp_path / ".openhands"
+    settings_dir.mkdir()
+    settings_file = settings_dir / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "agent_settings": {
+                    "llm": {
+                        "model": "gpt-4o",
+                        "api_key": "persisted-api-key",
+                    }
+                },
+                "conversation_settings": {},
+            }
+        )
+    )
+
+    # Request without API key - should be filled from persisted
+    # We need to use usage_id to avoid the LLM trying to connect
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="claude-sonnet-4-20250514", usage_id="test-llm"), tools=[]
+        ),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        # Service should load settings from tmp_path/.openhands/settings.json
+        # If merge didn't work, this would raise MissingSettingsError
+        conversation_info, is_new = await service.start_conversation(request)
+
+        assert is_new is True
+        # The request model should be preserved (request overrides persisted)
+        assert conversation_info.agent.llm.model == "claude-sonnet-4-20250514"
+        # Verify conversation was created (the merge was successful)
+        assert conversation_info.id is not None
+        # Note: API key is correctly redacted in response for security
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_raises_missing_settings_error(tmp_path):
+    """Test that start_conversation raises error when no LLM API key available."""
+    from openhands.agent_server.conversation_service import MissingSettingsError
+
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    # No persisted settings, request without API key
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as service:
+        with pytest.raises(MissingSettingsError) as exc_info:
+            await service.start_conversation(request)
+
+        assert "LLM API key" in str(exc_info.value)

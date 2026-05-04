@@ -6,7 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    MissingSettingsError,
+)
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
     ACPConversationInfo,
@@ -118,7 +121,10 @@ async def batch_get_acp_conversations(
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post(
+    "",
+    responses={400: {"description": "Missing required settings"}},
+)
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
@@ -128,6 +134,12 @@ async def start_acp_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
     """Start a conversation using the ACP-capable contract."""
-    info, is_new = await conversation_service.start_acp_conversation(request)
+    try:
+        info, is_new = await conversation_service.start_acp_conversation(request)
+    except MissingSettingsError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
