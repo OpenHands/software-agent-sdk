@@ -27,7 +27,9 @@ logger = get_logger(__name__)
 # ── Route Path Constants ─────────────────────────────────────────────────
 # These are relative to the router prefix (/settings).
 # When mounted on /api, full paths become /api/settings, /api/settings/secrets, etc.
-# Import these from RemoteWorkspace to keep client/server routes in sync.
+# Note: RemoteWorkspace (client) uses absolute paths (e.g., "/api/settings")
+# while this router uses relative paths. The paths are intentionally separate
+# to match their respective contexts (router prefix vs full URL path).
 SETTINGS_PATH = ""  # -> /api/settings
 SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}

@@ -303,10 +303,17 @@ class ConversationService:
         Returns:
             The persisted settings if available, None otherwise.
         """
-        # Compute persistence dir from conversations_dir
-        # conversations_dir is typically workspace/conversations,
-        # so persistence_dir is workspace/.openhands
-        persistence_dir = self.conversations_dir.parent / ".openhands"
+        import os
+
+        # Check OH_PERSISTENCE_DIR first for consistency with settings router
+        env_dir = os.environ.get("OH_PERSISTENCE_DIR")
+        if env_dir:
+            persistence_dir = Path(env_dir)
+        else:
+            # Compute persistence dir from conversations_dir
+            # conversations_dir is typically workspace/conversations,
+            # so persistence_dir is workspace/.openhands
+            persistence_dir = self.conversations_dir.parent / ".openhands"
 
         from openhands.agent_server.persistence.store import FileSettingsStore
 
