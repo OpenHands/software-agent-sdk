@@ -71,6 +71,10 @@ class LabelProbMap(BaseModel):
 # ============================================================
 
 
+DEFAULT_CRITIC_SERVER_URL = "https://llm-proxy.app.all-hands.dev/vllm"
+DEFAULT_CRITIC_MODEL_NAME = "critic"
+
+
 class CriticClient(BaseModel):
     """
     Core inference client for the Critic classification service.
@@ -91,7 +95,7 @@ class CriticClient(BaseModel):
 
     # --- connection / model config ---
     server_url: str = Field(
-        default="https://all-hands-ai--critic-qwen3-4b-serve.modal.run",
+        default=DEFAULT_CRITIC_SERVER_URL,
         description="Base URL of the vLLM classification service",
     )
     # validate_secret() normalizes empty, whitespace-only, and redacted inputs
@@ -101,7 +105,7 @@ class CriticClient(BaseModel):
         ..., description="API key for authenticating with the vLLM service"
     )
     model_name: str = Field(
-        default="critic-qwen3-4b", description="Name of the model to use"
+        default=DEFAULT_CRITIC_MODEL_NAME, description="Name of the model to use"
     )
     tokenizer_name: str = Field(
         default="Qwen/Qwen3-4B-Instruct-2507",
