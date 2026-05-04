@@ -1,5 +1,5 @@
 ---
-name: QA Changes Evaluation [experimental]
+name: QA Changes Evaluation
 
 # This workflow evaluates how well QA validation performed.
 # It runs when a PR is closed to assess QA effectiveness.
@@ -48,14 +48,11 @@ jobs:
                     echo "No trace file found for PR #$PR_NUMBER - skipping evaluation"
                   fi
 
-            # EXPERIMENTAL: pinned to feature branch while qa-changes plugin is in development.
-            # Switch to @main (and remove ref:) once the plugin is merged.
             - name: Checkout extensions repository
               if: steps.check-trace.outputs.trace_exists == 'true'
               uses: actions/checkout@v6
               with:
                   repository: OpenHands/extensions
-                  ref: feat/qa-changes-plugin
                   path: extensions
 
             - name: Set up Python
