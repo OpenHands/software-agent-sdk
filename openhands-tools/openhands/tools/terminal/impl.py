@@ -1,7 +1,10 @@
 import re
 import threading
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING, Literal
+
+from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
@@ -29,6 +32,24 @@ from openhands.tools.terminal.terminal.tmux_pane_pool import (
     TmuxPanePool,
 )
 
+
+_TMUX_POOL_RECOVERY_MESSAGE = (
+    "The terminal session was reset because the underlying tmux server/session "
+    "disappeared while running the previous command. This often happens when a "
+    "command terminates the persistent shell, for example by ending with a "
+    "top-level `exit` such as `exit $code`, or otherwise kills tmux. OpenHands "
+    "rebuilt the terminal pool, but the interrupted command's result is not "
+    "reliable and was not retried. Avoid top-level `exit` in future terminal "
+    'commands; use a non-shell-exiting status check like `test "$code" -eq 0` '
+    "or conditional shell logic instead. Please rerun any needed command."
+)
+
+_TMUX_RECOVERABLE_ERROR_MARKERS = (
+    "no server running",
+    "can't find session",
+    "could not find window_id",
+    "could not find pane_id",
+)
 
 logger = get_logger(__name__)
 
@@ -71,6 +92,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._username = username
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._terminal_type = terminal_type
+        self._max_panes = max_panes
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -78,17 +100,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._session: TerminalSession | None = None
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
+        self._pool_recovery_lock = threading.Lock()
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
         if use_pool:
-            self._pool = TmuxPanePool(working_dir, username, max_panes=max_panes)
-            self._pool.initialize()
-            logger.info(
-                f"TerminalExecutor initialized (pool mode) "
-                f"working_dir: {working_dir}, username: {username}, "
-                f"max_panes: {max_panes}"
-            )
+            self._initialize_pool()
         else:
             self._session = create_terminal_session(
                 work_dir=working_dir,
@@ -110,6 +127,50 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     def is_pooled(self) -> bool:
         """Whether this executor is using the tmux pane pool for concurrency."""
         return self._pool is not None
+
+    def _initialize_pool(self) -> None:
+        self._pool = TmuxPanePool(
+            self._working_dir,
+            self._username,
+            max_panes=self._max_panes,
+        )
+        self._pool.initialize()
+        logger.info(
+            f"TerminalExecutor initialized (pool mode) "
+            f"working_dir: {self._working_dir}, username: {self._username}, "
+            f"max_panes: {self._max_panes}"
+        )
+
+    @staticmethod
+    def _is_recoverable_tmux_pool_error(error: Exception) -> bool:
+        recoverable_types = (LibTmuxException, TmuxObjectDoesNotExist)
+        if not isinstance(error, recoverable_types):
+            return False
+        message = " ".join(str(arg) for arg in error.args).lower()
+        return any(marker in message for marker in _TMUX_RECOVERABLE_ERROR_MARKERS)
+
+    def _recover_tmux_pool(self, failed_pool: TmuxPanePool) -> None:
+        with self._pool_recovery_lock:
+            if self._pool is not failed_pool:
+                return
+
+            with suppress(Exception):
+                failed_pool.close()
+            with self._sessions_lock:
+                self._sessions.clear()
+            self._initialize_pool()
+
+    @staticmethod
+    def _tmux_pool_recovery_observation(
+        action: TerminalAction,
+        error: Exception,
+    ) -> TerminalObservation:
+        return TerminalObservation.from_text(
+            text=(f"{_TMUX_POOL_RECOVERY_MESSAGE}\n\nOriginal tmux error: {error}"),
+            is_error=True,
+            command=action.command or "[RESET]",
+            exit_code=-1,
+        )
 
     @property
     def working_dir(self) -> str:
@@ -411,50 +472,63 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         managed by the pool's context manager so there is exactly one
         checkout and one checkin per call.
         """
-        with self._pool.pane() as handle:  # type: ignore[union-attr]
-            reset_text: str | None = None
+        pool = self._pool
+        assert pool is not None
+        try:
+            with pool.pane() as handle:
+                reset_text: str | None = None
 
-            if action.reset or handle.terminal._closed:
-                self._discard_session(handle.terminal)
-                handle.terminal = self._pool.replace(handle.terminal)  # type: ignore[union-attr]
-                reset_text = self._RESET_TEXT
-                logger.info(
-                    f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
-                )
-
-                if not action.command.strip():
-                    return TerminalObservation.from_text(
-                        text=reset_text,
-                        command="[RESET]",
-                        exit_code=0,
+                if action.reset or handle.terminal._closed:
+                    self._discard_session(handle.terminal)
+                    handle.terminal = pool.replace(handle.terminal)
+                    reset_text = self._RESET_TEXT
+                    logger.info(
+                        "Terminal pane replaced (reset) "
+                        f"working_dir: {self._working_dir}"
                     )
 
-            session = self._wrap_session(handle.terminal)
-            self._prepare_pooled_session(session)
+                    if not action.command.strip():
+                        return TerminalObservation.from_text(
+                            text=reset_text,
+                            command="[RESET]",
+                            exit_code=0,
+                        )
 
-            cmd_action = (
-                action
-                if reset_text is None
-                else TerminalAction(
-                    command=action.command,
-                    timeout=action.timeout,
-                    is_input=False,
+                session = self._wrap_session(handle.terminal)
+                self._prepare_pooled_session(session)
+
+                cmd_action = (
+                    action
+                    if reset_text is None
+                    else TerminalAction(
+                        command=action.command,
+                        timeout=action.timeout,
+                        is_input=False,
+                    )
                 )
+                self._export_envs(cmd_action, conversation, session=session)
+                observation = session.execute(cmd_action)
+
+                if reset_text is not None:
+                    observation = observation.model_copy(
+                        update={
+                            "content": [
+                                TextContent(text=f"{reset_text}\n\n{observation.text}")
+                            ],
+                            "command": f"[RESET] {action.command}",
+                        }
+                    )
+
+                return self._mask_observation(observation, conversation)
+        except Exception as error:
+            if not self._is_recoverable_tmux_pool_error(error):
+                raise
+            logger.warning(
+                "Recovering terminal pane pool after tmux server/session disappeared",
+                exc_info=True,
             )
-            self._export_envs(cmd_action, conversation, session=session)
-            observation = session.execute(cmd_action)
-
-            if reset_text is not None:
-                observation = observation.model_copy(
-                    update={
-                        "content": [
-                            TextContent(text=f"{reset_text}\n\n{observation.text}")
-                        ],
-                        "command": f"[RESET] {action.command}",
-                    }
-                )
-
-            return self._mask_observation(observation, conversation)
+            self._recover_tmux_pool(pool)
+            return self._tmux_pool_recovery_observation(action, error)
 
     def __call__(
         self,

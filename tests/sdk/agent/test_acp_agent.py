@@ -16,6 +16,7 @@ from openhands.sdk.agent.acp_agent import (
     _build_session_meta,
     _estimate_cost_from_tokens,
     _extract_token_usage,
+    _image_url_to_acp_block,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
     _resolve_bypass_mode,
@@ -34,7 +35,7 @@ from openhands.sdk.event import (
     MessageEvent,
     SystemPromptEvent,
 )
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.workspace.local import LocalWorkspace
@@ -364,12 +365,81 @@ class TestACPAgentValidation:
             extended_content=[TextContent(text="Prefer concise responses.")],
         )
 
-        prompt = agent._build_acp_prompt(event)
+        blocks = agent._build_acp_prompt(event)
 
-        assert prompt is not None
-        assert "First block." in prompt
-        assert "Second block." in prompt
-        assert prompt.count("Prefer concise responses.") == 1
+        assert blocks is not None
+        texts = [b.text for b in blocks if hasattr(b, "text")]
+        assert "First block." in texts
+        assert "Second block." in texts
+        assert sum(1 for t in texts if t == "Prefer concise responses.") == 1
+
+    def test_build_acp_prompt_includes_image_content(self):
+        agent = _make_agent()
+        event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[
+                    TextContent(text="What is in this image?"),
+                    ImageContent(image_urls=["data:image/png;base64,iVBOR"]),
+                ],
+            ),
+        )
+
+        blocks = agent._build_acp_prompt(event)
+
+        assert blocks is not None
+        assert len(blocks) == 2
+        assert blocks[0].type == "text"
+        assert blocks[0].text == "What is in this image?"
+        assert blocks[1].type == "image"
+        assert blocks[1].data == "iVBOR"
+        assert blocks[1].mime_type == "image/png"
+
+
+class TestImageUrlToAcpBlock:
+    def test_data_uri(self):
+        block = _image_url_to_acp_block("data:image/jpeg;base64,/9j/4AAQ")
+        assert block is not None
+        assert block.data == "/9j/4AAQ"
+        assert block.mime_type == "image/jpeg"
+
+    def test_plain_url(self):
+        block = _image_url_to_acp_block("https://example.com/img.png")
+        assert block is not None
+        assert block.uri == "https://example.com/img.png"
+
+    def test_invalid_data_uri_returns_none(self):
+        block = _image_url_to_acp_block("data:broken")
+        assert block is None
+
+    def test_real_png_round_trips(self):
+        """Verify a real PNG image survives the full conversion path."""
+        import base64
+        import struct
+        import zlib
+
+        # Minimal valid 1x1 red PNG
+        sig = b"\x89PNG\r\n\x1a\n"
+        ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+        ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data) & 0xFFFFFFFF
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", ihdr_crc)
+        raw = zlib.compress(b"\x00\xff\x00\x00")
+        idat_crc = zlib.crc32(b"IDAT" + raw) & 0xFFFFFFFF
+        idat = struct.pack(">I", len(raw)) + b"IDAT" + raw + struct.pack(">I", idat_crc)
+        iend_crc = zlib.crc32(b"IEND") & 0xFFFFFFFF
+        iend = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", iend_crc)
+        png_bytes = sig + ihdr + idat + iend
+
+        b64_data = base64.b64encode(png_bytes).decode()
+        data_uri = f"data:image/png;base64,{b64_data}"
+
+        block = _image_url_to_acp_block(data_uri)
+        assert block is not None
+        assert block.mime_type == "image/png"
+        decoded = base64.b64decode(block.data)
+        assert decoded == png_bytes
+        assert decoded[:4] == b"\x89PNG"
 
 
 # ---------------------------------------------------------------------------
@@ -787,8 +857,7 @@ class TestACPAgentStep:
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
         prompt_blocks = prompt_call.args[0]
-        assert len(prompt_blocks) == 1
-        prompt_text = prompt_blocks[0].text
+        prompt_text = "\n\n".join(b.text for b in prompt_blocks if hasattr(b, "text"))
         assert "Review this PR." in prompt_text
         assert "<name>review</name>" in prompt_text
         assert "<description>Review pull requests.</description>" in prompt_text
@@ -834,7 +903,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
-        prompt_text = prompt_call.args[0][0].text
+        prompt_text = "\n\n".join(
+            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+        )
         assert "Review this PR." in prompt_text
         assert "<REPO_CONTEXT>" in prompt_text
         assert "Always follow repository-specific review rules." in prompt_text
@@ -887,7 +958,9 @@ class TestACPAgentStep:
 
         prompt_call = agent._conn.prompt.await_args
         assert prompt_call is not None
-        prompt_text = prompt_call.args[0][0].text
+        prompt_text = "\n\n".join(
+            b.text for b in prompt_call.args[0] if hasattr(b, "text")
+        )
         assert "Legacy triggered review instructions." in prompt_text
         assert "AgentSkills triggered review instructions." in prompt_text
         assert "<name>agentskill-review</name>" in prompt_text

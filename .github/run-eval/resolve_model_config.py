@@ -77,7 +77,7 @@ MODELS = {
         "id": "kimi-k2.6",
         "display_name": "Kimi K2.6",
         "llm_config": {
-            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "model": "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc",
             "temperature": 1.0,
         },
     },
@@ -230,6 +230,12 @@ MODELS = {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
+    },
+    # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
