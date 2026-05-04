@@ -16,13 +16,23 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 ### Review decision policy (eval / benchmark risk)
 
 Do **NOT** submit an **APPROVE** review when the PR changes agent behavior or anything
-that could plausibly affect benchmark/evaluation performance.
+that could plausibly affect benchmark/evaluation performance — **unless** eval evidence
+is already provided (see exception below).
 
 Examples include: prompt templates, tool calling/execution, planning/loop logic,
 memory/condenser behavior, terminal/stdin/stdout handling, or evaluation harness code.
 
 If a PR is in this category (or you are uncertain), leave a **COMMENT** review and
 explicitly flag it for a human maintainer to decide after running lightweight evals.
+
+#### Exception – eval evidence provided
+
+If the PR description **or** PR comments contain a link to the eval monitor
+(`openhands-eval-monitor.vercel.app`) showing a completed benchmark run **and**
+a human maintainer has commented confirming the results (e.g., "Human review done",
+"eval looks good", or similar), treat the eval-risk requirement as satisfied and
+follow the normal approval policy. The eval monitor link is authoritative proof of
+benchmark validation for this repository.
 
 ### Default approval policy
 

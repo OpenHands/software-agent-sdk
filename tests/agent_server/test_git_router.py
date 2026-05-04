@@ -165,85 +165,6 @@ async def test_git_diff_missing_path_param(client):
 
 
 # =============================================================================
-# Path Parameter Tests (Legacy/Backwards Compatibility)
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_git_changes_path_param_success(client):
-    """Test git changes endpoint with path parameter (legacy)."""
-    expected_changes = [
-        GitChange(status=GitChangeStatus.ADDED, path=Path("new_file.py")),
-        GitChange(status=GitChangeStatus.UPDATED, path=Path("existing_file.py")),
-    ]
-
-    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.return_value = expected_changes
-
-        test_path = "src/test_repo"
-        response = client.get(f"/api/git/changes/{test_path}")
-
-        assert response.status_code == 200
-        response_data = response.json()
-
-        assert len(response_data) == 2
-        assert response_data[0]["status"] == "ADDED"
-        assert response_data[1]["status"] == "UPDATED"
-        mock_git_changes.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_changes_path_param_nested(client):
-    """Test git changes endpoint with nested path parameter."""
-    expected_changes = [
-        GitChange(status=GitChangeStatus.ADDED, path=Path("file.py")),
-    ]
-
-    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.return_value = expected_changes
-
-        test_path = "src/deep/nested/repo"
-        response = client.get(f"/api/git/changes/{test_path}")
-
-        assert response.status_code == 200
-        mock_git_changes.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_diff_path_param_success(client):
-    """Test git diff endpoint with path parameter (legacy)."""
-    expected_diff = GitDiff(modified="new content", original="old content")
-
-    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.return_value = expected_diff
-
-        test_path = "src/test_file.py"
-        response = client.get(f"/api/git/diff/{test_path}")
-
-        assert response.status_code == 200
-        response_data = response.json()
-
-        assert response_data["modified"] == "new content"
-        assert response_data["original"] == "old content"
-        mock_git_diff.assert_called_once_with(Path(test_path))
-
-
-@pytest.mark.asyncio
-async def test_git_diff_path_param_nested(client):
-    """Test git diff endpoint with nested path parameter."""
-    expected_diff = GitDiff(modified="updated", original="original")
-
-    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
-        mock_git_diff.return_value = expected_diff
-
-        test_path = "src/utils/helper.py"
-        response = client.get(f"/api/git/diff/{test_path}")
-
-        assert response.status_code == 200
-        mock_git_diff.assert_called_once_with(Path(test_path))
-
-
-# =============================================================================
 # Additional Edge Case Tests
 # =============================================================================
 
@@ -307,16 +228,10 @@ async def test_git_changes_with_complex_paths(client):
         assert response_data[2]["path"] == "special-chars_file@123.py"
 
 
-def test_git_legacy_routes_are_deprecated_in_openapi(client):
+def test_git_legacy_routes_are_removed_from_openapi(client):
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
-    openapi_schema = response.json()
-
-    changes_operation = openapi_schema["paths"]["/api/git/changes/{path}"]["get"]
-    assert changes_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in changes_operation["description"]
-
-    diff_operation = openapi_schema["paths"]["/api/git/diff/{path}"]["get"]
-    assert diff_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in diff_operation["description"]
+    openapi_paths = response.json()["paths"]
+    assert "/api/git/changes/{path}" not in openapi_paths
+    assert "/api/git/diff/{path}" not in openapi_paths

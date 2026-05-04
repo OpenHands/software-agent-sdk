@@ -1174,6 +1174,33 @@ def test_conversation_stats_restore_then_track():
         assert stats.get_combined_metrics().accumulated_cost == 10.25
 
 
+def test_telemetry_callback_preserved_across_revalidation():
+    """Telemetry callbacks must survive validators re-running on the LLM.
+
+    Wrapping an LLM in another Pydantic model (e.g. RegistryEvent) re-runs the
+    LLM's `mode="after"` validators. Before this fix, _set_env_side_effects
+    rebuilt _telemetry unconditionally, silently dropping any callback wired
+    via telemetry.set_*_callback() — which broke real-time stats streaming
+    from the agent server (no `key="stats"` events were ever emitted after
+    the first agent step).
+    """
+    llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="agent",
+    )
+    fired: list[bool] = []
+    llm.telemetry.set_stats_update_callback(lambda: fired.append(True))
+    telemetry_before = llm._telemetry
+
+    RegistryEvent(llm=llm)
+
+    assert llm._telemetry is telemetry_before
+    assert llm.telemetry._stats_update_callback is not None
+    llm.telemetry._stats_update_callback()
+    assert fired == [True]
+
+
 # max_output_tokens Capping Tests
 
 

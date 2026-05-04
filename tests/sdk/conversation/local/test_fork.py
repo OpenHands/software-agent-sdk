@@ -279,3 +279,29 @@ def test_fork_persisted_events_survive_reload():
         resumed_ids = [e.id for e in resumed.state.events]
         assert evt_id_1 in resumed_ids
         assert evt_id_2 in resumed_ids
+
+
+def test_fork_default_does_not_clobber_source_cache_key():
+    """Default fork() must leave the source's prompt_cache_key intact (#2917)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src_key_before = src.agent.llm._prompt_cache_key
+
+        fork = src.fork()
+
+        assert src.agent.llm._prompt_cache_key == src_key_before == str(src.id)
+        assert fork.agent.llm._prompt_cache_key == str(fork.id)
+        assert fork.agent.llm._prompt_cache_key != src.agent.llm._prompt_cache_key
+
+
+def test_fork_with_aliased_agent_does_not_clobber_source_cache_key():
+    """fork(agent=source.agent) must not repin the source LLM's cache key (#2917)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src = Conversation(agent=_agent(), persistence_dir=tmpdir, workspace=tmpdir)
+        src_key_before = src.agent.llm._prompt_cache_key
+
+        fork = src.fork(agent=src.agent)
+
+        assert src.agent.llm._prompt_cache_key == src_key_before == str(src.id)
+        assert fork.agent.llm._prompt_cache_key == str(fork.id)
+        assert fork.agent.llm is not src.agent.llm

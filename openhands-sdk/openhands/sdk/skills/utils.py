@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,10 +14,14 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
     from openhands.sdk.skills.skill import Skill, SkillResources
+
+# Type alias for secret lookup functions
+SecretLookup = Callable[[str], str | None]
 
 logger = get_logger(__name__)
 
@@ -65,25 +70,59 @@ def find_mcp_config(skill_dir: Path) -> Path | None:
     return None
 
 
+def _serialize_for_json(obj: object) -> object:
+    """Recursively convert Pydantic models to dicts for JSON serialization.
+
+    This handles the case where MCP config contains Pydantic model objects
+    (RemoteMCPServer, StdioMCPServer) instead of plain dicts.
+    """
+    # Check for Pydantic v2 model_dump method
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    return obj
+
+
 def expand_mcp_variables(
     config: dict,
     variables: dict[str, str],
+    get_secret: SecretLookup | None = None,
+    *,  # keyword-only after this (PEP 3102)
+    expand_defaults: bool = True,
 ) -> dict:
     """Expand variables in MCP configuration.
 
     Supports variable expansion similar to Claude Code:
-    - ${VAR} - Environment variables or provided variables
+    - ${VAR} - Environment variables, provided variables, or secrets
     - ${VAR:-default} - With default value
 
+    Resolution order:
+    1. Provided variables (e.g., SKILL_ROOT)
+    2. Secrets (via get_secret callback, if provided)
+    3. Environment variables
+    4. Default value (if specified and expand_defaults=True)
+
     Args:
-        config: MCP configuration dictionary.
-        variables: Dictionary of variable names to values.
+        config: MCP configuration dictionary. May contain Pydantic model objects
+            (e.g., RemoteMCPServer, StdioMCPServer) which will be converted to
+            dicts before JSON serialization.
+        variables: Dictionary of variable names to values (e.g., SKILL_ROOT).
+        get_secret: Callback to look up a secret by name. We use a callback
+            rather than a dict to avoid extracting all secrets into plain text.
+            Pass `secret_registry.get_secret_value` or `{"K": "V"}.get` for tests.
+        expand_defaults: If True, apply default values for unresolved variables.
+            If False, preserve ${VAR:-default} as-is for later expansion.
+            This allows deferred expansion when secrets are not yet available.
 
     Returns:
         Configuration with variables expanded.
     """
-    # Convert to JSON string for easy replacement
-    config_str = json.dumps(config)
+    # Convert Pydantic models to plain containers before variable expansion.
+    serializable_config = _serialize_for_json(config)
 
     # Pattern for ${VAR} or ${VAR:-default}
     var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
@@ -92,29 +131,56 @@ def expand_mcp_variables(
         var_name = match.group(1)
         default_value = match.group(2)
 
-        # Check provided variables first, then environment
+        # Check provided variables first, then secrets, then environment
         if var_name in variables:
             return variables[var_name]
+        if get_secret is not None:
+            secret_value = get_secret(var_name)
+            if secret_value is not None:
+                return secret_value
         if var_name in os.environ:
             return os.environ[var_name]
-        if default_value is not None:
+        # Apply default only if expand_defaults is True
+        if expand_defaults and default_value is not None:
             return default_value
-        # Return original if not found
+        # Return original if not found (preserves placeholder for later expansion)
         return match.group(0)
 
-    config_str = var_pattern.sub(replace_var, config_str)
-    return json.loads(config_str)
+    def expand_value(value: object) -> object:
+        if isinstance(value, str):
+            return var_pattern.sub(replace_var, value)
+        if isinstance(value, dict):
+            return {
+                expand_value(key) if isinstance(key, str) else key: expand_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [expand_value(item) for item in value]
+        return value
+
+    expanded_config = expand_value(serializable_config)
+    if not isinstance(expanded_config, dict):
+        raise TypeError("expanded MCP config must be a dictionary")
+    return expanded_config
 
 
 def load_mcp_config(
     mcp_json_path: Path,
     skill_root: Path | None = None,
+    get_secret: SecretLookup | None = None,
+    *,  # keyword-only after this (PEP 3102)
+    expand_defaults: bool = True,
 ) -> dict:
     """Load and parse .mcp.json with variable expansion.
 
     Args:
         mcp_json_path: Path to the .mcp.json file.
         skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
+        get_secret: Optional callback to look up per-conversation secrets.
+            See expand_mcp_variables() for details on why this is a callback.
+        expand_defaults: If True, apply default values for unresolved variables.
+            If False, preserve ${VAR:-default} as-is for later expansion.
+            Use False during plugin loading to defer until secrets are available.
 
     Returns:
         Parsed MCP configuration dictionary.
@@ -123,7 +189,7 @@ def load_mcp_config(
         SkillValidationError: If the file cannot be parsed or is invalid.
     """
     try:
-        with open(mcp_json_path) as f:
+        with open(mcp_json_path, encoding="utf-8") as f:
             config = json.load(f)
     except json.JSONDecodeError as e:
         raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
@@ -140,8 +206,10 @@ def load_mcp_config(
     if skill_root:
         variables["SKILL_ROOT"] = str(skill_root)
 
-    # Expand variables
-    config = expand_mcp_variables(config, variables)
+    # Expand variables (includes secrets if provided)
+    config = expand_mcp_variables(
+        config, variables, get_secret=get_secret, expand_defaults=expand_defaults
+    )
 
     # Validate using MCPConfig
     try:
@@ -362,7 +430,7 @@ def discover_skill_resources(skill_dir: Path) -> SkillResources:
     # Import here to avoid circular dependency
     from openhands.sdk.skills.skill import SkillResources
 
-    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+    resources = SkillResources(skill_root=to_posix_path(skill_dir.resolve()))
 
     for resource_type in RESOURCE_DIRECTORIES:
         resource_dir = skill_dir / resource_type
@@ -392,7 +460,7 @@ def _list_resource_files(
             if item.is_file():
                 # Store relative path from resource directory
                 rel_path = item.relative_to(resource_dir)
-                files.append(str(rel_path))
+                files.append(to_posix_path(rel_path))
     except OSError as e:
         logger.warning(f"Error listing {resource_type} directory: {e}")
     return sorted(files)

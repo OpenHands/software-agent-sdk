@@ -89,7 +89,11 @@ class TestBrowserInitialization:
                 "openhands.tools.browser_use.impl.CustomBrowserUseServer",
                 return_value=mock_server,
             ),
-            patch("os.getuid", return_value=1000),  # Non-root user
+            patch(
+                "openhands.tools.browser_use.impl.os.getuid",
+                return_value=1000,
+                create=True,
+            ),  # Non-root user
         ):
             executor = BrowserToolExecutor(
                 headless=False,

@@ -1,0 +1,93 @@
+---
+name: Create GitHub Release
+
+# Automatically create a GitHub release when a release PR is merged into main.
+# This bridges the gap between merging the release PR and the pypi-release
+# workflow (which triggers on release published).
+
+on:
+    pull_request:
+        types: [closed]
+        branches: [main]
+
+jobs:
+    create-release:
+        # Only run when a release PR is merged (not just closed)
+        if: >
+            github.event.pull_request.merged == true &&
+            startsWith(github.event.pull_request.head.ref, 'rel-')
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write
+        steps:
+            - name: Extract version from branch name
+              id: version
+              run: |
+                  BRANCH="${{ github.event.pull_request.head.ref }}"
+                  VERSION="${BRANCH#rel-}"
+
+                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Could not extract valid version from branch: $BRANCH"
+                    exit 1
+                  fi
+
+                  echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "📦 Version: $VERSION"
+
+            - name: Check release does not already exist
+              id: check
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  if gh release view "v${VERSION}" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+                    echo "⚠️ Release v${VERSION} already exists, skipping"
+                    echo "exists=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "exists=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Find previous release tag
+              if: steps.check.outputs.exists == 'false'
+              id: prev_tag
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  PREV_TAG=$(gh release list --repo "${{ github.repository }}" \
+                    --exclude-drafts --exclude-pre-releases --limit 1 \
+                    --json tagName --jq '.[0].tagName')
+                  echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+                  echo "📌 Previous release tag: ${PREV_TAG:-<none>}"
+
+            - name: Create GitHub Release
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+                  PREV_TAG: ${{ steps.prev_tag.outputs.prev_tag }}
+              run: |
+                  NOTES_FLAG=()
+                  if [ -n "$PREV_TAG" ]; then
+                    NOTES_FLAG=(--notes-start-tag "$PREV_TAG")
+                  fi
+
+                  gh release create "v${VERSION}" \
+                    --repo "${{ github.repository }}" \
+                    --target "${{ github.event.pull_request.merge_commit_sha }}" \
+                    --title "v${VERSION}" \
+                    --generate-notes \
+                    "${NOTES_FLAG[@]}"
+
+                  echo "✅ Release v${VERSION} created!"
+                  echo "🔗 https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
+
+            - name: Summary
+              env:
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  echo "## ✅ Release v${VERSION} Created" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- **Tag**: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+                  echo "" >> "$GITHUB_STEP_SUMMARY"
+                  echo "The \`pypi-release.yml\` workflow will now publish packages to PyPI." >> "$GITHUB_STEP_SUMMARY"

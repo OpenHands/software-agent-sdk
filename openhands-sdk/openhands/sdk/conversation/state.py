@@ -2,7 +2,8 @@
 import copy
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -213,6 +214,9 @@ class ConversationState(OpenHandsModel):
     _on_state_change: ConversationCallbackType | None = PrivateAttr(
         default=None
     )  # callback for state changes
+    _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
+        default=None
+    )
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
@@ -237,6 +241,13 @@ class ConversationState(OpenHandsModel):
         """
         self._on_state_change = callback
 
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
+        self._events.set_write_guard(write_guard)
+
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
         """
@@ -255,7 +266,11 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        if self._write_guard is None:
+            fs.write(BASE_STATE, payload)
+        else:
+            with self._write_guard():
+                fs.write(BASE_STATE, payload)
 
     # ===== State cloning =====
     def snapshot(
@@ -395,11 +410,16 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if persistence_dir:
+            file_store = LocalFileStore(
+                persistence_dir, cache_limit_size=max_iterations
+            )
+        else:
+            logger.warning(
+                "No persistence_dir provided; falling back to InMemoryFileStore. "
+                "EventLog data will not persist across requests."
+            )
+            file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)

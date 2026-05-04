@@ -20,10 +20,10 @@ Policies enforced:
      marked `deprecated: true` in the generated schema.
 
 2) Deprecation runway before removal
-   - If a REST operation (path + HTTP method) is removed, it must have been marked
-     `deprecated: true` in the baseline release and its OpenAPI description must
-     declare a scheduled removal version that has been reached by the current
-     package version.
+   - If a REST operation (path + HTTP method) or schema property is removed, it
+     must have been marked `deprecated: true` in the baseline release and its
+     OpenAPI description must declare a scheduled removal version that has been
+     reached by the current package version.
 
 3) Additive response oneOf/anyOf expansion is allowed
    - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
@@ -35,9 +35,9 @@ Policies enforced:
 
 4) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
-     operations or additive oneOf expansions fail the check. REST clients need 5
-     minor releases of runway, so incompatible replacements must ship additively or
-     behind a versioned contract until the scheduled removal version.
+     operations/properties or additive oneOf expansions fail the check. REST clients
+     need 5 minor releases of runway, so incompatible replacements must ship
+     additively or behind a versioned contract until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -271,7 +271,7 @@ def _find_sdk_deprecated_fastapi_routes_in_file(
                     uses_sdk_deprecated = True
 
         if has_route_decorator and uses_sdk_deprecated:
-            rel_path = file_path.relative_to(repo_root)
+            rel_path = file_path.relative_to(repo_root).as_posix()
             errors.append(
                 f"{rel_path}:{node.lineno} FastAPI route `{node.name}` uses "
                 "openhands.sdk.utils.deprecation.deprecated; use the route "
@@ -418,6 +418,104 @@ def _validate_removed_operations(
     return errors
 
 
+def _iter_schema_properties(schema: dict):
+    if not isinstance(schema, dict):
+        return
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for property_name, property_schema in properties.items():
+            if isinstance(property_schema, dict):
+                yield property_name, property_schema
+
+    for value in schema.values():
+        if isinstance(value, dict):
+            yield from _iter_schema_properties(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    yield from _iter_schema_properties(item)
+
+
+def _removed_property_name(change: dict) -> str | None:
+    text = str(change.get("text", ""))
+    match = re.search(r"(?:request property|optional property) `([^`]+)`", text)
+    if match is None:
+        return None
+    return match.group(1).rstrip("/").rsplit("/", maxsplit=1)[-1]
+
+
+def _validate_removed_schema_properties(
+    removed_properties: list[dict],
+    prev_schema: dict,
+    current_version: str,
+) -> list[str]:
+    """Validate removed schema properties against baseline deprecation metadata."""
+    errors: list[str] = []
+    baseline_properties: dict[str, list[dict]] = {}
+    for property_name, property_schema in _iter_schema_properties(prev_schema):
+        baseline_properties.setdefault(property_name, []).append(property_schema)
+
+    for change in removed_properties:
+        property_name = _removed_property_name(change)
+        if property_name is None:
+            errors.append(
+                "Removed schema property could not be identified from oasdiff output: "
+                f"{change.get('text', str(change))}"
+            )
+            continue
+
+        deprecated_candidates = [
+            property_schema
+            for property_schema in baseline_properties.get(property_name, [])
+            if property_schema.get("deprecated") is True
+        ]
+        if not deprecated_candidates:
+            errors.append(
+                f"Removed schema property {property_name!r} without prior "
+                "deprecation (deprecated=true)."
+            )
+            continue
+
+        removal_targets = [
+            deprecation_details[1]
+            for property_schema in deprecated_candidates
+            if (
+                deprecation_details := _parse_openapi_deprecation_description(
+                    property_schema.get("description")
+                )
+            )
+            is not None
+        ]
+        if not removal_targets:
+            errors.append(
+                f"Removed schema property {property_name!r} was marked deprecated "
+                "in the baseline release, but its OpenAPI description does not "
+                "declare a scheduled removal version. REST API property removals "
+                "require 5 minor releases of deprecation runway."
+            )
+            continue
+
+        if not any(
+            _version_ge(current_version, removed_in) for removed_in in removal_targets
+        ):
+            errors.append(
+                f"Removed schema property {property_name!r} before its scheduled "
+                f"removal version(s): {', '.join(f'v{v}' for v in removal_targets)} "
+                f"(current version: v{current_version}). REST API property removals "
+                "require 5 minor releases of deprecation runway."
+            )
+            continue
+
+        print(
+            f"::notice title={PYPI_DISTRIBUTION} REST API::Removed previously-"
+            f"deprecated schema property {property_name!r} after its scheduled "
+            "removal version was reached."
+        )
+
+    return errors
+
+
 # oasdiff rule IDs for additive oneOf/anyOf expansion in response schemas.
 # These are flagged as ERR by oasdiff but are expected evolution for extensible
 # discriminated-union APIs (e.g. the events endpoint).  We downgrade them to
@@ -437,13 +535,10 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 
 def _split_breaking_changes(
     breaking_changes: list[dict],
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """Split oasdiff results into three buckets.
-
-    Returns:
-        (removed_operations, additive_response_oneof, other_breaking_changes)
-    """
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Split oasdiff results into allowlisted buckets and other breakages."""
     removed_operations: list[dict] = []
+    removed_schema_properties: list[dict] = []
     additive_response_oneof: list[dict] = []
     other_breaking_changes: list[dict] = []
 
@@ -461,13 +556,22 @@ def _split_breaking_changes(
             )
             continue
 
+        if "removed" in change_id.lower() and "property" in change_id.lower():
+            removed_schema_properties.append(change)
+            continue
+
         if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS:
             additive_response_oneof.append(change)
             continue
 
         other_breaking_changes.append(change)
 
-    return removed_operations, additive_response_oneof, other_breaking_changes
+    return (
+        removed_operations,
+        removed_schema_properties,
+        additive_response_oneof,
+        other_breaking_changes,
+    )
 
 
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
@@ -606,6 +710,7 @@ def main() -> int:
     else:
         (
             removed_operations,
+            removed_schema_properties,
             additive_response_oneof,
             other_breaking_changes,
         ) = _split_breaking_changes(breaking_changes)
@@ -614,8 +719,13 @@ def main() -> int:
             prev_schema,
             current_version,
         )
+        property_removal_errors = _validate_removed_schema_properties(
+            removed_schema_properties,
+            prev_schema,
+            current_version,
+        )
 
-        for error in removal_errors:
+        for error in removal_errors + property_removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
         if additive_response_oneof:
@@ -632,8 +742,8 @@ def main() -> int:
             print(
                 "::error "
                 f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
-                "changes other than removing previously-deprecated operations "
-                "or additive response oneOf expansions. "
+                "changes other than removing previously-deprecated operations/"
+                "properties or additive response oneOf expansions. "
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
@@ -643,11 +753,11 @@ def main() -> int:
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
-        if not (removal_errors or other_breaking_changes):
+        if not (removal_errors or property_removal_errors or other_breaking_changes):
             print(
                 "Breaking changes are limited to previously-deprecated operations "
-                "whose scheduled removal versions have been reached, and/or "
-                "additive response oneOf expansions."
+                "or properties whose scheduled removal versions have been reached, "
+                "and/or additive response oneOf expansions."
             )
         else:
             return 1

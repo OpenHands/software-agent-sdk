@@ -1,7 +1,10 @@
-import json
+import re
 import threading
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING, Literal
+
+from libtmux.exc import LibTmuxException, TmuxObjectDoesNotExist
 
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
@@ -30,7 +33,29 @@ from openhands.tools.terminal.terminal.tmux_pane_pool import (
 )
 
 
+_TMUX_POOL_RECOVERY_MESSAGE = (
+    "The terminal session was reset because the underlying tmux server/session "
+    "disappeared while running the previous command. This often happens when a "
+    "command terminates the persistent shell, for example by ending with a "
+    "top-level `exit` such as `exit $code`, or otherwise kills tmux. OpenHands "
+    "rebuilt the terminal pool, but the interrupted command's result is not "
+    "reliable and was not retried. Avoid top-level `exit` in future terminal "
+    'commands; use a non-shell-exiting status check like `test "$code" -eq 0` '
+    "or conditional shell logic instead. Please rerun any needed command."
+)
+
+_TMUX_RECOVERABLE_ERROR_MARKERS = (
+    "no server running",
+    "can't find session",
+    "could not find window_id",
+    "could not find pane_id",
+)
+
 logger = get_logger(__name__)
+
+# Environment variable names must be alphanumeric + underscores, starting with
+# a letter or underscore. This guards against shell injection via key names.
+_ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
@@ -41,7 +66,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         working_dir: str,
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
-        terminal_type: Literal["tmux", "subprocess"] | None = None,
+        terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
@@ -49,14 +74,15 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
         Args:
-            working_dir: Working directory for bash commands
-            username: Optional username for the bash session
+            working_dir: Working directory for shell commands
+            username: Optional username for the shell session
             no_change_timeout_seconds: Timeout for no output change
             terminal_type: Force a specific session type:
-                         ('tmux', 'subprocess').
-                         If None, auto-detect based on system capabilities
-            shell_path: Path to the shell binary (for subprocess terminal type only).
-                       If None, will auto-detect bash from PATH.
+                         ('tmux', 'subprocess', or 'powershell').
+                         If None, auto-detect based on system capabilities.
+            shell_path: Path to the shell binary. On Unix this applies to the
+                       subprocess backend; on Windows it can point to a
+                       PowerShell executable.
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
@@ -66,6 +92,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._username = username
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._terminal_type = terminal_type
+        self._max_panes = max_panes
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -73,17 +100,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._session: TerminalSession | None = None
         self._sessions: dict[int, TerminalSession] = {}
         self._sessions_lock = threading.Lock()
+        self._pool_recovery_lock = threading.Lock()
 
         use_pool = terminal_type in (None, "tmux") and _is_tmux_available()
 
         if use_pool:
-            self._pool = TmuxPanePool(working_dir, username, max_panes=max_panes)
-            self._pool.initialize()
-            logger.info(
-                f"TerminalExecutor initialized (pool mode) "
-                f"working_dir: {working_dir}, username: {username}, "
-                f"max_panes: {max_panes}"
-            )
+            self._initialize_pool()
         else:
             self._session = create_terminal_session(
                 work_dir=working_dir,
@@ -105,6 +127,50 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     def is_pooled(self) -> bool:
         """Whether this executor is using the tmux pane pool for concurrency."""
         return self._pool is not None
+
+    def _initialize_pool(self) -> None:
+        self._pool = TmuxPanePool(
+            self._working_dir,
+            self._username,
+            max_panes=self._max_panes,
+        )
+        self._pool.initialize()
+        logger.info(
+            f"TerminalExecutor initialized (pool mode) "
+            f"working_dir: {self._working_dir}, username: {self._username}, "
+            f"max_panes: {self._max_panes}"
+        )
+
+    @staticmethod
+    def _is_recoverable_tmux_pool_error(error: Exception) -> bool:
+        recoverable_types = (LibTmuxException, TmuxObjectDoesNotExist)
+        if not isinstance(error, recoverable_types):
+            return False
+        message = " ".join(str(arg) for arg in error.args).lower()
+        return any(marker in message for marker in _TMUX_RECOVERABLE_ERROR_MARKERS)
+
+    def _recover_tmux_pool(self, failed_pool: TmuxPanePool) -> None:
+        with self._pool_recovery_lock:
+            if self._pool is not failed_pool:
+                return
+
+            with suppress(Exception):
+                failed_pool.close()
+            with self._sessions_lock:
+                self._sessions.clear()
+            self._initialize_pool()
+
+    @staticmethod
+    def _tmux_pool_recovery_observation(
+        action: TerminalAction,
+        error: Exception,
+    ) -> TerminalObservation:
+        return TerminalObservation.from_text(
+            text=(f"{_TMUX_POOL_RECOVERY_MESSAGE}\n\nOriginal tmux error: {error}"),
+            is_error=True,
+            command=action.command or "[RESET]",
+            exit_code=-1,
+        )
 
     @property
     def working_dir(self) -> str:
@@ -197,6 +263,49 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         session.prev_status = None
         session.prev_output = ""
 
+    @staticmethod
+    def _powershell_quote(value: str) -> str:
+        escaped = value.replace("'", "''")
+        return f"'{escaped}'"
+
+    @staticmethod
+    def _bash_quote(value: str) -> str:
+        """Quote a value for bash using $'...' ANSI-C quoting."""
+        escaped = value.replace("\\", "\\\\")
+        escaped = escaped.replace("'", "\\'")
+        escaped = escaped.replace("\n", "\\n")
+        escaped = escaped.replace("\r", "\\r")
+        escaped = escaped.replace("\t", "\\t")
+        return f"$'{escaped}'"
+
+    @classmethod
+    def _build_env_exports(
+        cls,
+        env_vars: dict[str, str],
+        session: TerminalSession,
+    ) -> str:
+        valid: dict[str, str] = {}
+        for key, value in env_vars.items():
+            if _ENV_VAR_NAME_RE.match(key):
+                valid[key] = value
+            else:
+                logger.warning("Skipping secret with invalid env var name: %r", key)
+
+        if not valid:
+            return ""
+
+        if session.terminal.is_powershell():
+            assignments = [
+                f"$env:{key} = {cls._powershell_quote(value)}"
+                for key, value in valid.items()
+            ]
+            return "; ".join(assignments)
+
+        assignments = [
+            f"export {key}={cls._bash_quote(value)}" for key, value in valid.items()
+        ]
+        return " && ".join(assignments)
+
     # ------------------------------------------------------------------
     # Env export / secret masking
     # ------------------------------------------------------------------
@@ -225,14 +334,13 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         if not env_vars:
             return
 
-        export_statements = []
-        for key, value in env_vars.items():
-            export_statements.append(f"export {key}={json.dumps(value)}")
-        exports_cmd = " && ".join(export_statements)
+        target = session or self.session
+        exports_cmd = self._build_env_exports(env_vars, target)
+
+        if not exports_cmd:
+            return
 
         logger.debug(f"Exporting {len(env_vars)} environment variables before command")
-
-        target = session or self.session
         # Execute the export command separately to persist env in the session
         _ = target.execute(
             TerminalAction(
@@ -364,50 +472,63 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         managed by the pool's context manager so there is exactly one
         checkout and one checkin per call.
         """
-        with self._pool.pane() as handle:  # type: ignore[union-attr]
-            reset_text: str | None = None
+        pool = self._pool
+        assert pool is not None
+        try:
+            with pool.pane() as handle:
+                reset_text: str | None = None
 
-            if action.reset or handle.terminal._closed:
-                self._discard_session(handle.terminal)
-                handle.terminal = self._pool.replace(handle.terminal)  # type: ignore[union-attr]
-                reset_text = self._RESET_TEXT
-                logger.info(
-                    f"Terminal pane replaced (reset) working_dir: {self._working_dir}"
-                )
-
-                if not action.command.strip():
-                    return TerminalObservation.from_text(
-                        text=reset_text,
-                        command="[RESET]",
-                        exit_code=0,
+                if action.reset or handle.terminal._closed:
+                    self._discard_session(handle.terminal)
+                    handle.terminal = pool.replace(handle.terminal)
+                    reset_text = self._RESET_TEXT
+                    logger.info(
+                        "Terminal pane replaced (reset) "
+                        f"working_dir: {self._working_dir}"
                     )
 
-            session = self._wrap_session(handle.terminal)
-            self._prepare_pooled_session(session)
+                    if not action.command.strip():
+                        return TerminalObservation.from_text(
+                            text=reset_text,
+                            command="[RESET]",
+                            exit_code=0,
+                        )
 
-            cmd_action = (
-                action
-                if reset_text is None
-                else TerminalAction(
-                    command=action.command,
-                    timeout=action.timeout,
-                    is_input=False,
+                session = self._wrap_session(handle.terminal)
+                self._prepare_pooled_session(session)
+
+                cmd_action = (
+                    action
+                    if reset_text is None
+                    else TerminalAction(
+                        command=action.command,
+                        timeout=action.timeout,
+                        is_input=False,
+                    )
                 )
+                self._export_envs(cmd_action, conversation, session=session)
+                observation = session.execute(cmd_action)
+
+                if reset_text is not None:
+                    observation = observation.model_copy(
+                        update={
+                            "content": [
+                                TextContent(text=f"{reset_text}\n\n{observation.text}")
+                            ],
+                            "command": f"[RESET] {action.command}",
+                        }
+                    )
+
+                return self._mask_observation(observation, conversation)
+        except Exception as error:
+            if not self._is_recoverable_tmux_pool_error(error):
+                raise
+            logger.warning(
+                "Recovering terminal pane pool after tmux server/session disappeared",
+                exc_info=True,
             )
-            self._export_envs(cmd_action, conversation, session=session)
-            observation = session.execute(cmd_action)
-
-            if reset_text is not None:
-                observation = observation.model_copy(
-                    update={
-                        "content": [
-                            TextContent(text=f"{reset_text}\n\n{observation.text}")
-                        ],
-                        "command": f"[RESET] {action.command}",
-                    }
-                )
-
-            return self._mask_observation(observation, conversation)
+            self._recover_tmux_pool(pool)
+            return self._tmux_pool_recovery_observation(action, error)
 
     def __call__(
         self,

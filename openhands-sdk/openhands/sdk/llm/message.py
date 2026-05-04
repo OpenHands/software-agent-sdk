@@ -29,6 +29,10 @@ class MessageToolCall(BaseModel):
     """
 
     id: str = Field(..., description="Canonical tool call id")
+    responses_item_id: str | None = Field(
+        default=None,
+        description="Original Responses function_call.id, echoed verbatim on replay",
+    )
     name: str = Field(..., description="Tool/function name")
     arguments: str = Field(..., description="JSON string of arguments")
     origin: Literal["completion", "responses"] = Field(
@@ -76,6 +80,7 @@ class MessageToolCall(BaseModel):
 
         return cls(
             id=str(call_id),
+            responses_item_id=str(item.id) if item.id else None,
             name=str(name),
             arguments=arguments_str,
             origin="responses",
@@ -94,8 +99,11 @@ class MessageToolCall(BaseModel):
 
     def to_responses_dict(self) -> dict[str, Any]:
         """Serialize to OpenAI Responses 'function_call' input item format."""
-        # Responses requires ids to begin with 'fc'
-        resp_id = self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        # Echo the original function_call.id verbatim when we have it, so
+        # replays stay byte-identical and OpenAI's prefix cache keeps matching.
+        item_id = self.responses_item_id or (
+            self.id if str(self.id).startswith("fc") else f"fc_{self.id}"
+        )
         # Responses requires arguments to be a JSON string
         args_str = (
             self.arguments
@@ -104,8 +112,8 @@ class MessageToolCall(BaseModel):
         )
         return {
             "type": "function_call",
-            "id": resp_id,
-            "call_id": resp_id,
+            "id": item_id,
+            "call_id": self.id,
             "name": self.name,
             "arguments": args_str,
         }
@@ -530,20 +538,13 @@ class Message(BaseModel):
 
         if self.role == "tool":
             if self.tool_call_id is not None:
-                # Responses requires function_call_output.call_id
-                # to match a previous function_call id
-                resp_call_id = (
-                    self.tool_call_id
-                    if str(self.tool_call_id).startswith("fc")
-                    else f"fc_{self.tool_call_id}"
-                )
                 for c in self.content:
                     if isinstance(c, TextContent):
                         output_text = self._maybe_truncate_tool_text(c.text)
                         items.append(
                             {
                                 "type": "function_call_output",
-                                "call_id": resp_call_id,
+                                "call_id": self.tool_call_id,
                                 "output": output_text,
                             }
                         )
@@ -552,7 +553,7 @@ class Message(BaseModel):
                             items.append(
                                 {
                                     "type": "function_call_output",
-                                    "call_id": resp_call_id,
+                                    "call_id": self.tool_call_id,
                                     "output": [
                                         {
                                             "type": "input_image",
@@ -679,8 +680,10 @@ class Message(BaseModel):
             elif item_type == "function_call":
                 # Handle generic objects (e.g., BaseLiteLLMOpenAIResponseObject
                 # from streaming) or dicts with function_call type
+                raw_item_id = _get(item, "id")
                 tc = MessageToolCall(
-                    id=_get(item, "call_id") or _get(item, "id", ""),
+                    id=_get(item, "call_id") or raw_item_id or "",
+                    responses_item_id=str(raw_item_id) if raw_item_id else None,
                     name=_get(item, "name", ""),
                     arguments=_get(item, "arguments", ""),
                     origin="responses",

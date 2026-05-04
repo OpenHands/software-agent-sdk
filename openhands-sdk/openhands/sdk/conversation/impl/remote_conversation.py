@@ -27,6 +27,7 @@ from openhands.sdk.conversation.exceptions import (
 )
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
@@ -767,6 +768,8 @@ class RemoteConversation(BaseConversation):
                 )
             self._id = uuid.UUID(cid)
 
+            workspace.register_conversation(str(self._id))
+
         # Initialize the remote state
         self._state = RemoteState(
             self._client,
@@ -1263,29 +1266,21 @@ class RemoteConversation(BaseConversation):
         """Generate a title for the conversation based on the first user message.
 
         Args:
-            llm: Optional LLM to use for title generation. If provided, its usage_id
-                 will be sent to the server. If not provided, uses the agent's LLM.
+            llm: Optional LLM to use for title generation. If not provided,
+                 uses the agent's LLM.
             max_length: Maximum length of the generated title.
 
         Returns:
             A generated title for the conversation.
         """
-        # For remote conversations, delegate to the server endpoint
-        payload = {
-            "max_length": max_length,
-            "llm": llm.model_dump(mode="json", context={"expose_secrets": True})
-            if llm
-            else None,
-        }
+        # Reconcile before reading state so recently posted user messages are
+        # visible even if they arrived between the last sync and this call.
+        self._state.events.reconcile()
 
-        resp = _send_request(
-            self._client,
-            "POST",
-            f"{self._conversation_action_base_path}/{self._id}/generate_title",
-            json=payload,
+        effective_llm = llm if llm is not None else self.agent.llm
+        return generate_conversation_title(
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
-        data = resp.json()
-        return data["title"]
 
     def condense(self) -> None:
         """Force condensation of the conversation history.

@@ -71,4 +71,7 @@ def select_responses_options(
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 
+    if llm._prompt_cache_key:
+        out["prompt_cache_key"] = llm._prompt_cache_key
+
     return out
