@@ -53,7 +53,7 @@ def __getattr__(name: str):
         warn_deprecated(
             f"Importing '{name}' from 'openhands.sdk.context.skills'",
             deprecated_in="1.16.0",
-            removed_in="1.20.0",
+            removed_in="1.21.0",
             details=f"Use 'from openhands.sdk.skills import {name}' instead.",
             stacklevel=3,
         )

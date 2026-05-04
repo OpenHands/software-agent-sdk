@@ -6,7 +6,6 @@ from fastapi import (
     APIRouter,
     File,
     HTTPException,
-    Path as FastApiPath,
     Query,
     UploadFile,
     status,
@@ -109,40 +108,11 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.post("/upload/{path:path}", deprecated=True)
-async def upload_file_path(
-    path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
-    file: Annotated[UploadFile, File(...)],
-) -> Success:
-    """Upload a file using path parameter (legacy, for backwards compatibility).
-
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/upload?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
-    """
-    return await _upload_file(path, file)
-
-
 @file_router.get("/download")
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
-    return await _download_file(path)
-
-
-@file_router.get("/download/{path:path}", deprecated=True)
-async def download_file_path(
-    path: Annotated[str, FastApiPath(description="Absolute file path.")],
-) -> FileResponse:
-    """Download a file using path parameter (legacy, for backwards compatibility).
-
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/download?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
-    """
     return await _download_file(path)
 
 
