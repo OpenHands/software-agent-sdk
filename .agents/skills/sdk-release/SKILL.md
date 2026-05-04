@@ -178,7 +178,18 @@ All should return `200`.
 
 ## Phase 7: Post-Release Announcements
 
-Send a Slack notification to announce the release. This is a human step.
+After the automated pipeline completes, compose a Slack message for the
+human to post, including links to the downstream version bump PRs:
+
+```
+🚀 *SDK v<version> published to PyPI!*
+
+Version bump PRs:
+• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands>
+• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-<version>|OpenHands-CLI>
+
+Release: <https://github.com/OpenHands/software-agent-sdk/releases/tag/v<version>|v<version>>
+```
 
 See `references/post-release-checklist.md` for details on reviewing
 downstream PRs and handling any issues.
@@ -197,4 +208,4 @@ downstream PRs and handling any issues.
 - [ ] _(Automated)_ Packages published to PyPI
 - [ ] _(Automated)_ Downstream version bump PRs created
 - [ ] Verify packages appear on PyPI
-- [ ] Send Slack notification announcing the release
+- [ ] Send Slack message with downstream version bump PR links
