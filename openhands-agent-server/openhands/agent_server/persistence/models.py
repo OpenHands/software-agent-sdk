@@ -7,7 +7,7 @@ for the Cloud API's settings/secrets endpoints.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import (
     BaseModel,
@@ -33,6 +33,13 @@ from openhands.sdk.settings.model import (
     _apply_persisted_migrations,
 )
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+class SettingsUpdatePayload(TypedDict, total=False):
+    """Typed payload for PersistedSettings.update() method."""
+
+    agent_settings_diff: dict[str, Any]
+    conversation_settings_diff: dict[str, Any]
 
 
 class PersistedSettings(BaseModel):
@@ -61,7 +68,7 @@ class PersistedSettings(BaseModel):
         )
         return bool(secret_value and secret_value.strip())
 
-    def update(self, payload: dict[str, Any]) -> None:
+    def update(self, payload: SettingsUpdatePayload) -> None:
         """Apply a batch of changes from a nested dict.
 
         Accepts ``agent_settings_diff`` and ``conversation_settings_diff``

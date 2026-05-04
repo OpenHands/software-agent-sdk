@@ -1,6 +1,6 @@
 import re
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ValidationError
@@ -13,6 +13,7 @@ from openhands.agent_server.persistence import (
     get_secrets_store,
     get_settings_store,
 )
+from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import (
     ConversationSettings,
@@ -177,7 +178,7 @@ async def update_settings(
     update_data = payload.model_dump(exclude_none=True)
     if update_data:
         try:
-            settings.update(update_data)
+            settings.update(cast(SettingsUpdatePayload, update_data))
             store.save(settings)
         except ValidationError as e:
             raise HTTPException(status_code=400, detail=str(e))
