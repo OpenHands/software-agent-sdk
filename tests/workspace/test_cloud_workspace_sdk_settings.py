@@ -209,8 +209,52 @@ class TestGetMcpConfig:
 
         assert mcp_config == {}
 
+    def test_get_mcp_config_passthrough_mcpservers_format(self, mock_workspace):
+        """get_mcp_config passes through mcpServers format from API directly.
+
+        This is the standard fastmcp.MCPConfig format returned by the API since
+        April 2025. The method should recognize this format and return it as-is.
+        """
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "mcp_config": {
+                "mcpServers": {
+                    "hubspot": {
+                        "url": "https://mcp.example.com/hubspot",
+                        "transport": "streamable-http",
+                        "headers": {"Authorization": "Bearer secret-key"},
+                    },
+                    "slack": {
+                        "url": "https://mcp.example.com/slack",
+                        "transport": "sse",
+                    },
+                }
+            }
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ) as mock_req:
+            mcp_config = mock_workspace.get_mcp_config()
+
+        # Verify expose_secrets is passed
+        mock_req.assert_called_once_with(
+            "GET",
+            f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
+            headers={"X-Session-API-Key": SESSION_KEY},
+        )
+
+        # Should pass through the mcpServers format directly
+        assert "mcpServers" in mcp_config
+        assert len(mcp_config["mcpServers"]) == 2
+        assert mcp_config["mcpServers"]["hubspot"]["url"] == "https://mcp.example.com/hubspot"
+        assert mcp_config["mcpServers"]["hubspot"]["headers"]["Authorization"] == "Bearer secret-key"
+        assert mcp_config["mcpServers"]["slack"]["transport"] == "sse"
+
     def test_get_mcp_config_transforms_sse_servers(self, mock_workspace):
-        """get_mcp_config correctly transforms SSE servers."""
+        """get_mcp_config correctly transforms legacy SSE servers format."""
         mock_response = MagicMock()
         mock_response.json.return_value = {
             "mcp_config": {
@@ -232,6 +276,7 @@ class TestGetMcpConfig:
         mock_req.assert_called_once_with(
             "GET",
             f"{CLOUD_URL}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": SESSION_KEY},
         )
 
