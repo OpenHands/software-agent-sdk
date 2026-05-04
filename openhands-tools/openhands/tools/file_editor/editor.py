@@ -745,7 +745,7 @@ class FileEditor:
 
         snippet_content = "\n".join(
             [
-                f"{i + start_line:6}\t{line}"
+                f"{i + start_line}\t{line}"
                 for i, line in enumerate(snippet_content.split("\n"))
             ]
         )

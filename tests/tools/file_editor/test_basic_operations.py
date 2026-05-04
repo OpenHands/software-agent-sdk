@@ -270,7 +270,7 @@ def test_view_operation_truncation(temp_file):
     assert "Here's the result of running `cat -n`" in result.text
 
     # With head-and-tail truncation, should contain both start and end content
-    # The line numbers will show as "     1\tA..." at start and end with "A"
+    # The line numbers will show as "1\tA..." at start and end with "A"
     assert "\tA" in result.text  # Should have A's with tab formatting
 
 
@@ -318,9 +318,9 @@ def test_view_with_a_specific_range(editor):
     # View file in range 50-100
     result = editor(command="view", path=str(test_file), view_range=[50, 100])
     assert f"Here's the result of running `cat -n` on {test_file}:" in result.text
-    assert "    49\tLine 49" not in result.text
-    assert "    50\tLine 50" in result.text
-    assert "   100\tLine 100" in result.text
+    assert "49\tLine 49" not in result.text
+    assert "50\tLine 50" in result.text
+    assert "100\tLine 100" in result.text
     assert "101" not in result.text
 
 
@@ -369,8 +369,8 @@ def test_str_replace_no_linting(editor):
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
-     1\tThis is a sample file.
-     2\tThis file is for testing purposes.
+1\tThis is a sample file.
+2\tThis file is for testing purposes.
 Review the changes and make sure they are as expected. Edit the file again if necessary."""  # noqa: E501
     )
 
@@ -392,8 +392,8 @@ def test_str_replace_multi_line_no_linting(editor):
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
-     1\tThis is a sample file.
-     2\tThis file is for testing purposes.
+1\tThis is a sample file.
+2\tThis file is for testing purposes.
 Review the changes and make sure they are as expected. Edit the file again if necessary."""  # noqa: E501
     )
 
@@ -411,8 +411,8 @@ def test_str_replace_multi_line_with_tabs_no_linting(editor_python_file_with_tab
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
-     1\tdef test():
-     2\t\tprint("Hello, Universe!")
+1\tdef test():
+2\t\tprint("Hello, Universe!")
 Review the changes and make sure they are as expected. Edit the file again if necessary."""  # noqa: E501
     )
 
@@ -514,9 +514,9 @@ def test_insert_no_linting(editor):
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
-     1\tThis is a test file.
-     2\tInserted line
-     3\tThis file is for testing purposes.
+1\tThis is a test file.
+2\tInserted line
+3\tThis file is for testing purposes.
 Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."""  # noqa: E501
     )
 
@@ -563,9 +563,9 @@ def test_insert_chinese_text_into_english_file(editor):
     assert (
         result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
-     1\t中文文本
-     2\tThis is a test file.
-     3\tThis file is for testing purposes.
+1\t中文文本
+2\tThis is a test file.
+3\tThis file is for testing purposes.
 Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary."""  # noqa: E501
     )
 
@@ -870,8 +870,8 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
 
     # View file
     result = editor(command="view", path=str(test_file))
-    assert "     1\tLine 1" in result.text
-    assert "   500\tLine 500" in result.text
+    assert "1\tLine 1" in result.text
+    assert "500\tLine 500" in result.text
 
     # Replace line 500's content with '500 new'
     result = editor(
@@ -880,14 +880,14 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         old_str="Line 500",
         new_str="500 new",
     )
-    assert "   500\t500 new" in result.text
+    assert "500\t500 new" in result.text
 
     # Delete the line '500 new'
     result = editor(
         command="str_replace", path=str(test_file), old_str="500 new\n", new_str=""
     )
-    assert "   499\tLine 499" in result.text
-    assert "   500\tLine 501" in result.text
+    assert "499\tLine 499" in result.text
+    assert "500\tLine 501" in result.text
 
     # Insert content at line 500
     result = editor(
@@ -896,4 +896,4 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         insert_line=499,
         new_str="Inserted line at 500",
     )
-    assert "   500\tInserted line at 500" in result.text
+    assert "500\tInserted line at 500" in result.text
