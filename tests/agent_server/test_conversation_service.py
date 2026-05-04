@@ -2419,7 +2419,9 @@ class TestSettingsMerging:
         with pytest.raises(MissingSettingsError) as exc_info:
             _validate_merged_agent_settings(agent_data)
 
-        assert "LLM API key" in str(exc_info.value)
+        error_message = str(exc_info.value)
+        assert "LLM API key" in error_message
+        assert "gpt-4" in error_message  # Model name should be in error
 
     def test_validate_merged_agent_settings_passes_with_valid_key(self):
         """Test that validation passes with a valid API key."""
