@@ -3,6 +3,17 @@ from pydantic import SecretStr
 from openhands.sdk.utils.cipher import Cipher
 
 
+REDACTED_SECRET_VALUE = "**********"
+
+
+def is_redacted_secret(v: str | SecretStr | None) -> bool:
+    if v is None:
+        return False
+    if isinstance(v, SecretStr):
+        return v.get_secret_value() == REDACTED_SECRET_VALUE
+    return v == REDACTED_SECRET_VALUE
+
+
 def serialize_secret(v: SecretStr | None, info):
     """
     Serialize secret fields with encryption or redaction.
@@ -49,7 +60,7 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
         secret_value = v
 
     # If the secret is empty, whitespace-only or redacted - return None
-    if not secret_value or not secret_value.strip() or secret_value == "**********":
+    if not secret_value or not secret_value.strip() or is_redacted_secret(secret_value):
         return None
 
     # check if a cipher is supplied

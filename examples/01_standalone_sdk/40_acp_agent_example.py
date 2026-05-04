@@ -3,7 +3,8 @@
 This example shows how to use an ACP-compatible server (claude-agent-acp)
 as the agent backend instead of direct LLM calls.  It also demonstrates
 ``ask_agent()`` — a stateless side-question that forks the ACP session
-and leaves the main conversation untouched.
+and leaves the main conversation untouched — and sending an image alongside
+text to verify multimodal (vision) input support.
 
 Prerequisites:
     - Node.js / npx available
@@ -15,9 +16,12 @@ Usage:
 
 import os
 
+from openhands.sdk import ImageContent, Message, TextContent
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation import Conversation
 
+
+IMAGE_URL = "https://github.com/OpenHands/docs/raw/main/openhands/static/img/logo.png"
 
 agent = ACPAgent(acp_command=["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
 
@@ -25,10 +29,25 @@ try:
     cwd = os.getcwd()
     conversation = Conversation(agent=agent, workspace=cwd)
 
-    # --- Main conversation turn ---
+    # --- Main conversation turn (text only) ---
     conversation.send_message(
         "List the Python source files under openhands-sdk/openhands/sdk/agent/, "
         "then read the __init__.py and summarize what agent classes are exported."
+    )
+    conversation.run()
+
+    # --- Image input turn (text + image) ---
+    print("\n--- image input ---")
+    conversation.send_message(
+        Message(
+            role="user",
+            content=[
+                TextContent(
+                    text="Describe what you see in this image in one sentence."
+                ),
+                ImageContent(image_urls=[IMAGE_URL]),
+            ],
+        )
     )
     conversation.run()
 

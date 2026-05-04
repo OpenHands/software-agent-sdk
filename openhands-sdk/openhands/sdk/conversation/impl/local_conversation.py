@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -340,15 +341,17 @@ class LocalConversation(BaseConversation):
             but has its own identity and independent state going forward.
         """
         fork_id = conversation_id or uuid.uuid4()
-        if agent is not None:
-            fork_agent = agent
-        else:
-            # Round-trip via JSON to produce a deep copy that avoids
-            # thread-lock pickling issues with model_copy(deep=True).
-            agent_cls = type(self.agent)
-            fork_agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
-            )
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
@@ -432,14 +435,16 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        merged_context = self.agent.agent_context
+        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Track whether we have plugins or MCP config to process
+        has_mcp_config = bool(merged_mcp)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -463,6 +468,7 @@ class LocalConversation(BaseConversation):
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                has_mcp_config = has_mcp_config or bool(merged_mcp)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -472,7 +478,28 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Expand MCP config variables with per-conversation secrets
+        # This handles ${VAR} and ${VAR:-default} placeholders:
+        # - Variables referencing secrets injected via API are expanded to secret values
+        # - Variables with defaults that don't have secrets fall back to their defaults
+        # - This is the ONLY place where defaults are applied (plugin loading preserves
+        #   placeholders with expand_defaults=False to avoid double-expansion)
+        if merged_mcp:
+            # Pass the registry's lookup method as a callback - secrets are retrieved
+            # lazily, one at a time, only when actually referenced in the config
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
+            )
+            logger.debug("Expanded MCP config variables")
+
+        # Update agent with merged content only if we have plugins or MCP config
+        # Skip update when nothing changed to avoid unnecessary agent state mutations
+        if self._plugin_specs or has_mcp_config:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -483,8 +510,6 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -601,13 +626,39 @@ class LocalConversation(BaseConversation):
 
     def _pin_prompt_cache_key(self) -> None:
         # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
-        self.agent.llm._prompt_cache_key = str(self._state.id)
+        # Skip if a key is already set: sub-agent LLMs inherit the parent's
+        # via model_copy, and overwriting would put each sub-agent on its own
+        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
+        if self.agent.llm._prompt_cache_key is None:
+            self.agent.llm._prompt_cache_key = str(self._state.id)
+
+    def switch_llm(self, llm: LLM) -> None:
+        """Swap the agent's LLM to the given object.
+
+        The caller owns ``llm.usage_id``; it is the registry key. If an
+        entry with that key already exists, the cached LLM is reused and
+        the passed ``llm`` is dropped — matching the rest of the
+        registry's "first-write-wins" contract.
+
+        Args:
+            llm: LLM to install on the agent.
+        """
+        try:
+            new_llm = self.llm_registry.get(llm.usage_id)
+        except KeyError:
+            new_llm = llm
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
+            self._pin_prompt_cache_key()
 
     def switch_profile(self, profile_name: str) -> None:
-        """Switch the agent's LLM to a named profile.
+        """Switch the agent's LLM to a profile loaded from disk.
 
-        Loads the profile from the LLMProfileStore (cached in the registry
-        after the first load) and updates the agent and conversation state.
+        Loads the profile from :class:`LLMProfileStore` (cached in the
+        registry under ``profile:{profile_name}`` after first load) and
+        delegates the swap to :meth:`switch_llm`.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -618,15 +669,11 @@ class LocalConversation(BaseConversation):
         """
         usage_id = f"profile:{profile_name}"
         try:
-            new_llm = self.llm_registry.get(usage_id)
+            cached = self.llm_registry.get(usage_id)
         except KeyError:
-            new_llm = self._profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
-        with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
-            self._state.agent = self.agent
-            self._pin_prompt_cache_key()
+            loaded = self._profile_store.load(profile_name)
+            cached = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(cached)
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:

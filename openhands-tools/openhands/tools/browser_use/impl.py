@@ -9,6 +9,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -93,6 +94,114 @@ logger = get_logger(__name__)
 DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
 
 
+def _current_platform(platform: str | None = None) -> str:
+    return sys.platform if platform is None else platform
+
+
+def _windows_browser_install_paths() -> list[Path]:
+    roots = [
+        os.environ.get("PROGRAMFILES", "C:\\Program Files"),
+        os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    browsers = [
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+        ("Chromium", "Application", "chrome.exe"),
+    ]
+
+    paths: list[Path] = []
+    for root in roots:
+        if root is None:
+            continue
+        for parts in browsers:
+            paths.append(Path(root).joinpath(*parts))
+    return paths
+
+
+def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            ]
+        case "win32":
+            return _windows_browser_install_paths()
+        case _:
+            return [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/usr/bin/microsoft-edge"),
+                Path("/usr/bin/microsoft-edge-stable"),
+            ]
+
+
+def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+        case "win32":
+            if local_app_data := os.environ.get("LOCALAPPDATA"):
+                return [Path(local_app_data) / "ms-playwright"]
+            return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+        case _:
+            return [Path.home() / ".cache" / "ms-playwright"]
+
+
+def _playwright_chromium_paths(
+    chromium_dir: Path,
+    platform: str | None = None,
+) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [
+                chromium_dir
+                / "chrome-mac-arm64"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
+                chromium_dir
+                / "chrome-mac"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
+                chromium_dir
+                / "chrome-mac"
+                / "Chromium.app"
+                / "Contents"
+                / "MacOS"
+                / "Chromium",
+            ]
+        case "win32":
+            return [
+                chromium_dir / "chrome-win64" / "chrome.exe",
+                chromium_dir / "chrome-win" / "chrome.exe",
+            ]
+        case _:
+            return [
+                chromium_dir / "chrome-linux64" / "chrome",
+                chromium_dir / "chrome-linux" / "chrome",
+            ]
+
+
+def _path_binary_candidates(platform: str | None = None) -> tuple[str, ...]:
+    if _current_platform(platform) == "win32":
+        return ("chrome", "msedge", "chromium")
+    return (
+        "google-chrome",
+        "chrome",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+    )
+
+
 def _format_browser_operation_error(
     error: BaseException, timeout_seconds: float | None = None
 ) -> str:
@@ -163,71 +272,31 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _cleanup_initiated: bool
     _action_timeout_seconds: float
 
-    def check_chromium_available(self) -> str | None:
+    @staticmethod
+    @functools.cache
+    def check_chromium_available() -> str | None:
         """Check if a Chromium/Chrome binary is available.
-
-        This method can be overridden by subclasses to provide
-        platform-specific detection logic.
 
         Returns:
             Path to Chromium binary if found, None otherwise
         """
         # Check standard installation paths (prefer full Chrome installs)
-        standard_paths = [
-            # Linux
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            # macOS
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-        for install_path in standard_paths:
-            p = Path(install_path)
-            if p.exists():
-                return str(p)
+        for path in _standard_chromium_paths():
+            if path.exists():
+                return str(path)
 
         # Check Playwright-installed Chromium (preferred over PATH lookups
         # because PATH binaries like homebrew chromium may lack CDP support)
-        playwright_cache_candidates = [
-            Path.home() / ".cache" / "ms-playwright",  # Linux
-            Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
-        ]
-
-        for playwright_cache in playwright_cache_candidates:
+        for playwright_cache in _playwright_cache_dirs():
             if playwright_cache.exists():
                 chromium_dirs = list(playwright_cache.glob("chromium-*"))
                 for chromium_dir in chromium_dirs:
-                    # Check platform-specific paths
-                    possible_paths = [
-                        chromium_dir / "chrome-linux" / "chrome",  # Linux (old)
-                        chromium_dir / "chrome-linux64" / "chrome",  # Linux (new)
-                        chromium_dir
-                        / "chrome-mac"
-                        / "Chromium.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Chromium",  # macOS (old)
-                        chromium_dir
-                        / "chrome-mac-arm64"
-                        / "Google Chrome for Testing.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Google Chrome for Testing",  # macOS arm64
-                        chromium_dir
-                        / "chrome-mac"
-                        / "Google Chrome for Testing.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Google Chrome for Testing",  # macOS x64
-                    ]
-                    for p in possible_paths:
-                        if p.exists():
-                            return str(p)
+                    for path in _playwright_chromium_paths(chromium_dir):
+                        if path.exists():
+                            return str(path)
 
         # Fallback: check PATH for any chromium-based binary
-        for binary in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+        for binary in _path_binary_candidates():
             if path := shutil.which(binary):
                 return path
 
@@ -294,7 +363,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             # SECURITY: Running Chrome as root without a sandbox is risky
             # - a compromised browser has full root access. Use only in
             # controlled environments.
-            running_as_root = os.getuid() == 0
+            getuid = getattr(os, "getuid", None)
+            running_as_root = getuid is not None and getuid() == 0
             if running_as_root:
                 logger.warning(
                     "Running as root - disabling Chromium sandbox "

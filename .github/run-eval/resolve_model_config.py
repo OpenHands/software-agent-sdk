@@ -34,7 +34,8 @@ def _sigterm_handler(signum: int, _frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
-signal.signal(signal.SIGALRM, _sigterm_handler)
+if sigalrm := getattr(signal, "SIGALRM", None):
+    signal.signal(sigalrm, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
@@ -76,7 +77,7 @@ MODELS = {
         "id": "kimi-k2.6",
         "display_name": "Kimi K2.6",
         "llm_config": {
-            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "model": "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc",
             "temperature": 1.0,
         },
     },
@@ -183,6 +184,14 @@ MODELS = {
             "reasoning_effort": "high",
         },
     },
+    "gpt-5.5": {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.5",
+            "reasoning_effort": "high",
+        },
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
@@ -221,6 +230,12 @@ MODELS = {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
+    },
+    # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",

@@ -10,7 +10,7 @@ import copy
 import json
 import re
 from collections.abc import Iterable
-from typing import Any, Literal, NotRequired, TypedDict, cast
+from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
@@ -64,6 +64,11 @@ Reminder:
 - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
 </IMPORTANT>
 """  # noqa: E501
+
+SECURITY_PARAMS_EXAMPLE: Final[str] = """\
+<parameter=security_risk>LOW</parameter>
+<parameter=summary>Brief description of action</parameter>
+"""
 
 STOP_WORDS = ["</function"]
 
@@ -316,14 +321,18 @@ def convert_fncall_messages_to_non_fncall_messages(
     messages: list[dict],
     tools: list[ChatCompletionToolParam],
     add_in_context_learning_example: bool = True,
+    include_security_params: bool = False,
 ) -> list[dict]:
     """Convert function calling messages to non-function calling messages."""
     messages = copy.deepcopy(messages)
 
     formatted_tools = convert_tools_to_description(tools)
-    system_message_suffix = system_message_suffix_TEMPLATE.format(
-        description=formatted_tools
-    )
+    template = system_message_suffix_TEMPLATE
+    if include_security_params:
+        template = template.replace(
+            "</function>", SECURITY_PARAMS_EXAMPLE + "</function>"
+        )
+    system_message_suffix = template.format(description=formatted_tools)
 
     converted_messages = []
     first_user_message_encountered = False
@@ -621,13 +630,17 @@ def _normalize_parameter_tags(fn_body: str) -> str:
 def convert_non_fncall_messages_to_fncall_messages(
     messages: list[dict],
     tools: list[ChatCompletionToolParam],
+    include_security_params: bool = False,
 ) -> list[dict]:
     """Convert non-function calling messages back to function calling messages."""
     messages = copy.deepcopy(messages)
     formatted_tools = convert_tools_to_description(tools)
-    system_message_suffix = system_message_suffix_TEMPLATE.format(
-        description=formatted_tools
-    )
+    template = system_message_suffix_TEMPLATE
+    if include_security_params:
+        template = template.replace(
+            "</function>", SECURITY_PARAMS_EXAMPLE + "</function>"
+        )
+    system_message_suffix = template.format(description=formatted_tools)
 
     converted_messages = []
     tool_call_counter = 1  # Counter for tool calls

@@ -1,6 +1,7 @@
 import argparse
 import atexit
 import faulthandler
+import importlib
 import signal
 import sys
 from types import FrameType
@@ -13,6 +14,30 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
+
+def preload_modules(modules_arg: str | None) -> None:
+    """Import user-specified modules so their top-level side effects run.
+
+    Used to register custom tools before any conversation is created, avoiding
+    a race with dynamic `tool_module_qualnames` import in conversation_service.
+    """
+    if not modules_arg:
+        return
+    for module_name in modules_arg.split(","):
+        module_name = module_name.strip()
+        if not module_name:
+            continue
+        try:
+            importlib.import_module(module_name)
+            logger.info("Imported module: %s", module_name)
+        except ImportError as e:
+            logger.error(
+                "Failed to import module '%s' specified in --import-modules: %s",
+                module_name,
+                e,
+            )
+            raise
 
 
 def check_browser():
@@ -110,25 +135,37 @@ def main() -> None:
         action="store_true",
         help="Check if browser functionality works and exit",
     )
+    parser.add_argument(
+        "--import-modules",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of modules to import at startup "
+            "(e.g. 'myapp.tools,myapp.plugins')"
+        ),
+    )
 
     args = parser.parse_args()
 
-    # Handle browser check
+    # Handle browser check (should run without importing user modules)
     if args.check_browser:
         if check_browser():
             sys.exit(0)
         else:
             sys.exit(1)
 
-    print(f"🙌 Starting OpenHands Agent Server on {args.host}:{args.port}")
-    print(f"📖 API docs will be available at http://{args.host}:{args.port}/docs")
-    print(f"🔄 Auto-reload: {'enabled' if args.reload else 'disabled'}")
+    # Import user modules after early-exit checks
+    preload_modules(args.import_modules)
+
+    print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
+    print(f"API docs will be available at http://{args.host}:{args.port}/docs")
+    print(f"Auto-reload: {'enabled' if args.reload else 'disabled'}")
 
     # Show debug mode status
     if DEBUG:
-        print("🐛 DEBUG mode: ENABLED (stack traces will be shown)")
+        print("DEBUG mode: ENABLED (stack traces will be shown)")
     else:
-        print("🔒 DEBUG mode: DISABLED")
+        print("DEBUG mode: DISABLED")
     print()
 
     # Configure uvicorn logging based on DEBUG environment variable

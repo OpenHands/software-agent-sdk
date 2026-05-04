@@ -95,7 +95,12 @@ def slow_service():
 
 def test_browser_executor_initialization():
     """Test that BrowserToolExecutor initializes correctly."""
-    executor = BrowserToolExecutor()
+    with patch.object(
+        BrowserToolExecutor,
+        "_ensure_chromium_available",
+        return_value="/usr/bin/chromium",
+    ):
+        executor = BrowserToolExecutor()
 
     assert executor._config["headless"] is True
     assert executor._config["allowed_domains"] == []
@@ -107,13 +112,18 @@ def test_browser_executor_initialization():
 
 def test_browser_executor_config_passing():
     """Test that configuration is passed correctly."""
-    executor = BrowserToolExecutor(
-        session_timeout_minutes=60,
-        headless=False,
-        allowed_domains=["example.com", "test.com"],
-        action_timeout_seconds=12.5,
-        custom_param="value",
-    )
+    with patch.object(
+        BrowserToolExecutor,
+        "_ensure_chromium_available",
+        return_value="/usr/bin/chromium",
+    ):
+        executor = BrowserToolExecutor(
+            session_timeout_minutes=60,
+            headless=False,
+            allowed_domains=["example.com", "test.com"],
+            action_timeout_seconds=12.5,
+            custom_param="value",
+        )
 
     assert executor._config["headless"] is False
     assert executor._config["allowed_domains"] == ["example.com", "test.com"]

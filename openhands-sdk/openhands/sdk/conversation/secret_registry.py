@@ -132,6 +132,55 @@ class SecretRegistry(OpenHandsModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
+    def get_secret_value(self, name: str) -> str | None:
+        """Look up a single secret value by name.
+
+        This method retrieves the value of a specific secret. It's designed
+        to be passed as a callback to functions that need secret lookup
+        (e.g., expand_mcp_variables) without exposing all secrets at once.
+
+        Retrieved values are tracked in _exported_values for consistent masking
+        in command outputs.
+
+        Args:
+            name: The name of the secret to retrieve.
+
+        Returns:
+            The secret value if found and successfully retrieved, None otherwise.
+
+        Note:
+            Returns None for both missing secrets and retrieval failures.
+            Retrieval errors (network, auth, etc.) are logged as warnings.
+        """
+        source = self.secret_sources.get(name)
+        if source is None:
+            return None
+        try:
+            value = source.get_value()
+            if value:
+                # Track retrieved value for output masking
+                self._exported_values[name] = value
+            return value
+        except (OSError, TimeoutError) as e:
+            # Network/IO errors - likely transient, log and return None
+            logger.warning(
+                f"Transient error retrieving secret '{name}' "
+                f"(may retry later): {type(e).__name__}: {e}"
+            )
+            return None
+        except (ValueError, KeyError, TypeError) as e:
+            # Configuration/data errors - likely permanent
+            logger.warning(
+                f"Configuration error for secret '{name}': {type(e).__name__}: {e}"
+            )
+            return None
+        except Exception as e:
+            # Unexpected errors - log with full details for debugging
+            logger.warning(
+                f"Unexpected error retrieving secret '{name}': {type(e).__name__}: {e}"
+            )
+            return None
+
 
 def _wrap_secret(value: SecretValue) -> SecretSource:
     """Convert the value given to a secret source"""

@@ -1,8 +1,10 @@
 """Tests for the conversation visualizer and event visualization."""
 
+import io
 import json
+import sys
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Self
+from typing import IO, TYPE_CHECKING, Self, cast
 
 from pydantic import Field
 from rich.text import Text
@@ -45,6 +47,31 @@ class _UnknownEventForVisualizerTest(Event):
     """
 
     source: SourceType = "agent"
+
+
+class _Cp1252Stdout:
+    """Minimal stream that reproduces legacy Windows cp1252 stdout encoding."""
+
+    encoding = "cp1252"
+
+    def __init__(self) -> None:
+        self._buffer = io.StringIO()
+
+    def fileno(self) -> int:
+        return 1
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        text.encode(self.encoding)
+        return self._buffer.write(text)
+
+    def getvalue(self) -> str:
+        return self._buffer.getvalue()
 
 
 class VisualizerMockAction(Action):
@@ -272,6 +299,25 @@ def test_conversation_visualizer_initialization():
     assert visualizer is not None
     assert hasattr(visualizer, "on_event")
     assert hasattr(visualizer, "_create_event_block")
+
+
+def test_default_visualizer_handles_unicode_on_legacy_windows_stdout(monkeypatch):
+    """Visualizer output should not fail on legacy Windows stdout."""
+    stream = _Cp1252Stdout()
+    monkeypatch.setattr(sys, "stdout", cast(IO[str], stream))
+
+    visualizer = DefaultConversationVisualizer()
+    event = MessageEvent(
+        source="agent",
+        llm_message=Message(
+            role="assistant",
+            content=[TextContent(text="\U0001f510 Security Policy")],
+        ),
+    )
+
+    visualizer.on_event(event)
+
+    assert "Security Policy" in stream.getvalue()
 
 
 def test_visualizer_event_panel_creation():
