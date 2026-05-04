@@ -1,7 +1,7 @@
 """Tests for CriticClient api_key handling."""
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.critic.impl.api import APIBasedCritic
@@ -27,27 +27,46 @@ def test_critic_client_with_secret_str_api_key():
 
 
 def test_critic_client_empty_string_api_key():
-    """Test that CriticClient rejects an empty string api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key="")
+    """Test that CriticClient normalizes an empty string api_key to None."""
+    client = CriticClient(api_key="")
+
+    assert client.api_key is None
 
 
 def test_critic_client_whitespace_only_api_key():
-    """Test that CriticClient rejects a whitespace-only api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key="   \t\n  ")
+    """Test that CriticClient normalizes a whitespace-only api_key to None."""
+    client = CriticClient(api_key="   \t\n  ")
+
+    assert client.api_key is None
 
 
 def test_critic_client_empty_secret_str_api_key():
-    """Test that CriticClient rejects an empty SecretStr api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key=SecretStr(""))
+    """Test that CriticClient normalizes an empty SecretStr api_key to None."""
+    client = CriticClient(api_key=SecretStr(""))
+
+    assert client.api_key is None
+
+
+def test_critic_client_normalizes_redacted_api_key_placeholder():
+    """Test that redacted critic api_key placeholders become None."""
+    client = CriticClient(api_key="**********")
+
+    assert client.api_key is None
+
+
+def test_critic_client_rejects_none_api_key_for_inference():
+    """Test that missing api_key cannot be used as a runtime credential."""
+    client = CriticClient(api_key="**********")
+
+    with pytest.raises(ValueError, match="api_key must be non-empty"):
+        client._get_api_key_value()
 
 
 def test_critic_client_whitespace_secret_str_api_key():
-    """Test that CriticClient rejects a whitespace-only SecretStr api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key=SecretStr("   \t\n  "))
+    """Test that CriticClient normalizes a whitespace-only SecretStr api_key."""
+    client = CriticClient(api_key=SecretStr("   \t\n  "))
+
+    assert client.api_key is None
 
 
 def test_critic_client_api_key_not_exposed_in_repr():
