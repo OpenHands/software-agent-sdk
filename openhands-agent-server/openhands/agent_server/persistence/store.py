@@ -113,12 +113,13 @@ class SettingsStore(ABC):
 
     @abstractmethod
     def update(
-        self, update_fn: "Callable[[PersistedSettings], PersistedSettings]"
+        self, update_fn: Callable[[PersistedSettings], PersistedSettings]
     ) -> PersistedSettings:
         """Atomically update settings with file locking.
 
         Args:
-            update_fn: Function that takes current settings and returns updated settings.
+            update_fn: Function that receives current settings and returns
+                updated settings.
 
         Returns:
             The updated settings after saving.
@@ -222,7 +223,8 @@ class FileSettingsStore(SettingsStore):
         each other. The update function is called within the lock.
 
         Args:
-            update_fn: Function that takes current settings and returns updated settings.
+            update_fn: Function that receives current settings and returns
+                updated settings.
 
         Returns:
             The updated settings after saving.
