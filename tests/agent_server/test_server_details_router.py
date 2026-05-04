@@ -24,6 +24,14 @@ def client():
     return TestClient(app)
 
 
+def test_alive_and_health_return_ok_status(client):
+    """The liveness and health checks should share the same JSON payload."""
+    for endpoint in ("/alive", "/health"):
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
 def test_ready_returns_503_before_init(client):
     """The /ready endpoint should return 503 while initialization is not complete."""
     response = client.get("/ready")

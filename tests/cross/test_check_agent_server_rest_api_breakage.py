@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ _find_deprecation_policy_errors = _prod._find_deprecation_policy_errors
 _find_sdk_deprecated_fastapi_routes_in_file = (
     _prod._find_sdk_deprecated_fastapi_routes_in_file
 )
+_filter_public_rest_openapi = _prod._filter_public_rest_openapi
 _get_baseline_version = _prod._get_baseline_version
 _normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
 _parse_openapi_deprecation_description = _prod._parse_openapi_deprecation_description
@@ -44,6 +46,53 @@ def _schema_with_operation(path: str, method: str, operation: dict) -> dict:
             }
         },
     }
+
+
+def test_filter_public_rest_openapi_keeps_only_api_paths():
+    schema = {
+        "paths": {
+            "/health": {"get": {"responses": {}}},
+            "/ready": {"get": {"responses": {}}},
+            "/api/conversations": {"get": {"responses": {}}},
+            "/api/tools/": {"get": {"responses": {}}},
+        },
+        "components": {"schemas": {"Foo": {"type": "string"}}},
+    }
+
+    filtered = _filter_public_rest_openapi(schema)
+
+    assert set(filtered["paths"]) == {"/api/conversations", "/api/tools/"}
+    assert filtered["components"] == schema["components"]
+
+
+def test_find_deprecation_policy_errors_ignores_non_public_paths():
+    schema = {
+        "paths": {
+            "/health": {
+                "get": {
+                    "description": (
+                        "Deprecated since v1.2.3 and scheduled for removal in v1.5.0."
+                    ),
+                    "responses": {},
+                }
+            },
+            "/api/foo": {
+                "get": {
+                    "description": (
+                        "Deprecated since v1.2.3 and scheduled for removal in v1.5.0."
+                    ),
+                    "responses": {},
+                }
+            },
+        }
+    }
+
+    filtered = _filter_public_rest_openapi(schema)
+
+    assert _find_deprecation_policy_errors(filtered) == [
+        "GET /api/foo documents deprecation in its description but is not marked "
+        "deprecated=true in OpenAPI."
+    ]
 
 
 def test_find_deprecation_policy_errors_requires_openapi_deprecated_flag():
@@ -281,7 +330,7 @@ def test_validate_removed_operations_allows_scheduled_removal(capsys):
 
 def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsys):
     prev_schema = _schema_with_operation(
-        "/foo",
+        "/api/foo",
         "get",
         {
             "deprecated": True,
@@ -311,8 +360,12 @@ def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsy
             [
                 {
                     "id": "removed-operation",
-                    "details": {"path": "/foo", "method": "get", "deprecated": True},
-                    "text": "removed GET /foo",
+                    "details": {
+                        "path": "/api/foo",
+                        "method": "get",
+                        "deprecated": True,
+                    },
+                    "text": "removed GET /api/foo",
                 }
             ],
             1,
@@ -330,7 +383,7 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
     monkeypatch, capsys
 ):
     prev_schema = _schema_with_operation(
-        "/foo",
+        "/api/foo",
         "get",
         {
             "deprecated": True,
@@ -360,8 +413,12 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
             [
                 {
                     "id": "removed-operation",
-                    "details": {"path": "/foo", "method": "get", "deprecated": True},
-                    "text": "removed GET /foo",
+                    "details": {
+                        "path": "/api/foo",
+                        "method": "get",
+                        "deprecated": True,
+                    },
+                    "text": "removed GET /api/foo",
                 }
             ],
             1,
@@ -372,6 +429,47 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
 
     captured = capsys.readouterr()
     assert "scheduled removal versions have been reached" in captured.out
+
+
+def test_main_filters_non_public_paths_before_oasdiff(monkeypatch):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_current_openapi",
+        lambda: {
+            "paths": {
+                "/health": {"get": {"responses": {}}},
+                "/api/foo": {"get": {"responses": {}}},
+            }
+        },
+    )
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {
+            "paths": {
+                "/ready": {"get": {"responses": {}}},
+                "/api/foo": {"get": {"responses": {}}},
+            }
+        },
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+
+    def fake_run_oasdiff(prev_spec: Path, cur_spec: Path):
+        prev_schema = json.loads(prev_spec.read_text())
+        cur_schema = json.loads(cur_spec.read_text())
+        assert set(prev_schema["paths"]) == {"/api/foo"}
+        assert set(cur_schema["paths"]) == {"/api/foo"}
+        return [], 0
+
+    monkeypatch.setattr(_prod, "_run_oasdiff_breakage_check", fake_run_oasdiff)
+
+    assert _prod.main() == 0
 
 
 def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, capsys):

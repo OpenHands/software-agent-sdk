@@ -23,6 +23,10 @@ def _package_version(dist_name: str) -> str:
         return "unknown"
 
 
+class HealthStatus(BaseModel):
+    status: str
+
+
 class ServerInfo(BaseModel):
     uptime: float
     idle_time: float
@@ -68,15 +72,15 @@ def mark_initialization_complete() -> None:
 
 
 @server_details_router.get("/alive")
-async def alive():
+async def alive() -> HealthStatus:
     """Basic liveness check - returns OK if the server process is running."""
-    return {"status": "ok"}
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/health")
-async def health() -> str:
+async def health() -> HealthStatus:
     """Basic health check - returns OK if the server process is running."""
-    return "OK"
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/ready")

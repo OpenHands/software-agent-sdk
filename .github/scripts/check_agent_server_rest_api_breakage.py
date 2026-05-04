@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """REST API breakage detection for openhands-agent-server using oasdiff.
 
-This script compares the current OpenAPI schema for the agent-server REST API against
-an already-published release. The baseline version is selected from PyPI, but the
-baseline schema is generated from the matching git tag under the current workspace's
-locked dependency set. This keeps the comparison focused on API changes in our code,
-not schema drift from newer FastAPI/Pydantic releases.
+This script compares the current OpenAPI schema for the public agent-server REST API
+(the `/api/**` surface) against an already-published release. The baseline version is
+selected from PyPI, but the baseline schema is generated from the matching git tag
+under the current workspace's locked dependency set. This keeps the comparison
+focused on API changes in our code, not schema drift from newer FastAPI/Pydantic
+releases.
 
 The deprecation note it recognizes intentionally matches the phrasing used by the
 Python deprecation checks, for example:
@@ -78,6 +79,7 @@ HTTP_METHODS = {
     "head",
     "trace",
 }
+PUBLIC_REST_PATH_PREFIX = "/api/"
 ROUTE_DECORATOR_NAMES = HTTP_METHODS | {"api_route"}
 OPENAPI_PROGRAM = """
 import json
@@ -289,6 +291,17 @@ def _find_sdk_deprecated_fastapi_routes(repo_root: Path) -> list[str]:
         errors.extend(_find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root))
 
     return errors
+
+
+def _filter_public_rest_openapi(schema: dict) -> dict:
+    filtered_schema = dict(schema)
+    filtered_schema["paths"] = {
+        path: path_item
+        for path, path_item in schema.get("paths", {}).items()
+        if path == PUBLIC_REST_PATH_PREFIX.rstrip("/")
+        or path.startswith(PUBLIC_REST_PATH_PREFIX)
+    }
+    return filtered_schema
 
 
 def _find_deprecation_policy_errors(schema: dict) -> list[str]:
@@ -571,6 +584,7 @@ def main() -> int:
     current_schema = _generate_current_openapi()
     if current_schema is None:
         return 1
+    current_schema = _filter_public_rest_openapi(current_schema)
 
     deprecation_policy_errors = _find_deprecation_policy_errors(current_schema)
     for error in deprecation_policy_errors:
@@ -579,6 +593,7 @@ def main() -> int:
     prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
     if prev_schema is None:
         return 0 if not (static_policy_errors or deprecation_policy_errors) else 1
+    prev_schema = _filter_public_rest_openapi(prev_schema)
 
     prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
     current_schema = _normalize_openapi_for_oasdiff(current_schema)
