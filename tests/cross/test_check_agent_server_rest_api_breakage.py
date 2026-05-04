@@ -579,7 +579,7 @@ def test_split_breaking_changes_separates_five_buckets():
         {
             "id": "request-property-type-changed",
             "details": {},
-            "text": "the `agent` request property type/format changed from `object` to ``",
+            "text": "the `agent` request property type/format changed",
         },
         {
             "id": "response-body-changed",
