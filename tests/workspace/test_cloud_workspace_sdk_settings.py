@@ -249,8 +249,14 @@ class TestGetMcpConfig:
         # Should pass through the mcpServers format directly
         assert "mcpServers" in mcp_config
         assert len(mcp_config["mcpServers"]) == 2
-        assert mcp_config["mcpServers"]["hubspot"]["url"] == "https://mcp.example.com/hubspot"
-        assert mcp_config["mcpServers"]["hubspot"]["headers"]["Authorization"] == "Bearer secret-key"
+        assert (
+            mcp_config["mcpServers"]["hubspot"]["url"]
+            == "https://mcp.example.com/hubspot"
+        )
+        assert (
+            mcp_config["mcpServers"]["hubspot"]["headers"]["Authorization"]
+            == "Bearer secret-key"
+        )
         assert mcp_config["mcpServers"]["slack"]["transport"] == "sse"
 
     def test_get_mcp_config_transforms_sse_servers(self, mock_workspace):
