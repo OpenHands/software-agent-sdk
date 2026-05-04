@@ -1612,8 +1612,8 @@ def test_switch_conversation_llm_success(
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.get_conversation.return_value = mock_conversation
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     llm_payload = {
@@ -1644,8 +1644,8 @@ def test_switch_conversation_llm_not_found(
     """The /switch_llm endpoint returns 404 when the conversation is missing."""
     mock_conversation_service.get_event_service.return_value = None
 
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
