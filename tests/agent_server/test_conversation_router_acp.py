@@ -50,8 +50,8 @@ def test_start_acp_conversation_accepts_acp_agent(
         sample_acp_conversation_info,
         True,
     )
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -79,8 +79,8 @@ def test_get_acp_conversation_returns_acp_agent(
     mock_conversation_service.get_acp_conversation.return_value = (
         sample_acp_conversation_info
     )
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -103,8 +103,8 @@ def test_search_acp_conversations_returns_acp_page(
             next_page_id=None,
         )
     )
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -118,8 +118,8 @@ def test_search_acp_conversations_returns_acp_page(
 
 def test_count_acp_conversations_returns_count(client, mock_conversation_service):
     mock_conversation_service.count_acp_conversations.return_value = 2
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:
@@ -138,8 +138,8 @@ def test_batch_get_acp_conversations_returns_acp_agents(
     mock_conversation_service.batch_get_acp_conversations.return_value = [
         sample_acp_conversation_info
     ]
-    client.app.dependency_overrides[get_conversation_service] = (
-        lambda: mock_conversation_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
     )
 
     try:

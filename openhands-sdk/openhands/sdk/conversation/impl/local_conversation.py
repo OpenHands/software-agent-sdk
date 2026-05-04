@@ -37,7 +37,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -108,6 +108,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        file_store: FileStore | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -188,6 +189,7 @@ class LocalConversation(BaseConversation):
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
+            file_store=file_store,
         )
 
         self._pin_prompt_cache_key()
