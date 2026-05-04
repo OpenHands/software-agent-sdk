@@ -150,6 +150,14 @@ async def get_settings(
     store = get_settings_store(config)
     settings = store.load() or PersistedSettings()
 
+    # Audit log when secrets are exposed
+    if should_expose and settings.llm_api_key_is_set:
+        client_host = request.client.host if request.client else "unknown"
+        logger.info(
+            "LLM API key exposed via settings API",
+            extra={"client_host": client_host, "expose_via_header": expose_via_header},
+        )
+
     # Build serialization context based on expose_secrets flag
     context = {"expose_secrets": True} if should_expose else {}
 

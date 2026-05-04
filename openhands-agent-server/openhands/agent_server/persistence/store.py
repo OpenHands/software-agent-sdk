@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import stat
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -58,12 +59,24 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     """Write JSON atomically with secure permissions.
 
     Uses write-to-temp-then-rename pattern to prevent corruption
-    if interrupted. Sets owner-only permissions on the file.
+    if interrupted. Creates temp file with owner-only permissions from
+    the start to prevent race conditions where sensitive data could
+    be read before chmod.
     """
     tmp_path = path.with_suffix(".tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    tmp_path.chmod(_FILE_MODE)
+    # Create file with secure permissions from the start using os.open
+    # O_WRONLY | O_CREAT | O_TRUNC mimics "w" mode
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        # Clean up on error
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     tmp_path.replace(path)  # Atomic on POSIX
 
 
@@ -275,9 +288,9 @@ class FileSecretsStore(SecretsStore):
 
 # ── Global Store Access ──────────────────────────────────────────────────
 
-
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
+_store_lock = threading.Lock()
 
 
 def _get_persistence_dir(config: Config | None = None) -> Path:
@@ -302,29 +315,48 @@ def _get_cipher(config: Config | None = None) -> Cipher | None:
 
 
 def get_settings_store(config: Config | None = None) -> FileSettingsStore:
-    """Get the global settings store instance."""
+    """Get the global settings store instance (thread-safe).
+
+    Note: The config parameter is only used on first initialization.
+    Subsequent calls return the existing instance regardless of config.
+    """
     global _settings_store
-    if _settings_store is None:
-        _settings_store = FileSettingsStore(
-            persistence_dir=_get_persistence_dir(config),
-            cipher=_get_cipher(config),
-        )
-    return _settings_store
+    if _settings_store is not None:
+        return _settings_store
+
+    with _store_lock:
+        # Double-check after acquiring lock
+        if _settings_store is None:
+            _settings_store = FileSettingsStore(
+                persistence_dir=_get_persistence_dir(config),
+                cipher=_get_cipher(config),
+            )
+        return _settings_store
 
 
 def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
-    """Get the global secrets store instance."""
+    """Get the global secrets store instance (thread-safe).
+
+    Note: The config parameter is only used on first initialization.
+    Subsequent calls return the existing instance regardless of config.
+    """
     global _secrets_store
-    if _secrets_store is None:
-        _secrets_store = FileSecretsStore(
-            persistence_dir=_get_persistence_dir(config),
-            cipher=_get_cipher(config),
-        )
-    return _secrets_store
+    if _secrets_store is not None:
+        return _secrets_store
+
+    with _store_lock:
+        # Double-check after acquiring lock
+        if _secrets_store is None:
+            _secrets_store = FileSecretsStore(
+                persistence_dir=_get_persistence_dir(config),
+                cipher=_get_cipher(config),
+            )
+        return _secrets_store
 
 
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
     global _settings_store, _secrets_store
-    _settings_store = None
-    _secrets_store = None
+    with _store_lock:
+        _settings_store = None
+        _secrets_store = None

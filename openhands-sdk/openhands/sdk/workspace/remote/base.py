@@ -334,7 +334,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         result: dict[str, LookupSecret] = {}
         for item in data.get("secrets", []):
-            name = item["name"]
+            # Safely extract name, skip malformed items
+            name = item.get("name") if isinstance(item, dict) else None
+            if name is None:
+                continue
             if names is not None and name not in names:
                 continue
             result[name] = LookupSecret(
@@ -399,6 +402,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Transform SSE servers → RemoteMCPServer format
         for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
+            if not isinstance(sse_server, dict) or "url" not in sse_server:
+                continue  # Skip malformed entries
             server_config: dict[str, Any] = {
                 "url": sse_server["url"],
                 "transport": "sse",
@@ -412,6 +417,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Transform SHTTP servers → RemoteMCPServer format
         for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
+            if not isinstance(shttp_server, dict) or "url" not in shttp_server:
+                continue  # Skip malformed entries
             server_config = {
                 "url": shttp_server["url"],
                 "transport": "streamable-http",
@@ -425,6 +432,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Transform STDIO servers → StdioMCPServer format
         for stdio_server in mcp_config_data.get("stdio_servers") or []:
+            if not isinstance(stdio_server, dict):
+                continue  # Skip malformed entries
+            if "command" not in stdio_server or "name" not in stdio_server:
+                continue  # Skip entries missing required fields
             server_config = {
                 "command": stdio_server["command"],
                 "args": stdio_server.get("args", []),
