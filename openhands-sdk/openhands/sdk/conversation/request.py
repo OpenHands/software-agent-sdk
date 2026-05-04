@@ -63,9 +63,12 @@ class SendMessageRequest(BaseModel):
 class _StartConversationRequestBase(BaseModel):
     """Common conversation creation fields shared by conversation contracts."""
 
-    workspace: LocalWorkspace = Field(
-        ...,
-        description="Working directory for agent operations and tool execution",
+    workspace: LocalWorkspace | None = Field(
+        default=None,
+        description=(
+            "Working directory for agent operations and tool execution. "
+            "If not provided, the server uses a default working directory."
+        ),
     )
     conversation_id: UUID | None = Field(
         default=None,
@@ -166,10 +169,18 @@ class _StartConversationRequestBase(BaseModel):
 class StartConversationRequest(_StartConversationRequestBase):
     """Payload to create a new conversation.
 
-    Contains an Agent configuration along with conversation-specific options.
+    Contains an optional Agent configuration along with conversation-specific
+    options. If agent is not provided, the server builds one from persisted
+    settings (requires settings to be configured via /api/settings).
     """
 
-    agent: Agent
+    agent: Agent | None = Field(
+        default=None,
+        description=(
+            "Agent configuration. If not provided, the server builds an agent "
+            "from persisted settings (LLM config, tools, MCP, condenser, etc.)."
+        ),
+    )
 
 
 class StartACPConversationRequest(_StartConversationRequestBase):

@@ -35,6 +35,7 @@ from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
     OpenHandsModel,
 )
+from openhands.sdk.workspace import LocalWorkspace
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
@@ -71,7 +72,12 @@ class StoredConversation(StartACPConversationRequest):
     """Stored details about a conversation.
 
     Extends StartConversationRequest with server-assigned fields.
+    Unlike the request model, stored conversations have resolved agent/workspace.
     """
+
+    # Override to make required (resolved by server before storage)
+    agent: ACPEnabledAgent = Field(...)  # type: ignore[assignment]
+    workspace: LocalWorkspace = Field(...)  # type: ignore[assignment]
 
     id: OpenHandsUUID
     title: str | None = Field(

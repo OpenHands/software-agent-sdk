@@ -603,8 +603,8 @@ def test_start_conversation_invalid_request(client, mock_conversation_service):
     )
 
     try:
-        # Test with missing required fields
-        invalid_request = {"invalid": "data"}
+        # Test with invalid field types (max_iterations must be an int >= 1)
+        invalid_request = {"max_iterations": "not_a_number"}
 
         response = client.post("/api/conversations", json=invalid_request)
 

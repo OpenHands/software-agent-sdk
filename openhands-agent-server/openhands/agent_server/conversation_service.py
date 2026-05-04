@@ -195,39 +195,49 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
 def _merge_request_with_persisted_settings(
     request_data: dict[str, Any],
     persisted_settings: PersistedSettings | None,
+    default_working_dir: str,
 ) -> dict[str, Any]:
     """Merge a start conversation request with persisted settings.
 
     Persisted settings provide defaults that are overridden by values in the
-    request. This allows users to start conversations without fully specifying
-    the agent configuration if they have previously saved settings.
+    request. This allows users to start conversations with a minimal payload
+    (or even an empty payload) if they have previously saved settings.
 
-    The merge is selective - we only merge specific components that make sense:
-    - agent.llm: LLM configuration (model, api_key, base_url, etc.)
-    - conversation settings: max_iterations, confirmation_policy, etc.
+    When agent is not provided in the request, the entire agent is built from
+    persisted settings using ``agent_settings.create_agent()``.
 
-    Note that the request's Agent structure is preserved; we only fill in
-    missing LLM fields from persisted settings. This is because
-    StartConversationRequest.agent is an Agent object while
-    PersistedSettings.agent_settings is OpenHandsAgentSettings (used to
-    create agents via settings UI), and they have different structures.
+    When workspace is not provided, uses the default working directory.
 
     Args:
         request_data: The start conversation request as a dict.
         persisted_settings: The persisted settings (may be None if not configured).
+        default_working_dir: Default working directory if not specified in request.
 
     Returns:
         A merged request dict with persisted defaults filled in.
     """
-    if persisted_settings is None:
-        return request_data
-
     result = dict(request_data)
 
-    # Merge LLM settings only (not the entire agent structure)
-    # The request contains an Agent dict, persisted contains OpenHandsAgentSettings
-    agent_data = result.get("agent", {})
-    if isinstance(agent_data, dict):
+    # Handle workspace - use default if not provided
+    if result.get("workspace") is None:
+        result["workspace"] = {
+            "kind": "LocalWorkspace",
+            "working_dir": default_working_dir,
+        }
+
+    if persisted_settings is None:
+        return result
+
+    # Handle agent - build from persisted settings if not provided
+    agent_data = result.get("agent")
+    if agent_data is None:
+        # Build entire agent from persisted settings
+        agent = persisted_settings.agent_settings.create_agent()
+        result["agent"] = agent.model_dump(
+            mode="json", context={"expose_secrets": True}
+        )
+    elif isinstance(agent_data, dict):
+        # Merge LLM settings only (not the entire agent structure)
         llm_data = agent_data.get("llm", {})
         if isinstance(llm_data, dict):
             # Get persisted LLM settings
@@ -640,8 +650,9 @@ class ConversationService:
         # This allows users to start conversations without fully specifying
         # the agent configuration if they have previously saved settings.
         persisted_settings = self._load_persisted_settings()
+        default_working_dir = str(self.conversations_dir.parent)
         merged_data = _merge_request_with_persisted_settings(
-            request_data, persisted_settings
+            request_data, persisted_settings, default_working_dir
         )
 
         # Validate that after merging we have required settings

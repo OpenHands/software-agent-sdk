@@ -773,6 +773,8 @@ class TestConversationServiceStartConversation:
                 mock_event_service = AsyncMock(spec=EventService)
                 mock_event_service_class.return_value = mock_event_service
 
+                assert request.agent is not None
+                assert request.workspace is not None
                 # Mock the state that would be returned
                 mock_state = ConversationState(
                     id=uuid4(),
@@ -843,6 +845,8 @@ class TestConversationServiceStartConversation:
                 mock_event_service_class.return_value = mock_event_service
 
                 # Mock the state that would be returned
+                assert request.agent is not None
+                assert request.workspace is not None
                 mock_state = ConversationState(
                     id=uuid4(),
                     agent=request.agent,
@@ -991,6 +995,8 @@ class TestConversationServiceStartConversation:
                 conversation_service, "_start_event_service"
             ) as mock_start:
                 mock_new_service = AsyncMock(spec=EventService)
+                assert request.agent is not None
+                assert request.workspace is not None
                 mock_new_service.stored = StoredConversation(
                     id=custom_id,
                     agent=request.agent,
@@ -2314,7 +2320,9 @@ class TestSettingsMerging:
             )
         )
 
-        merged = _merge_request_with_persisted_settings(request_data, persisted)
+        merged = _merge_request_with_persisted_settings(
+            request_data, persisted, "/default/dir"
+        )
 
         # Request model should be preserved, persisted API key should be added
         assert merged["agent"]["llm"]["model"] == "gpt-4"
@@ -2341,26 +2349,63 @@ class TestSettingsMerging:
             )
         )
 
-        merged = _merge_request_with_persisted_settings(request_data, persisted)
+        merged = _merge_request_with_persisted_settings(
+            request_data, persisted, "/default/dir"
+        )
 
         # Request values should take precedence
         assert merged["agent"]["llm"]["model"] == "gpt-4"
         assert merged["agent"]["llm"]["api_key"] == "request-key"
 
-    def test_merge_request_with_persisted_settings_none_returns_original(self):
-        """Test that None persisted settings returns original request."""
+    def test_merge_request_with_persisted_settings_none_returns_with_workspace(self):
+        """Test that None persisted settings still sets default workspace."""
         from openhands.agent_server.conversation_service import (
             _merge_request_with_persisted_settings,
         )
 
         request_data = {
             "agent": {"llm": {"model": "gpt-4"}},
-            "workspace": {"working_dir": "workspace/project"},
         }
 
-        merged = _merge_request_with_persisted_settings(request_data, None)
+        merged = _merge_request_with_persisted_settings(
+            request_data, None, "/default/dir"
+        )
 
-        assert merged == request_data
+        # Agent preserved, workspace set to default
+        assert merged["agent"]["llm"]["model"] == "gpt-4"
+        assert merged["workspace"]["working_dir"] == "/default/dir"
+
+    def test_merge_request_builds_agent_from_persisted_when_not_provided(self):
+        """Test that agent is built from persisted settings when not in request."""
+        from openhands.agent_server.conversation_service import (
+            _merge_request_with_persisted_settings,
+        )
+        from openhands.agent_server.persistence import PersistedSettings
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
+        # Request has no agent
+        request_data = {
+            "initial_message": {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+            },
+        }
+
+        # Persisted settings have full agent config
+        persisted = PersistedSettings(
+            agent_settings=OpenHandsAgentSettings(
+                llm=LLM(model="claude-sonnet", api_key=SecretStr("persisted-key"))
+            )
+        )
+
+        merged = _merge_request_with_persisted_settings(
+            request_data, persisted, "/default/dir"
+        )
+
+        # Agent should be built from persisted settings
+        assert merged["agent"]["llm"]["model"] == "claude-sonnet"
+        assert merged["agent"]["llm"]["api_key"] == "persisted-key"
+        assert merged["workspace"]["working_dir"] == "/default/dir"
 
     def test_validate_merged_agent_settings_raises_on_missing_key(self):
         """Test that validation raises MissingSettingsError for missing API key."""

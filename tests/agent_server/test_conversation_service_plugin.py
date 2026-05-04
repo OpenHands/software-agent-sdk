@@ -130,6 +130,10 @@ async def test_start_conversation_without_plugin(conversation_service):
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
 
+            assert request.agent is not None
+
+            assert request.workspace is not None
+
             mock_state = ConversationState(
                 id=uuid4(),
                 agent=request.agent,
@@ -191,6 +195,10 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
         ) as mock_event_service_class:
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
+
+            assert request.agent is not None
+
+            assert request.workspace is not None
 
             mock_state = ConversationState(
                 id=uuid4(),
@@ -254,6 +262,10 @@ async def test_start_conversation_with_multiple_plugins(conversation_service, tm
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
 
+            assert request.agent is not None
+
+            assert request.workspace is not None
+
             mock_state = ConversationState(
                 id=uuid4(),
                 agent=request.agent,
@@ -308,6 +320,10 @@ async def test_plugins_persisted_in_stored_conversation_for_lazy_loading(
         ) as mock_event_service_class:
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
+
+            assert request.agent is not None
+
+            assert request.workspace is not None
 
             mock_state = ConversationState(
                 id=uuid4(),
@@ -374,6 +390,10 @@ async def test_start_conversation_with_explicit_hook_config(conversation_service
         ) as mock_event_service_class:
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
+
+            assert request.agent is not None
+
+            assert request.workspace is not None
 
             mock_state = ConversationState(
                 id=uuid4(),
@@ -448,6 +468,10 @@ async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
         ) as mock_event_service_class:
             mock_event_service = AsyncMock(spec=EventService)
             mock_event_service_class.return_value = mock_event_service
+
+            assert request.agent is not None
+
+            assert request.workspace is not None
 
             mock_state = ConversationState(
                 id=uuid4(),
