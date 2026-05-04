@@ -12,7 +12,7 @@ import os
 import stat
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,6 +39,22 @@ _DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
 
 
+def _ensure_secure_directory(path: Path) -> None:
+    """Ensure directory exists with secure permissions.
+
+    Creates the directory with owner-only permissions (0o700) if it doesn't exist.
+    If it already exists, ensures permissions are correct.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=False, mode=_DIR_MODE)
+    except FileExistsError:
+        # Directory exists - ensure permissions are correct
+        try:
+            path.chmod(_DIR_MODE)
+        except OSError:
+            pass  # Best effort - may fail if not owner
+
+
 @contextmanager
 def _file_lock(lock_path: Path) -> Iterator[None]:
     """Context manager for file-based locking (Unix fcntl).
@@ -46,7 +62,7 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
     Provides exclusive lock to prevent race conditions during
     read-modify-write operations.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_secure_directory(lock_path.parent)
     with open(lock_path, "w", encoding="utf-8") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -94,6 +110,19 @@ class SettingsStore(ABC):
     @abstractmethod
     def save(self, settings: PersistedSettings) -> None:
         """Save settings to storage."""
+
+    @abstractmethod
+    def update(
+        self, update_fn: "Callable[[PersistedSettings], PersistedSettings]"
+    ) -> PersistedSettings:
+        """Atomically update settings with file locking.
+
+        Args:
+            update_fn: Function that takes current settings and returns updated settings.
+
+        Returns:
+            The updated settings after saving.
+        """
 
 
 class SecretsStore(ABC):
@@ -174,8 +203,7 @@ class FileSettingsStore(SettingsStore):
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
         """
-        self.persistence_dir.mkdir(parents=True, exist_ok=True)
-        self.persistence_dir.chmod(_DIR_MODE)
+        _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
         # This flows through to field serializers using serialize_secret()
@@ -184,6 +212,26 @@ class FileSettingsStore(SettingsStore):
 
         _atomic_write_json(self._path, data)
         logger.debug(f"Settings saved to {self._path}")
+
+    def update(
+        self, update_fn: Callable[[PersistedSettings], PersistedSettings]
+    ) -> PersistedSettings:
+        """Atomically update settings with file locking.
+
+        Uses file locking to prevent concurrent updates from overwriting
+        each other. The update function is called within the lock.
+
+        Args:
+            update_fn: Function that takes current settings and returns updated settings.
+
+        Returns:
+            The updated settings after saving.
+        """
+        with _file_lock(self._lock_path):
+            settings = self.load() or PersistedSettings()
+            updated = update_fn(settings)
+            self.save(updated)
+            return updated
 
 
 class FileSecretsStore(SecretsStore):
@@ -240,8 +288,7 @@ class FileSecretsStore(SecretsStore):
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
         """
-        self.persistence_dir.mkdir(parents=True, exist_ok=True)
-        self.persistence_dir.chmod(_DIR_MODE)
+        _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
         context = {"cipher": self.cipher} if self.cipher else {"expose_secrets": True}

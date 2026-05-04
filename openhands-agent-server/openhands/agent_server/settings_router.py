@@ -177,19 +177,26 @@ async def update_settings(
     Accepts ``agent_settings_diff`` and/or ``conversation_settings_diff``
     for incremental updates. Values are deep-merged with existing settings.
 
+    Uses file locking to prevent concurrent updates from overwriting each other.
+
     Raises:
         HTTPException: 400 if the update payload contains invalid values.
     """
     config = _get_config(request)
     store = get_settings_store(config)
-    settings = store.load() or PersistedSettings()
 
-    # Apply updates with validation error handling
     update_data = payload.model_dump(exclude_none=True)
-    if update_data:
-        try:
+    if not update_data:
+        # No updates - just return current settings
+        settings = store.load() or PersistedSettings()
+    else:
+        # Apply updates atomically with file locking
+        def apply_update(settings: PersistedSettings) -> PersistedSettings:
             settings.update(cast(SettingsUpdatePayload, update_data))
-            store.save(settings)
+            return settings
+
+        try:
+            settings = store.update(apply_update)
         except ValidationError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

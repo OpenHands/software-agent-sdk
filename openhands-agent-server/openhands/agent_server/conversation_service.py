@@ -267,11 +267,20 @@ def _merge_request_with_persisted_settings(
     return result
 
 
+def _is_acp_agent(agent_data: dict[str, Any]) -> bool:
+    """Check if agent data represents an ACPAgent.
+
+    ACPAgent delegates to an external ACP server and doesn't need an LLM API key.
+    """
+    return "acp_command" in agent_data
+
+
 def _validate_merged_agent_settings(agent_data: dict[str, Any]) -> None:
     """Validate that merged agent settings have required configuration.
 
     After merging request data with persisted settings, this function ensures
-    that the agent has a valid LLM API key configured.
+    that the agent has a valid LLM API key configured. ACPAgent is exempt
+    from this check since it delegates to an external ACP server.
 
     Args:
         agent_data: The merged agent configuration dict.
@@ -279,6 +288,10 @@ def _validate_merged_agent_settings(agent_data: dict[str, Any]) -> None:
     Raises:
         MissingSettingsError: If required settings are missing.
     """
+    # ACPAgent doesn't need an LLM API key - it uses a dummy LLM
+    if _is_acp_agent(agent_data):
+        return
+
     if not _has_valid_llm_api_key(agent_data):
         # Extract model info for a more helpful error message
         llm_data = agent_data.get("llm", {})

@@ -280,9 +280,17 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response.raise_for_status()
         data = response.json()
 
+        # Validate response is a dict (server error may return null/list/string)
+        if not isinstance(data, dict):
+            return LLM(**llm_kwargs)
+
         # Extract from agent_settings structure
         agent_settings = data.get("agent_settings", {})
+        if not isinstance(agent_settings, dict):
+            agent_settings = {}
         llm_settings = agent_settings.get("llm", {})
+        if not isinstance(llm_settings, dict):
+            llm_settings = {}
 
         # Build kwargs from fetched config (only include non-None values)
         kwargs: dict[str, Any] = {
@@ -332,8 +340,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response.raise_for_status()
         data = response.json()
 
+        # Validate response is a dict (server error may return null/list/string)
+        if not isinstance(data, dict):
+            return {}
+
         result: dict[str, LookupSecret] = {}
-        for item in data.get("secrets", []):
+        secrets_list = data.get("secrets", [])
+        if not isinstance(secrets_list, list):
+            secrets_list = []
+
+        for item in secrets_list:
             # Safely extract name, skip malformed items
             name = item.get("name") if isinstance(item, dict) else None
             if name is None:
@@ -372,11 +388,17 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response.raise_for_status()
         data = response.json()
 
+        # Validate response is a dict (server error may return null/list/string)
+        if not isinstance(data, dict):
+            return {}
+
         # Extract from agent_settings structure
         agent_settings = data.get("agent_settings", {})
+        if not isinstance(agent_settings, dict):
+            return {}
         mcp_config_data = agent_settings.get("mcp_config")
 
-        if not mcp_config_data:
+        if not mcp_config_data or not isinstance(mcp_config_data, dict):
             return {}
 
         mcp_servers = self._transform_mcp_config_to_servers(mcp_config_data)

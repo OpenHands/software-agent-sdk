@@ -542,27 +542,37 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 # 1. The property type changes from `object` to `anyOf[object, null]`
 # 2. Nested properties appear "removed" from the old path structure
 #
-# These patterns match the change text reported by oasdiff.
-_OPTIONAL_REQUEST_PROPERTY_PATTERNS = (
-    # Type changes for making agent/workspace optional
+# NOTE: These patterns deliberately match ANY nested property under agent/ or
+# workspace/. This is because making a top-level property optional causes oasdiff
+# to report all nested properties as "removed" due to the anyOf wrapper. If a
+# genuine breaking change is introduced to agent/ or workspace/ fields in the
+# future, it should go through the normal deprecation process with explicit
+# @deprecated annotations - not sneak through alongside schema refactoring.
+_OPTIONAL_AGENT_WORKSPACE_PATTERNS = (
+    # Type changes for making agent/workspace optional (top-level)
     "the `agent` request property type/format changed",
     "the `workspace` request property type/format changed",
     # Nested properties that appear "removed" due to anyOf wrapper
     "removed the request property `agent/",
     "removed the request property `workspace/",
-    # LLM safety_settings removal (deprecated upstream)
-    "removed the request property `llm/safety_settings`",
-    # Optional nested properties under agent that show up differently
+    # Optional nested properties that show up differently in oasdiff output
     "removed the optional property `agent/",
     "removed the optional property `workspace/",
+)
+
+# Separate allowlist for upstream deprecations unrelated to optional args.
+# These are breaking changes from upstream dependencies that we accept.
+_UPSTREAM_DEPRECATION_PATTERNS = (
+    # LLM safety_settings was removed in litellm - not related to optional args
+    "removed the request property `llm/safety_settings`",
 )
 
 
 def _is_allowed_optional_request_change(change_text: str) -> bool:
     """Check if a breaking change is allowed as part of optional request args."""
     return any(
-        pattern in change_text for pattern in _OPTIONAL_REQUEST_PROPERTY_PATTERNS
-    )
+        pattern in change_text for pattern in _OPTIONAL_AGENT_WORKSPACE_PATTERNS
+    ) or any(pattern in change_text for pattern in _UPSTREAM_DEPRECATION_PATTERNS)
 
 
 def _split_breaking_changes(
