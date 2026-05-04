@@ -199,13 +199,13 @@ def demo_enable_disable_plugin(installed_dir: Path, plugin_name: str) -> None:
     ]
 
     metadata = json.loads((installed_dir / ".installed.json").read_text())
-    assert metadata["plugins"][plugin_name]["enabled"] is False
+    assert metadata["extensions"][plugin_name]["enabled"] is False
 
     assert enable_plugin(plugin_name, installed_dir=installed_dir) is True
     print_state("After re-enable", installed_dir)
 
     metadata = json.loads((installed_dir / ".installed.json").read_text())
-    assert metadata["plugins"][plugin_name]["enabled"] is True
+    assert metadata["extensions"][plugin_name]["enabled"] is True
     assert plugin_name in [
         plugin.name for plugin in load_installed_plugins(installed_dir=installed_dir)
     ]

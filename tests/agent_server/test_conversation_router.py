@@ -1602,6 +1602,69 @@ def test_switch_conversation_profile_corrupted_profile(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_conversation_llm_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /switch_llm endpoint forwards the inline LLM to switch_llm,
+    bypassing the profile store (#3017).
+    """
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    llm_payload = {
+        "model": "openai/gpt-4o",
+        "api_key": "sk-test",
+        "usage_id": "caller-supplied-id",
+    }
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={"llm": llm_payload},
+        )
+
+        assert response.status_code == 200
+        mock_conversation.switch_llm.assert_called_once()
+        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded_llm, LLM)
+        assert forwarded_llm.model == "openai/gpt-4o"
+        assert forwarded_llm.usage_id == "caller-supplied-id"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """The /switch_llm endpoint returns 404 when the conversation is missing."""
+    mock_conversation_service.get_event_service.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-test",
+                    "usage_id": "x",
+                }
+            },
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_fork_conversation_success(
     client, mock_conversation_service, sample_conversation_info, sample_conversation_id
 ):

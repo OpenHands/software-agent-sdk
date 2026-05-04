@@ -10,6 +10,7 @@ import frontmatter
 from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks.config import HookConfig
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -260,7 +261,7 @@ class AgentDefinition(BaseModel):
         Returns:
             Loaded AgentDefinition instance.
         """
-        with open(agent_path) as f:
+        with open(agent_path, encoding="utf-8") as f:
             post = frontmatter.load(f)
 
         fm = post.metadata
@@ -298,7 +299,7 @@ class AgentDefinition(BaseModel):
             hooks=hooks,
             profile_store_dir=profile_store_dir,
             system_prompt=content,
-            source=str(agent_path),
+            source=to_posix_path(agent_path),
             when_to_use_examples=when_to_use_examples,
             metadata=metadata,
         )

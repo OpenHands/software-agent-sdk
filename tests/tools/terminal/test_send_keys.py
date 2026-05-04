@@ -54,6 +54,10 @@ def test_supported_special_keys_contains_essentials() -> None:
         assert key in SUPPORTED_SPECIAL_KEYS
 
 
+@pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="SubprocessTerminal is not available on Windows",
+)
 def test_subprocess_specials_match_contract() -> None:
     """Backend specials dicts must stay in sync with SUPPORTED_SPECIAL_KEYS."""
     from openhands.tools.terminal.terminal.subprocess_terminal import (

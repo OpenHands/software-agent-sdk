@@ -1,6 +1,7 @@
 # state.py
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Self
@@ -211,6 +212,9 @@ class ConversationState(OpenHandsModel):
     _on_state_change: ConversationCallbackType | None = PrivateAttr(
         default=None
     )  # callback for state changes
+    _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
+        default=None
+    )
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
@@ -235,6 +239,13 @@ class ConversationState(OpenHandsModel):
         """
         self._on_state_change = callback
 
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
+        self._events.set_write_guard(write_guard)
+
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
         """
@@ -253,7 +264,11 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        if self._write_guard is None:
+            fs.write(BASE_STATE, payload)
+        else:
+            with self._write_guard():
+                fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod

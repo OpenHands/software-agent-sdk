@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import threading
 import time
@@ -8,8 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from litellm.types.utils import ChatCompletionMessageToolCall, Function
 from pydantic import SecretStr
 
+from openhands.agent_server.conversation_lease import (
+    LEASE_FILE_NAME,
+    ConversationOwnershipLostError,
+)
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationContractMismatchError,
@@ -32,11 +38,16 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
+from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
 
 @pytest.fixture
@@ -61,6 +72,36 @@ def sample_stored_conversation():
     )
 
 
+def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
+    tool_call = MessageToolCall.from_chat_tool_call(
+        ChatCompletionMessageToolCall(
+            id=tool_call_id,
+            type="function",
+            function=Function(
+                name="terminal",
+                arguments='{"command": "sleep 30"}',
+            ),
+        )
+    )
+    return ActionEvent(
+        thought=[TextContent(text="run sleep")],
+        action=TerminalAction(command="sleep 30"),
+        tool_name="terminal",
+        tool_call_id=tool_call_id,
+        tool_call=tool_call,
+        llm_response_id="response_1",
+        security_risk=SecurityRisk.LOW,
+        summary="run sleep",
+    )
+
+
+def _expire_conversation_lease(conversations_dir: Path, conversation_id) -> None:
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    payload = json.loads(lease_path.read_text())
+    payload["expires_at"] = 0
+    lease_path.write_text(json.dumps(payload))
+
+
 @pytest.fixture
 def conversation_service():
     """Create a ConversationService instance for testing."""
@@ -71,6 +112,111 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.mark.asyncio
+async def test_second_service_does_not_resume_active_running_conversation(tmp_path):
+    """A second service should not attach to a live running conversation."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            assert secondary._event_services is not None
+            assert conversation_info.id not in secondary._event_services
+
+            primary_state.events.append(
+                ObservationEvent(
+                    observation=TerminalObservation.from_text(
+                        "done",
+                        command="sleep 30",
+                        exit_code=0,
+                    ),
+                    action_id=running_action.id,
+                    tool_name="terminal",
+                    tool_call_id=running_action.tool_call_id,
+                )
+            )
+
+        events = primary_state.events[:]
+        assert [type(event).__name__ for event in events] == [
+            "ActionEvent",
+            "ConversationStateUpdateEvent",
+            "ObservationEvent",
+        ]
+        assert not any(isinstance(event, AgentErrorEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+        primary_event_service = primary._event_services[conversation_info.id]
+        primary_state = await primary_event_service.get_state()
+
+        running_action = _create_running_terminal_action()
+        primary_state.events.append(running_action)
+        primary_state.execution_status = ConversationExecutionStatus.RUNNING
+        _expire_conversation_lease(conversations_dir, conversation_info.id)
+
+        async with ConversationService(
+            conversations_dir=conversations_dir,
+        ) as secondary:
+            assert secondary._event_services is not None
+            secondary_event_service = secondary._event_services[conversation_info.id]
+            secondary_state = await secondary_event_service.get_state()
+
+            assert any(
+                isinstance(event, AgentErrorEvent)
+                for event in secondary_state.events[:]
+            )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.events.append(
+                    ObservationEvent(
+                        observation=TerminalObservation.from_text(
+                            "late result",
+                            command="sleep 30",
+                            exit_code=0,
+                        ),
+                        action_id=running_action.id,
+                        tool_name="terminal",
+                        tool_call_id=running_action.tool_call_id,
+                    )
+                )
+
+            with pytest.raises(ConversationOwnershipLostError):
+                primary_state.execution_status = ConversationExecutionStatus.ERROR
 
 
 class TestConversationServiceSearchConversations:
@@ -119,6 +265,55 @@ class TestConversationServiceSearchConversations:
         assert result.items[0].id == conversation_id
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
         assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_conversations_with_critic_redacts_api_key(
+        self, conversation_service
+    ):
+        """ConversationInfo should serialize critic secrets without rejecting them."""
+        agent = Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("llm-secret")),
+            tools=[],
+            critic=APIBasedCritic(
+                api_key=SecretStr("critic-secret"),
+                server_url="https://critic.example.com",
+                model_name="critic",
+            ),
+        )
+        stored_conv = StoredConversation(
+            id=uuid4(),
+            agent=agent,
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored_conv
+        mock_service.get_state.return_value = ConversationState(
+            id=stored_conv.id,
+            agent=stored_conv.agent,
+            workspace=stored_conv.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored_conv.confirmation_policy,
+        )
+        conversation_service._event_services[stored_conv.id] = mock_service
+
+        result = await conversation_service.search_conversations()
+
+        info = result.items[0]
+        assert isinstance(info.agent.critic, APIBasedCritic)
+        assert info.agent.critic.api_key is None
+
+        payload = info.model_dump(mode="json")
+        assert payload["agent"]["llm"]["api_key"] is None
+        assert payload["agent"]["critic"]["api_key"] is None
+        assert "llm-secret" not in str(payload)
+        assert "critic-secret" not in str(payload)
+        assert "critic-secret" not in str(info)
 
     @pytest.mark.asyncio
     async def test_search_conversations_status_filter(self, conversation_service):

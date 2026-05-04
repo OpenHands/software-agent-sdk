@@ -343,15 +343,17 @@ class LocalConversation(BaseConversation):
             but has its own identity and independent state going forward.
         """
         fork_id = conversation_id or uuid.uuid4()
-        if agent is not None:
-            fork_agent = agent
-        else:
-            # Round-trip via JSON to produce a deep copy that avoids
-            # thread-lock pickling issues with model_copy(deep=True).
-            agent_cls = type(self.agent)
-            fork_agent = agent_cls.model_validate(
-                self.agent.model_dump(context={"expose_secrets": True}),
-            )
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
 
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
@@ -632,11 +634,33 @@ class LocalConversation(BaseConversation):
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
 
-    def switch_profile(self, profile_name: str) -> None:
-        """Switch the agent's LLM to a named profile.
+    def switch_llm(self, llm: LLM) -> None:
+        """Swap the agent's LLM to the given object.
 
-        Loads the profile from the LLMProfileStore (cached in the registry
-        after the first load) and updates the agent and conversation state.
+        The caller owns ``llm.usage_id``; it is the registry key. If an
+        entry with that key already exists, the cached LLM is reused and
+        the passed ``llm`` is dropped — matching the rest of the
+        registry's "first-write-wins" contract.
+
+        Args:
+            llm: LLM to install on the agent.
+        """
+        try:
+            new_llm = self.llm_registry.get(llm.usage_id)
+        except KeyError:
+            new_llm = llm
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
+            self._pin_prompt_cache_key()
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a profile loaded from disk.
+
+        Loads the profile from :class:`LLMProfileStore` (cached in the
+        registry under ``profile:{profile_name}`` after first load) and
+        delegates the swap to :meth:`switch_llm`.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -647,15 +671,11 @@ class LocalConversation(BaseConversation):
         """
         usage_id = f"profile:{profile_name}"
         try:
-            new_llm = self.llm_registry.get(usage_id)
+            cached = self.llm_registry.get(usage_id)
         except KeyError:
-            new_llm = self._profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
-        with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
-            self._state.agent = self.agent
-            self._pin_prompt_cache_key()
+            loaded = self._profile_store.load(profile_name)
+            cached = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(cached)
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:

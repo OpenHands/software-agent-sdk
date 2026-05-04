@@ -5,10 +5,15 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import shutil
+import sys
+import textwrap
 import threading
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -16,6 +21,7 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from pydantic import SecretStr
 
+from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -45,8 +51,12 @@ from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
-@pytest.fixture
-def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+@contextmanager
+def live_server_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    import_modules: str | None = None,
+) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
     We set OPENHANDS_AGENT_SERVER_CONFIG_PATH before creating the app so that
@@ -58,9 +68,6 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     workspace_path = tmp_path / "workspace"
 
     # Ensure clean directories (both tmp and any leftover in cwd)
-    import shutil
-    from pathlib import Path
-
     # Clean up any leftover directories from previous runs in current working directory
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
@@ -99,6 +106,9 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
+
+    if import_modules is not None:
+        preload_modules(import_modules)
 
     # Build app after env is set
     from openhands.agent_server.api import create_app
@@ -139,6 +149,7 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
             "app": app,
             "conversation_service": app.state.conversation_service,
             "host": f"http://127.0.0.1:{port}",
+            "workspace_path": workspace_path,
         }
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
@@ -149,6 +160,12 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
+
+
+@pytest.fixture
+def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+    with live_server_env(tmp_path, monkeypatch) as env:
+        yield env
 
 
 @pytest.fixture
@@ -198,6 +215,128 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+
+def test_preloaded_custom_tool_resolves_in_live_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A startup-preloaded tool is available during live conversation creation."""
+    from openhands.sdk.tool import Tool, registry as tool_registry
+
+    package_name = "preload_live_server_tools_2771"
+    module_qualname = f"{package_name}.tools"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "tools.py").write_text(
+        textwrap.dedent(
+            """\
+            from __future__ import annotations
+
+            from collections.abc import Sequence
+            from typing import ClassVar
+
+            from openhands.sdk.tool import (
+                Action,
+                Observation,
+                ToolDefinition,
+                ToolExecutor,
+                register_tool,
+            )
+
+
+            class PreloadedAction(Action):
+                pass
+
+
+            class PreloadedObservation(Observation):
+                pass
+
+
+            class PreloadedExecutor(
+                ToolExecutor[PreloadedAction, PreloadedObservation]
+            ):
+                def __call__(
+                    self,
+                    action: PreloadedAction,
+                    conversation=None,
+                ) -> PreloadedObservation:
+                    return PreloadedObservation.from_text("preloaded")
+
+
+            class PreloadedLiveServerTool(
+                ToolDefinition[PreloadedAction, PreloadedObservation]
+            ):
+                name: ClassVar[str] = "preloaded_live_server_tool"
+
+                @classmethod
+                def create(
+                    cls, conv_state=None, **params
+                ) -> Sequence[PreloadedLiveServerTool]:
+                    return [
+                        cls(
+                            description="Tool registered by startup preload.",
+                            action_type=PreloadedAction,
+                            observation_type=PreloadedObservation,
+                            executor=PreloadedExecutor(),
+                        )
+                    ]
+
+
+            register_tool(PreloadedLiveServerTool.name, PreloadedLiveServerTool)
+            """
+        )
+    )
+
+    registry_snapshot = dict(tool_registry._REG)
+    usability_snapshot = dict(tool_registry._USABILITY_REG)
+    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop(package_name, None)
+    sys.modules.pop(module_qualname, None)
+
+    try:
+        with live_server_env(
+            tmp_path, monkeypatch, import_modules=module_qualname
+        ) as env:
+            llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+            agent = Agent(
+                llm=llm,
+                tools=[Tool(name="preloaded_live_server_tool")],
+                include_default_tools=[],
+            )
+            payload = {
+                "agent": agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
+                "workspace": {"working_dir": "/tmp/workspace/project"},
+                "initial_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Initialize tools."}],
+                },
+                "tool_module_qualnames": {},
+            }
+
+            with httpx.Client(base_url=env["host"]) as client:
+                response = client.post("/api/conversations", json=payload, timeout=10)
+
+            assert response.status_code == 201, response.text
+            conversation_id = UUID(response.json()["id"])
+            event_service = env["conversation_service"]._event_services[conversation_id]
+            assert event_service._conversation is not None
+            assert (
+                "preloaded_live_server_tool"
+                in event_service._conversation.agent.tools_map
+            )
+    finally:
+        sys.modules.pop(package_name, None)
+        sys.modules.pop(module_qualname, None)
+        tool_registry._REG.clear()
+        tool_registry._REG.update(registry_snapshot)
+        tool_registry._USABILITY_REG.clear()
+        tool_registry._USABILITY_REG.update(usability_snapshot)
+        tool_registry._MODULE_QUALNAMES.clear()
+        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -429,6 +568,10 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
 def test_bash_command_endpoint_with_live_server(server_env):
     """Integration test for bash command execution through live server.
 
@@ -495,7 +638,8 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     test_file.write_text(test_content)
 
     # Define the destination path (must be absolute for the server)
-    destination = "/tmp/test_workspace/uploaded_file.txt"
+    destination = server_env["workspace_path"] / "uploaded_file.txt"
+    destination_remote = destination.as_posix()
 
     # Upload the file
     result = workspace.file_upload(str(test_file), destination)
@@ -508,25 +652,19 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     assert result.source_path == str(test_file), (
         f"Expected source_path to be {test_file}, got {result.source_path}"
     )
-    assert result.destination_path == destination, (
-        f"Expected destination_path to be {destination}, got {result.destination_path}"
+    assert result.destination_path == destination_remote, (
+        f"Expected destination_path to be {destination_remote}, "
+        f"got {result.destination_path}"
     )
 
-    # Verify the file exists at the destination with correct content
-    # Use bash command to check file existence and read content
-    check_cmd = f"test -f {destination} && cat {destination}"
-    check_result = workspace.execute_command(check_cmd, timeout=5.0)
-
-    assert check_result.exit_code == 0, (
-        f"File does not exist at destination or could not be read. "
-        f"Exit code: {check_result.exit_code}, "
-        f"stderr: {check_result.stderr}"
+    downloaded_file = tmp_path / "downloaded_upload.txt"
+    download_result = workspace.file_download(destination, downloaded_file)
+    assert download_result.success is True, (
+        f"File download failed. Error: {download_result.error}, "
+        f"Source: {download_result.source_path}, "
+        f"Destination: {download_result.destination_path}"
     )
-
-    # Verify the content matches what we uploaded
-    assert check_result.stdout == test_content, (
-        f"File content mismatch. Expected:\n{test_content}\nGot:\n{check_result.stdout}"
-    )
+    assert downloaded_file.read_text() == test_content
 
 
 def test_conversation_stats_with_live_server(
@@ -1496,6 +1634,16 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
     conv.close()
 
 
+def test_server_info_exposes_usable_tools(server_env):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get("/server_info", timeout=10.0)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload.get("usable_tools"), list)
+    assert "terminal" in payload["usable_tools"]
+
+
 def test_remote_state_exposes_invoked_skills(
     server_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -1612,8 +1760,9 @@ def test_remote_state_exposes_invoked_skills(
     ]
     assert skill_observations, "No ObservationEvent emitted for invoke_skill"
     obs_text = skill_observations[-1].observation.text
-    assert str(skill_dir.resolve()) in obs_text, (
-        f"Footer missing skill directory {skill_dir.resolve()!s}: {obs_text!r}"
+    skill_dir_display = skill_dir.resolve().as_posix()
+    assert skill_dir_display in obs_text, (
+        f"Footer missing skill directory {skill_dir_display}: {obs_text!r}"
     )
     assert obs_text.rstrip().endswith("relative to that directory.")
 

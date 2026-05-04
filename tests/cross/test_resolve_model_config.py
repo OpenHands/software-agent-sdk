@@ -629,7 +629,10 @@ def test_kimi_k2_6_config():
 
     assert model["id"] == "kimi-k2.6"
     assert model["display_name"] == "Kimi K2.6"
-    assert model["llm_config"]["model"] == "litellm_proxy/moonshot/kimi-k2.6"
+    assert (
+        model["llm_config"]["model"]
+        == "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc"
+    )
     assert model["llm_config"]["temperature"] == 1.0
 
 
@@ -641,3 +644,12 @@ def test_gpt_5_5_config():
     assert model["display_name"] == "GPT-5.5"
     assert model["llm_config"]["model"] == "litellm_proxy/openai/gpt-5.5"
     assert model["llm_config"]["reasoning_effort"] == "high"
+
+
+def test_deepseek_v4_flash_config():
+    """Test that deepseek-v4-flash has correct configuration."""
+    model = MODELS["deepseek-v4-flash"]
+
+    assert model["id"] == "deepseek-v4-flash"
+    assert model["display_name"] == "DeepSeek V4 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"

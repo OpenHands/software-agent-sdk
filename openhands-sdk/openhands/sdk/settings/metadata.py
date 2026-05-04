@@ -28,7 +28,7 @@ class SettingsFieldMetadata(BaseModel):
     depends_on: tuple[str, ...] = ()
     variant: str | None = None
     """When set, the field only applies to the named ``AgentSettings``
-    variant (``"llm"`` or ``"acp"``). Fields with ``variant=None`` are
+    variant (``"openhands"`` or ``"acp"``). Fields with ``variant=None`` are
     shown regardless of the active ``agent_kind``."""
 
 

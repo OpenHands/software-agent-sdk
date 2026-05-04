@@ -71,6 +71,45 @@ class TestExpandMcpVariables:
             "/path/to/skill/scripts/server.py"
         )
 
+    def test_expand_windows_path_variables_preserves_backslashes(self):
+        """Windows paths must be expanded as values, not raw JSON fragments."""
+        config = {
+            "mcpServers": {
+                "test-server": {
+                    "command": "${SKILL_ROOT}\\scripts\\server.py",
+                }
+            }
+        }
+        variables = {"SKILL_ROOT": r"C:\Users\tester\skill"}
+
+        result = expand_mcp_variables(config, variables)
+
+        assert result["mcpServers"]["test-server"]["command"] == (
+            r"C:\Users\tester\skill\scripts\server.py"
+        )
+
+    def test_expand_variables_in_dictionary_keys(self):
+        """Variable expansion should preserve the legacy key-substitution behavior."""
+        config = {
+            "mcpServers": {
+                "${SERVER_NAME}": {
+                    "headers": {"${HEADER_NAME}": "Bearer ${TOKEN}"},
+                }
+            }
+        }
+        variables = {
+            "SERVER_NAME": "expanded-server",
+            "HEADER_NAME": "Authorization",
+            "TOKEN": "secret-token",
+        }
+
+        result = expand_mcp_variables(config, variables)
+
+        assert "expanded-server" in result["mcpServers"]
+        assert result["mcpServers"]["expanded-server"]["headers"] == {
+            "Authorization": "Bearer secret-token"
+        }
+
     def test_expand_environment_variables(self):
         """Test expanding variables from environment."""
         os.environ["TEST_MCP_VAR"] = "env-value-123"
