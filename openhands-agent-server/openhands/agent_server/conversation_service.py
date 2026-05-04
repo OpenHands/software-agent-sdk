@@ -272,7 +272,11 @@ def _validate_merged_agent_settings(agent_data: dict[str, Any]) -> None:
     if not _has_valid_llm_api_key(agent_data):
         # Extract model info for a more helpful error message
         llm_data = agent_data.get("llm", {})
-        model = llm_data.get("model", "unknown") if isinstance(llm_data, dict) else "unknown"
+        model = (
+            llm_data.get("model", "unknown")
+            if isinstance(llm_data, dict)
+            else "unknown"
+        )
         raise MissingSettingsError(
             f"Missing required LLM API key for model '{model}'. "
             "Please provide an agent configuration with a valid LLM API key, "
