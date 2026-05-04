@@ -268,35 +268,6 @@ class TestToolCallMatchingPropertyEnforcement(TestToolCallMatchingBase):
         # Both the ActionEvent and AgentErrorEvent should be kept
         assert len(result) == 0
 
-    def test_duplicate_observation_like_events_for_same_tool_call_id(self) -> None:
-        """Duplicate observation-like events for the same tool_call_id (e.g.
-        AgentErrorEvent emitted by crash recovery followed by a late
-        ObservationEvent) must be deduplicated by enforce(), otherwise
-        manipulation_indices() crashes condensation with a KeyError.
-        """
-        action = create_autospec(ActionEvent, instance=True)
-        action.tool_call_id = "call_1"
-        action.id = "action_1"
-        action.llm_response_id = "response_1"
-
-        agent_error = AgentErrorEvent(
-            error="A restart occurred while this tool was in progress.",
-            tool_name="terminal",
-            tool_call_id="call_1",
-        )
-
-        late_observation = create_autospec(ObservationEvent, instance=True)
-        late_observation.tool_call_id = "call_1"
-        late_observation.id = "obs_late"
-
-        events: list[LLMConvertibleEvent] = [action, agent_error, late_observation]
-
-        result = self.property.enforce(events, events)
-
-        # The action and the first observation-like event (AgentErrorEvent)
-        # are kept; the duplicate ObservationEvent must be dropped.
-        assert result == {late_observation.id}
-
     def test_mixed_observation_types(self) -> None:
         """Test filtering with mixed observation types."""
         # ActionEvents

@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from logging import getLogger
 
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.base import ViewPropertyBase
@@ -11,9 +10,6 @@ from openhands.sdk.event import (
     ObservationBaseEvent,
     ToolCallID,
 )
-
-
-logger = getLogger(__name__)
 
 
 class ToolCallMatchingProperty(ViewPropertyBase):
@@ -49,9 +45,7 @@ class ToolCallMatchingProperty(ViewPropertyBase):
         # If an action event has a tool call ID that doesn't appear in any observation,
         # we need to remove it. Likewise, if an observation has a tool call ID that is
         # not in any action event, we need to remove it.
-        # Also drop duplicate observation-like events for the same tool_call_id.
         events_to_remove: set[EventID] = set()
-        seen_observation_ids: set[ToolCallID] = set()
 
         for event in current_view_events:
             match event:
@@ -61,10 +55,6 @@ class ToolCallMatchingProperty(ViewPropertyBase):
                 case ObservationBaseEvent():
                     if event.tool_call_id not in action_tool_call_ids:
                         events_to_remove.add(event.id)
-                    elif event.tool_call_id in seen_observation_ids:
-                        events_to_remove.add(event.id)
-                    else:
-                        seen_observation_ids.add(event.tool_call_id)
 
         return events_to_remove
 
@@ -94,14 +84,13 @@ class ToolCallMatchingProperty(ViewPropertyBase):
                 case ActionEvent():
                     pending_tool_call_ids.add(event.tool_call_id)
                 case ObservationBaseEvent():
-                    # discard (not remove) so a duplicate slipping past enforce()
-                    # logs a warning instead of crashing condensation.
-                    if event.tool_call_id not in pending_tool_call_ids:
-                        logger.warning(
-                            "Duplicate observation-like event for tool_call_id=%s",
-                            event.tool_call_id,
-                        )
-                    pending_tool_call_ids.discard(event.tool_call_id)
+                    # Intentionally use remove(), not discard(): a second
+                    # observation-like event for the same tool_call_id means the
+                    # view has already violated the 1 action -> 1 result
+                    # invariant that downstream LLM APIs expect. That case must
+                    # be fixed by de-duplicating the view before serialization,
+                    # not by silently tolerating it here.
+                    pending_tool_call_ids.remove(event.tool_call_id)
 
             if pending_tool_call_ids:
                 # The enumeration index corresponds to the position of the event, but we
