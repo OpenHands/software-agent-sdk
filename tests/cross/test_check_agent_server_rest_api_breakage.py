@@ -419,6 +419,8 @@ def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsy
 def test_main_allows_scheduled_property_removal_with_documented_target(
     monkeypatch, capsys
 ):
+    # Use a property path that doesn't match the optional request allowlist
+    # (i.e., not starting with agent/ or workspace/)
     prev_schema = _schema_with_property(
         "old_field",
         {
@@ -450,7 +452,8 @@ def test_main_allows_scheduled_property_removal_with_documented_target(
                 {
                     "id": "response-property-removed",
                     "details": {},
-                    "text": "removed the optional property `agent/llm/old_field`",
+                    # Use a path that won't match optional request allowlist
+                    "text": "removed the optional property `response/data/old_field`",
                 }
             ],
             1,
@@ -546,7 +549,7 @@ def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, 
     assert "other than removing previously-deprecated operations" in captured.out
 
 
-def test_split_breaking_changes_separates_three_buckets():
+def test_split_breaking_changes_separates_five_buckets():
     changes = [
         {
             "id": "removed-operation",
@@ -571,7 +574,12 @@ def test_split_breaking_changes_separates_three_buckets():
         {
             "id": "response-property-removed",
             "details": {},
-            "text": "removed the optional property `agent/llm/old_field`",
+            "text": "removed the request property `agent/some_field`",
+        },
+        {
+            "id": "request-property-type-changed",
+            "details": {},
+            "text": "the `agent` request property type/format changed from `object` to ``",
         },
         {
             "id": "response-body-changed",
@@ -579,18 +587,20 @@ def test_split_breaking_changes_separates_three_buckets():
             "text": "response body changed",
         },
     ]
-    removed, removed_properties, additive_oneof, other = _prod._split_breaking_changes(
-        changes
+    removed, removed_properties, additive_oneof, optional_request, other = (
+        _prod._split_breaking_changes(changes)
     )
     assert len(removed) == 1
     assert removed[0]["path"] == "/foo"
-    assert len(removed_properties) == 1
-    assert removed_properties[0]["id"] == "response-property-removed"
+    # The "removed the request property `agent/" is matched by optional request pattern
+    assert len(removed_properties) == 0
     assert {change["id"] for change in additive_oneof} == {
         "response-property-one-of-added",
         "response-body-one-of-added",
         "response-body-any-of-added",
     }
+    # Both agent property changes should be in optional_request bucket
+    assert len(optional_request) == 2
     assert len(other) == 1
     assert other[0]["id"] == "response-body-changed"
 

@@ -552,8 +552,9 @@ _OPTIONAL_REQUEST_PROPERTY_PATTERNS = (
     "removed the request property `workspace/",
     # LLM safety_settings removal (deprecated upstream)
     "removed the request property `llm/safety_settings`",
-    # Response schema changes due to optional fields
-    "removed the optional property",
+    # Optional nested properties under agent that show up differently
+    "removed the optional property `agent/",
+    "removed the optional property `workspace/",
 )
 
 
