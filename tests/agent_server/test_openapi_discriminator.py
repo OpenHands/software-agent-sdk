@@ -166,6 +166,18 @@ def test_action_variants_have_proper_schemas(client):
         )
 
 
+def _extract_ref(schema: dict) -> str | None:
+    """Extract $ref from a schema, handling direct refs and anyOf/oneOf wrappers."""
+    if "$ref" in schema:
+        return schema["$ref"]
+    # Handle anyOf where one option is the ref and another is null
+    if "anyOf" in schema:
+        for variant in schema["anyOf"]:
+            if "$ref" in variant:
+                return variant["$ref"]
+    return None
+
+
 def test_conversation_contracts_keep_v1_stable_and_add_acp_routes(client):
     """v1 conversations stay Agent-only while ACP endpoints expose polymorphism."""
     response = client.get("/openapi.json")
@@ -175,26 +187,28 @@ def test_conversation_contracts_keep_v1_stable_and_add_acp_routes(client):
     schemas = openapi_schema["components"]["schemas"]
 
     v1_request = schemas["StartConversationRequest"]
-    assert (
-        v1_request["properties"]["agent"]["$ref"] == "#/components/schemas/Agent-Input"
-    )
+    # Agent may be optional (anyOf with null) but should reference Agent-Input
+    agent_ref = _extract_ref(v1_request["properties"]["agent"])
+    assert agent_ref == "#/components/schemas/Agent-Input"
+
     v1_response = schemas["ConversationInfo"]
-    assert (
-        v1_response["properties"]["agent"]["$ref"]
-        == "#/components/schemas/Agent-Output"
-    )
+    # Response agent may also be optional
+    response_agent_ref = _extract_ref(v1_response["properties"]["agent"])
+    assert response_agent_ref == "#/components/schemas/Agent-Output"
 
     acp_request = schemas["StartACPConversationRequest"]
     agent_schema = acp_request["properties"]["agent"]
     assert "oneOf" in agent_schema
-    refs = {variant["$ref"] for variant in agent_schema["oneOf"]}
+    refs = {variant["$ref"] for variant in agent_schema["oneOf"] if "$ref" in variant}
     assert "#/components/schemas/Agent-Input" in refs
     assert "#/components/schemas/ACPAgent-Input" in refs
 
     acp_response = schemas["ACPConversationInfo"]
     acp_agent_schema = acp_response["properties"]["agent"]
     assert "oneOf" in acp_agent_schema
-    acp_refs = {variant["$ref"] for variant in acp_agent_schema["oneOf"]}
+    acp_refs = {
+        variant["$ref"] for variant in acp_agent_schema["oneOf"] if "$ref" in variant
+    }
     assert "#/components/schemas/Agent-Output" in acp_refs
     assert "#/components/schemas/ACPAgent-Output" in acp_refs
 
