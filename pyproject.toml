@@ -5,6 +5,11 @@ members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands
 # Security: Apply workspace-wide dependency guardrails.
 [tool.uv]
 exclude-newer = "7 days"  # Avoid packages uploaded in the last 7 days.
+# litellm 1.83.7 pins python-dotenv==1.0.1 exactly, conflicting with fastmcp>=3.0.0 which requires >=1.1.0.
+# Override so uv resolves to a version fastmcp accepts; python-dotenv 1.x is backward-compatible.
+override-dependencies = [
+    "python-dotenv>=1.1.0",
+]
 constraint-dependencies = [
     "starlette>=0.49.1",  # CVE-2025-62727
     "aiohttp>=3.13.3",  # CVE-2025-69223 + 7 others
