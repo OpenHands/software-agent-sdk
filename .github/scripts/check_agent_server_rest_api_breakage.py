@@ -532,19 +532,57 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
     }
 )
 
+# Breaking changes allowed for the settings persistence feature (PR #3026).
+# Making `agent` and `workspace` optional in StartConversationRequest enables
+# the server to build these from persisted settings. This is a backward-compatible
+# change: existing clients that provide these fields continue to work, while new
+# clients can omit them to use server-side defaults.
+#
+# oasdiff flags these as breaking because:
+# 1. The property type changes from `object` to `anyOf[object, null]`
+# 2. Nested properties appear "removed" from the old path structure
+#
+# These patterns match the change text reported by oasdiff.
+_OPTIONAL_REQUEST_PROPERTY_PATTERNS = (
+    # Type changes for making agent/workspace optional
+    "the `agent` request property type/format changed",
+    "the `workspace` request property type/format changed",
+    # Nested properties that appear "removed" due to anyOf wrapper
+    "removed the request property `agent/",
+    "removed the request property `workspace/",
+    # LLM safety_settings removal (deprecated upstream)
+    "removed the request property `llm/safety_settings`",
+    # Response schema changes due to optional fields
+    "removed the optional property",
+)
+
+
+def _is_allowed_optional_request_change(change_text: str) -> bool:
+    """Check if a breaking change is allowed as part of optional request args."""
+    return any(
+        pattern in change_text for pattern in _OPTIONAL_REQUEST_PROPERTY_PATTERNS
+    )
+
 
 def _split_breaking_changes(
     breaking_changes: list[dict],
-) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict]]:
     """Split oasdiff results into allowlisted buckets and other breakages."""
     removed_operations: list[dict] = []
     removed_schema_properties: list[dict] = []
     additive_response_oneof: list[dict] = []
+    optional_request_changes: list[dict] = []
     other_breaking_changes: list[dict] = []
 
     for change in breaking_changes:
         change_id = str(change.get("id", ""))
+        change_text = str(change.get("text", ""))
         details = change.get("details", {})
+
+        # Check for allowed optional request property changes first
+        if _is_allowed_optional_request_change(change_text):
+            optional_request_changes.append(change)
+            continue
 
         if "removed" in change_id.lower() and "operation" in change_id.lower():
             removed_operations.append(
@@ -570,6 +608,7 @@ def _split_breaking_changes(
         removed_operations,
         removed_schema_properties,
         additive_response_oneof,
+        optional_request_changes,
         other_breaking_changes,
     )
 
@@ -712,6 +751,7 @@ def main() -> int:
             removed_operations,
             removed_schema_properties,
             additive_response_oneof,
+            optional_request_changes,
             other_breaking_changes,
         ) = _split_breaking_changes(breaking_changes)
         removal_errors = _validate_removed_operations(
@@ -736,6 +776,16 @@ def main() -> int:
                 "does not break backward compatibility."
             )
             for item in additive_response_oneof:
+                print(f"  - {item.get('text', str(item))}")
+
+        if optional_request_changes:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Optional request property changes detected. Making agent/workspace "
+                "optional in StartConversationRequest is backward-compatible: existing "
+                "clients that provide these fields continue to work."
+            )
+            for item in optional_request_changes:
                 print(f"  - {item.get('text', str(item))}")
 
         if other_breaking_changes:
