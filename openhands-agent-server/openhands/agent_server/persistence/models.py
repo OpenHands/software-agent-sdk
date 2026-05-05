@@ -92,9 +92,10 @@ class PersistedSettings(BaseModel):
         Note:
             Secret values are temporarily exposed in memory during the merge
             operation. The merged dict is immediately consumed by model
-            construction and not persisted or logged. Any exceptions raised
-            during merge will not expose secrets in stack traces because
-            Pydantic re-wraps values in SecretStr before validation errors.
+            construction and not persisted or logged.
+
+        Raises:
+            ValueError: If validation fails (sanitized to avoid secret leakage).
         """
         agent_update = payload.get("agent_settings_diff")
         if isinstance(agent_update, dict):
@@ -105,7 +106,14 @@ class PersistedSettings(BaseModel):
                 agent_update,
             )
             # Use from_persisted to handle potential schema migrations
-            self.agent_settings = AgentSettings.from_persisted(merged)
+            # Wrap in try-catch to prevent secrets from leaking in tracebacks
+            try:
+                self.agent_settings = AgentSettings.from_persisted(merged)
+            except Exception as e:
+                # Re-raise with sanitized message to avoid exposing secrets
+                raise ValueError(
+                    f"Failed to update agent settings: {type(e).__name__}"
+                ) from None
 
         conv_update = payload.get("conversation_settings_diff")
         if isinstance(conv_update, dict):
@@ -114,7 +122,12 @@ class PersistedSettings(BaseModel):
                 conv_update,
             )
             # Use from_persisted to handle potential schema migrations
-            self.conversation_settings = ConversationSettings.from_persisted(merged)
+            try:
+                self.conversation_settings = ConversationSettings.from_persisted(merged)
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to update conversation settings: {type(e).__name__}"
+                ) from None
 
     @field_serializer("agent_settings")
     def agent_settings_serializer(

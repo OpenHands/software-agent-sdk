@@ -482,7 +482,12 @@ class ConversationService:
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
         # cipher in the validation context so validate_secret() can decrypt them.
-        if request.secrets_encrypted and self.cipher is not None:
+        if request.secrets_encrypted:
+            if self.cipher is None:
+                raise ValueError(
+                    "Cannot decrypt secrets: cipher not configured. "
+                    "Set OH_SECRET_KEY environment variable."
+                )
             stored = StoredConversation.model_validate(
                 {"id": conversation_id, **request_data},
                 context={"cipher": self.cipher},

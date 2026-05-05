@@ -166,8 +166,13 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 100)
         else:
-            # Fallback: no locking (shouldn't happen)
-            yield
+            # This should never happen on standard systems (Unix or Windows)
+            # Raise an error rather than silently proceeding without locking,
+            # which could cause data corruption from concurrent writes
+            raise RuntimeError(
+                "File locking not available on this platform. "
+                "Concurrent writes may cause data corruption."
+            )
     finally:
         os.close(fd)
 
@@ -335,6 +340,11 @@ class FileSettingsStore(SettingsStore):
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
+
+        Warning:
+            This method does NOT acquire a file lock. For concurrent-safe
+            updates, use :meth:`update` which wraps save() with file locking.
+            Direct calls to save() from multiple processes may cause lost updates.
 
         Warning:
             If no cipher is provided, secrets are stored in plaintext.

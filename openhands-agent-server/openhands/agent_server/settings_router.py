@@ -284,6 +284,13 @@ async def list_secrets(request: Request) -> SecretsResponse:
     store = get_secrets_store(config)
     secrets = store.load()
 
+    client_host = request.client.host if request.client else "unknown"
+    secret_count = len(secrets.custom_secrets) if secrets else 0
+    logger.info(
+        "Secrets list accessed",
+        extra={"client_host": client_host, "secret_count": secret_count},
+    )
+
     if secrets is None:
         return SecretsResponse(secrets=[])
 
@@ -311,16 +318,19 @@ async def get_secret_value(request: Request, name: str) -> Response:
     store = get_secrets_store(config)
     value = store.get_secret(name)
 
+    client_host = request.client.host if request.client else "unknown"
     if value is None:
+        # Log failed access attempts to detect enumeration attacks
+        logger.warning(
+            "Secret access failed - not found",
+            extra={"secret_name": name, "client_host": client_host},
+        )
         # Use generic message to prevent secret name enumeration attacks
         raise HTTPException(status_code=404, detail="Secret not found")
 
     logger.info(
         "Secret accessed",
-        extra={
-            "secret_name": name,
-            "client_host": request.client.host if request.client else "unknown",
-        },
+        extra={"secret_name": name, "client_host": client_host},
     )
     return Response(content=value, media_type="text/plain")
 
@@ -371,16 +381,19 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     config = _get_config(request)
     store = get_secrets_store(config)
 
+    client_host = request.client.host if request.client else "unknown"
     deleted = store.delete_secret(name)
     if not deleted:
+        # Log failed deletion attempts to detect enumeration attacks
+        logger.warning(
+            "Secret deletion failed - not found",
+            extra={"secret_name": name, "client_host": client_host},
+        )
         # Use generic message to prevent secret name enumeration attacks
         raise HTTPException(status_code=404, detail="Secret not found")
 
     logger.info(
         "Secret deleted",
-        extra={
-            "secret_name": name,
-            "client_host": request.client.host if request.client else "unknown",
-        },
+        extra={"secret_name": name, "client_host": client_host},
     )
     return {"deleted": True}

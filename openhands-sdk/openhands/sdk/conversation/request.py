@@ -108,7 +108,10 @@ class _StartConversationRequestBase(BaseModel):
             "are cipher-encrypted and should be decrypted by the server before "
             "use. This enables secure round-tripping of settings through "
             "untrusted clients (e.g., frontend) that received encrypted values "
-            "via X-Expose-Secrets: encrypted header."
+            "via the X-Expose-Secrets header. "
+            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
+            "to receive cipher-encrypted secrets, then passes them in the agent "
+            "config with secrets_encrypted=True so the server can decrypt them."
         ),
     )
     tool_module_qualnames: dict[str, str] = Field(

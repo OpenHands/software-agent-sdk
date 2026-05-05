@@ -1,3 +1,4 @@
+import logging
 from typing import Literal
 
 from pydantic import SecretStr
@@ -9,6 +10,8 @@ REDACTED_SECRET_VALUE = "**********"
 
 # Type for expose_secrets context value
 ExposeSecretsMode = Literal["encrypted", "plaintext"] | bool
+
+_logger = logging.getLogger(__name__)
 
 
 def is_redacted_secret(v: str | SecretStr | None) -> bool:
@@ -49,6 +52,11 @@ def serialize_secret(v: SecretStr | None, info):
         if cipher:
             return cipher.encrypt(v)
         # No cipher available - fall back to redaction for safety
+        # Log warning to surface potential configuration issues
+        _logger.warning(
+            "Requested encrypted mode but no cipher available, "
+            "falling back to redaction. Configure OH_SECRET_KEY."
+        )
         return REDACTED_SECRET_VALUE
 
     if expose_mode == "plaintext" or expose_mode is True:
