@@ -637,7 +637,6 @@ def _split_breaking_changes(
 
     for change in breaking_changes:
         change_id = str(change.get("id", ""))
-        change_text = str(change.get("text", ""))
         details = change.get("details", {})
 
         # Check for allowed optional request property changes first

@@ -13,7 +13,6 @@ import os
 import stat
 import sys
 import threading
-import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -106,7 +105,7 @@ def _validate_filename(filename: str) -> None:
     if filename.endswith(".") or filename.endswith(" "):
         raise ValueError("filename must not end with '.' or space")
 
-    # Check for Windows reserved names (use split instead of rsplit for multi-extension files)
+    # Check for Windows reserved names (split handles multi-extension files)
     # e.g., "CON.txt.json" -> "CON" not "CON.txt"
     basename = filename.split(".")[0].upper()
     if basename in _WINDOWS_RESERVED_NAMES:

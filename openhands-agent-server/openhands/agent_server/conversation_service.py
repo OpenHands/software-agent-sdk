@@ -198,7 +198,7 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
 # Multiple patterns for different formats Pydantic may use.
 _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Pattern: field': 'value' or field": "value"
-    # Group 1 captures the field name, group 2 captures the value (not used in replacement)
+    # Group 1 = field name, group 2 = value (unused in replacement)
     (
         re.compile(
             r"(api_key|secret|token|password|credential|key|auth)"
@@ -208,7 +208,7 @@ _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         r"\1=***REDACTED***",
     ),
     # Pattern: field=value (no quotes)
-    # Group 1 captures the field name, group 2 captures the value (not used in replacement)
+    # Group 1 = field name, group 2 = value (unused in replacement)
     (
         re.compile(
             r"(api_key|secret|token|password|credential|key|auth)"
