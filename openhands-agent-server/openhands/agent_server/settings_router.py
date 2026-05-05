@@ -212,8 +212,12 @@ async def get_settings(request: Request) -> SettingsResponse:
 
     try:
         return SettingsResponse(
-            agent_settings=settings.agent_settings.model_dump(mode="json", context=context),
-            conversation_settings=settings.conversation_settings.model_dump(mode="json"),
+            agent_settings=settings.agent_settings.model_dump(
+                mode="json", context=context
+            ),
+            conversation_settings=settings.conversation_settings.model_dump(
+                mode="json"
+            ),
             llm_api_key_is_set=settings.llm_api_key_is_set,
         )
     except Exception as e:

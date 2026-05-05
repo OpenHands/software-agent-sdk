@@ -364,7 +364,9 @@ def _coerce_dict_secrets(d: dict[str, Any]) -> dict[str, Any]:
             try:
                 out[k] = v.get_secret_value()
             except Exception:
-                _logger.warning(f"Failed to extract secret value for key '{k}' - skipping")
+                _logger.warning(
+                    f"Failed to extract secret value for key '{k}' - skipping"
+                )
                 out[k] = None
         else:
             out[k] = v

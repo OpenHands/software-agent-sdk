@@ -458,7 +458,6 @@ def test_concurrent_patch_updates_preserve_data(client_with_settings):
     Tests that multiple sequential PATCH requests don't corrupt settings
     or lose updates due to race conditions in the file locking mechanism.
     """
-    import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     # Initialize settings
@@ -483,9 +482,7 @@ def test_concurrent_patch_updates_preserve_data(client_with_settings):
 
     # Run concurrent updates
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(update_settings, f"model-{i}") for i in range(10)
-        ]
+        futures = [executor.submit(update_settings, f"model-{i}") for i in range(10)]
         for future in as_completed(futures):
             result = future.result()
             results.append(result)
