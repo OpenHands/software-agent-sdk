@@ -133,24 +133,30 @@ async def get_settings(
     conversation settings, and whether an LLM API key is configured.
 
     Args:
-        expose_secrets: DEPRECATED - use X-Expose-Secrets header instead.
-            If True, return actual secret values instead of masked
-            placeholders. Default: False (secrets are masked as "**********").
+        expose_secrets: REJECTED - use X-Expose-Secrets header instead.
+            Query parameters appear in URLs which are logged by proxies,
+            stored in browser history, and cached by intermediate systems.
+            Use the ``X-Expose-Secrets: true`` header for secure secret exposure.
 
     Note:
-        **Security**: Prefer using the ``X-Expose-Secrets: true`` header
-        instead of the query parameter. Query parameters appear in URLs
-        which may be logged by proxies, stored in browser history, and
-        cached by intermediate systems. The header-based approach avoids
-        these security concerns.
+        **Security**: The ``X-Expose-Secrets: true`` header is the only
+        supported method for exposing secrets. Query parameter usage is
+        rejected to prevent secrets from appearing in access logs.
     """
-    # Check header first (preferred), then fall back to query param (deprecated)
+    # Check header for expose_secrets (the only supported method)
     expose_via_header = request.headers.get("X-Expose-Secrets", "").lower() == "true"
-    should_expose = expose_via_header or expose_secrets
+
+    # Reject deprecated query parameter for security - URLs are logged by proxies
     if expose_secrets and not expose_via_header:
-        logger.warning(
-            "expose_secrets query param is deprecated - use X-Expose-Secrets header"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Query parameter 'expose_secrets' is rejected for security reasons. "
+                "Use header 'X-Expose-Secrets: true' instead."
+            ),
         )
+
+    should_expose = expose_via_header
 
     config = _get_config(request)
     store = get_settings_store(config)
@@ -211,10 +217,10 @@ async def update_settings(
         settings.update(cast(SettingsUpdatePayload, update_data))
         return settings
 
+    client_host = request.client.host if request.client else "unknown"
     try:
         settings = store.update(apply_update)
         # Audit log: settings modified
-        client_host = request.client.host if request.client else "unknown"
         logger.info(
             "Settings updated",
             extra={
@@ -226,6 +232,11 @@ async def update_settings(
             },
         )
     except ValidationError as e:
+        # Audit log: validation failed
+        logger.warning(
+            "Settings update validation failed",
+            extra={"client_host": client_host},
+        )
         # 422 Unprocessable Entity - semantic validation failure
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -285,7 +296,8 @@ async def get_secret_value(request: Request, name: str) -> Response:
     value = store.get_secret(name)
 
     if value is None:
-        raise HTTPException(status_code=404, detail=f"Secret '{name}' not found")
+        # Use generic message to prevent secret name enumeration attacks
+        raise HTTPException(status_code=404, detail="Secret not found")
 
     logger.info(
         "Secret accessed",
@@ -345,7 +357,8 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
 
     deleted = store.delete_secret(name)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Secret '{name}' not found")
+        # Use generic message to prevent secret name enumeration attacks
+        raise HTTPException(status_code=404, detail="Secret not found")
 
     logger.info(
         "Secret deleted",

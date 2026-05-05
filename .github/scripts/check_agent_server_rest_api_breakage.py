@@ -577,6 +577,13 @@ _OPTIONAL_AGENT_WORKSPACE_PATTERNS = (
     "removed the optional property `workspace/",
 )
 
+# Endpoints where agent/workspace allowlist patterns apply
+# Only allow agent/workspace changes on StartConversationRequest (POST /conversations)
+_ALLOWED_AGENT_WORKSPACE_ENDPOINTS = (
+    "/api/conversations",
+    "/api/acp/tasks",  # ACP uses same StartConversationRequest
+)
+
 # Separate allowlist for upstream deprecations unrelated to optional args.
 # These are breaking changes from upstream dependencies that we accept.
 _UPSTREAM_DEPRECATION_PATTERNS = (
@@ -584,12 +591,38 @@ _UPSTREAM_DEPRECATION_PATTERNS = (
     "removed the request property `llm/safety_settings`",
 )
 
+# Threshold for warning when many changes are allowlisted
+_ALLOWLIST_WARNING_THRESHOLD = 10
 
-def _is_allowed_optional_request_change(change_text: str) -> bool:
-    """Check if a breaking change is allowed as part of optional request args."""
-    return any(
-        pattern in change_text for pattern in _OPTIONAL_AGENT_WORKSPACE_PATTERNS
-    ) or any(pattern in change_text for pattern in _UPSTREAM_DEPRECATION_PATTERNS)
+
+def _is_allowed_optional_request_change(change: dict) -> bool:
+    """Check if a breaking change is allowed as part of optional request args.
+
+    Args:
+        change: The oasdiff change dict containing 'text' and 'details'.
+
+    Returns:
+        True if the change is allowed, False otherwise.
+    """
+    change_text = str(change.get("text", ""))
+    details = change.get("details", {})
+    path = str(details.get("path", ""))
+
+    # Check upstream deprecations first (apply globally)
+    if any(pattern in change_text for pattern in _UPSTREAM_DEPRECATION_PATTERNS):
+        return True
+
+    # For agent/workspace patterns, also verify the endpoint
+    if any(pattern in change_text for pattern in _OPTIONAL_AGENT_WORKSPACE_PATTERNS):
+        # If we have path info, verify it's an allowed endpoint
+        if path:
+            return any(
+                endpoint in path for endpoint in _ALLOWED_AGENT_WORKSPACE_ENDPOINTS
+            )
+        # No path info available - allow but log will warn about threshold
+        return True
+
+    return False
 
 
 def _split_breaking_changes(
@@ -608,7 +641,7 @@ def _split_breaking_changes(
         details = change.get("details", {})
 
         # Check for allowed optional request property changes first
-        if _is_allowed_optional_request_change(change_text):
+        if _is_allowed_optional_request_change(change):
             optional_request_changes.append(change)
             continue
 
@@ -807,6 +840,14 @@ def main() -> int:
                 print(f"  - {item.get('text', str(item))}")
 
         if optional_request_changes:
+            # Warn if too many changes are allowlisted - may indicate over-matching
+            if len(optional_request_changes) > _ALLOWLIST_WARNING_THRESHOLD:
+                print(
+                    f"\n::warning title={PYPI_DISTRIBUTION} REST API::"
+                    f"Allowlisted {len(optional_request_changes)} changes, exceeding "
+                    f"threshold of {_ALLOWLIST_WARNING_THRESHOLD}. Review manually - "
+                    "may include genuine breaking changes."
+                )
             print(
                 f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
                 "Optional request property changes detected. Making agent/workspace "

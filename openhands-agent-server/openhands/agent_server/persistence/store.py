@@ -86,6 +86,10 @@ def _validate_filename(filename: str) -> None:
     Raises:
         ValueError: If filename is invalid or potentially dangerous.
     """
+    # Check for empty filename (would resolve to parent directory)
+    if not filename:
+        raise ValueError("filename must not be empty")
+
     # Check for path separators
     if "/" in filename or "\\" in filename:
         raise ValueError("filename must not contain path separators")
@@ -102,8 +106,9 @@ def _validate_filename(filename: str) -> None:
     if filename.endswith(".") or filename.endswith(" "):
         raise ValueError("filename must not end with '.' or space")
 
-    # Check for Windows reserved names
-    basename = filename.rsplit(".", 1)[0].upper()
+    # Check for Windows reserved names (use split instead of rsplit for multi-extension files)
+    # e.g., "CON.txt.json" -> "CON" not "CON.txt"
+    basename = filename.split(".")[0].upper()
     if basename in _WINDOWS_RESERVED_NAMES:
         raise ValueError(f"filename '{filename}' uses a reserved name")
 
@@ -141,8 +146,8 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
     """
     _ensure_secure_directory(lock_path.parent)
 
-    # Create lock file with secure permissions from the start
-    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, _FILE_MODE)
+    # Create lock file - use O_RDWR for Windows compatibility with msvcrt
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, _FILE_MODE)
     try:
         if fcntl is not None:
             # Unix: use fcntl for file locking
@@ -153,12 +158,14 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         elif msvcrt is not None:
             # Windows: use msvcrt for file locking
-            # Lock the first byte (enough to prevent concurrent access)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            # Lock multiple bytes for more reliable locking behavior
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 100)
             try:
                 yield
             finally:
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 100)
         else:
             # Fallback: no locking (shouldn't happen)
             yield
@@ -180,13 +187,15 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         concurrent access, network drives), but provides reasonable
         protection against corruption from interrupted writes.
     """
-    # Use PID and time for unique temp filename to prevent collisions
-    # when multiple processes write to the same file concurrently
-    unique_suffix = f".tmp.{os.getpid()}.{int(time.time() * 1000000)}"
+    import uuid
+
+    # Use PID, time, and uuid for unique temp filename to prevent collisions
+    # when multiple processes/threads write to the same file concurrently
+    unique_suffix = f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
     tmp_path = path.with_suffix(unique_suffix)
     # Create file with secure permissions from the start using os.open
-    # O_WRONLY | O_CREAT | O_TRUNC mimics "w" mode
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+    # O_EXCL ensures exclusive creation (fails if file exists)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE)
     fdopen_succeeded = False
     try:
         f = os.fdopen(fd, "w", encoding="utf-8")
@@ -385,6 +394,12 @@ class FileSecretsStore(SecretsStore):
         - Directory created with owner-only permissions (0o700)
         - Atomic writes to prevent corruption
         - File locking to prevent race conditions
+
+    Note:
+        On Windows, the 0o600 file permissions are not enforced by the
+        filesystem. If storing secrets without encryption (cipher=None),
+        they may be readable by other local users. Configure OH_SECRET_KEY
+        to enable encryption for secure storage on all platforms.
     """
 
     def __init__(
@@ -400,6 +415,14 @@ class FileSecretsStore(SecretsStore):
         self.filename = filename
         self._path = self.persistence_dir / filename
         self._lock_path = self.persistence_dir / ".secrets.lock"
+
+        # Warn about Windows security limitations when no encryption
+        if sys.platform == "win32" and not cipher:
+            logger.warning(
+                "Storing secrets without encryption on Windows. "
+                "File permissions are not enforced. Configure OH_SECRET_KEY "
+                "for secure storage."
+            )
 
     def load(self) -> Secrets | None:
         """Load secrets from file.

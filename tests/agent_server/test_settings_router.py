@@ -200,7 +200,8 @@ class TestSecretsCRUD:
             headers=AUTH_HEADER,
             json={"name": "123_INVALID", "value": "value"},
         )
-        assert response.status_code == 400
+        # 422 Unprocessable Entity - semantic validation error
+        assert response.status_code == 422
 
         # Name with invalid characters
         response = auth_client.put(
@@ -208,4 +209,4 @@ class TestSecretsCRUD:
             headers=AUTH_HEADER,
             json={"name": "INVALID-NAME", "value": "value"},
         )
-        assert response.status_code == 400
+        assert response.status_code == 422

@@ -193,25 +193,38 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-# Patterns to match sensitive field values in error messages
-# Multiple patterns for different formats Pydantic may use
-_SENSITIVE_PATTERNS = [
+# Patterns to match sensitive field values in error messages.
+# Each tuple contains (pattern, replacement).
+# Multiple patterns for different formats Pydantic may use.
+_SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Pattern: field': 'value' or field": "value"
-    re.compile(
-        r"(api_key|secret|token|password|credential|key|auth)"
-        r"['\"]?\s*[:=]\s*['\"]([^'\"}\s,]+)['\"]",
-        re.IGNORECASE,
+    # Group 1 captures the field name, group 2 captures the value (not used in replacement)
+    (
+        re.compile(
+            r"(api_key|secret|token|password|credential|key|auth)"
+            r"['\"]?\s*[:=]\s*['\"]([^'\"}\s,]+)['\"]",
+            re.IGNORECASE,
+        ),
+        r"\1=***REDACTED***",
     ),
     # Pattern: field=value (no quotes)
-    re.compile(
-        r"(api_key|secret|token|password|credential|key|auth)"
-        r"\s*=\s*([^\s,}\]]+)",
-        re.IGNORECASE,
+    # Group 1 captures the field name, group 2 captures the value (not used in replacement)
+    (
+        re.compile(
+            r"(api_key|secret|token|password|credential|key|auth)"
+            r"\s*=\s*([^\s,}\]]+)",
+            re.IGNORECASE,
+        ),
+        r"\1=***REDACTED***",
     ),
     # Pattern: 'value' for Field(secret=True) - Pydantic shows just the value
-    re.compile(
-        r"Input should be [^']+'([^']+)'",
-        re.IGNORECASE,
+    # No capturing group for the secret value - replace the entire match
+    (
+        re.compile(
+            r"Input should be [^']+'[^']+'",
+            re.IGNORECASE,
+        ),
+        "Input should be ***REDACTED***",
     ),
 ]
 
@@ -229,8 +242,8 @@ def _sanitize_validation_error(error: ValidationError) -> str:
     """
     error_str = str(error)
     sanitized = error_str
-    for pattern in _SENSITIVE_PATTERNS:
-        sanitized = pattern.sub(r"\1=***REDACTED***", sanitized)
+    for pattern, replacement in _SENSITIVE_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
     return sanitized
 
 
@@ -285,7 +298,12 @@ def _merge_request_with_persisted_settings(
             condenser = agent_dict["condenser"]
             if "llm" in condenser and isinstance(condenser["llm"], dict):
                 condenser_llm = condenser["llm"]
-                agent_llm_id = agent_dict.get("llm", {}).get("usage_id", "default")
+                # Safely access nested llm.usage_id (handle None or non-dict cases)
+                llm = agent_dict.get("llm", {})
+                if isinstance(llm, dict):
+                    agent_llm_id = llm.get("usage_id", "default")
+                else:
+                    agent_llm_id = "default"
                 if condenser_llm.get("usage_id") == agent_llm_id:
                     condenser_llm["usage_id"] = f"{agent_llm_id}_condenser"
         result["agent"] = agent_dict

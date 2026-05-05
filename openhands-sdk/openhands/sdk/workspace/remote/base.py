@@ -357,11 +357,19 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Validate response is a dict (server error may return null/list/string)
         if not isinstance(data, dict):
+            logger.warning(
+                f"Invalid secrets response from agent-server: "
+                f"expected dict, got {type(data).__name__}"
+            )
             return {}
 
         result: dict[str, LookupSecret] = {}
         secrets_list = data.get("secrets", [])
         if not isinstance(secrets_list, list):
+            logger.warning(
+                f"Invalid secrets list in response: "
+                f"expected list, got {type(secrets_list).__name__}"
+            )
             secrets_list = []
 
         for item in secrets_list:
