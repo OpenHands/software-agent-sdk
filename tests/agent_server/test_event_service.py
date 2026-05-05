@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import threading
 import time
 from datetime import UTC, datetime
@@ -1475,6 +1476,94 @@ class TestEventServiceStartWithRunningStatus:
                 if isinstance(call[0][0], AgentErrorEvent)
             ]
             assert len(error_event_calls) == 0
+
+    @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
+    @pytest.mark.asyncio
+    async def test_start_initializes_workspace_as_git_repo(
+        self, event_service, tmp_path
+    ):
+        """A fresh workspace dir should be `git init`-ed during start().
+
+        Without this, /api/git/changes 500s on non-repo workspaces and
+        agent-created files never appear in the Changes tab.
+        """
+        # Arrange
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = tmp_path / "fresh_workspace"
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(workspace_dir))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Act
+            await event_service.start()
+
+        # Assert
+        assert (workspace_dir / ".git").exists()
+
+    @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
+    @pytest.mark.asyncio
+    async def test_start_is_idempotent_for_already_initialized_repo(
+        self, event_service, tmp_path
+    ):
+        """Resuming a conversation on an existing repo must not re-init it.
+
+        Guards against accidental double-init that could clobber refs/HEAD
+        on a workspace the user already has commits in.
+        """
+        # Arrange — pre-initialize the workspace dir as a git repo and
+        # capture the .git directory's identity so we can detect re-init.
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = tmp_path / "existing_repo"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        from openhands.sdk.git.utils import run_git_command
+
+        run_git_command(["git", "init"], workspace_dir)
+        marker = workspace_dir / ".git" / "_idempotency_marker"
+        marker.write_text("preexisting")
+
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(workspace_dir))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Act
+            await event_service.start()
+
+        # Assert — repo still present and our marker survived (no re-init).
+        assert (workspace_dir / ".git").exists()
+        assert marker.exists()
+        assert marker.read_text() == "preexisting"
 
 
 class TestEventServiceConcurrentSubscriptions:
