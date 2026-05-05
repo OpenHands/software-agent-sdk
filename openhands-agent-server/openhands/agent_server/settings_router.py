@@ -221,7 +221,7 @@ async def get_settings(request: Request) -> SettingsResponse:
             llm_api_key_is_set=settings.llm_api_key_is_set,
         )
     except Exception as e:
-        # Handle ValueError from serialize_secret when cipher is missing for encrypted mode
+        # Handle ValueError from serialize_secret when cipher is missing
         if "no cipher configured" in str(e):
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
