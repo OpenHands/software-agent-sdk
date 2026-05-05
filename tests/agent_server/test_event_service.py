@@ -22,11 +22,17 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import Event
+from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalAction, TerminalObservation
 
 
 @pytest.fixture
@@ -1394,6 +1400,75 @@ class TestEventServiceStartWithRunningStatus:
             assert mock_state.execution_status == ConversationExecutionStatus.IDLE
 
             # Verify _on_event was NOT called with AgentErrorEvent
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_skips_error_event_when_observation_already_exists(
+        self, event_service, tmp_path
+    ):
+        """Don't synthesize AgentErrorEvent if the loaded state already carries an
+        ObservationBaseEvent for the unmatched action's tool_call_id.
+
+        Reproduces the gap get_unmatched_actions misses: an ObservationEvent that
+        matches by tool_call_id but not by action_id (e.g. action_id rewritten on
+        replay) — without this guard we'd emit a duplicate observation-like event.
+        """
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            unmatched_action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="run ls")],
+                action=TerminalAction(command="ls"),
+                tool_name="terminal",
+                tool_call_id="call_1",
+                tool_call=MessageToolCall(
+                    id="call_1",
+                    name="terminal",
+                    arguments='{"command": "ls"}',
+                    origin="completion",
+                ),
+                llm_response_id="response_1",
+            )
+            # Observation matches by tool_call_id but with a different action_id,
+            # so get_unmatched_actions still reports the action as unmatched.
+            stale_observation = ObservationEvent(
+                observation=TerminalObservation.from_text(
+                    "done", command="ls", exit_code=0
+                ),
+                action_id="some_other_action_id",
+                tool_name="terminal",
+                tool_call_id="call_1",
+            )
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [unmatched_action, stale_observation]
+            mock_state.stats = MagicMock()
+
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
             error_event_calls = [
                 call
                 for call in mock_conv._on_event.call_args_list

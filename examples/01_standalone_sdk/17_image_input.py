@@ -2,10 +2,17 @@
 
 This script mirrors the basic setup from ``examples/01_hello_world.py`` but adds
 vision support by sending an image to the agent alongside text instructions.
+
+It also demonstrates multi-image input with base64-encoded images that exercise
+the Anthropic many-image resizing path (>20 images are automatically downscaled
+to 2000×2000 px).
 """
 
+import base64
+import io
 import os
 
+from PIL import Image
 from pydantic import SecretStr
 
 from openhands.sdk import (
@@ -26,6 +33,16 @@ from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
+
+
+def _make_png_data_url(width: int, height: int, color: str = "red") -> str:
+    """Create a base64 PNG data URL with the given dimensions and colour."""
+    image = Image.new("RGB", (width, height), color=color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
 
 # Configure LLM (vision-capable model)
 api_key = os.getenv("LLM_API_KEY")
@@ -65,6 +82,7 @@ conversation = Conversation(
     agent=agent, callbacks=[conversation_callback], workspace=cwd
 )
 
+# ── Part 1: single URL image ──────────────────────────────────────────────
 IMAGE_URL = "https://github.com/OpenHands/docs/raw/main/openhands/static/img/logo.png"
 
 conversation.send_message(
@@ -85,6 +103,54 @@ conversation.run()
 
 conversation.send_message(
     "Great! Please save your description and caption into image_report.md."
+)
+conversation.run()
+
+# ── Part 2: many oversized base64 images (exercises Anthropic resize) ─────
+# Generate 21 base64 images at 2500×100 px — just above the 20-image threshold
+# that triggers Anthropic's many-image limit (2000×2000 px per image).
+# The SDK will automatically downscale these before sending to the provider.
+COLORS = [
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "cyan",
+    "magenta",
+    "orange",
+    "purple",
+    "pink",
+    "brown",
+    "gray",
+    "white",
+    "navy",
+    "teal",
+    "olive",
+    "maroon",
+    "lime",
+    "aqua",
+    "coral",
+    "gold",
+    "indigo",
+]
+oversized_data_urls = [
+    _make_png_data_url(2500, 100, color=COLORS[i % len(COLORS)]) for i in range(21)
+]
+
+conversation.send_message(
+    Message(
+        role="user",
+        content=[
+            TextContent(
+                text=(
+                    "I'm sending you 21 solid-colour test images. "
+                    "List the dominant colour of each image in order, "
+                    "one per line."
+                )
+            ),
+            ImageContent(image_urls=oversized_data_urls),
+        ],
+    )
 )
 conversation.run()
 
