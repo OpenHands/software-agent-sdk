@@ -111,202 +111,192 @@ class ManagedAPIServer:
             print("✅ Server stopped")
 
 
-def main():
-    """Demonstrate the Settings and Secrets API."""
-    with ManagedAPIServer(port=8765) as server:
-        client = httpx.Client(base_url=server.base_url, timeout=10.0)
+with ManagedAPIServer(port=8765) as server:
+    client = httpx.Client(base_url=server.base_url, timeout=10.0)
 
-        try:
-            # ══════════════════════════════════════════════════════════════
-            # 1. GET Settings
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("📋 Getting current settings")
-            logger.info("=" * 60)
+    try:
+        # ══════════════════════════════════════════════════════════════
+        # 1. GET Settings
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("📋 Getting current settings")
+        logger.info("=" * 60)
 
-            response = client.get("/api/settings")
-            assert response.status_code == 200, f"GET settings failed: {response.text}"
-            settings = response.json()
+        response = client.get("/api/settings")
+        assert response.status_code == 200, f"GET settings failed: {response.text}"
+        settings = response.json()
 
-            logger.info("✅ Settings retrieved successfully")
-            logger.info(f"   - LLM model: {settings['agent_settings']['llm']['model']}")
-            logger.info(f"   - LLM API key set: {settings['llm_api_key_is_set']}")
+        logger.info("✅ Settings retrieved successfully")
+        logger.info(f"   - LLM model: {settings['agent_settings']['llm']['model']}")
+        logger.info(f"   - LLM API key set: {settings['llm_api_key_is_set']}")
 
-            # ══════════════════════════════════════════════════════════════
-            # 2. PATCH Settings (update LLM model)
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🔧 Updating settings (changing LLM model)")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 2. PATCH Settings (update LLM model)
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🔧 Updating settings (changing LLM model)")
+        logger.info("=" * 60)
 
-            response = client.patch(
-                "/api/settings",
-                json={"agent_settings_diff": {"llm": {"model": "gpt-4o-mini"}}},
-            )
-            assert response.status_code == 200, (
-                f"PATCH settings failed: {response.text}"
-            )
-            updated = response.json()
+        response = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"model": "gpt-4o-mini"}}},
+        )
+        assert response.status_code == 200, f"PATCH settings failed: {response.text}"
+        updated = response.json()
 
-            logger.info("✅ Settings updated successfully")
-            logger.info(
-                f"   - New LLM model: {updated['agent_settings']['llm']['model']}"
-            )
+        logger.info("✅ Settings updated successfully")
+        logger.info(f"   - New LLM model: {updated['agent_settings']['llm']['model']}")
 
-            # ══════════════════════════════════════════════════════════════
-            # 3. Create Custom Secrets
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🔐 Creating custom secrets")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 3. Create Custom Secrets
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🔐 Creating custom secrets")
+        logger.info("=" * 60)
 
-            # Create first secret
-            response = client.put(
-                "/api/settings/secrets",
-                json={
-                    "name": "MY_API_KEY",
-                    "value": "sk-example-key-12345",
-                    "description": "Example API key for demonstration",
-                },
-            )
-            assert response.status_code == 200, f"Create secret failed: {response.text}"
-            logger.info("✅ Created secret: MY_API_KEY")
+        # Create first secret
+        response = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "MY_API_KEY",
+                "value": "sk-example-key-12345",
+                "description": "Example API key for demonstration",
+            },
+        )
+        assert response.status_code == 200, f"Create secret failed: {response.text}"
+        logger.info("✅ Created secret: MY_API_KEY")
 
-            # Create second secret
-            response = client.put(
-                "/api/settings/secrets",
-                json={
-                    "name": "DATABASE_URL",
-                    "value": "postgresql://localhost:5432/mydb",
-                },
-            )
-            assert response.status_code == 200
-            logger.info("✅ Created secret: DATABASE_URL")
+        # Create second secret
+        response = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "DATABASE_URL",
+                "value": "postgresql://localhost:5432/mydb",
+            },
+        )
+        assert response.status_code == 200
+        logger.info("✅ Created secret: DATABASE_URL")
 
-            # ══════════════════════════════════════════════════════════════
-            # 4. List Secrets
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("📜 Listing all secrets")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 4. List Secrets
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("📜 Listing all secrets")
+        logger.info("=" * 60)
 
-            response = client.get("/api/settings/secrets")
-            assert response.status_code == 200
-            secrets = response.json()["secrets"]
+        response = client.get("/api/settings/secrets")
+        assert response.status_code == 200
+        secrets = response.json()["secrets"]
 
-            logger.info(f"✅ Found {len(secrets)} secrets:")
-            for secret in secrets:
-                desc = secret.get("description") or "(no description)"
-                logger.info(f"   - {secret['name']}: {desc}")
+        logger.info(f"✅ Found {len(secrets)} secrets:")
+        for secret in secrets:
+            desc = secret.get("description") or "(no description)"
+            logger.info(f"   - {secret['name']}: {desc}")
 
-            # ══════════════════════════════════════════════════════════════
-            # 5. Get Secret Value
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🔍 Retrieving secret value")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 5. Get Secret Value
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🔍 Retrieving secret value")
+        logger.info("=" * 60)
 
-            response = client.get("/api/settings/secrets/MY_API_KEY")
-            assert response.status_code == 200
-            value = response.text
+        response = client.get("/api/settings/secrets/MY_API_KEY")
+        assert response.status_code == 200
+        value = response.text
 
-            logger.info(f"✅ Retrieved MY_API_KEY value: {value[:10]}...")
+        logger.info(f"✅ Retrieved MY_API_KEY value: {value[:10]}...")
 
-            # ══════════════════════════════════════════════════════════════
-            # 6. Update Secret (upsert)
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🔄 Updating secret value")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 6. Update Secret (upsert)
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🔄 Updating secret value")
+        logger.info("=" * 60)
 
-            response = client.put(
-                "/api/settings/secrets",
-                json={
-                    "name": "MY_API_KEY",
-                    "value": "sk-updated-key-67890",
-                    "description": "Updated API key",
-                },
-            )
-            assert response.status_code == 200
+        response = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "MY_API_KEY",
+                "value": "sk-updated-key-67890",
+                "description": "Updated API key",
+            },
+        )
+        assert response.status_code == 200
 
-            # Verify update
-            response = client.get("/api/settings/secrets/MY_API_KEY")
-            assert response.text == "sk-updated-key-67890"
-            logger.info("✅ Secret updated successfully")
+        # Verify update
+        response = client.get("/api/settings/secrets/MY_API_KEY")
+        assert response.text == "sk-updated-key-67890"
+        logger.info("✅ Secret updated successfully")
 
-            # ══════════════════════════════════════════════════════════════
-            # 7. Secret Name Validation
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("⚠️  Testing secret name validation")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 7. Secret Name Validation
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("⚠️  Testing secret name validation")
+        logger.info("=" * 60)
 
-            # Invalid: starts with number
-            response = client.put(
-                "/api/settings/secrets",
-                json={"name": "123_invalid", "value": "test"},
-            )
-            assert response.status_code == 422
-            logger.info("✅ Rejected invalid name '123_invalid' (starts with number)")
+        # Invalid: starts with number
+        response = client.put(
+            "/api/settings/secrets",
+            json={"name": "123_invalid", "value": "test"},
+        )
+        assert response.status_code == 422
+        logger.info("✅ Rejected invalid name '123_invalid' (starts with number)")
 
-            # Invalid: contains hyphen
-            response = client.put(
-                "/api/settings/secrets",
-                json={"name": "invalid-name", "value": "test"},
-            )
-            assert response.status_code == 422
-            logger.info("✅ Rejected invalid name 'invalid-name' (contains hyphen)")
+        # Invalid: contains hyphen
+        response = client.put(
+            "/api/settings/secrets",
+            json={"name": "invalid-name", "value": "test"},
+        )
+        assert response.status_code == 422
+        logger.info("✅ Rejected invalid name 'invalid-name' (contains hyphen)")
 
-            # ══════════════════════════════════════════════════════════════
-            # 8. Delete Secret
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🗑️  Deleting secrets")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 8. Delete Secret
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🗑️  Deleting secrets")
+        logger.info("=" * 60)
 
-            response = client.delete("/api/settings/secrets/MY_API_KEY")
-            assert response.status_code == 200
-            assert response.json()["deleted"] is True
-            logger.info("✅ Deleted secret: MY_API_KEY")
+        response = client.delete("/api/settings/secrets/MY_API_KEY")
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
+        logger.info("✅ Deleted secret: MY_API_KEY")
 
-            # Verify deletion
-            response = client.get("/api/settings/secrets/MY_API_KEY")
-            assert response.status_code == 404
-            logger.info("✅ Confirmed secret no longer exists")
+        # Verify deletion
+        response = client.get("/api/settings/secrets/MY_API_KEY")
+        assert response.status_code == 404
+        logger.info("✅ Confirmed secret no longer exists")
 
-            # Cleanup remaining secret
-            client.delete("/api/settings/secrets/DATABASE_URL")
-            logger.info("✅ Deleted secret: DATABASE_URL")
+        # Cleanup remaining secret
+        client.delete("/api/settings/secrets/DATABASE_URL")
+        logger.info("✅ Deleted secret: DATABASE_URL")
 
-            # ══════════════════════════════════════════════════════════════
-            # 9. Settings with LLM API Key
-            # ══════════════════════════════════════════════════════════════
-            logger.info("\n" + "=" * 60)
-            logger.info("🔑 Testing LLM API key in settings")
-            logger.info("=" * 60)
+        # ══════════════════════════════════════════════════════════════
+        # 9. Settings with LLM API Key
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("🔑 Testing LLM API key in settings")
+        logger.info("=" * 60)
 
-            response = client.patch(
-                "/api/settings",
-                json={"agent_settings_diff": {"llm": {"api_key": "sk-llm-test-key"}}},
-            )
-            assert response.status_code == 200
-            result = response.json()
+        response = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"api_key": "sk-llm-test-key"}}},
+        )
+        assert response.status_code == 200
+        result = response.json()
 
-            # Key should be set but redacted in response
-            assert result["llm_api_key_is_set"] is True
-            assert result["agent_settings"]["llm"]["api_key"] == "**********"
-            logger.info("✅ LLM API key set (redacted in response)")
+        # Key should be set but redacted in response
+        assert result["llm_api_key_is_set"] is True
+        assert result["agent_settings"]["llm"]["api_key"] == "**********"
+        logger.info("✅ LLM API key set (redacted in response)")
 
-            logger.info("\n" + "=" * 60)
-            logger.info("🎉 All Settings and Secrets API tests passed!")
-            logger.info("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("🎉 All Settings and Secrets API tests passed!")
+        logger.info("=" * 60)
 
-            # This example doesn't use LLM, so cost is 0
-            print("EXAMPLE_COST: 0.0")
+        # This example doesn't use LLM, so cost is 0
+        print("EXAMPLE_COST: 0.0")
 
-        finally:
-            client.close()
-
-
-if __name__ == "__main__":
-    main()
+    finally:
+        client.close()
