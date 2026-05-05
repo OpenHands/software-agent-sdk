@@ -1,13 +1,14 @@
 import asyncio
 import importlib
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import httpx
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
@@ -190,6 +191,26 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
         elif v is not None:
             result[k] = v
     return result
+
+
+# Pattern to match sensitive field values in error messages
+_SENSITIVE_FIELDS_PATTERN = re.compile(
+    r"(api_key|secret|token|password|credential)['\"]?\s*[:=]\s*['\"]?[^'\"}\s,]+",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_validation_error(error: ValidationError) -> str:
+    """Sanitize ValidationError messages to remove potentially exposed secrets.
+
+    When building models from dicts that have expose_secrets=True context,
+    any validation failure could include secret values in error messages.
+    This function redacts such values before the error propagates.
+    """
+    error_str = str(error)
+    # Redact any field=value patterns for sensitive fields
+    sanitized = _SENSITIVE_FIELDS_PATTERN.sub(r"\1': '***REDACTED***", error_str)
+    return sanitized
 
 
 def _merge_request_with_persisted_settings(
@@ -698,10 +719,19 @@ class ConversationService:
         agent_data = merged_data.get("agent", {})
         _validate_merged_agent_settings(agent_data)
 
-        stored = StoredConversation(
-            id=conversation_id,
-            **merged_data,
-        )
+        # Wrap StoredConversation construction to sanitize any secret leakage
+        # in ValidationError messages. Since merged_data may contain exposed
+        # secrets (from model_dump with expose_secrets=True), validation errors
+        # could include these values in their messages.
+        try:
+            stored = StoredConversation(
+                id=conversation_id,
+                **merged_data,
+            )
+        except ValidationError as e:
+            # Sanitize error message to remove any exposed secrets
+            sanitized_msg = _sanitize_validation_error(e)
+            raise ValueError(f"Invalid conversation configuration: {sanitized_msg}")
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:

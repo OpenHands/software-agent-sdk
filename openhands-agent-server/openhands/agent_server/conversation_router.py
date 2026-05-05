@@ -153,7 +153,7 @@ async def batch_get_conversations(
 @conversation_router.post(
     "",
     responses={
-        400: {"description": "Missing required settings"},
+        422: {"description": "Missing required settings"},
         409: {"description": "Conversation contract mismatch"},
     },
 )

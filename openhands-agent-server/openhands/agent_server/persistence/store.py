@@ -177,17 +177,20 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     # Create file with secure permissions from the start using os.open
     # O_WRONLY | O_CREAT | O_TRUNC mimics "w" mode
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
+    fdopen_succeeded = False
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f = os.fdopen(fd, "w", encoding="utf-8")
+        fdopen_succeeded = True
+        with f:
             json.dump(data, f, indent=2)
     except Exception:
-        # Note: os.fdopen() takes ownership of the fd on success.
-        # If it fails, we need to close fd manually.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        # Clean up on error
+        # Only close fd manually if os.fdopen() didn't take ownership
+        if not fdopen_succeeded:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # Clean up temp file on error
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
@@ -380,11 +383,8 @@ class FileSecretsStore(SecretsStore):
         cipher: Cipher | None = None,
         filename: str = "secrets.json",
     ):
-        # Validate filename to prevent path traversal
-        if "/" in filename or "\\" in filename or filename.startswith("."):
-            raise ValueError(
-                "filename must not contain path separators or start with '.'"
-            )
+        # Use same validation as FileSettingsStore
+        _validate_filename(filename)
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename
@@ -409,7 +409,16 @@ class FileSecretsStore(SecretsStore):
             # Pass cipher in context for automatic decryption of all secret fields
             context = {"cipher": self.cipher} if self.cipher else None
             return Secrets.model_validate(data, context=context)
+        except (PermissionError, OSError) as e:
+            # Critical filesystem errors should be re-raised
+            logger.error(f"Cannot access secrets file: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            # Corrupted file - log and return None to allow recovery
+            logger.error(f"Secrets file is corrupted: {e}")
+            return None
         except Exception:
+            # Validation or other errors - log and return None
             logger.error("Failed to load secrets", exc_info=True)
             return None
 
@@ -419,11 +428,24 @@ class FileSecretsStore(SecretsStore):
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
+
+        Warning:
+            If no cipher is provided, secrets are stored in plaintext.
         """
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
-        context = {"cipher": self.cipher} if self.cipher else {"expose_secrets": True}
+        if self.cipher:
+            context: dict[str, Any] = {"cipher": self.cipher}
+        else:
+            context = {"expose_secrets": True}
+            # Warn about plaintext secret storage (only if secrets exist)
+            if secrets.custom_secrets:
+                logger.warning(
+                    "Saving secrets in PLAINTEXT (no cipher configured). "
+                    "Configure SETTINGS_ENCRYPTION_KEY for production deployments."
+                )
+
         data = secrets.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)

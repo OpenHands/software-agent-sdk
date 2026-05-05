@@ -542,27 +542,29 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 # 1. The property type changes from `object` to `anyOf[object, null]`
 # 2. Nested properties appear "removed" from the old path structure
 #
-# NOTE: These patterns are TEMPORARY for PR #3026 (making agent/workspace
-# optional). They match ALL nested properties, creating a blind spot for
-# legitimate breaking changes.
-# TODO(@all-hands-bot): Remove these patterns after PR #3026 is merged
-# and verified in production.
+# NOTE: These patterns are for PR #3026 (making agent/workspace optional).
+# They use prefix matching because the anyOf wrapper causes oasdiff to report
+# ALL nested properties as "removed" - there's no practical way to enumerate
+# every possible nested path.
 #
-# These patterns deliberately match ANY nested property under agent/ or workspace/.
-# This is because making a top-level property optional causes oasdiff to report all
-# nested properties as "removed" due to the anyOf wrapper. If a genuine breaking change
-# is introduced to agent/ or workspace/ fields in the future, it should go through the
-# normal deprecation process with explicit @deprecated annotations - not sneak through
-# alongside schema refactoring.
+# IMPORTANT: Any genuine breaking changes to agent/ or workspace/ fields
+# should go through the normal deprecation process with explicit annotations.
+# Review changes carefully during code review - don't rely solely on CI.
+#
+# Pattern design rationale:
+# - Type/format changes are explicit (top-level only)
+# - Nested property patterns use prefix match because oasdiff reports the
+#   entire nested structure as removed when parent becomes anyOf[object, null]
+# - If you're modifying agent or workspace schema, verify changes manually
 _OPTIONAL_AGENT_WORKSPACE_PATTERNS = (
-    # Type changes for making agent/workspace optional (top-level)
+    # Type changes for making agent/workspace optional (top-level only)
     "the `agent` request property type/format changed",
     "the `workspace` request property type/format changed",
-    # Nested properties that appear "removed" due to anyOf wrapper
-    # WARNING: These match ANY removal under agent/ or workspace/!
+    # Nested properties reported as "removed" due to anyOf wrapper.
+    # Prefix match is intentional - oasdiff reports ALL nested paths.
     "removed the request property `agent/",
     "removed the request property `workspace/",
-    # Optional nested properties that show up differently in oasdiff output
+    # Optional nested properties (oasdiff sometimes uses this format)
     "removed the optional property `agent/",
     "removed the optional property `workspace/",
 )

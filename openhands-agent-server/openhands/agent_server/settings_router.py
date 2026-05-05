@@ -2,7 +2,7 @@ import re
 from functools import lru_cache
 from typing import Any, cast
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ValidationError
 
 from openhands.agent_server.persistence import (
@@ -156,12 +156,16 @@ async def get_settings(
     store = get_settings_store(config)
     settings = store.load() or PersistedSettings()
 
-    # Audit log when secrets are exposed
-    if should_expose and settings.llm_api_key_is_set:
+    # Audit log when secrets are exposed (always log if expose requested)
+    if should_expose:
         client_host = request.client.host if request.client else "unknown"
         logger.info(
-            "Secrets exposed via settings API (LLM, MCP, agent settings)",
-            extra={"client_host": client_host, "expose_via_header": expose_via_header},
+            "Secrets exposed via settings API",
+            extra={
+                "client_host": client_host,
+                "expose_via_header": expose_via_header,
+                "has_llm_api_key": settings.llm_api_key_is_set,
+            },
         )
 
     # Build serialization context based on expose_secrets flag
@@ -222,7 +226,10 @@ async def update_settings(
             },
         )
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # 422 Unprocessable Entity - semantic validation failure
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
     except (OSError, PermissionError):
         logger.error("Settings update failed", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update settings")
