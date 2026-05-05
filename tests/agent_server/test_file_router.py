@@ -1,6 +1,7 @@
 """Tests for file_router.py endpoints."""
 
 import io
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -246,3 +247,54 @@ def test_file_legacy_routes_are_removed_from_openapi(client):
     openapi_paths = response.json()["paths"]
     assert "/api/file/upload/{path}" not in openapi_paths
     assert "/api/file/download/{path}" not in openapi_paths
+
+
+# =============================================================================
+# list_subdirs Tests
+# =============================================================================
+
+
+def test_list_subdirs_returns_only_directories_with_absolute_paths(client, tmp_path):
+    """Return subdirs with absolute paths; skip files and hidden entries."""
+    (tmp_path / "repo1").mkdir()
+    (tmp_path / "repo2").mkdir()
+    (tmp_path / ".hidden_dir").mkdir()
+    (tmp_path / "README.md").write_text("hi")
+
+    response = client.get("/api/file/list_subdirs", params={"path": str(tmp_path)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(tmp_path)
+    names = [entry["name"] for entry in body["subdirs"]]
+    paths = [entry["path"] for entry in body["subdirs"]]
+    assert names == ["repo1", "repo2"]
+    assert paths == [str(tmp_path / "repo1"), str(tmp_path / "repo2")]
+
+
+def test_list_subdirs_relative_path_returns_400(client):
+    response = client.get("/api/file/list_subdirs", params={"path": "relative/path"})
+    assert response.status_code == 400
+    assert "must be absolute" in response.json()["detail"]
+
+
+def test_list_subdirs_missing_directory_returns_404(client, tmp_path):
+    response = client.get(
+        "/api/file/list_subdirs",
+        params={"path": str(tmp_path / "does-not-exist")},
+    )
+    assert response.status_code == 404
+
+
+def test_list_subdirs_path_is_a_file_returns_400(client, tmp_path):
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("hi")
+    response = client.get("/api/file/list_subdirs", params={"path": str(file_path)})
+    assert response.status_code == 400
+    assert "not a directory" in response.json()["detail"]
+
+
+def test_get_home_returns_user_home(client):
+    response = client.get("/api/file/home")
+    assert response.status_code == 200
+    assert response.json()["home"] == str(Path.home())

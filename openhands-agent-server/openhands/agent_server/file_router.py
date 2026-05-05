@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -11,6 +12,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -19,6 +21,20 @@ from openhands.agent_server.conversation_service import get_default_conversation
 from openhands.agent_server.models import ExecuteBashRequest, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.logger import get_logger
+
+
+class SubdirectoryEntry(BaseModel):
+    name: str
+    path: str
+
+
+class ListSubdirsResponse(BaseModel):
+    path: str
+    subdirs: list[SubdirectoryEntry]
+
+
+class HomeResponse(BaseModel):
+    home: str
 
 
 logger = get_logger(__name__)
@@ -114,6 +130,69 @@ async def download_file_query(
 ) -> FileResponse:
     """Download a file from the workspace using query parameter (preferred method)."""
     return await _download_file(path)
+
+
+@file_router.get("/home")
+async def get_home_directory() -> HomeResponse:
+    """Return the agent-server user's home directory.
+
+    Used by the GUI to start a folder-browser at a sensible default location.
+    """
+    return HomeResponse(home=str(Path.home()))
+
+
+@file_router.get("/list_subdirs")
+async def list_subdirs(
+    path: Annotated[
+        str,
+        Query(description="Absolute directory path to list subdirectories of"),
+    ],
+) -> ListSubdirsResponse:
+    """List immediate subdirectories of `path`.
+
+    Used by the GUI's workspace picker. Hidden entries (names starting with '.')
+    and symlinks are skipped. Files are skipped. Returns absolute paths so the
+    GUI can use a result directly as ``workspace.working_dir``.
+    """
+    target = Path(path)
+    if not target.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+    if not target.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Directory not found",
+        )
+    if not target.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is not a directory",
+        )
+
+    entries: list[SubdirectoryEntry] = []
+    try:
+        with os.scandir(target) as scanner:
+            for entry in scanner:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                entries.append(
+                    SubdirectoryEntry(name=entry.name, path=str(target / entry.name))
+                )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+
+    entries.sort(key=lambda e: e.name.lower())
+    return ListSubdirsResponse(path=str(target), subdirs=entries)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")
