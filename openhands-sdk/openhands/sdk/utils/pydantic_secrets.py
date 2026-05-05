@@ -48,16 +48,16 @@ def serialize_secret(v: SecretStr | None, info):
 
     # Handle expose_secrets modes
     if expose_mode == "encrypted":
-        # Encrypted mode requires a cipher
+        # Encrypted mode requires a cipher - fail fast if missing
         if cipher:
             return cipher.encrypt(v)
-        # No cipher available - fall back to redaction for safety
-        # Log warning to surface potential configuration issues
-        _logger.warning(
-            "Requested encrypted mode but no cipher available, "
-            "falling back to redaction. Configure OH_SECRET_KEY."
+        # No cipher available - raise error so misconfiguration is caught early
+        # Silent fallback would cause round-trip failures (frontend sends redacted
+        # secrets back) and hide configuration errors until runtime
+        raise ValueError(
+            "Cannot encrypt secret: no cipher configured. "
+            "Set OH_SECRET_KEY environment variable."
         )
-        return REDACTED_SECRET_VALUE
 
     if expose_mode == "plaintext" or expose_mode is True:
         # Plaintext mode - expose raw value (backend only!)

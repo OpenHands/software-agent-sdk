@@ -182,17 +182,16 @@ async def get_settings(request: Request) -> SettingsResponse:
     store = get_settings_store(config)
     settings = store.load() or PersistedSettings()
 
-    # Audit log when secrets are exposed
-    if expose_mode:
-        client_host = request.client.host if request.client else "unknown"
-        logger.info(
-            "Secrets exposed via settings API",
-            extra={
-                "client_host": client_host,
-                "expose_mode": expose_mode,
-                "has_llm_api_key": settings.llm_api_key_is_set,
-            },
-        )
+    # Audit log all settings access for security visibility
+    client_host = request.client.host if request.client else "unknown"
+    logger.info(
+        "Settings accessed",
+        extra={
+            "client_host": client_host,
+            "expose_mode": expose_mode or "redacted",
+            "has_llm_api_key": settings.llm_api_key_is_set,
+        },
+    )
 
     # Build serialization context based on expose mode
     if expose_mode:
@@ -257,15 +256,26 @@ async def update_settings(
                 ),
             },
         )
-    except ValidationError as e:
+    except (ValueError, ValidationError) as e:
         # Audit log: validation failed
+        # Note: PersistedSettings.update() raises ValueError (sanitized message)
+        # while Pydantic validation raises ValidationError
         logger.warning(
             "Settings update validation failed",
             extra={"client_host": client_host},
         )
         # 422 Unprocessable Entity - semantic validation failure
+        # Don't expose error details - could contain secrets in tracebacks
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Settings validation failed",
+        )
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Settings update blocked: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
         )
     except (OSError, PermissionError):
         logger.error("Settings update failed", exc_info=True)

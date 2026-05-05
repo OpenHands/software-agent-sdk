@@ -367,3 +367,76 @@ def test_secret_name_validation(client_with_settings):
         json={"name": "VALID_NAME_123", "value": "test"},
     )
     assert response.status_code == 200
+
+
+# ── PATCH validation and error handling tests ───────────────────────────
+
+
+def test_patch_settings_validation_error_returns_422(client_with_settings):
+    """PATCH /api/settings with invalid data returns 422."""
+    # Invalid: negative max_iterations
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"conversation_settings_diff": {"max_iterations": -5}},
+    )
+    assert response.status_code == 422
+    # Error message should be sanitized (not expose secrets)
+    assert response.json()["detail"] == "Settings validation failed"
+
+
+def test_patch_settings_validation_error_does_not_leak_secrets(client_with_settings):
+    """PATCH validation errors don't leak secret values in error messages."""
+    # Try to update with invalid model value (causes validation to fail)
+    # This tests that even if the API key was in memory during validation,
+    # it doesn't appear in error messages
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {"api_key": "sk-secret-value", "model": ""}  # Empty model is invalid
+            }
+        },
+    )
+    # Should return 422 with sanitized message
+    assert response.status_code == 422
+    # The error message should be sanitized - NOT contain the secret value
+    error_detail = response.json()["detail"]
+    assert "sk-secret-value" not in error_detail
+    # And it should be the generic sanitized message
+    assert error_detail == "Settings validation failed"
+
+
+def test_secret_upsert_updates_existing(client_with_settings):
+    """PUT /api/settings/secrets updates existing secret (upsert behavior)."""
+    # Create initial secret
+    client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": "original-value", "description": "Original"},
+    )
+
+    # Update the secret (same name, new value)
+    update_response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": "updated-value", "description": "Updated"},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["description"] == "Updated"
+
+    # Verify the value was updated
+    get_response = client_with_settings.get("/api/settings/secrets/MY_SECRET")
+    assert get_response.status_code == 200
+    assert get_response.text == "updated-value"
+
+
+def test_secret_name_validation_on_get(client_with_settings):
+    """GET /api/settings/secrets/{name} validates name format."""
+    # Invalid name format
+    response = client_with_settings.get("/api/settings/secrets/123_invalid")
+    assert response.status_code == 422
+
+
+def test_secret_name_validation_on_delete(client_with_settings):
+    """DELETE /api/settings/secrets/{name} validates name format."""
+    # Invalid name format
+    response = client_with_settings.delete("/api/settings/secrets/invalid-name")
+    assert response.status_code == 422

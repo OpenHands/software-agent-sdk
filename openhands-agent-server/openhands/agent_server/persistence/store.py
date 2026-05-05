@@ -384,9 +384,24 @@ class FileSettingsStore(SettingsStore):
 
         Returns:
             The updated settings after saving.
+
+        Raises:
+            RuntimeError: If the settings file exists but cannot be loaded
+                (e.g., corrupted JSON, decryption failure). This prevents
+                data loss from overwriting existing settings with defaults.
         """
         with _file_lock(self._lock_path):
-            settings = self.load() or PersistedSettings()
+            settings = self.load()
+            if settings is None:
+                # File doesn't exist or is empty - safe to use defaults
+                if self._path.exists():
+                    # File exists but load() returned None - corrupted or unreadable
+                    raise RuntimeError(
+                        f"Cannot load settings from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to overwrite with defaults to prevent data loss."
+                    )
+                settings = PersistedSettings()
             updated = update_fn(settings)
             self.save(updated)
             return updated
@@ -472,6 +487,12 @@ class FileSecretsStore(SecretsStore):
         flows through to field serializers using serialize_secret().
 
         Warning:
+            This method does NOT acquire a file lock. For concurrent-safe
+            updates, use :meth:`set_secret` or :meth:`delete_secret` which
+            wrap save() with file locking. Direct calls to save() from
+            multiple processes may cause lost updates.
+
+        Warning:
             If no cipher is provided, secrets are stored in plaintext.
         """
         _ensure_secure_directory(self.persistence_dir)
@@ -508,9 +529,25 @@ class FileSecretsStore(SecretsStore):
             return secret.secret.get_secret_value()
 
     def set_secret(self, name: str, value: str, description: str | None = None) -> None:
-        """Set a single secret with file locking to prevent race conditions."""
+        """Set a single secret with file locking to prevent race conditions.
+
+        Raises:
+            RuntimeError: If the secrets file exists but cannot be loaded
+                (e.g., corrupted JSON, decryption failure). This prevents
+                data loss from overwriting existing secrets with defaults.
+        """
         with _file_lock(self._lock_path):
-            secrets = self.load() or Secrets()
+            secrets = self.load()
+            if secrets is None:
+                # File doesn't exist - safe to use defaults
+                if self._path.exists():
+                    # File exists but load() returned None - corrupted or unreadable
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to overwrite with defaults to prevent data loss."
+                    )
+                secrets = Secrets()
 
             # Create new secrets dict with updated value
             new_secrets = dict(secrets.custom_secrets)
@@ -524,10 +561,26 @@ class FileSecretsStore(SecretsStore):
             self.save(Secrets(custom_secrets=new_secrets))
 
     def delete_secret(self, name: str) -> bool:
-        """Delete a secret with file locking. Returns True if it existed."""
+        """Delete a secret with file locking. Returns True if it existed.
+
+        Raises:
+            RuntimeError: If the secrets file exists but cannot be loaded
+                (e.g., corrupted JSON, decryption failure). This prevents
+                data loss from overwriting existing secrets with defaults.
+        """
         with _file_lock(self._lock_path):
             secrets = self.load()
-            if secrets is None or name not in secrets.custom_secrets:
+            if secrets is None:
+                # File doesn't exist - nothing to delete
+                if self._path.exists():
+                    # File exists but load() returned None - corrupted or unreadable
+                    raise RuntimeError(
+                        f"Cannot load secrets from {self._path}. "
+                        "File may be corrupted or encrypted with a different key. "
+                        "Refusing to modify to prevent data loss."
+                    )
+                return False
+            if name not in secrets.custom_secrets:
                 return False
 
             new_secrets = {k: v for k, v in secrets.custom_secrets.items() if k != name}
@@ -566,8 +619,20 @@ def _get_cipher(config: Config | None = None) -> Cipher | None:
 def get_settings_store(config: Config | None = None) -> FileSettingsStore:
     """Get the global settings store instance (thread-safe).
 
-    Note: The config parameter is only used on first initialization.
-    Subsequent calls return the existing instance regardless of config.
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+
+    Warning:
+        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
+        The store singleton caches the cipher from first initialization.
+        If the cipher key changes:
+        - New data may be encrypted with a stale key
+        - Existing data may fail to decrypt
+        - This could trigger data loss protection in update operations
+
+        To use a new cipher key, restart the server process.
+        For testing, use :func:`reset_stores` to clear the singletons.
     """
     global _settings_store
     if _settings_store is not None:
@@ -586,8 +651,20 @@ def get_settings_store(config: Config | None = None) -> FileSettingsStore:
 def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
     """Get the global secrets store instance (thread-safe).
 
-    Note: The config parameter is only used on first initialization.
-    Subsequent calls return the existing instance regardless of config.
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+
+    Warning:
+        The cipher key (OH_SECRET_KEY) must NOT change during runtime.
+        The store singleton caches the cipher from first initialization.
+        If the cipher key changes:
+        - New data may be encrypted with a stale key
+        - Existing data may fail to decrypt
+        - This could trigger data loss protection in update operations
+
+        To use a new cipher key, restart the server process.
+        For testing, use :func:`reset_stores` to clear the singletons.
     """
     global _secrets_store
     if _secrets_store is not None:

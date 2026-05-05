@@ -7,6 +7,7 @@ for the Cloud API's settings/secrets endpoints.
 
 from __future__ import annotations
 
+import re
 from typing import Any, TypedDict
 
 from pydantic import (
@@ -179,12 +180,37 @@ class PersistedSettings(BaseModel):
         return data
 
 
+_SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+
+
 class CustomSecret(BaseModel):
     """A custom secret with name, value, and optional description."""
 
     name: str
     secret: SecretStr | None
     description: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        """Validate secret name format for safety.
+
+        Secret names are used as environment variable names and may be logged,
+        so we enforce strict validation to prevent:
+        - Path traversal (../, null bytes)
+        - Log injection (control characters)
+        - Shell injection (special characters)
+        - Invalid env var names (starting with numbers, special chars)
+
+        Note: The router also validates names, but this provides defense-in-depth
+        for secrets created directly via the store (bypassing the HTTP layer).
+        """
+        if not _SECRET_NAME_PATTERN.match(v):
+            raise ValueError(
+                "Secret name must start with a letter, contain only "
+                "letters/numbers/underscores, and be 1-64 characters"
+            )
+        return v
 
     @field_validator("secret")
     @classmethod

@@ -109,13 +109,13 @@ def test_serialize_secret_encrypted_mode_with_cipher(mock_info, cipher):
     assert decrypted.get_secret_value() == "sk-test-123"
 
 
-def test_serialize_secret_encrypted_mode_without_cipher_falls_back_to_redacted(
+def test_serialize_secret_encrypted_mode_without_cipher_raises_error(
     mock_info,
 ):
-    """expose_secrets='encrypted' without cipher falls back to redaction."""
+    """expose_secrets='encrypted' without cipher raises ValueError."""
     secret = SecretStr("sk-test-123")
-    result = serialize_secret(secret, mock_info({"expose_secrets": "encrypted"}))
-    assert result == REDACTED_SECRET_VALUE
+    with pytest.raises(ValueError, match="no cipher configured"):
+        serialize_secret(secret, mock_info({"expose_secrets": "encrypted"}))
 
 
 def test_serialize_secret_cipher_without_expose_mode_encrypts(mock_info, cipher):
@@ -236,3 +236,98 @@ def test_roundtrip_plaintext_mode(mock_info):
     result = validate_secret(plaintext, mock_info({}))
     assert result is not None
     assert result.get_secret_value() == "sk-test-api-key-12345"
+
+
+# ── Real Pydantic integration tests ─────────────────────────────────────
+
+
+def test_real_pydantic_roundtrip_encrypted(cipher):
+    """Test encryption via actual Pydantic serialization (not mocks)."""
+    from openhands.agent_server.persistence.models import CustomSecret
+
+    # Create with plaintext
+    secret = CustomSecret(name="TEST_KEY", secret=SecretStr("my-secret-value"))
+
+    # Serialize with encrypted context (real model_dump call)
+    data = secret.model_dump(
+        mode="json", context={"expose_secrets": "encrypted", "cipher": cipher}
+    )
+
+    # Verify encrypted (not plaintext, not redacted)
+    assert data["secret"] != "my-secret-value"
+    assert data["secret"] != REDACTED_SECRET_VALUE
+    assert isinstance(data["secret"], str)
+
+    # Validate (decrypt) with cipher context (real model_validate call)
+    restored = CustomSecret.model_validate(data, context={"cipher": cipher})
+    assert restored.secret is not None
+    assert restored.secret.get_secret_value() == "my-secret-value"
+
+
+def test_real_pydantic_roundtrip_plaintext():
+    """Test plaintext via actual Pydantic serialization (not mocks)."""
+    from openhands.agent_server.persistence.models import CustomSecret
+
+    # Create with plaintext
+    secret = CustomSecret(name="TEST_KEY", secret=SecretStr("my-secret-value"))
+
+    # Serialize with plaintext context
+    data = secret.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+
+    # Verify plaintext
+    assert data["secret"] == "my-secret-value"
+
+    # Validate (no cipher - just wraps in SecretStr)
+    restored = CustomSecret.model_validate(data)
+    assert restored.secret is not None
+    assert restored.secret.get_secret_value() == "my-secret-value"
+
+
+def test_real_pydantic_redacted_mode():
+    """Test redaction via actual Pydantic serialization (default behavior)."""
+    from openhands.agent_server.persistence.models import CustomSecret
+
+    # Create with plaintext
+    secret = CustomSecret(name="TEST_KEY", secret=SecretStr("my-secret-value"))
+
+    # Serialize without context (default = redacted)
+    data = secret.model_dump(mode="json")
+
+    # Verify redacted - Pydantic returns SecretStr repr for json mode
+    # which is "**********" (the default SecretStr repr)
+    assert data["secret"] == REDACTED_SECRET_VALUE
+
+
+def test_real_pydantic_nested_secrets_roundtrip(cipher):
+    """Test encryption of nested secrets in Secrets model."""
+    from openhands.agent_server.persistence.models import CustomSecret, Secrets
+
+    # Create Secrets with multiple custom secrets
+    secrets = Secrets(
+        custom_secrets={
+            "API_KEY": CustomSecret(
+                name="API_KEY", secret=SecretStr("sk-123"), description="API key"
+            ),
+            "DB_PASS": CustomSecret(
+                name="DB_PASS", secret=SecretStr("password123"), description="DB password"
+            ),
+        }
+    )
+
+    # Serialize with cipher (encrypts all secrets)
+    data = secrets.model_dump(mode="json", context={"cipher": cipher})
+
+    # Verify all secrets are encrypted
+    for name in ["API_KEY", "DB_PASS"]:
+        assert data["custom_secrets"][name]["secret"] not in [
+            "sk-123",
+            "password123",
+            REDACTED_SECRET_VALUE,
+        ]
+
+    # Validate (decrypt) all secrets
+    restored = Secrets.model_validate(data, context={"cipher": cipher})
+    assert restored.custom_secrets["API_KEY"].secret is not None
+    assert restored.custom_secrets["API_KEY"].secret.get_secret_value() == "sk-123"
+    assert restored.custom_secrets["DB_PASS"].secret is not None
+    assert restored.custom_secrets["DB_PASS"].secret.get_secret_value() == "password123"
