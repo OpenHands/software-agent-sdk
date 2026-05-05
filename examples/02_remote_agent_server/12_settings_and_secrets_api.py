@@ -187,16 +187,16 @@ with ManagedAPIServer(port=8765) as server:
         # Create a workspace directory
         temp_workspace_dir = tempfile.mkdtemp(prefix="settings_api_demo_")
 
-        # Build the StartConversationRequest with encrypted API key
-        # The server will decrypt it because secrets_encrypted=True
+        # Extract LLM config from encrypted settings response
+        # We can use the encrypted settings directly - just need to map fields
+        encrypted_llm = encrypted_settings["agent_settings"]["llm"]
+
+        # Build the StartConversationRequest using the encrypted LLM config
+        # The server will decrypt the api_key because secrets_encrypted=True
         start_request = {
             "agent": {
                 "kind": "Agent",
-                "llm": {
-                    "model": llm_model,
-                    "api_key": encrypted_api_key,  # Encrypted value from settings!
-                    "usage_id": "settings-api-demo",
-                },
+                "llm": encrypted_llm,  # Use entire LLM config from settings
                 "tools": [
                     {"name": TerminalTool.name},
                     {"name": FileEditorTool.name},
