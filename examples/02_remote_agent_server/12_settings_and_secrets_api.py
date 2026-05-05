@@ -246,17 +246,17 @@ with ManagedAPIServer(port=8765) as server:
         logger.info("⏳ Waiting for agent to complete task...")
         logger.info("=" * 60)
 
-        # Poll conversation state until agent finishes
+        # Poll conversation until agent finishes
         max_wait = 120  # seconds
         poll_interval = 2
         elapsed = 0
         execution_status = "unknown"
 
         while elapsed < max_wait:
-            response = client.get(f"/api/conversations/{conversation_id}/state")
+            response = client.get(f"/api/conversations/{conversation_id}")
             assert response.status_code == 200
-            state = response.json()
-            execution_status = state.get("execution_status", "unknown")
+            conversation_data = response.json()
+            execution_status = conversation_data.get("execution_status", "unknown")
 
             if execution_status in ("stopped", "paused", "error"):
                 break
