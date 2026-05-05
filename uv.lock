@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-27T19:20:35.138318429Z"
+exclude-newer = "2026-04-28T15:16:34.692638Z"
 exclude-newer-span = "P7D"
 
 [manifest]
@@ -33,6 +33,7 @@ constraints = [
 dev = [
     { name = "griffe", extras = ["pypi"], specifier = ">=2.0.0" },
     { name = "packaging", specifier = ">=24.2" },
+    { name = "pillow", specifier = ">=12.1.1" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pycodestyle", specifier = ">=2.12.0" },
@@ -2492,6 +2493,7 @@ dependencies = [
     { name = "httpx", extra = ["socks"] },
     { name = "litellm" },
     { name = "lmnr" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "python-frontmatter" },
     { name = "python-json-logger" },
@@ -2515,6 +2517,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "litellm", specifier = ">=1.83.7" },
     { name = "lmnr", specifier = ">=0.7.47" },
+    { name = "pillow", specifier = ">=12.1.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-json-logger", specifier = ">=3.3.0" },

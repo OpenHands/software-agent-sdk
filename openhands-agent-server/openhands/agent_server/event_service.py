@@ -24,9 +24,15 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import AgentErrorEvent, StreamingDeltaEvent
+from openhands.sdk.event import (
+    AgentErrorEvent,
+    ObservationBaseEvent,
+    StreamingDeltaEvent,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
@@ -497,6 +503,34 @@ class EventService:
         for llm in agent.get_all_llms():
             llm.telemetry.set_stats_update_callback(stats_callback)
 
+    @staticmethod
+    def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
+        """Initialize the workspace as a git repo if it isn't already one.
+
+        The /api/git/changes endpoint expects a real repository to compute
+        changes against; without this, agent-created files never appear in
+        the Changes tab. We only run `git init` (no commit) — empty repos
+        are handled by `get_valid_ref()` via GIT_EMPTY_TREE_HASH, and
+        untracked files surface through `git ls-files --others`.
+        """
+        try:
+            validate_git_repository(working_dir)
+            return  # already a repo
+        except GitRepositoryError:
+            logger.debug(
+                "Workspace %s is not a git repository; running `git init`",
+                working_dir,
+            )
+
+        try:
+            run_git_command(["git", "init"], working_dir)
+        except GitCommandError as e:
+            # Don't block conversation startup if git is missing or init
+            # fails — the git router is defensive and will return [] anyway.
+            logger.warning(
+                "Failed to initialize git repository at %s: %s", working_dir, e
+            )
+
     async def start(self):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
@@ -511,7 +545,9 @@ class EventService:
         self._lease_generation = lease_claim.generation
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
-        Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
+        working_dir = Path(workspace.working_dir)
+        working_dir.mkdir(parents=True, exist_ok=True)
+        self._ensure_workspace_is_git_repo(working_dir)
         agent_cls = type(self.stored.agent)
         agent = agent_cls.model_validate(
             self.stored.agent.model_dump(context={"expose_secrets": True}),
@@ -611,16 +647,25 @@ class EventService:
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
-                error_event = AgentErrorEvent(
-                    tool_name=first_action.tool_name,
-                    tool_call_id=first_action.tool_call_id,
-                    error=(
-                        "A restart occurred while this tool was in progress. "
-                        "This may indicate a fatal memory error or system crash. "
-                        "The tool execution was interrupted and did not complete."
-                    ),
+                # Skip if any observation-like event already exists for this
+                # tool_call_id, to avoid duplicate observations when an
+                # observation matches by tool_call_id but not action_id.
+                already_observed = any(
+                    isinstance(e, ObservationBaseEvent)
+                    and e.tool_call_id == first_action.tool_call_id
+                    for e in state.events
                 )
-                self._conversation._on_event(error_event)
+                if not already_observed:
+                    error_event = AgentErrorEvent(
+                        tool_name=first_action.tool_name,
+                        tool_call_id=first_action.tool_call_id,
+                        error=(
+                            "A restart occurred while this tool was in progress. "
+                            "This may indicate a fatal memory error or system crash. "
+                            "The tool execution was interrupted and did not complete."
+                        ),
+                    )
+                    self._conversation._on_event(error_event)
 
         # Publish initial state update
         await self._publish_state_update()

@@ -18,6 +18,7 @@ jobs:
             startsWith(github.event.pull_request.head.ref, 'rel-')
         runs-on: ubuntu-24.04
         permissions:
+            actions: write
             contents: write
         steps:
             - name: Extract version from branch name
@@ -81,6 +82,18 @@ jobs:
                   echo "✅ Release v${VERSION} created!"
                   echo "🔗 https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
 
+            - name: Dispatch PyPI release workflow
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  gh workflow run pypi-release.yml \
+                    --repo "${{ github.repository }}" \
+                    --ref "v${VERSION}"
+
+                  echo "🚀 Dispatched pypi-release.yml for v${VERSION}"
+
             - name: Summary
               env:
                   VERSION: ${{ steps.version.outputs.version }}
@@ -90,4 +103,4 @@ jobs:
                   echo "- **Tag**: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
                   echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
                   echo "" >> "$GITHUB_STEP_SUMMARY"
-                  echo "The \`pypi-release.yml\` workflow will now publish packages to PyPI." >> "$GITHUB_STEP_SUMMARY"
+                  echo "The \`pypi-release.yml\` workflow was dispatched to publish packages to PyPI." >> "$GITHUB_STEP_SUMMARY"
