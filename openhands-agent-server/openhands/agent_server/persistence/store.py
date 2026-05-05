@@ -13,6 +13,7 @@ import os
 import stat
 import sys
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -179,10 +180,10 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         concurrent access, network drives), but provides reasonable
         protection against corruption from interrupted writes.
     """
-    # Use PID and counter for unique temp filename to prevent collisions
+    # Use PID and time for unique temp filename to prevent collisions
     # when multiple processes write to the same file concurrently
-    _atomic_write_json._counter = getattr(_atomic_write_json, "_counter", 0) + 1
-    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{_atomic_write_json._counter}")
+    unique_suffix = f".tmp.{os.getpid()}.{int(time.time() * 1000000)}"
+    tmp_path = path.with_suffix(unique_suffix)
     # Create file with secure permissions from the start using os.open
     # O_WRONLY | O_CREAT | O_TRUNC mimics "w" mode
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
