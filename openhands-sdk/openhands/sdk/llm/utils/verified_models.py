@@ -65,6 +65,7 @@ VERIFIED_DEEPSEEK_MODELS = [
 VERIFIED_MOONSHOT_MODELS = [
     "kimi-k2-thinking",
     "kimi-k2.5",
+    "kimi-k2.6",
 ]
 
 VERIFIED_MINIMAX_MODELS = [
@@ -87,6 +88,10 @@ VERIFIED_NVIDIA_MODELS = [
 VERIFIED_QWEN_MODELS = [
     "qwen3-6-plus",
     "qwen3-coder-480b",
+]
+
+VERIFIED_TRINITY_MODELS = [
+    "trinity-large-thinking",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -140,4 +145,5 @@ VERIFIED_MODELS = {
     "glm": VERIFIED_GLM_MODELS,
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
+    "trinity": VERIFIED_TRINITY_MODELS,
 }
