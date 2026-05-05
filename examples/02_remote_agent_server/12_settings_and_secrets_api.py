@@ -58,6 +58,14 @@ class ManagedAPIServer:
         """Start the API server subprocess."""
         print(f"Starting OpenHands API server on {self.base_url}...")
 
+        # Set OH_SECRET_KEY to enable encrypted secrets feature
+        # In production, this should be a secure randomly generated key
+        env = {
+            "LOG_JSON": "true",
+            "OH_SECRET_KEY": "example-secret-key-for-demo-only-32b",
+            **os.environ,
+        }
+
         self.process = subprocess.Popen(
             [
                 "python",
@@ -71,7 +79,7 @@ class ManagedAPIServer:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={"LOG_JSON": "true", **os.environ},
+            env=env,
         )
 
         assert self.process is not None
