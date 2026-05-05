@@ -29,6 +29,7 @@ from openhands.agent_server.persistence.models import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 
+
 # fcntl is Unix-only; on Windows, file locking is a no-op
 if sys.platform != "win32":
     import fcntl
