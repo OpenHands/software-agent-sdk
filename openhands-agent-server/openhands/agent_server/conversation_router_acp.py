@@ -137,8 +137,9 @@ async def start_acp_conversation(
     try:
         info, is_new = await conversation_service.start_acp_conversation(request)
     except MissingSettingsError as e:
+        # 422 Unprocessable Entity - semantic validation failure after merging
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK

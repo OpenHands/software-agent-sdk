@@ -235,9 +235,18 @@ def _merge_request_with_persisted_settings(
     if agent_data is None:
         # Build entire agent from persisted settings
         agent = persisted_settings.agent_settings.create_agent()
-        result["agent"] = agent.model_dump(
-            mode="json", context={"expose_secrets": True}
-        )
+        agent_dict = agent.model_dump(mode="json", context={"expose_secrets": True})
+        # Ensure unique usage_ids to prevent registry collisions.
+        # When agent is deserialized, LLM and condenser.llm become separate objects.
+        # If both have usage_id='default', the registry rejects the second one.
+        if "condenser" in agent_dict and isinstance(agent_dict["condenser"], dict):
+            condenser = agent_dict["condenser"]
+            if "llm" in condenser and isinstance(condenser["llm"], dict):
+                condenser_llm = condenser["llm"]
+                agent_llm_id = agent_dict.get("llm", {}).get("usage_id", "default")
+                if condenser_llm.get("usage_id") == agent_llm_id:
+                    condenser_llm["usage_id"] = f"{agent_llm_id}_condenser"
+        result["agent"] = agent_dict
     elif isinstance(agent_data, dict):
         # Merge LLM settings only (not the entire agent structure)
         llm_data = agent_data.get("llm", {})

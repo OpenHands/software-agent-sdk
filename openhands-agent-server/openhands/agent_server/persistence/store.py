@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr
 
@@ -30,11 +30,14 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
 
 
-# fcntl is Unix-only; on Windows, file locking is a no-op
+# fcntl is Unix-only; on Windows, use msvcrt for file locking
 if sys.platform != "win32":
     import fcntl
+
+    msvcrt = None
 else:
     fcntl = None  # type: ignore[assignment]
+    import msvcrt
 
 
 if TYPE_CHECKING:
@@ -46,6 +49,62 @@ logger = get_logger(__name__)
 # File permission constants (owner read/write only)
 _DIR_MODE = stat.S_IRWXU  # 0o700 - rwx------
 _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
+
+# Windows reserved filenames (case-insensitive)
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+)
+
+
+def _validate_filename(filename: str) -> None:
+    """Validate filename to prevent path traversal and injection attacks.
+
+    Raises:
+        ValueError: If filename is invalid or potentially dangerous.
+    """
+    # Check for path separators
+    if "/" in filename or "\\" in filename:
+        raise ValueError("filename must not contain path separators")
+
+    # Check for leading dots (hidden files, parent directory traversal)
+    if filename.startswith("."):
+        raise ValueError("filename must not start with '.'")
+
+    # Check for null bytes (null byte injection)
+    if "\x00" in filename:
+        raise ValueError("filename must not contain null bytes")
+
+    # Check for trailing dots/spaces (Windows path handling issues)
+    if filename.endswith(".") or filename.endswith(" "):
+        raise ValueError("filename must not end with '.' or space")
+
+    # Check for Windows reserved names
+    basename = filename.rsplit(".", 1)[0].upper()
+    if basename in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(f"filename '{filename}' uses a reserved name")
 
 
 def _ensure_secure_directory(path: Path) -> None:
@@ -77,20 +136,33 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
     """Context manager for file-based locking.
 
     Uses Unix fcntl for exclusive locking to prevent race conditions during
-    read-modify-write operations. On Windows, locking is a no-op (not supported).
+    read-modify-write operations. On Windows, uses msvcrt.locking.
     """
     _ensure_secure_directory(lock_path.parent)
-    if fcntl is None:
-        # Windows: no file locking support, just yield
-        yield
-        return
 
-    with open(lock_path, "w", encoding="utf-8") as lock_file:
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+    # Create lock file with secure permissions from the start
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT, _FILE_MODE)
+    try:
+        if fcntl is not None:
+            # Unix: use fcntl for file locking
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            # Windows: use msvcrt for file locking
+            # Lock the first byte (enough to prevent concurrent access)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            # Fallback: no locking (shouldn't happen)
             yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -196,11 +268,8 @@ class FileSettingsStore(SettingsStore):
         cipher: Cipher | None = None,
         filename: str = "settings.json",
     ):
-        # Validate filename to prevent path traversal
-        if "/" in filename or "\\" in filename or filename.startswith("."):
-            raise ValueError(
-                "filename must not contain path separators or start with '.'"
-            )
+        # Validate filename to prevent path traversal and injection attacks
+        _validate_filename(filename)
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename
@@ -226,7 +295,16 @@ class FileSettingsStore(SettingsStore):
             # This flows through to field validators using validate_secret()
             context = {"cipher": self.cipher} if self.cipher else None
             return PersistedSettings.model_validate(data, context=context)
+        except (PermissionError, OSError) as e:
+            # Critical filesystem errors should be re-raised
+            logger.error(f"Cannot access settings file: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            # Corrupted file - log and return None to allow recovery
+            logger.error(f"Settings file is corrupted: {e}")
+            return None
         except Exception:
+            # Validation or other errors - log and return None
             logger.error("Failed to load settings", exc_info=True)
             return None
 
@@ -236,12 +314,26 @@ class FileSettingsStore(SettingsStore):
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
+
+        Warning:
+            If no cipher is provided, secrets are stored in plaintext.
+            This is logged as a security warning on first save.
         """
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields
         # This flows through to field serializers using serialize_secret()
-        context = {"cipher": self.cipher} if self.cipher else {"expose_secrets": True}
+        if self.cipher:
+            context: dict[str, Any] = {"cipher": self.cipher}
+        else:
+            context = {"expose_secrets": True}
+            # Warn about plaintext secret storage (only if secrets exist)
+            if settings.llm_api_key_is_set:
+                logger.warning(
+                    "Saving settings with secrets in PLAINTEXT (no cipher configured). "
+                    "Configure SETTINGS_ENCRYPTION_KEY for production deployments."
+                )
+
         data = settings.model_dump(mode="json", context=context)
 
         _atomic_write_json(self._path, data)

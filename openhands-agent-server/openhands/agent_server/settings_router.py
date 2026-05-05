@@ -133,18 +133,24 @@ async def get_settings(
     conversation settings, and whether an LLM API key is configured.
 
     Args:
-        expose_secrets: If True, return actual secret values instead of masked
-            placeholders. Use this for internal automation scripts that need
-            LLM API keys. Default: False (secrets are masked as "**********").
+        expose_secrets: DEPRECATED - use X-Expose-Secrets header instead.
+            If True, return actual secret values instead of masked
+            placeholders. Default: False (secrets are masked as "**********").
 
     Note:
-        The expose_secrets parameter is passed as a query parameter for
-        compatibility with existing integrations. For new integrations,
-        consider using the X-Expose-Secrets header instead.
+        **Security**: Prefer using the ``X-Expose-Secrets: true`` header
+        instead of the query parameter. Query parameters appear in URLs
+        which may be logged by proxies, stored in browser history, and
+        cached by intermediate systems. The header-based approach avoids
+        these security concerns.
     """
-    # Also check header as alternative to query param
+    # Check header first (preferred), then fall back to query param (deprecated)
     expose_via_header = request.headers.get("X-Expose-Secrets", "").lower() == "true"
-    should_expose = expose_secrets or expose_via_header
+    should_expose = expose_via_header or expose_secrets
+    if expose_secrets and not expose_via_header:
+        logger.warning(
+            "expose_secrets query param is deprecated - use X-Expose-Secrets header"
+        )
 
     config = _get_config(request)
     store = get_settings_store(config)
@@ -187,34 +193,39 @@ async def update_settings(
 
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
-        # No updates - warn and return current settings
-        logger.warning("Empty settings update payload received")
-        settings = store.load() or PersistedSettings()
-    else:
-        # Apply updates atomically with file locking
-        def apply_update(settings: PersistedSettings) -> PersistedSettings:
-            settings.update(cast(SettingsUpdatePayload, update_data))
-            return settings
+        # No updates provided - this is a client error
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one of agent_settings_diff or "
+                "conversation_settings_diff must be provided"
+            ),
+        )
 
-        try:
-            settings = store.update(apply_update)
-            # Audit log: settings modified
-            client_host = request.client.host if request.client else "unknown"
-            logger.info(
-                "Settings updated",
-                extra={
-                    "client_host": client_host,
-                    "agent_settings_modified": "agent_settings_diff" in update_data,
-                    "conversation_settings_modified": (
-                        "conversation_settings_diff" in update_data
-                    ),
-                },
-            )
-        except ValidationError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except (OSError, PermissionError):
-            logger.error("Settings update failed", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to update settings")
+    # Apply updates atomically with file locking
+    def apply_update(settings: PersistedSettings) -> PersistedSettings:
+        settings.update(cast(SettingsUpdatePayload, update_data))
+        return settings
+
+    try:
+        settings = store.update(apply_update)
+        # Audit log: settings modified
+        client_host = request.client.host if request.client else "unknown"
+        logger.info(
+            "Settings updated",
+            extra={
+                "client_host": client_host,
+                "agent_settings_modified": "agent_settings_diff" in update_data,
+                "conversation_settings_modified": (
+                    "conversation_settings_diff" in update_data
+                ),
+            },
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except (OSError, PermissionError):
+        logger.error("Settings update failed", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update settings")
 
     # Don't expose secrets in PATCH response (consistent with GET behavior)
     return SettingsResponse(

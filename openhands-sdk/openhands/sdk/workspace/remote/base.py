@@ -287,7 +287,10 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Validate response is a dict (server error may return null/list/string)
         if not isinstance(data, dict):
-            return LLM(**llm_kwargs)
+            raise ValueError(
+                f"Invalid settings response from agent-server: "
+                f"expected dict, got {type(data).__name__}"
+            )
 
         # Extract from agent_settings structure
         agent_settings = data.get("agent_settings", {})
@@ -481,9 +484,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             env = stdio_server.get("env")
             if env and isinstance(env, dict):
                 server_config["env"] = env
-            # STDIO servers have an explicit name field
+            # STDIO servers have an explicit name field - check for cross-type collision
             if server_name in mcp_servers:
-                logger.warning(f"Duplicate MCP server name '{server_name}'")
+                logger.warning(
+                    f"MCP server name '{server_name}' collides with existing server "
+                    f"(possibly from SSE/SHTTP config) - STDIO server will overwrite it"
+                )
             mcp_servers[server_name] = server_config
 
         return mcp_servers
