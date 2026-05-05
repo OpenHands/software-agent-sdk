@@ -129,6 +129,8 @@ class PersistedSettings(BaseModel):
                 try:
                     new_agent = AgentSettings.from_persisted(agent_merged)
                 except Exception as e:
+                    # Use 'from None' to break exception chain - the original
+                    # exception may contain secret values in Pydantic errors
                     raise ValueError(
                         f"Failed to update agent settings: {type(e).__name__}"
                     ) from None
@@ -141,6 +143,7 @@ class PersistedSettings(BaseModel):
                 try:
                     new_conv = ConversationSettings.from_persisted(conv_merged)
                 except Exception as e:
+                    # Use 'from None' to break exception chain - see above
                     raise ValueError(
                         f"Failed to update conversation settings: {type(e).__name__}"
                     ) from None
