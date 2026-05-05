@@ -1,9 +1,14 @@
+from typing import Literal
+
 from pydantic import SecretStr
 
 from openhands.sdk.utils.cipher import Cipher
 
 
 REDACTED_SECRET_VALUE = "**********"
+
+# Type for expose_secrets context value
+ExposeSecretsMode = Literal["encrypted", "plaintext"] | bool
 
 
 def is_redacted_secret(v: str | SecretStr | None) -> bool:
@@ -16,26 +21,41 @@ def is_redacted_secret(v: str | SecretStr | None) -> bool:
 
 def serialize_secret(v: SecretStr | None, info):
     """
-    Serialize secret fields with encryption or redaction.
+    Serialize secret fields with encryption, plaintext exposure, or redaction.
 
-    - If a cipher is provided in context, encrypts the secret value
-    - If expose_secrets flag is True in context, exposes the actual value
-    - Otherwise, lets Pydantic handle default masking (redaction)
-    - This prevents accidental secret disclosure
-    """  # noqa: E501
+    Context options:
+    - ``cipher``: If provided, encrypts the secret value (takes precedence)
+    - ``expose_secrets``: Controls how secrets are exposed:
+      - ``"encrypted"``: Encrypt using cipher from context (requires cipher)
+      - ``"plaintext"`` or ``True``: Expose the actual value (backend use only)
+      - ``False`` or absent: Let Pydantic handle default masking (redaction)
+
+    The ``"encrypted"`` mode is safe for frontend clients as they cannot decrypt.
+    The ``"plaintext"`` mode should only be used by trusted backend clients.
+    """
     if v is None:
         return None
 
-    # check if a cipher is supplied
-    if info.context and info.context.get("cipher"):
-        cipher: Cipher = info.context.get("cipher")
+    expose_mode = info.context.get("expose_secrets") if info.context else None
+    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+
+    # Handle explicit cipher in context (backward compat for storage)
+    if cipher and expose_mode != "plaintext":
         return cipher.encrypt(v)
 
-    # Check if the 'expose_secrets' flag is in the serialization context
-    if info.context and info.context.get("expose_secrets"):
+    # Handle expose_secrets modes
+    if expose_mode == "encrypted":
+        # Encrypted mode requires a cipher
+        if cipher:
+            return cipher.encrypt(v)
+        # No cipher available - fall back to redaction for safety
+        return REDACTED_SECRET_VALUE
+
+    if expose_mode == "plaintext" or expose_mode is True:
+        # Plaintext mode - expose raw value (backend only!)
         return v.get_secret_value()
 
-    # Let Pydantic handle the default masking
+    # Default: let Pydantic handle masking (redaction)
     return v
 
 
