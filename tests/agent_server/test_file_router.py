@@ -1,6 +1,7 @@
 """Tests for file_router.py endpoints."""
 
 import io
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -246,3 +247,103 @@ def test_file_legacy_routes_are_removed_from_openapi(client):
     openapi_paths = response.json()["paths"]
     assert "/api/file/upload/{path}" not in openapi_paths
     assert "/api/file/download/{path}" not in openapi_paths
+
+
+# =============================================================================
+# search_subdirs Tests
+# =============================================================================
+
+
+def test_search_subdirs_returns_only_directories_with_absolute_paths(client, tmp_path):
+    """Return subdirs with absolute paths; skip files and hidden entries."""
+    (tmp_path / "repo1").mkdir()
+    (tmp_path / "repo2").mkdir()
+    (tmp_path / ".hidden_dir").mkdir()
+    (tmp_path / "README.md").write_text("hi")
+
+    response = client.get("/api/file/search_subdirs", params={"path": str(tmp_path)})
+
+    assert response.status_code == 200
+    body = response.json()
+    names = [entry["name"] for entry in body["items"]]
+    paths = [entry["path"] for entry in body["items"]]
+    assert names == ["repo1", "repo2"]
+    assert paths == [str(tmp_path / "repo1"), str(tmp_path / "repo2")]
+    assert body["next_page_id"] is None
+
+
+def test_search_subdirs_relative_path_returns_400(client):
+    response = client.get("/api/file/search_subdirs", params={"path": "relative/path"})
+    assert response.status_code == 400
+    assert "must be absolute" in response.json()["detail"]
+
+
+def test_search_subdirs_missing_directory_returns_404(client, tmp_path):
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path / "does-not-exist")},
+    )
+    assert response.status_code == 404
+
+
+def test_search_subdirs_path_is_a_file_returns_400(client, tmp_path):
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("hi")
+    response = client.get("/api/file/search_subdirs", params={"path": str(file_path)})
+    assert response.status_code == 400
+    assert "not a directory" in response.json()["detail"]
+
+
+def test_search_subdirs_paginates_with_limit_and_page_id(client, tmp_path):
+    """Limit caps the page; next_page_id resumes from the next item."""
+    for name in ["alpha", "Bravo", "charlie", "Delta", "echo"]:
+        (tmp_path / name).mkdir()
+
+    first = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "limit": 2},
+    )
+    assert first.status_code == 200
+    first_body = first.json()
+    assert [e["name"] for e in first_body["items"]] == ["alpha", "Bravo"]
+    assert first_body["next_page_id"] == "charlie"
+
+    second = client.get(
+        "/api/file/search_subdirs",
+        params={
+            "path": str(tmp_path),
+            "limit": 2,
+            "page_id": first_body["next_page_id"],
+        },
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    assert [e["name"] for e in second_body["items"]] == ["charlie", "Delta"]
+    assert second_body["next_page_id"] == "echo"
+
+    third = client.get(
+        "/api/file/search_subdirs",
+        params={
+            "path": str(tmp_path),
+            "limit": 2,
+            "page_id": second_body["next_page_id"],
+        },
+    )
+    assert third.status_code == 200
+    third_body = third.json()
+    assert [e["name"] for e in third_body["items"]] == ["echo"]
+    assert third_body["next_page_id"] is None
+
+
+def test_search_subdirs_limit_too_low_returns_422(client, tmp_path):
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "limit": 0},
+    )
+    assert response.status_code == 422
+
+
+def test_get_home_returns_user_home(client):
+    response = client.get("/api/file/home")
+    assert response.status_code == 200
+    assert response.json()["home"] == str(Path.home())
