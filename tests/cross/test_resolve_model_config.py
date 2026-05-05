@@ -653,3 +653,13 @@ def test_deepseek_v4_flash_config():
     assert model["id"] == "deepseek-v4-flash"
     assert model["display_name"] == "DeepSeek V4 Flash"
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
+
+
+def test_gpt_oss_120b_config():
+    """Test that gpt-oss-120b has correct configuration."""
+    model = MODELS["gpt-oss-120b"]
+
+    assert model["id"] == "gpt-oss-120b"
+    assert model["display_name"] == "GPT OSS 120B"
+    assert model["llm_config"]["model"] == "litellm_proxy/gpt-oss-120b"
+    assert model["llm_config"]["temperature"] == 0.0
