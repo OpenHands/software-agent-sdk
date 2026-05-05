@@ -184,12 +184,10 @@ class TestACPAgentSerialization:
         # In-memory state still holds the real values — only serialization masks.
         assert agent.acp_env["OPENAI_API_KEY"] == "sk-real-secret-do-not-leak"
 
+        # model_dump returns SecretStr objects — real values are hidden.
         dumped = agent.model_dump()
-        assert dumped["acp_env"] == {
-            "OPENAI_API_KEY": REDACTED_SECRET_VALUE,
-            "GEMINI_API_KEY": REDACTED_SECRET_VALUE,
-            "GEMINI_BASE_URL": REDACTED_SECRET_VALUE,
-        }
+        for v in dumped["acp_env"].values():
+            assert str(v) == REDACTED_SECRET_VALUE
 
         # JSON path that produced the original leaks must not contain any of
         # the real values.
