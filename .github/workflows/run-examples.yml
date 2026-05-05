@@ -30,11 +30,10 @@ jobs:
               if: github.event_name == 'pull_request'
               uses: lewagon/wait-on-check-action@v1.7.0
               with:
-                  ref: ${{ github.event.pull_request.head.sha }}
+                  ref: ${{ github.event.pull_request.head.ref }}
                   check-name: Build & Push (python-amd64)
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
                   wait-interval: 10
-                  fail-on-no-checks: false
 
             - name: Checkout
               uses: actions/checkout@v6
@@ -110,15 +109,13 @@ jobs:
                               -H "Content-Type: application/json" \
                               "${API_URL}" \
                               -d "$payload"); then
-                              echo "::warning::Failed to create PR comment (expected for fork PRs). Continuing without comments."
-                              API_URL=""
-                              return
+                              echo "::error::Failed to create PR comment."
+                              exit 1
                           fi
                           COMMENT_ID=$(echo "$response" | jq -r '.id // ""')
                           if [ -z "$COMMENT_ID" ]; then
-                              echo "::warning::GitHub API response did not include a comment id. Continuing without comments."
-                              API_URL=""
-                              return
+                              echo "::error::GitHub API response did not include a comment id: $response"
+                              exit 1
                           fi
                           echo "Created comment with ID: $COMMENT_ID"
                       else
@@ -129,8 +126,8 @@ jobs:
                               -H "Content-Type: application/json" \
                               "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${COMMENT_ID}" \
                               -d "$payload" > /dev/null; then
-                              echo "::warning::Failed to update PR comment (ID: $COMMENT_ID). Continuing."
-                              return
+                              echo "::error::Failed to update PR comment (ID: $COMMENT_ID)."
+                              exit 1
                           fi
                       fi
                   }
