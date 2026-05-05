@@ -155,12 +155,80 @@ class TestACPAgentSerialization:
             acp_args=["--verbose"],
             acp_env={"FOO": "bar"},
         )
-        dumped = agent.model_dump_json()
+        # ``acp_env`` is redacted by default, so a value-preserving round-trip
+        # requires expose_secrets=True (same contract as ``LLM.api_key``).
+        dumped = agent.model_dump_json(context={"expose_secrets": True})
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_command == agent.acp_command
         assert restored.acp_args == agent.acp_args
         assert restored.acp_env == agent.acp_env
+
+    def test_acp_env_redacted_by_default(self):
+        """``acp_env`` values must be masked in default serialization output.
+
+        Regression guard: trace dumps consumed by evaluation tooling embed the
+        full ACPAgent state under ``history[*].value.agent``. Before masking,
+        live proxy keys leaked into shareable archives.
+        """
+        agent = ACPAgent(
+            acp_command=["echo", "test"],
+            acp_env={
+                "OPENAI_API_KEY": "sk-real-secret-do-not-leak",
+                "GEMINI_API_KEY": "sk-other-secret",
+                "GEMINI_BASE_URL": "https://llm-proxy.example/",
+            },
+        )
+
+        # In-memory state still holds the real values — only serialization masks.
+        assert agent.acp_env["OPENAI_API_KEY"] == "sk-real-secret-do-not-leak"
+
+        dumped = agent.model_dump()
+        assert dumped["acp_env"] == {
+            "OPENAI_API_KEY": "<redacted>",
+            "GEMINI_API_KEY": "<redacted>",
+            "GEMINI_BASE_URL": "<redacted>",
+        }
+
+        # JSON path that produced the original leaks must not contain any of
+        # the real values.
+        dumped_json = agent.model_dump_json()
+        assert "sk-real-secret-do-not-leak" not in dumped_json
+        assert "sk-other-secret" not in dumped_json
+        assert "https://llm-proxy.example/" not in dumped_json
+        assert '"<redacted>"' in dumped_json
+
+    def test_acp_env_exposed_with_expose_secrets(self):
+        """``expose_secrets=True`` returns the real values for transport use."""
+        secrets = {
+            "OPENAI_API_KEY": "sk-real-secret",
+            "BASE_URL": "https://llm-proxy.example/",
+        }
+        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(secrets))
+
+        dumped = agent.model_dump(context={"expose_secrets": True})
+        assert dumped["acp_env"] == secrets
+
+        # Round-trip with expose_secrets must reconstruct the original values.
+        json_blob = agent.model_dump_json(context={"expose_secrets": True})
+        restored = AgentBase.model_validate_json(json_blob)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == secrets
+
+    def test_acp_env_serializer_does_not_mutate_in_memory_state(self):
+        """Serialization must not mutate ``self.acp_env`` — the runtime path
+        (:meth:`ACPAgent._start_acp_server`) reads it directly to populate the
+        subprocess environment.
+        """
+        original = {"OPENAI_API_KEY": "sk-real-secret"}
+        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(original))
+
+        # Multiple dumps in different modes must leave the live dict alone.
+        agent.model_dump()
+        agent.model_dump_json()
+        agent.model_dump(context={"expose_secrets": True})
+
+        assert agent.acp_env == original
 
     def test_deserialization_from_dict(self):
         data = {

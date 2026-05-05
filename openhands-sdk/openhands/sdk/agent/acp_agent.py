@@ -42,7 +42,7 @@ from acp.schema import (
     UsageUpdate,
 )
 from acp.transports import default_environment
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, field_serializer
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -701,6 +701,27 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+
+    @field_serializer("acp_env", when_used="always")
+    def _serialize_acp_env(self, value: dict[str, str], info) -> dict[str, str]:
+        """Mask ``acp_env`` values during serialization to prevent secret leakage.
+
+        ``acp_env`` carries provider credentials (e.g. ``ANTHROPIC_API_KEY``,
+        ``OPENAI_API_KEY``, ``GEMINI_API_KEY``) into the ACP subprocess. Without
+        masking, these values land in any persisted agent state — including the
+        conversation history dumps consumed by trace tooling — exposing live
+        proxy keys.
+
+        Pass ``context={"expose_secrets": True}`` to ``model_dump`` /
+        ``model_dump_json`` to recover the real values (e.g. when shipping the
+        agent to a remote agent-server). The runtime path
+        (:meth:`_start_acp_server`) reads ``self.acp_env`` directly and is not
+        affected by this serializer.
+        """
+        if info.context and info.context.get("expose_secrets"):
+            return dict(value)
+        return dict.fromkeys(value, "<redacted>")
+
     acp_session_mode: str | None = Field(
         default=None,
         description=(
