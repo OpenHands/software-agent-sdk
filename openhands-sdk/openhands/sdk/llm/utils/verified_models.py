@@ -124,7 +124,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-super",
     "qwen3-6-plus",
     "qwen3-coder-480b",
-    "trinity-large-thinking,
+    "trinity-large-thinking",
 ]
 
 
