@@ -256,7 +256,7 @@ async def update_settings(
                 ),
             },
         )
-    except (ValueError, ValidationError) as e:
+    except (ValueError, ValidationError):
         # Audit log: validation failed
         # Note: PersistedSettings.update() raises ValueError (sanitized message)
         # while Pydantic validation raises ValidationError

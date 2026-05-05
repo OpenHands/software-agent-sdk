@@ -393,7 +393,10 @@ def test_patch_settings_validation_error_does_not_leak_secrets(client_with_setti
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "llm": {"api_key": "sk-secret-value", "model": ""}  # Empty model is invalid
+                "llm": {
+                    "api_key": "sk-secret-value",
+                    "model": "",
+                }  # Empty model is invalid
             }
         },
     )
@@ -411,7 +414,11 @@ def test_secret_upsert_updates_existing(client_with_settings):
     # Create initial secret
     client_with_settings.put(
         "/api/settings/secrets",
-        json={"name": "MY_SECRET", "value": "original-value", "description": "Original"},
+        json={
+            "name": "MY_SECRET",
+            "value": "original-value",
+            "description": "Original",
+        },
     )
 
     # Update the secret (same name, new value)

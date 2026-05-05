@@ -309,7 +309,9 @@ def test_real_pydantic_nested_secrets_roundtrip(cipher):
                 name="API_KEY", secret=SecretStr("sk-123"), description="API key"
             ),
             "DB_PASS": CustomSecret(
-                name="DB_PASS", secret=SecretStr("password123"), description="DB password"
+                name="DB_PASS",
+                secret=SecretStr("password123"),
+                description="DB password",
             ),
         }
     )
