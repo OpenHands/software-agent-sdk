@@ -28,7 +28,7 @@ jobs:
         steps:
             - name: Download QA trace artifact
               id: download-trace
-              uses: dawidd6/action-download-artifact@v20
+              uses: dawidd6/action-download-artifact@v21
               continue-on-error: true
               with:
                   workflow: qa-changes-by-openhands.yml
