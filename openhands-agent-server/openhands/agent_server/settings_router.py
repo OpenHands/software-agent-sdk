@@ -167,10 +167,15 @@ async def get_settings(request: Request) -> SettingsResponse:
     - ``plaintext``: Returns raw secret values (backend clients only!)
     - (absent): Returns redacted values ("**********")
 
-    Note:
+    Security:
+        This endpoint requires authentication via the ``X-Session-API-Key``
+        header when the server is configured with session API keys. All
+        authenticated clients can access any expose mode.
+
         The ``plaintext`` mode should only be used by trusted backend clients
-        (e.g., RemoteWorkspace). Frontend clients should use ``encrypted`` mode
-        if they need to round-trip secret values.
+        (e.g., RemoteWorkspace) operating in the same trust domain as the
+        agent-server. Frontend clients should use ``encrypted`` mode if they
+        need to round-trip secret values for start conversation requests.
     """
     expose_mode = _parse_expose_secrets_header(request)
     config = _get_config(request)
