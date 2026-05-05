@@ -88,7 +88,7 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-6-plus",
     "qwen3-coder-480b",
 ]
-a
+
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
