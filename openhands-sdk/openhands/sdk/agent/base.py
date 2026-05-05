@@ -28,7 +28,7 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp import create_mcp_tools_graceful
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -453,6 +453,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
+        mcp_errors: list[str] = []
 
         # Use ThreadPoolExecutor to parallelize tool resolution
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -463,15 +464,32 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 future = executor.submit(resolve_tool, tool_spec, state)
                 futures.append(future)
 
-            # Submit MCP tools creation if configured
+            # Submit MCP tools creation if configured (using graceful degradation)
+            mcp_future = None
             if self.mcp_config:
-                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
-                futures.append(future)
+                mcp_future = executor.submit(
+                    create_mcp_tools_graceful, self.mcp_config, 30
+                )
 
-            # Collect results as they complete
+            # Collect regular tool results
             for future in futures:
                 result = future.result()
                 tools.extend(result)
+
+            # Collect MCP results with graceful degradation
+            if mcp_future is not None:
+                mcp_result = mcp_future.result()
+                tools.extend(mcp_result.tools)
+                if mcp_result.has_errors:
+                    for err in mcp_result.errors:
+                        mcp_errors.append(f"{err.server_name}: {err}")
+
+        # Log MCP errors but continue with available tools
+        if mcp_errors:
+            logger.warning(
+                "Some MCP servers failed to initialize:\n"
+                + "\n".join(f"  - {e}" for e in mcp_errors)
+            )
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
