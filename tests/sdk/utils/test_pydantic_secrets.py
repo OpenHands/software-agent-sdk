@@ -413,5 +413,7 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
 
     # Deserialize (decrypt)
     restored = PersistedSettings.model_validate(data, context={"cipher": cipher})
-    assert restored.agent_settings.llm.api_key is not None
-    assert restored.agent_settings.llm.api_key.get_secret_value() == "sk-test-key-12345"
+    restored_key = restored.agent_settings.llm.api_key
+    assert restored_key is not None
+    assert isinstance(restored_key, SecretStr)
+    assert restored_key.get_secret_value() == "sk-test-key-12345"
