@@ -128,10 +128,11 @@ class ManagedAPIServer:
             print("✅ Server stopped")
 
 
-# Get LLM API key from environment
+# Get LLM configuration from environment
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+llm_base_url = os.getenv("LLM_BASE_URL")  # Optional custom base URL
 
 with ManagedAPIServer(port=8765) as server:
     client = httpx.Client(base_url=server.base_url, timeout=120.0)
@@ -145,22 +146,24 @@ with ManagedAPIServer(port=8765) as server:
         logger.info("=" * 60)
 
         # Store LLM configuration - the API key is encrypted at rest
+        llm_config: dict[str, str] = {
+            "model": llm_model,
+            "api_key": api_key,
+        }
+        if llm_base_url:
+            llm_config["base_url"] = llm_base_url
+
         response = client.patch(
             "/api/settings",
-            json={
-                "agent_settings_diff": {
-                    "llm": {
-                        "model": llm_model,
-                        "api_key": api_key,
-                    }
-                }
-            },
+            json={"agent_settings_diff": {"llm": llm_config}},
         )
         assert response.status_code == 200, f"PATCH settings failed: {response.text}"
         settings = response.json()
 
         logger.info("✅ LLM settings stored successfully")
         logger.info(f"   - LLM model: {settings['agent_settings']['llm']['model']}")
+        if llm_base_url:
+            logger.info(f"   - Base URL: {llm_base_url}")
         logger.info(f"   - API key set: {settings['llm_api_key_is_set']}")
 
         # ══════════════════════════════════════════════════════════════
@@ -213,10 +216,7 @@ with ManagedAPIServer(port=8765) as server:
         start_request = {
             "agent": {
                 "kind": "Agent",
-                "llm": {
-                    "model": llm_model,
-                    "api_key": api_key,  # LLM API key passed directly
-                },
+                "llm": llm_config,  # Use same LLM config (model, api_key, base_url)
                 "tools": [
                     {"name": TerminalTool.name},
                     {"name": FileEditorTool.name},
