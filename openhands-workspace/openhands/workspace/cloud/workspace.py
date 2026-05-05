@@ -682,9 +682,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def get_mcp_config(self) -> dict[str, Any]:
         """Fetch MCP configuration from the user's SaaS account.
 
-        Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
-        and transforms it into the format expected by the SDK Agent and
+        Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
+        user's MCP configuration in the format expected by the SDK Agent and
         ``fastmcp.mcp_config.MCPConfig``.
+
+        The API returns ``mcp_config`` in the standard ``fastmcp.MCPConfig``
+        format with a ``mcpServers`` dict. This method passes that through
+        directly. For backward compatibility, it also supports transforming
+        the legacy format (``sse_servers``, ``shttp_servers``, ``stdio_servers``
+        arrays) if encountered.
 
         Returns:
             A dictionary with ``mcpServers`` key containing server configurations
@@ -711,6 +717,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         resp = self._send_api_request(
             "GET",
             f"{self.cloud_api_url}/api/v1/users/me",
+            params={"expose_secrets": "true"},
             headers={"X-Session-API-Key": self._session_api_key or ""},
         )
         data = resp.json()
@@ -719,6 +726,11 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not mcp_config_data:
             return {}
 
+        # Standard format: API returns mcpServers dict directly (fastmcp.MCPConfig)
+        if "mcpServers" in mcp_config_data:
+            return mcp_config_data
+
+        # Legacy format: transform sse_servers/shttp_servers/stdio_servers arrays
         mcp_servers: dict[str, dict[str, Any]] = {}
 
         # Transform SSE servers → RemoteMCPServer format
