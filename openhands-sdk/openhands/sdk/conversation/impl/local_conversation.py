@@ -1,5 +1,4 @@
 import atexit
-import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -70,7 +69,7 @@ logger = get_logger(__name__)
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
-    _state: ConversationState
+    _state_value: ConversationState
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
@@ -85,6 +84,18 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+
+    @property
+    def _state(self) -> ConversationState:
+        return self._state_value
+
+    @_state.setter
+    def _state(self, new_state: ConversationState) -> None:
+        self._state_value = new_state
+        # Automatically update objects that hold direct state references.
+        stuck_detector = getattr(self, "_stuck_detector", None)
+        if stuck_detector is not None:
+            stuck_detector.state = new_state
 
     def __init__(
         self,
@@ -380,30 +391,24 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            # Deep-copy events from source → fork so the source stays
-            # immutable.
-            for event in self._state.events:
-                fork_conv._state.events.append(event.model_copy(deep=True))
+            # Build the effective tags dict for the fork.
+            fork_tags: dict[str, str] | None = None
+            if tags is not None or title is not None:
+                fork_tags = dict(tags) if tags else {}
+                if title is not None:
+                    fork_tags["title"] = title
 
-            # Copy runtime state that accumulated during the source
-            # conversation. activated_knowledge_skills is list[str] – strings
-            # are immutable so a shallow list copy is sufficient.
-            # agent_state can hold arbitrary mutable values, so deep-copy it.
-            fork_conv._state.activated_knowledge_skills = list(
-                self._state.activated_knowledge_skills
+            # Delegate deep-copy semantics to ConversationState.snapshot()
+            # and replace the fork's placeholder state.  The _state setter
+            # automatically updates the stuck detector's reference.
+            fork_conv._state = self._state.snapshot(
+                conversation_id=fork_id,
+                file_store=fork_conv._state._fs,
+                reset_metrics=reset_metrics,
+                agent=fork_agent,
+                persistence_dir=fork_conv._state.persistence_dir,
+                tags=fork_tags,
             )
-            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
-
-            # Copy title via tags if provided
-            if title is not None:
-                fork_conv._state.tags = {
-                    **fork_conv._state.tags,
-                    "title": title,
-                }
-
-            # Reset or copy metrics
-            if not reset_metrics:
-                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
 
             event_count = len(self._state.events)
 

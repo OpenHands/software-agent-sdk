@@ -1,5 +1,7 @@
 # state.py
+import copy
 import json
+import uuid
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
@@ -269,6 +271,95 @@ class ConversationState(OpenHandsModel):
         else:
             with self._write_guard():
                 fs.write(BASE_STATE, payload)
+
+    # ===== State cloning =====
+    def snapshot(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        file_store: FileStore | None = None,
+        reset_metrics: bool = False,
+        **overrides: Any,
+    ) -> "ConversationState":
+        """Create an independent copy of this state with its own identity.
+
+        Field-by-field copy semantics applied to the *base* (pre-override)
+        values:
+
+        - **Deep-copied**: ``agent_state`` (``copy.deepcopy``),
+          ``stats`` (``model_copy(deep=True)`` unless *reset_metrics*).
+        - **Shallow list/dict copy**: ``activated_knowledge_skills``,
+          ``invoked_skills``, ``tags``, ``blocked_actions``,
+          ``blocked_messages``.
+        - **Shared references**: ``agent``, ``workspace``,
+          ``confirmation_policy``, ``security_analyzer``, ``hook_config``.
+        - **Events**: each event is deep-copied into a fresh ``EventLog``.
+        - **Private attrs**: ``_lock`` and ``_on_state_change`` get fresh
+          defaults; ``_cipher`` is shared.
+
+        Any public ``ConversationState`` field can be overridden via
+        ``**overrides`` (e.g. ``agent=``, ``persistence_dir=``,
+        ``tags=``).  Overrides replace the copied value outright — no
+        additional deep/shallow copy is applied to them.
+
+        Args:
+            conversation_id: ID for the new state.  Auto-generated UUID
+                if ``None``.
+            file_store: ``FileStore`` backing the new state's event log
+                and persistence.  Falls back to ``InMemoryFileStore``
+                when ``None``.
+            reset_metrics: When ``True`` (default ``False``), the copy
+                starts with fresh ``ConversationStats``.
+            **overrides: Any ``ConversationState`` field to override on
+                the copy (e.g. ``agent=``, ``persistence_dir=``,
+                ``tags=``).
+
+        Returns:
+            A new ``ConversationState`` that is independent of the source.
+        """
+        new_id = conversation_id if conversation_id is not None else uuid.uuid4()
+        fs = file_store or InMemoryFileStore()
+
+        # Start from all current field values (shared references by
+        # default — safe for immutable Pydantic models).  Then apply
+        # field-specific copy semantics where mutability requires it.
+        fields: dict[str, Any] = {
+            name: getattr(self, name) for name in type(self).model_fields
+        }
+
+        # Identity & execution
+        fields["id"] = new_id
+        fields["execution_status"] = ConversationExecutionStatus.IDLE
+
+        # Deep-copied mutable data
+        fields["agent_state"] = copy.deepcopy(self.agent_state)
+        fields["stats"] = (
+            ConversationStats() if reset_metrics else self.stats.model_copy(deep=True)
+        )
+
+        # Shallow-copied collections (immutable str elements)
+        for list_field in ("activated_knowledge_skills", "invoked_skills"):
+            fields[list_field] = list(fields[list_field])
+        for dict_field in ("blocked_actions", "blocked_messages", "tags"):
+            fields[dict_field] = dict(fields[dict_field])
+
+        # Caller overrides replace values outright.
+        fields.update(overrides)
+
+        new_state = type(self)(**fields)
+
+        # Private attrs
+        new_state._fs = fs
+        new_state._events = EventLog(fs, dir_path=EVENTS_DIR)
+        new_state._cipher = self._cipher
+
+        # Deep-copy events into the new event log
+        for event in self._events:
+            new_state._events.append(event.model_copy(deep=True))
+
+        new_state._save_base_state(fs)
+        new_state._autosave_enabled = True
+        return new_state
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
