@@ -193,11 +193,27 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-# Pattern to match sensitive field values in error messages
-_SENSITIVE_FIELDS_PATTERN = re.compile(
-    r"(api_key|secret|token|password|credential)['\"]?\s*[:=]\s*['\"]?[^'\"}\s,]+",
-    re.IGNORECASE,
-)
+# Patterns to match sensitive field values in error messages
+# Multiple patterns for different formats Pydantic may use
+_SENSITIVE_PATTERNS = [
+    # Pattern: field': 'value' or field": "value"
+    re.compile(
+        r"(api_key|secret|token|password|credential|key|auth)"
+        r"['\"]?\s*[:=]\s*['\"]([^'\"}\s,]+)['\"]",
+        re.IGNORECASE,
+    ),
+    # Pattern: field=value (no quotes)
+    re.compile(
+        r"(api_key|secret|token|password|credential|key|auth)"
+        r"\s*=\s*([^\s,}\]]+)",
+        re.IGNORECASE,
+    ),
+    # Pattern: 'value' for Field(secret=True) - Pydantic shows just the value
+    re.compile(
+        r"Input should be [^']+'([^']+)'",
+        re.IGNORECASE,
+    ),
+]
 
 
 def _sanitize_validation_error(error: ValidationError) -> str:
@@ -206,10 +222,15 @@ def _sanitize_validation_error(error: ValidationError) -> str:
     When building models from dicts that have expose_secrets=True context,
     any validation failure could include secret values in error messages.
     This function redacts such values before the error propagates.
+
+    Uses multiple regex patterns to catch different formats Pydantic may use.
+    This is a defense-in-depth measure - the primary protection is to avoid
+    including secrets in error contexts in the first place.
     """
     error_str = str(error)
-    # Redact any field=value patterns for sensitive fields
-    sanitized = _SENSITIVE_FIELDS_PATTERN.sub(r"\1': '***REDACTED***", error_str)
+    sanitized = error_str
+    for pattern in _SENSITIVE_PATTERNS:
+        sanitized = pattern.sub(r"\1=***REDACTED***", sanitized)
     return sanitized
 
 

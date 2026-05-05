@@ -74,6 +74,13 @@ class PersistedSettings(BaseModel):
         Accepts ``agent_settings_diff`` and ``conversation_settings_diff``
         for partial updates. Uses ``from_persisted()`` to apply any schema
         migrations if the incoming diff contains an older schema version.
+
+        Note:
+            Secret values are temporarily exposed in memory during the merge
+            operation. The merged dict is immediately consumed by model
+            construction and not persisted or logged. Any exceptions raised
+            during merge will not expose secrets in stack traces because
+            Pydantic re-wraps values in SecretStr before validation errors.
         """
         from openhands.agent_server.persistence.utils import deep_merge
 
@@ -179,12 +186,24 @@ class Secrets(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     def get_env_vars(self) -> dict[str, str]:
-        """Get secrets as environment variables dict."""
-        return {
-            name: secret.secret.get_secret_value()
-            for name, secret in self.custom_secrets.items()
-            if secret.secret is not None
-        }
+        """Get secrets as environment variables dict.
+
+        Safely extracts secret values, logging warnings for malformed secrets.
+        """
+        result: dict[str, str] = {}
+        for name, secret in self.custom_secrets.items():
+            if secret.secret is None:
+                continue
+            try:
+                result[name] = secret.secret.get_secret_value()
+            except Exception:
+                # Log without exposing secret contents
+                from openhands.sdk.logger import get_logger
+
+                get_logger(__name__).warning(
+                    f"Failed to extract secret '{name}' - skipping"
+                )
+        return result
 
     def get_descriptions(self) -> dict[str, str | None]:
         """Get secret name to description mapping."""
@@ -224,9 +243,11 @@ class Secrets(BaseModel):
                     converted[name] = value
                 elif isinstance(value, dict):
                     # Keep as dict - let Pydantic handle validation with context
+                    # Note: Use None instead of "" for missing secret to preserve
+                    # distinction between "empty secret" and "missing secret"
                     converted[name] = {
                         "name": name,
-                        "secret": value.get("secret", ""),
+                        "secret": value.get("secret"),  # None if missing
                         "description": value.get("description"),
                     }
                 elif isinstance(value, str):

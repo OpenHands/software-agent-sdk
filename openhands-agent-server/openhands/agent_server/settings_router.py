@@ -94,11 +94,11 @@ def _validate_secret_name(name: str) -> None:
     - Be 1-64 characters long
 
     Raises:
-        HTTPException: 400 if name format is invalid.
+        HTTPException: 422 if name format is invalid.
     """
     if not _SECRET_NAME_PATTERN.match(name):
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
                 "Invalid secret name format. Must start with a letter, "
                 "contain only letters, numbers, and underscores, "

@@ -314,6 +314,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         # User-provided kwargs take precedence
         kwargs.update(llm_kwargs)
 
+        # Warn if no API key is configured (common misconfiguration)
+        if not kwargs.get("api_key"):
+            logger.warning(
+                "No LLM API key found in server settings or kwargs. "
+                "LLM calls will likely fail. Configure via /api/settings."
+            )
+
         return LLM(**kwargs)
 
     def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:

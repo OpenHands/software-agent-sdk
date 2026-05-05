@@ -73,9 +73,18 @@ class StoredConversation(StartACPConversationRequest):
 
     Extends StartConversationRequest with server-assigned fields.
     Unlike the request model, stored conversations have resolved agent/workspace.
+
+    Note:
+        The field overrides below make optional parent fields required. This is
+        intentional - a stored conversation MUST have resolved agent/workspace
+        (the server fills these in during start_conversation). The type:ignore
+        comments acknowledge the Liskov Substitution Principle (LSP) violation;
+        we accept this trade-off because StoredConversation is an internal model
+        that is never used polymorphically with StartACPConversationRequest.
     """
 
     # Override to make required (resolved by server before storage)
+    # LSP violation is intentional - see class docstring
     agent: ACPEnabledAgent = Field(...)  # type: ignore[assignment]
     workspace: LocalWorkspace = Field(...)  # type: ignore[assignment]
 

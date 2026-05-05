@@ -556,12 +556,20 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 # - Nested property patterns use prefix match because oasdiff reports the
 #   entire nested structure as removed when parent becomes anyOf[object, null]
 # - If you're modifying agent or workspace schema, verify changes manually
+#
+# WARNING: These patterns are intentionally broad to handle oasdiff's behavior
+# of reporting ALL nested paths when a parent field's type changes. This means:
+# 1. A genuine removal of a nested agent/workspace field WILL be allowlisted
+# 2. Code reviewers MUST manually verify schema changes to these fields
+# 3. When in doubt, add explicit test coverage for the schema change
 _OPTIONAL_AGENT_WORKSPACE_PATTERNS = (
     # Type changes for making agent/workspace optional (top-level only)
     "the `agent` request property type/format changed",
     "the `workspace` request property type/format changed",
     # Nested properties reported as "removed" due to anyOf wrapper.
     # Prefix match is intentional - oasdiff reports ALL nested paths.
+    # REVIEWER NOTE: If you're genuinely removing a field under agent/ or
+    # workspace/, this will be silently allowlisted. Double-check schema diffs.
     "removed the request property `agent/",
     "removed the request property `workspace/",
     # Optional nested properties (oasdiff sometimes uses this format)

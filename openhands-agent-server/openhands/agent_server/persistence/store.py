@@ -3,7 +3,7 @@
 Following the same pattern as OpenHands app-server's FileSettingsStore
 and FileSecretsStore for consistency.
 
-Note: File locking uses Unix fcntl module. On Windows, locking is a no-op.
+File locking uses fcntl on Unix and msvcrt on Windows.
 """
 
 from __future__ import annotations
@@ -172,8 +172,17 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     if interrupted. Creates temp file with owner-only permissions from
     the start to prevent race conditions where sensitive data could
     be read before chmod.
+
+    Note:
+        The rename operation (Path.replace) is atomic on POSIX systems.
+        On Windows, it may not be fully atomic in all edge cases (e.g.,
+        concurrent access, network drives), but provides reasonable
+        protection against corruption from interrupted writes.
     """
-    tmp_path = path.with_suffix(".tmp")
+    # Use PID and counter for unique temp filename to prevent collisions
+    # when multiple processes write to the same file concurrently
+    _atomic_write_json._counter = getattr(_atomic_write_json, "_counter", 0) + 1
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{_atomic_write_json._counter}")
     # Create file with secure permissions from the start using os.open
     # O_WRONLY | O_CREAT | O_TRUNC mimics "w" mode
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)

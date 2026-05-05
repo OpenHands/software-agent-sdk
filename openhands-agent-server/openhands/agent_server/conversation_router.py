@@ -177,6 +177,13 @@ async def start_conversation(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         ) from e
+    except ValueError as e:
+        # ValueError raised from _validate_merged_agent_settings or StoredConversation
+        # construction indicates invalid configuration (422, not 500)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info
 
