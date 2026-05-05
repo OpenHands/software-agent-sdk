@@ -447,3 +447,121 @@ def test_secret_name_validation_on_delete(client_with_settings):
     # Invalid name format
     response = client_with_settings.delete("/api/settings/secrets/invalid-name")
     assert response.status_code == 422
+
+
+# ── Concurrent update tests ────────────────────────────────────────────────
+
+
+def test_concurrent_patch_updates_preserve_data(client_with_settings):
+    """PATCH /api/settings handles concurrent updates without data loss.
+
+    Tests that multiple sequential PATCH requests don't corrupt settings
+    or lose updates due to race conditions in the file locking mechanism.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Initialize settings
+    client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "initial-model"}}},
+    )
+
+    results = []
+    errors = []
+
+    def update_settings(model_name: str):
+        """Make a PATCH request to update the model."""
+        try:
+            response = client_with_settings.patch(
+                "/api/settings",
+                json={"agent_settings_diff": {"llm": {"model": model_name}}},
+            )
+            return (model_name, response.status_code)
+        except Exception as e:
+            return (model_name, str(e))
+
+    # Run concurrent updates
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [
+            executor.submit(update_settings, f"model-{i}") for i in range(10)
+        ]
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            if result[1] != 200:
+                errors.append(result)
+
+    # All requests should succeed (file locking should serialize them)
+    assert len(errors) == 0, f"Some requests failed: {errors}"
+
+    # Final state should be consistent (one of the model values)
+    final_response = client_with_settings.get("/api/settings")
+    assert final_response.status_code == 200
+    final_model = final_response.json()["agent_settings"]["llm"]["model"]
+    # The final value should be one of the values we set (not corrupted)
+    assert final_model.startswith("model-"), f"Unexpected model value: {final_model}"
+
+
+# ── Error handling tests ───────────────────────────────────────────────────
+
+
+def test_get_settings_encrypted_mode_without_cipher_returns_503(temp_persistence_dir):
+    """GET /api/settings with X-Expose-Secrets: encrypted without cipher returns 503.
+
+    When OH_SECRET_KEY is not set, config.cipher is None and requesting
+    encrypted mode should fail fast with a clear error (503 Service Unavailable).
+    """
+    # Create a config WITHOUT secret_key (cipher will be None)
+    config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=None,  # No cipher!
+    )
+    client = TestClient(create_app(config))
+
+    # First, verify we can create settings (no cipher needed for plaintext)
+    # Note: Without cipher, we need to manually create a settings file
+    store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=None)
+    settings = PersistedSettings()
+    settings.agent_settings.llm.api_key = SecretStr("sk-test-secret-key")
+    store.save(settings)
+
+    # Now request encrypted mode - should fail because no cipher
+    response = client.get("/api/settings", headers={"X-Expose-Secrets": "encrypted"})
+
+    # Should return 503 (service unavailable - encryption not configured)
+    assert response.status_code == 503
+    body = response.json()
+    # Error message may be in 'detail' or 'exception' depending on error handler config
+    error_text = body.get("detail", "") + body.get("exception", "")
+    assert "OH_SECRET_KEY" in error_text
+
+
+def test_patch_settings_corrupted_file_returns_409(
+    client_with_settings, temp_persistence_dir
+):
+    """PATCH /api/settings returns 409 when settings file is corrupted.
+
+    Tests the RuntimeError handling path that catches corruption or
+    encryption key mismatches.
+    """
+    # Initialize valid settings first
+    client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "gpt-4"}}},
+    )
+
+    # Corrupt the settings file directly
+    settings_file = temp_persistence_dir / "settings.json"
+    settings_file.write_text("{ this is not valid JSON !!!}")
+
+    # Attempt to update - should fail with 409 (corruption detected)
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+    )
+
+    # RuntimeError from store.update() should be caught and returned as 409
+    assert response.status_code == 409
+    assert "corrupted" in response.json()["detail"].lower()

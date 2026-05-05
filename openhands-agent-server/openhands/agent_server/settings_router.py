@@ -169,8 +169,16 @@ async def get_settings(request: Request) -> SettingsResponse:
 
     Security:
         This endpoint requires authentication via the ``X-Session-API-Key``
-        header when the server is configured with session API keys. All
-        authenticated clients can access any expose mode.
+        header when the server is configured with session API keys.
+
+        **WARNING: No authorization check for plaintext mode.** All authenticated
+        clients can access any expose mode, including plaintext. Authentication
+        alone is insufficient - the server trusts all authenticated clients
+        equally. Production deployments should consider:
+
+        - Network isolation (restrict plaintext access to internal IPs only)
+        - Adding role-based authorization via ``X-Client-Type`` header
+        - Using encrypted mode for all non-backend clients
 
         The ``plaintext`` mode should only be used by trusted backend clients
         (e.g., RemoteWorkspace) operating in the same trust domain as the
@@ -202,11 +210,20 @@ async def get_settings(request: Request) -> SettingsResponse:
     else:
         context = {}
 
-    return SettingsResponse(
-        agent_settings=settings.agent_settings.model_dump(mode="json", context=context),
-        conversation_settings=settings.conversation_settings.model_dump(mode="json"),
-        llm_api_key_is_set=settings.llm_api_key_is_set,
-    )
+    try:
+        return SettingsResponse(
+            agent_settings=settings.agent_settings.model_dump(mode="json", context=context),
+            conversation_settings=settings.conversation_settings.model_dump(mode="json"),
+            llm_api_key_is_set=settings.llm_api_key_is_set,
+        )
+    except Exception as e:
+        # Handle ValueError from serialize_secret when cipher is missing for encrypted mode
+        if "no cipher configured" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Encryption not available: OH_SECRET_KEY is not configured",
+            )
+        raise
 
 
 @settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
@@ -278,7 +295,8 @@ async def update_settings(
             detail="Settings file is corrupted or encrypted with a different key",
         )
     except (OSError, PermissionError):
-        logger.error("Settings update failed", exc_info=True)
+        # Note: exc_info omitted to prevent secrets in scope from leaking in tracebacks
+        logger.error("Settings update failed - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
     # Don't expose secrets in PATCH response (consistent with GET behavior)
@@ -371,7 +389,8 @@ async def create_secret(
             description=secret.description,
         )
     except (OSError, PermissionError):
-        logger.error("Failed to save secret", exc_info=True)
+        # Note: exc_info omitted to prevent secret values from leaking in tracebacks
+        logger.error("Failed to save secret - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to save secret")
 
     logger.info(

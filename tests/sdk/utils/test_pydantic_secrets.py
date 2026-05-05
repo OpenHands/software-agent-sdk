@@ -139,12 +139,68 @@ def test_serialize_secret_cipher_with_plaintext_mode_returns_plaintext(
     assert result == "sk-test-123"
 
 
+def test_serialize_secret_cipher_with_bool_true_returns_plaintext(mock_info, cipher):
+    """expose_secrets=True (legacy boolean) overrides cipher - returns raw value.
+
+    This tests backward compatibility: when expose_secrets=True is passed with
+    a cipher, it should return plaintext instead of encrypting.
+    """
+    secret = SecretStr("sk-test-123")
+    result = serialize_secret(
+        secret, mock_info({"expose_secrets": True, "cipher": cipher})
+    )
+    # Should be plaintext, not encrypted
+    assert result == "sk-test-123"
+
+
 # ── validate_secret tests ───────────────────────────────────────────────
 
 
 def test_validate_secret_none_returns_none(mock_info):
     result = validate_secret(None, mock_info({}))
     assert result is None
+
+
+def test_validate_secret_invalid_type_int_raises_error(mock_info):
+    """validate_secret raises TypeError for invalid int type.
+
+    The function signature expects str | SecretStr | None. Passing an int
+    fails when trying to call .strip() on the value.
+    """
+    with pytest.raises((TypeError, AttributeError)):
+        validate_secret(123, mock_info({}))
+
+
+def test_validate_secret_invalid_type_dict_returns_none(mock_info):
+    """validate_secret handles empty dict gracefully (returns None).
+
+    Empty dict is falsy, so it's treated as empty/missing secret.
+    Note: Non-empty dicts would fail when .strip() is called.
+    """
+    result = validate_secret({}, mock_info({}))
+    assert result is None
+
+
+def test_validate_secret_invalid_type_list_returns_none(mock_info):
+    """validate_secret handles empty list gracefully (returns None).
+
+    Empty list is falsy, so it's treated as empty/missing secret.
+    Note: Non-empty lists would fail when .strip() is called.
+    """
+    result = validate_secret([], mock_info({}))
+    assert result is None
+
+
+def test_validate_secret_nonempty_dict_raises_error(mock_info):
+    """validate_secret raises error for non-empty dict (invalid type)."""
+    with pytest.raises((TypeError, AttributeError)):
+        validate_secret({"key": "value"}, mock_info({}))
+
+
+def test_validate_secret_nonempty_list_raises_error(mock_info):
+    """validate_secret raises error for non-empty list (invalid type)."""
+    with pytest.raises((TypeError, AttributeError)):
+        validate_secret(["value"], mock_info({}))
 
 
 def test_validate_secret_string_returns_secretstr(mock_info):

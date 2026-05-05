@@ -90,6 +90,14 @@ class PersistedSettings(BaseModel):
         for partial updates. Uses ``from_persisted()`` to apply any schema
         migrations if the incoming diff contains an older schema version.
 
+        Thread Safety:
+            This method is NOT thread-safe for concurrent in-memory updates.
+            The assignments to ``agent_settings`` and ``conversation_settings``
+            are not atomic. However, the router wraps calls via ``store.update()``
+            which uses file locking to prevent concurrent updates at the I/O layer.
+            Multiple ``PersistedSettings`` instances should NOT be shared across
+            threads without external synchronization.
+
         Note:
             Secret values are temporarily exposed in memory during the merge
             operation. The merged dict is immediately consumed by model
@@ -340,13 +348,24 @@ class SecretsResponse(BaseModel):
 
 
 def _coerce_dict_secrets(d: dict[str, Any]) -> dict[str, Any]:
-    """Recursively coerce SecretStr leaves to plain values."""
+    """Recursively coerce SecretStr leaves to plain values.
+
+    Note: SecretStr extraction is wrapped in error handling to prevent secret
+    values from leaking in exception tracebacks.
+    """
+    from openhands.sdk.logger import get_logger
+
+    _logger = get_logger(__name__)
     out: dict[str, Any] = {}
     for k, v in d.items():
         if isinstance(v, dict):
             out[k] = _coerce_dict_secrets(v)
         elif isinstance(v, SecretStr):
-            out[k] = v.get_secret_value()
+            try:
+                out[k] = v.get_secret_value()
+            except Exception:
+                _logger.warning(f"Failed to extract secret value for key '{k}' - skipping")
+                out[k] = None
         else:
             out[k] = v
     return out

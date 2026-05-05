@@ -43,7 +43,8 @@ def serialize_secret(v: SecretStr | None, info):
     cipher: Cipher | None = info.context.get("cipher") if info.context else None
 
     # Handle explicit cipher in context (backward compat for storage)
-    if cipher and expose_mode != "plaintext":
+    # Skip encryption if expose_mode is plaintext or True (legacy boolean)
+    if cipher and expose_mode not in ("plaintext", True):
         return cipher.encrypt(v)
 
     # Handle expose_secrets modes
