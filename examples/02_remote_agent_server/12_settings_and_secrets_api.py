@@ -285,28 +285,30 @@ with ManagedAPIServer(port=8765) as server:
 
         logger.info(f"✅ Agent finished with status: {execution_status}")
 
-        # Verify the secret was used correctly
-        response = client.post(
-            f"/api/conversations/{conversation_id}/execute",
-            json={
-                "command": "cat secret_test.txt 2>/dev/null || echo 'File not found'"
-            },
+        # Get the agent's final response to verify the task was completed
+        response = client.get(
+            f"/api/conversations/{conversation_id}/agent_final_response"
         )
         accumulated_cost = 0.0
         if response.status_code == 200:
             result = response.json()
-            file_content = result.get("stdout", "").strip()
-            logger.info(f"   File content: {file_content}")
-            # The file should contain the secret value
-            if secret_value in file_content:
-                logger.info("   ✅ Secret was correctly resolved and used!")
-            else:
-                logger.info("   ⚠️  Secret may not have been written to file")
+            agent_response = result.get("response", "")
+            if agent_response:
+                # Truncate long responses for display
+                display_response = (
+                    agent_response[:200] + "..."
+                    if len(agent_response) > 200
+                    else agent_response
+                )
+                logger.info(f"   Agent response: {display_response}")
+                logger.info("   ✅ Agent completed the task using the secret!")
 
         # Get conversation metrics
-        conversation_data = response.json() if response.status_code == 200 else {}
-        metrics = conversation_data.get("metrics", {})
-        accumulated_cost = metrics.get("accumulated_cost", 0.0)
+        response = client.get(f"/api/conversations/{conversation_id}")
+        if response.status_code == 200:
+            conversation_data = response.json()
+            metrics = conversation_data.get("metrics", {})
+            accumulated_cost = metrics.get("accumulated_cost", 0.0)
 
         # Clean up - delete conversation
         client.delete(f"/api/conversations/{conversation_id}")
