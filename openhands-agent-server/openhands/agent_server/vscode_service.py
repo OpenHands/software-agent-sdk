@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import shutil
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
@@ -19,6 +20,7 @@ class VSCodeService:
         port: int = 8001,
         connection_token: str | None = None,
         server_base_path: str | None = None,
+        openvscode_server_root: str | None = None,
     ):
         """Initialize VSCode service.
 
@@ -28,13 +30,19 @@ class VSCodeService:
             create_workspace: Whether to create the workspace directory if it doesn't
                 exist
             server_base_path: Base path for the server (used in path-based routing)
+            openvscode_server_root: Filesystem root of the OpenVSCode Server install.
+                When the binary is missing at this root, falls back to discovering
+                'openvscode-server' on PATH.
         """
         self.port: int = port
         self.connection_token: str | None = connection_token
         self.server_base_path: str | None = server_base_path
         self.process: asyncio.subprocess.Process | None = None
-        self.openvscode_server_root: Path = Path("/openhands/.openvscode-server")
+        self.openvscode_server_root: Path = Path(
+            openvscode_server_root or "/openhands/.openvscode-server"
+        )
         self.extensions_dir: Path = self.openvscode_server_root / "extensions"
+        self._resolved_binary: Path | None = None
 
     async def start(self) -> bool:
         """Start the VSCode server.
@@ -120,11 +128,25 @@ class VSCodeService:
     def _check_vscode_available(self) -> bool:
         """Check if VSCode server binary is available.
 
+        Probes the configured root first; falls back to PATH discovery so local
+        dev installs (e.g. via brew) work without the Docker layout. Root takes
+        precedence so a stray system install can't silently override the
+        configured one.
+
         Returns:
             True if available, False otherwise
         """
         vscode_binary = self.openvscode_server_root / "bin" / "openvscode-server"
-        return vscode_binary.exists() and vscode_binary.is_file()
+        if vscode_binary.exists() and vscode_binary.is_file():
+            self._resolved_binary = vscode_binary
+            return True
+
+        path_binary = shutil.which("openvscode-server")
+        if path_binary:
+            self._resolved_binary = Path(path_binary)
+            return True
+
+        return False
 
     async def _is_port_available(self) -> bool:
         """Check if the specified port is available.
@@ -155,8 +177,11 @@ class VSCodeService:
             if self.server_base_path
             else ""
         )
+        binary_path = self._resolved_binary or (
+            self.openvscode_server_root / "bin" / "openvscode-server"
+        )
         cmd = (
-            f"exec {self.openvscode_server_root}/bin/openvscode-server "
+            f"exec {binary_path} "
             f"--host 0.0.0.0 "
             f"--connection-token {self.connection_token} "
             f"--port {self.port} "
@@ -241,5 +266,6 @@ def get_vscode_service() -> VSCodeService | None:
                 port=config.vscode_port,
                 connection_token=connection_token,
                 server_base_path=config.vscode_base_path,
+                openvscode_server_root=config.vscode_server_root,
             )
     return _vscode_service

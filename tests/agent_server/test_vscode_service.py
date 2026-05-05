@@ -1,6 +1,7 @@
 """Tests for VSCode service."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -338,6 +339,7 @@ def test_get_vscode_service_enabled(tmp_path):
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 8001
         mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.vscode_server_root = "/openhands/.openvscode-server"
         mock_config.return_value.session_api_keys = []
 
         service = get_vscode_service()
@@ -367,6 +369,7 @@ def test_get_vscode_service_singleton():
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 8001
         mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.vscode_server_root = "/openhands/.openvscode-server"
         mock_config.return_value.session_api_keys = []
 
         service1 = get_vscode_service()
@@ -385,6 +388,7 @@ def test_get_vscode_service_with_custom_port():
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 9001
         mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.vscode_server_root = "/openhands/.openvscode-server"
         mock_config.return_value.session_api_keys = []
 
         service = get_vscode_service()
@@ -402,6 +406,7 @@ def test_get_vscode_service_with_base_path():
         mock_config.return_value.enable_vscode = True
         mock_config.return_value.vscode_port = 8001
         mock_config.return_value.vscode_base_path = "/runtime-123/vscode"
+        mock_config.return_value.vscode_server_root = "/openhands/.openvscode-server"
         mock_config.return_value.session_api_keys = []
 
         service = get_vscode_service()
@@ -449,3 +454,126 @@ def test_vscode_base_path_configuration():
     with patch.dict(os.environ, {"OH_VSCODE_BASE_PATH": "/runtime-abc/vscode"}):
         config = from_env(Config, "OH")
         assert config.vscode_base_path == "/runtime-abc/vscode"
+
+
+# Tests for configurable openvscode_server_root + PATH discovery fallback
+
+
+def test_check_vscode_available_uses_shutil_which_fallback(tmp_path):
+    """Falls back to PATH when the configured root has no binary.
+
+    Local dev installs (e.g. brew, manual download on PATH) should be picked up
+    even when the Docker layout at /openhands/.openvscode-server is absent.
+    """
+    # Arrange: configured root has no binary; a real binary exists elsewhere
+    fake_binary = tmp_path / "openvscode-server"
+    fake_binary.write_text("#!/bin/bash\necho mock")
+    fake_binary.chmod(0o755)
+    service = VSCodeService(openvscode_server_root=str(tmp_path / "nonexistent"))
+
+    # Act
+    with patch(
+        "openhands.agent_server.vscode_service.shutil.which",
+        return_value=str(fake_binary),
+    ):
+        available = service._check_vscode_available()
+
+    # Assert
+    assert available is True
+    assert service._resolved_binary == fake_binary
+
+
+def test_check_vscode_available_root_takes_precedence_over_path(
+    mock_openvscode_binary, tmp_path
+):
+    """Configured root wins over PATH so a stray system install can't override.
+
+    Locks in the precedence decision: configured root first, PATH only as fallback.
+    """
+    # Arrange: both root binary and shutil.which would resolve
+    service = VSCodeService()
+    service.openvscode_server_root = mock_openvscode_binary
+    service.extensions_dir = mock_openvscode_binary / "extensions"
+    path_binary = tmp_path / "path-openvscode-server"
+    path_binary.write_text("#!/bin/bash\necho path")
+    path_binary.chmod(0o755)
+
+    # Act
+    with patch(
+        "openhands.agent_server.vscode_service.shutil.which",
+        return_value=str(path_binary),
+    ):
+        available = service._check_vscode_available()
+
+    # Assert
+    assert available is True
+    assert service._resolved_binary == (
+        mock_openvscode_binary / "bin" / "openvscode-server"
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_vscode_process_uses_resolved_binary(tmp_path):
+    """Process command must invoke the discovered binary, not a hardcoded path.
+
+    Regression guard: when the binary is found via PATH fallback, the spawned
+    process must exec that binary rather than the (possibly missing) Docker path.
+    """
+    # Arrange
+    service = VSCodeService(connection_token="test-token")
+    discovered = tmp_path / "custom-openvscode-server"
+    service._resolved_binary = discovered
+
+    mock_process = AsyncMock()
+    mock_process.stdout = AsyncMock()
+
+    # Act
+    with (
+        patch(
+            "asyncio.create_subprocess_shell", return_value=mock_process
+        ) as mock_create,
+        patch.object(service, "_wait_for_startup"),
+    ):
+        await service._start_vscode_process()
+
+    # Assert
+    cmd = mock_create.call_args[0][0]
+    assert str(discovered) in cmd
+    assert "/openhands/.openvscode-server/bin/openvscode-server" not in cmd
+
+
+def test_get_vscode_service_passes_server_root_from_config():
+    """get_vscode_service forwards vscode_server_root from config to the service."""
+    # Arrange
+    with (
+        patch("openhands.agent_server.config.get_default_config") as mock_config,
+        patch("openhands.agent_server.vscode_service._vscode_service", None),
+    ):
+        mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
+        mock_config.return_value.vscode_base_path = None
+        mock_config.return_value.vscode_server_root = "/custom/root"
+        mock_config.return_value.session_api_keys = []
+
+        # Act
+        service = get_vscode_service()
+
+        # Assert
+        assert isinstance(service, VSCodeService)
+        assert service.openvscode_server_root == Path("/custom/root")
+
+
+def test_vscode_server_root_configuration():
+    """vscode_server_root has a Docker default and is overridable via env var."""
+    import os
+
+    from openhands.agent_server.config import Config, from_env
+
+    # Default preserves Docker layout
+    config = Config()
+    assert config.vscode_server_root == "/openhands/.openvscode-server"
+
+    # Env var override for non-Docker local dev
+    with patch.dict(os.environ, {"OH_VSCODE_SERVER_ROOT": "/opt/openvscode"}):
+        config = from_env(Config, "OH")
+        assert config.vscode_server_root == "/opt/openvscode"

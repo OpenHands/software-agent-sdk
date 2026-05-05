@@ -155,6 +155,15 @@ class Config(BaseModel):
             "For example, '/{runtime_id}/vscode' when using path-based routing."
         ),
     )
+    vscode_server_root: str = Field(
+        default="/openhands/.openvscode-server",
+        description=(
+            "Filesystem root of the OpenVSCode Server install. "
+            "Override with OH_VSCODE_SERVER_ROOT for non-Docker local dev. "
+            "When the binary is missing at this root, the service falls back "
+            "to discovering 'openvscode-server' on PATH."
+        ),
+    )
     enable_vnc: bool = Field(
         default=False,
         description="Whether to enable VNC desktop functionality",
