@@ -1,16 +1,15 @@
-"""Example demonstrating the Settings and Secrets API with a local agent server.
+"""Example demonstrating the Settings and Secrets API with encrypted secrets flow.
 
-This example shows how to:
-1. Store LLM API key via PATCH /api/settings (persisted encrypted at rest)
-2. Fetch settings with X-Expose-Secrets header to verify encryption modes
-3. Run a real agent conversation using settings stored via the API
-4. Manage custom secrets (CRUD operations with validation)
+This example shows the complete defense-in-depth workflow for frontend clients:
+1. Store LLM API key via PATCH /api/settings (encrypted at rest)
+2. Fetch settings with X-Expose-Secrets: encrypted (cipher-encrypted for transit)
+3. Start conversation via POST /api/conversations with secrets_encrypted=True
+4. Server decrypts secrets and runs the agent
 
-The key workflow demonstrated:
-1. Store LLM configuration via the Settings API
-2. Verify the API key is properly redacted/encrypted in responses
-3. Run an agent session that uses the stored model configuration
-4. Test custom secrets CRUD operations
+This is the recommended pattern for frontends that need to:
+- Store secrets securely via the Settings API
+- Pass encrypted secrets when starting conversations
+- Never have access to plaintext secrets after initial storage
 """
 
 import os
@@ -19,12 +18,13 @@ import sys
 import tempfile
 import threading
 import time
+from uuid import UUID
 
 import httpx
-from pydantic import SecretStr
 
-from openhands.sdk import LLM, Conversation, RemoteConversation, Workspace, get_logger
-from openhands.tools.preset.default import get_default_agent
+from openhands.sdk import get_logger
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -123,7 +123,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 
 with ManagedAPIServer(port=8765) as server:
-    client = httpx.Client(base_url=server.base_url, timeout=10.0)
+    client = httpx.Client(base_url=server.base_url, timeout=120.0)
 
     try:
         # ══════════════════════════════════════════════════════════════
@@ -156,14 +156,14 @@ with ManagedAPIServer(port=8765) as server:
         logger.info("   - API key redacted in response (default behavior)")
 
         # ══════════════════════════════════════════════════════════════
-        # Part 2: Verify Encrypted Secrets Mode
+        # Part 2: Fetch Settings with Encrypted Secrets
         # ══════════════════════════════════════════════════════════════
         logger.info("\n" + "=" * 60)
-        logger.info("🔐 Verifying encrypted secrets mode")
+        logger.info("🔐 Fetching settings with encrypted secrets")
         logger.info("=" * 60)
 
-        # X-Expose-Secrets: encrypted returns cipher-encrypted secrets
-        # This is used by frontend clients to pass secrets back safely
+        # Frontend clients use X-Expose-Secrets: encrypted to get cipher-encrypted
+        # secrets that can be safely passed back to start a conversation
         response = client.get(
             "/api/settings",
             headers={"X-Expose-Secrets": "encrypted"},
@@ -174,71 +174,113 @@ with ManagedAPIServer(port=8765) as server:
         encrypted_api_key = encrypted_settings["agent_settings"]["llm"]["api_key"]
         # Encrypted keys start with "gAAAAA" (Fernet token format)
         assert encrypted_api_key.startswith("gAAAAA"), "Expected encrypted token"
-        logger.info("✅ Encrypted secrets mode verified")
+        logger.info("✅ Retrieved encrypted settings")
         logger.info(f"   - Encrypted API key: {encrypted_api_key[:20]}...")
 
         # ══════════════════════════════════════════════════════════════
-        # Part 3: Run Agent Session with Settings
+        # Part 3: Start Conversation via REST API with Encrypted Secrets
         # ══════════════════════════════════════════════════════════════
         logger.info("\n" + "=" * 60)
-        logger.info("🤖 Running agent session using stored settings")
+        logger.info("🤖 Starting conversation via POST /api/conversations")
         logger.info("=" * 60)
 
-        # Create workspace connected to the remote server
+        # Create a workspace directory
         temp_workspace_dir = tempfile.mkdtemp(prefix="settings_api_demo_")
-        workspace = Workspace(host=server.base_url, working_dir=temp_workspace_dir)
 
-        # Verify workspace connection
-        result = workspace.execute_command("pwd")
-        logger.info(f"✅ Workspace connected: {result.stdout.strip()}")
+        # Build the StartConversationRequest with encrypted API key
+        # The server will decrypt it because secrets_encrypted=True
+        start_request = {
+            "agent": {
+                "kind": "Agent",
+                "llm": {
+                    "model": llm_model,
+                    "api_key": encrypted_api_key,  # Encrypted value from settings!
+                    "usage_id": "settings-api-demo",
+                },
+                "tools": [
+                    {"name": TerminalTool.name},
+                    {"name": FileEditorTool.name},
+                ],
+            },
+            "workspace": {"working_dir": temp_workspace_dir},
+            "secrets_encrypted": True,  # Tell server to decrypt the API key
+            "initial_message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Create a file called 'encrypted_secrets_test.txt' "
+                            "that contains exactly: 'Encrypted secrets flow works!'"
+                        ),
+                    }
+                ],
+                "run": True,  # Auto-run after sending message
+            },
+        }
 
-        # Create LLM using the model from settings
-        llm = LLM(
-            model=llm_model,
-            api_key=SecretStr(api_key),
+        # Start the conversation - server decrypts the API key
+        response = client.post("/api/conversations", json=start_request)
+        assert response.status_code == 201, (
+            f"Start conversation failed: {response.text}"
         )
+        conversation_info = response.json()
+        conversation_id = UUID(conversation_info["id"])
 
-        # Create agent using the LLM
-        agent = get_default_agent(
-            llm=llm,
-            cli_mode=True,  # Disable browser tools for simplicity
-        )
-
-        # Create conversation - with remote workspace, returns RemoteConversation
-        conversation = Conversation(
-            agent=agent,
-            workspace=workspace,
-        )
-        assert isinstance(conversation, RemoteConversation)
-        logger.info("✅ RemoteConversation created")
-
-        try:
-            # Send a task to verify the agent works
-            logger.info("\n📝 Sending task to agent...")
-            conversation.send_message(
-                "Create a file called 'settings_test.txt' that contains exactly: "
-                "'Settings API test successful!'"
-            )
-
-            # Run the conversation
-            logger.info("⏳ Running agent...")
-            conversation.run()
-
-            logger.info("✅ Agent task completed!")
-            logger.info(f"   Final status: {conversation.state.execution_status}")
-
-            # Verify the file was created
-            result = workspace.execute_command("cat settings_test.txt")
-            if result.exit_code == 0:
-                logger.info(f"   File content: {result.stdout.strip()}")
-                assert "successful" in result.stdout.lower()
-                logger.info("   ✅ Content verified - agent session works!")
-
-        finally:
-            conversation.close()
+        logger.info("✅ Conversation started!")
+        logger.info(f"   - Conversation ID: {conversation_id}")
+        logger.info(f"   - Title: {conversation_info.get('title', '(generating...)')}")
 
         # ══════════════════════════════════════════════════════════════
-        # Part 4: Test Custom Secrets CRUD
+        # Part 4: Wait for Agent to Complete
+        # ══════════════════════════════════════════════════════════════
+        logger.info("\n" + "=" * 60)
+        logger.info("⏳ Waiting for agent to complete task...")
+        logger.info("=" * 60)
+
+        # Poll conversation state until agent finishes
+        max_wait = 120  # seconds
+        poll_interval = 2
+        elapsed = 0
+        execution_status = "unknown"
+
+        while elapsed < max_wait:
+            response = client.get(f"/api/conversations/{conversation_id}/state")
+            assert response.status_code == 200
+            state = response.json()
+            execution_status = state.get("execution_status", "unknown")
+
+            if execution_status in ("stopped", "paused", "error"):
+                break
+
+            logger.info(f"   Status: {execution_status} (waited {elapsed}s)")
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+        logger.info(f"✅ Agent finished with status: {execution_status}")
+
+        # Verify the file was created
+        response = client.post(
+            f"/api/conversations/{conversation_id}/execute",
+            json={"command": "cat encrypted_secrets_test.txt"},
+        )
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"   File content: {result.get('stdout', '').strip()}")
+            assert "works" in result.get("stdout", "").lower()
+            logger.info("   ✅ Encrypted secrets flow verified end-to-end!")
+
+        # Get conversation metrics
+        response = client.get(f"/api/conversations/{conversation_id}/state")
+        state = response.json()
+        accumulated_cost = state.get("accumulated_cost", 0.0)
+
+        # Clean up - delete conversation
+        client.delete(f"/api/conversations/{conversation_id}")
+        logger.info("   Conversation deleted")
+
+        # ══════════════════════════════════════════════════════════════
+        # Part 5: Test Custom Secrets CRUD
         # ══════════════════════════════════════════════════════════════
         logger.info("\n" + "=" * 60)
         logger.info("🧪 Testing custom secrets CRUD operations")
@@ -290,7 +332,7 @@ with ManagedAPIServer(port=8765) as server:
         logger.info("✅ Verified deletion (404)")
 
         # ══════════════════════════════════════════════════════════════
-        # Part 5: Test Secret Name Validation
+        # Part 6: Test Secret Name Validation
         # ══════════════════════════════════════════════════════════════
         logger.info("\n" + "=" * 60)
         logger.info("⚠️  Testing secret name validation")
@@ -316,9 +358,7 @@ with ManagedAPIServer(port=8765) as server:
         logger.info("🎉 All Settings and Secrets API tests passed!")
         logger.info("=" * 60)
 
-        # Get cost from conversation
-        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-        print(f"EXAMPLE_COST: {cost}")
+        print(f"EXAMPLE_COST: {accumulated_cost}")
 
     finally:
         client.close()
