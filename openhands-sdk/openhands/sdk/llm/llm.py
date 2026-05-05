@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import base64
 import copy
 import json
+import mimetypes
 import os
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
+import httpx
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -444,6 +446,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
     _prompt_cache_key: str | None = PrivateAttr(default=None)
+    _inlined_image_url_cache: dict[str, str] = PrivateAttr(default_factory=dict)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -773,6 +776,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 include_security_params=add_security_risk_prediction,
             )
 
+        self._inline_remote_image_urls_in_payload(formatted_messages)
+
         # 3) normalize provider params
         # Only pass tools when native FC is active
         kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
@@ -909,6 +914,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
+        self._inline_remote_image_urls_in_payload(input_items)
 
         # Convert Tool objects to Responses ToolParam
         # (Responses path always supports function tools)
@@ -1124,6 +1130,70 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return None
 
         return api_key_value
+
+    def _provider_requires_inline_remote_image_urls(self) -> bool:
+        return self._infer_litellm_provider() == "moonshot"
+
+    def _maybe_inline_remote_image_url(self, url: str) -> str:
+        if not url.startswith(("http://", "https://")):
+            return url
+
+        cached_url = self._inlined_image_url_cache.get(url)
+        if cached_url is not None:
+            return cached_url
+
+        try:
+            response = httpx.get(url, follow_redirects=True, timeout=10.0)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to fetch remote image URL for %s: %s", self.model, exc
+            )
+            self._inlined_image_url_cache[url] = url
+            return url
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip()
+        mime_type = content_type or mimetypes.guess_type(url)[0]
+        if not mime_type or not mime_type.startswith("image/"):
+            logger.warning(
+                "Could not determine image MIME type for %s on %s", url, self.model
+            )
+            self._inlined_image_url_cache[url] = url
+            return url
+
+        data_url = (
+            f"data:{mime_type};base64,"
+            f"{base64.b64encode(response.content).decode('ascii')}"
+        )
+        self._inlined_image_url_cache[url] = data_url
+        return data_url
+
+    def _inline_remote_image_urls_in_payload(self, payload: Any) -> None:
+        if not self._provider_requires_inline_remote_image_urls():
+            return
+
+        if isinstance(payload, list):
+            for item in payload:
+                self._inline_remote_image_urls_in_payload(item)
+            return
+
+        if not isinstance(payload, dict):
+            return
+
+        if payload.get("type") == "image_url":
+            image_url = payload.get("image_url")
+            if isinstance(image_url, dict):
+                url = image_url.get("url")
+                if isinstance(url, str):
+                    image_url["url"] = self._maybe_inline_remote_image_url(url)
+        elif payload.get("type") == "input_image":
+            image_url = payload.get("image_url")
+            if isinstance(image_url, str):
+                payload["image_url"] = self._maybe_inline_remote_image_url(image_url)
+
+        for value in payload.values():
+            if isinstance(value, (dict, list)):
+                self._inline_remote_image_urls_in_payload(value)
 
     def _transport_call(
         self,
