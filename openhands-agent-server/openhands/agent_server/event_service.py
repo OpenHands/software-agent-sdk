@@ -517,7 +517,10 @@ class EventService:
             validate_git_repository(working_dir)
             return  # already a repo
         except GitRepositoryError:
-            pass
+            logger.debug(
+                "Workspace %s is not a git repository; running `git init`",
+                working_dir,
+            )
 
         try:
             run_git_command(["git", "init"], working_dir)

@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Query
 
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.sdk.git.exceptions import GitPathError, GitRepositoryError
+from openhands.sdk.git.exceptions import GitRepositoryError
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_diff import get_git_diff
 from openhands.sdk.git.models import GitChange, GitDiff
@@ -36,8 +36,11 @@ async def _get_git_diff(path: str) -> GitDiff:
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(None, get_git_diff, Path(path))
-    except (GitRepositoryError, GitPathError):
-        logger.debug("Path %s has no diff available; returning empty diff", path)
+    except GitRepositoryError:
+        # Only collapse the not-a-repo case to an empty diff; file-level
+        # GitPathError (missing/oversize/outside-repo) stays a 500 so
+        # callers can distinguish it from "no changes".
+        logger.debug("Path %s is not in a git repository; returning empty diff", path)
         return GitDiff(modified=None, original=None)
 
 
