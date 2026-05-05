@@ -28,9 +28,9 @@ class SubdirectoryEntry(BaseModel):
     path: str
 
 
-class ListSubdirsResponse(BaseModel):
-    path: str
-    subdirs: list[SubdirectoryEntry]
+class SubdirectoryPage(BaseModel):
+    items: list[SubdirectoryEntry]
+    next_page_id: str | None = None
 
 
 class HomeResponse(BaseModel):
@@ -141,19 +141,34 @@ async def get_home_directory() -> HomeResponse:
     return HomeResponse(home=str(Path.home()))
 
 
-@file_router.get("/list_subdirs")
-async def list_subdirs(
+@file_router.get("/search_subdirs")
+async def search_subdirs(
     path: Annotated[
         str,
         Query(description="Absolute directory path to list subdirectories of"),
     ],
-) -> ListSubdirsResponse:
-    """List immediate subdirectories of `path`.
+    page_id: Annotated[
+        str | None,
+        Query(title="Optional next_page_id from the previously returned page"),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(title="The max number of results in the page", gt=0, lte=100),
+    ] = 100,
+) -> SubdirectoryPage:
+    """Search / List immediate subdirectories of `path`.
 
     Used by the GUI's workspace picker. Hidden entries (names starting with '.')
     and symlinks are skipped. Files are skipped. Returns absolute paths so the
     GUI can use a result directly as ``workspace.working_dir``.
+
+    Results are sorted case-insensitively by name and paginated. ``page_id`` is
+    the ``next_page_id`` returned by the previous page (the lowercase name of
+    the first item to include on the next page).
     """
+    assert limit > 0
+    assert limit <= 100
+
     target = Path(path)
     if not target.is_absolute():
         raise HTTPException(
@@ -192,7 +207,20 @@ async def list_subdirs(
         )
 
     entries.sort(key=lambda e: e.name.lower())
-    return ListSubdirsResponse(path=str(target), subdirs=entries)
+
+    start_index = 0
+    if page_id:
+        for i, entry in enumerate(entries):
+            if entry.name.lower() == page_id:
+                start_index = i
+                break
+
+    page_items = entries[start_index : start_index + limit]
+    next_page_id: str | None = None
+    if start_index + limit < len(entries):
+        next_page_id = entries[start_index + limit].name.lower()
+
+    return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")
