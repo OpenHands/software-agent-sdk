@@ -562,3 +562,57 @@ def test_patch_settings_corrupted_file_returns_409(
     # RuntimeError from store.update() should be caught and returned as 409
     assert response.status_code == 409
     assert "corrupted" in response.json()["detail"].lower()
+
+
+# ── Corrupted secrets file tests ───────────────────────────────────────────
+
+
+def test_create_secret_corrupted_file_returns_500(
+    client_with_settings, temp_persistence_dir
+):
+    """PUT /api/settings/secrets returns 500 when secrets file is corrupted.
+
+    Tests that the data loss protection path is triggered when set_secret()
+    encounters a corrupted secrets file.
+    """
+    # Create initial secret
+    client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": "test"},
+    )
+
+    # Corrupt the secrets file
+    secrets_file = temp_persistence_dir / "secrets.json"
+    secrets_file.write_text("{ corrupted !!!}")
+
+    # Attempt to create new secret - should fail to prevent data loss
+    response = client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "OTHER_SECRET", "value": "value"},
+    )
+
+    assert response.status_code == 500
+
+
+def test_delete_secret_corrupted_file_returns_500(
+    client_with_settings, temp_persistence_dir
+):
+    """DELETE /api/settings/secrets returns 500 when secrets file is corrupted.
+
+    Tests that the data loss protection path is triggered when delete_secret()
+    encounters a corrupted secrets file.
+    """
+    # Create initial secret
+    client_with_settings.put(
+        "/api/settings/secrets",
+        json={"name": "MY_SECRET", "value": "test"},
+    )
+
+    # Corrupt the secrets file
+    secrets_file = temp_persistence_dir / "secrets.json"
+    secrets_file.write_text("{ corrupted !!!}")
+
+    # Attempt to delete secret - should fail to prevent data loss
+    response = client_with_settings.delete("/api/settings/secrets/MY_SECRET")
+
+    assert response.status_code == 500

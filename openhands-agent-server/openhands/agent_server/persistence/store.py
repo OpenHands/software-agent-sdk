@@ -219,7 +219,16 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         except OSError:
             pass
         raise
-    tmp_path.replace(path)  # Atomic on POSIX
+
+    # Atomic rename - clean up temp file if replace() fails
+    try:
+        tmp_path.replace(path)  # Atomic on POSIX
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 # Default storage directory (relative to working directory)

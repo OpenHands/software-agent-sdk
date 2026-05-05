@@ -389,3 +389,29 @@ def test_real_pydantic_nested_secrets_roundtrip(cipher):
     assert restored.custom_secrets["API_KEY"].secret.get_secret_value() == "sk-123"
     assert restored.custom_secrets["DB_PASS"].secret is not None
     assert restored.custom_secrets["DB_PASS"].secret.get_secret_value() == "password123"
+
+
+def test_real_pydantic_persisted_settings_roundtrip(cipher):
+    """Test PersistedSettings serialization with encrypted LLM api_key.
+
+    This tests the primary use case: full PersistedSettings with
+    agent_settings.llm.api_key encrypted and round-tripped.
+    """
+    from openhands.agent_server.persistence.models import PersistedSettings
+
+    # Create settings with secret
+    settings = PersistedSettings()
+    settings.agent_settings.llm.api_key = SecretStr("sk-test-key-12345")
+
+    # Serialize with cipher
+    data = settings.model_dump(mode="json", context={"cipher": cipher})
+    encrypted_key = data["agent_settings"]["llm"]["api_key"]
+
+    # Should be encrypted (not plaintext, not redacted)
+    assert encrypted_key != "sk-test-key-12345"
+    assert encrypted_key != REDACTED_SECRET_VALUE
+
+    # Deserialize (decrypt)
+    restored = PersistedSettings.model_validate(data, context={"cipher": cipher})
+    assert restored.agent_settings.llm.api_key is not None
+    assert restored.agent_settings.llm.api_key.get_secret_value() == "sk-test-key-12345"

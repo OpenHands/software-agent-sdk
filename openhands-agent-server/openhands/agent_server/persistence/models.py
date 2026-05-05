@@ -98,45 +98,64 @@ class PersistedSettings(BaseModel):
             Multiple ``PersistedSettings`` instances should NOT be shared across
             threads without external synchronization.
 
+        Atomicity:
+            Both updates are validated before any mutations occur. If either
+            validation fails, the object remains unchanged.
+
         Note:
             Secret values are temporarily exposed in memory during the merge
-            operation. The merged dict is immediately consumed by model
-            construction and not persisted or logged.
+            operation. Merged dicts are cleared after use to minimize exposure.
 
         Raises:
             ValueError: If validation fails (sanitized to avoid secret leakage).
         """
         agent_update = payload.get("agent_settings_diff")
-        if isinstance(agent_update, dict):
-            merged = _deep_merge(
-                self.agent_settings.model_dump(
-                    mode="json", context={"expose_secrets": "plaintext"}
-                ),
-                agent_update,
-            )
-            # Use from_persisted to handle potential schema migrations
-            # Wrap in try-catch to prevent secrets from leaking in tracebacks
-            try:
-                self.agent_settings = AgentSettings.from_persisted(merged)
-            except Exception as e:
-                # Re-raise with sanitized message to avoid exposing secrets
-                raise ValueError(
-                    f"Failed to update agent settings: {type(e).__name__}"
-                ) from None
-
         conv_update = payload.get("conversation_settings_diff")
-        if isinstance(conv_update, dict):
-            merged = _deep_merge(
-                self.conversation_settings.model_dump(mode="json"),
-                conv_update,
-            )
-            # Use from_persisted to handle potential schema migrations
-            try:
-                self.conversation_settings = ConversationSettings.from_persisted(merged)
-            except Exception as e:
-                raise ValueError(
-                    f"Failed to update conversation settings: {type(e).__name__}"
-                ) from None
+
+        # Phase 1: Validate both updates before any mutations
+        new_agent: AgentSettingsConfig | None = None
+        new_conv: ConversationSettings | None = None
+        agent_merged: dict | None = None
+        conv_merged: dict | None = None
+
+        try:
+            if isinstance(agent_update, dict):
+                agent_merged = _deep_merge(
+                    self.agent_settings.model_dump(
+                        mode="json", context={"expose_secrets": "plaintext"}
+                    ),
+                    agent_update,
+                )
+                try:
+                    new_agent = AgentSettings.from_persisted(agent_merged)
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to update agent settings: {type(e).__name__}"
+                    ) from None
+
+            if isinstance(conv_update, dict):
+                conv_merged = _deep_merge(
+                    self.conversation_settings.model_dump(mode="json"),
+                    conv_update,
+                )
+                try:
+                    new_conv = ConversationSettings.from_persisted(conv_merged)
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to update conversation settings: {type(e).__name__}"
+                    ) from None
+
+            # Phase 2: Apply validated changes atomically
+            if new_agent is not None:
+                self.agent_settings = new_agent
+            if new_conv is not None:
+                self.conversation_settings = new_conv
+        finally:
+            # Clear merged dicts to minimize plaintext exposure window
+            if agent_merged is not None:
+                agent_merged.clear()
+            if conv_merged is not None:
+                conv_merged.clear()
 
     @field_serializer("agent_settings")
     def agent_settings_serializer(

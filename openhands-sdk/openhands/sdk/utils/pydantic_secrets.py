@@ -42,27 +42,21 @@ def serialize_secret(v: SecretStr | None, info):
     expose_mode = info.context.get("expose_secrets") if info.context else None
     cipher: Cipher | None = info.context.get("cipher") if info.context else None
 
-    # Handle explicit cipher in context (backward compat for storage)
-    # Skip encryption if expose_mode is plaintext or True (legacy boolean)
-    if cipher and expose_mode not in ("plaintext", True):
-        return cipher.encrypt(v)
-
-    # Handle expose_secrets modes
-    if expose_mode == "encrypted":
-        # Encrypted mode requires a cipher - fail fast if missing
-        if cipher:
-            return cipher.encrypt(v)
-        # No cipher available - raise error so misconfiguration is caught early
-        # Silent fallback would cause round-trip failures (frontend sends redacted
-        # secrets back) and hide configuration errors until runtime
-        raise ValueError(
-            "Cannot encrypt secret: no cipher configured. "
-            "Set OH_SECRET_KEY environment variable."
-        )
-
+    # Handle plaintext mode first - no encryption needed
     if expose_mode == "plaintext" or expose_mode is True:
-        # Plaintext mode - expose raw value (backend only!)
         return v.get_secret_value()
+
+    # Handle encrypted mode (explicit or implicit via cipher presence)
+    # When cipher is present without explicit expose_mode, default to encryption
+    # This provides backward compatibility for storage operations
+    if expose_mode == "encrypted" or cipher:
+        if not cipher:
+            # Encrypted mode explicitly requested but no cipher available
+            raise ValueError(
+                "Cannot encrypt secret: no cipher configured. "
+                "Set OH_SECRET_KEY environment variable."
+            )
+        return cipher.encrypt(v)
 
     # Default: let Pydantic handle masking (redaction)
     return v

@@ -168,22 +168,24 @@ async def get_settings(request: Request) -> SettingsResponse:
     - (absent): Returns redacted values ("**********")
 
     Security:
-        This endpoint requires authentication via the ``X-Session-API-Key``
-        header when the server is configured with session API keys.
+        When the server is configured with ``session_api_keys``, all endpoints
+        under ``/api`` (including this one) require the ``X-Session-API-Key``
+        header. When no session API keys are configured, endpoints are open.
 
-        **WARNING: No authorization check for plaintext mode.** All authenticated
-        clients can access any expose mode, including plaintext. Authentication
-        alone is insufficient - the server trusts all authenticated clients
-        equally. Production deployments should consider:
+        **Trust model:** All authenticated clients are treated as equally
+        trusted. There is no role-based authorization for ``X-Expose-Secrets``
+        modes—any authenticated client can request ``plaintext`` or
+        ``encrypted`` exposure. This design assumes:
 
-        - Network isolation (restrict plaintext access to internal IPs only)
-        - Adding role-based authorization via ``X-Client-Type`` header
-        - Using encrypted mode for all non-backend clients
+        - All clients sharing session API keys operate in the same trust domain
+        - Network-level controls (firewalls, VPCs) restrict access to trusted
+          clients only
+        - Production deployments use session API keys to prevent anonymous access
 
-        The ``plaintext`` mode should only be used by trusted backend clients
-        (e.g., RemoteWorkspace) operating in the same trust domain as the
-        agent-server. Frontend clients should use ``encrypted`` mode if they
-        need to round-trip secret values for start conversation requests.
+        The ``plaintext`` mode exists for backend-to-backend communication
+        (e.g., RemoteWorkspace). Frontend clients should prefer ``encrypted``
+        mode for round-tripping secrets, or omit the header to receive redacted
+        values.
     """
     expose_mode = _parse_expose_secrets_header(request)
     config = _get_config(request)
@@ -191,15 +193,17 @@ async def get_settings(request: Request) -> SettingsResponse:
     settings = store.load() or PersistedSettings()
 
     # Audit log all settings access for security visibility
+    # Use WARNING level for plaintext mode to highlight security-sensitive operations
     client_host = request.client.host if request.client else "unknown"
-    logger.info(
-        "Settings accessed",
-        extra={
-            "client_host": client_host,
-            "expose_mode": expose_mode or "redacted",
-            "has_llm_api_key": settings.llm_api_key_is_set,
-        },
-    )
+    log_extra = {
+        "client_host": client_host,
+        "expose_mode": expose_mode or "redacted",
+        "has_llm_api_key": settings.llm_api_key_is_set,
+    }
+    if expose_mode == "plaintext":
+        logger.warning("Settings accessed with PLAINTEXT secrets", extra=log_extra)
+    else:
+        logger.info("Settings accessed", extra=log_extra)
 
     # Build serialization context based on expose mode
     if expose_mode:
@@ -379,7 +383,7 @@ async def create_secret(
     """Create or update a custom secret (upsert).
 
     Raises:
-        HTTPException: 400 if secret name format is invalid.
+        HTTPException: 400 if secret name format is invalid, 500 if file is corrupted.
     """
     _validate_secret_name(secret.name)
 
@@ -391,6 +395,13 @@ async def create_secret(
             name=secret.name,
             value=secret.value.get_secret_value(),
             description=secret.description,
+        )
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Secret create blocked: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Secrets file is corrupted or encrypted with a different key",
         )
     except (OSError, PermissionError):
         # Note: exc_info omitted to prevent secret values from leaking in tracebacks
@@ -412,7 +423,8 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """Delete a custom secret by name.
 
     Raises:
-        HTTPException: 400 if name format is invalid, 404 if secret not found.
+        HTTPException: 400 if name format is invalid, 404 if secret not found,
+        500 if file is corrupted.
     """
     _validate_secret_name(name)
 
@@ -420,7 +432,16 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     store = get_secrets_store(config)
 
     client_host = request.client.host if request.client else "unknown"
-    deleted = store.delete_secret(name)
+    try:
+        deleted = store.delete_secret(name)
+    except RuntimeError as e:
+        # Data corruption protection triggered (file exists but unreadable)
+        logger.error(f"Secret delete blocked: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Secrets file is corrupted or encrypted with a different key",
+        )
+
     if not deleted:
         # Log failed deletion attempts to detect enumeration attacks
         logger.warning(
