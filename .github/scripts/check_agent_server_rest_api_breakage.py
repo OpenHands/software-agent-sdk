@@ -614,11 +614,14 @@ def _is_allowed_optional_request_change(change: dict) -> bool:
 
     # For agent/workspace patterns, also verify the endpoint
     if any(pattern in change_text for pattern in _OPTIONAL_AGENT_WORKSPACE_PATTERNS):
-        # If we have path info, verify it's an allowed endpoint
+        # If we have path info, verify it's an allowed endpoint.
+        # Use prefix matching with boundary check to avoid matching unintended paths
+        # e.g., /api/conversations should NOT match /api/conversations_archive
         if path:
-            return any(
-                endpoint in path for endpoint in _ALLOWED_AGENT_WORKSPACE_ENDPOINTS
-            )
+            for endpoint in _ALLOWED_AGENT_WORKSPACE_ENDPOINTS:
+                if path == endpoint or path.startswith(endpoint + "/"):
+                    return True
+            return False
         # No path info available - allow but log will warn about threshold
         return True
 

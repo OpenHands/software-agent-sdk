@@ -125,7 +125,7 @@ class SettingsUpdateRequest(BaseModel):
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
 async def get_settings(
     request: Request,
-    expose_secrets: bool = False,
+    expose_secrets: bool | None = None,  # noqa: ARG001 - checked via query_params
 ) -> SettingsResponse:
     """Get current settings.
 
@@ -146,8 +146,10 @@ async def get_settings(
     # Check header for expose_secrets (the only supported method)
     expose_via_header = request.headers.get("X-Expose-Secrets", "").lower() == "true"
 
-    # Reject deprecated query parameter for security - URLs are logged by proxies
-    if expose_secrets and not expose_via_header:
+    # Reject ANY query parameter usage for security - URLs are logged by proxies.
+    # Check if 'expose_secrets' appears in query params regardless of value
+    # (expose_secrets=false or expose_secrets=0 should also be rejected).
+    if "expose_secrets" in request.query_params:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(

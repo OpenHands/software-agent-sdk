@@ -117,6 +117,9 @@ def _ensure_secure_directory(path: Path) -> None:
 
     Creates all parent directories with secure permissions (0o700).
     If it already exists, ensures permissions are correct.
+
+    Raises:
+        OSError: If directory creation or permission setting fails.
     """
     if not path.exists():
         # Create parents with secure permissions
@@ -126,14 +129,25 @@ def _ensure_secure_directory(path: Path) -> None:
             to_create.append(current)
             current = current.parent
 
+        # Create directories and set permissions on each
         for dir_path in reversed(to_create):
             dir_path.mkdir(mode=_DIR_MODE, exist_ok=True)
+            # Immediately chmod each created directory to prevent TOCTOU
+            try:
+                dir_path.chmod(_DIR_MODE)
+            except OSError as e:
+                raise OSError(
+                    f"Failed to set secure permissions on {dir_path}: {e}"
+                ) from e
 
     # Ensure permissions are correct even if dir already existed
     try:
         path.chmod(_DIR_MODE)
     except OSError as e:
-        logger.warning(f"Failed to set permissions on {path}: {e}")
+        raise OSError(
+            f"Failed to set secure permissions on {path}: {e}. "
+            "Secrets may be exposed with overly permissive permissions."
+        ) from e
 
 
 @contextmanager
@@ -298,19 +312,23 @@ class FileSettingsStore(SettingsStore):
         self._lock_path = self.persistence_dir / ".settings.lock"
 
     def load(self) -> PersistedSettings | None:
-        """Load settings from file.
+        """Load settings from file with file locking.
 
         If a cipher is provided, secrets are decrypted via Pydantic's
         validation context. The cipher is passed to model_validate which
         flows through to field validators using validate_secret().
+
+        Uses file locking to prevent reading partially written data during
+        concurrent save operations.
         """
         if not self._path.exists():
             logger.debug(f"Settings file not found: {self._path}")
             return None
 
         try:
-            with self._path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            with _file_lock(self._lock_path):
+                with self._path.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
 
             # Pass cipher in context for automatic decryption of all secret fields
             # This flows through to field validators using validate_secret()
@@ -330,11 +348,14 @@ class FileSettingsStore(SettingsStore):
             return None
 
     def save(self, settings: PersistedSettings) -> None:
-        """Save settings to file atomically with secure permissions.
+        """Save settings to file atomically with secure permissions and file locking.
 
         If a cipher is provided, secrets are encrypted via Pydantic's
         serialization context. The cipher is passed to model_dump which
         flows through to field serializers using serialize_secret().
+
+        Uses file locking to prevent race conditions with concurrent load
+        operations. Combined with atomic writes, this ensures data integrity.
 
         Warning:
             If no cipher is provided, secrets are stored in plaintext.
@@ -357,7 +378,8 @@ class FileSettingsStore(SettingsStore):
 
         data = settings.model_dump(mode="json", context=context)
 
-        _atomic_write_json(self._path, data)
+        with _file_lock(self._lock_path):
+            _atomic_write_json(self._path, data)
         logger.debug(f"Settings saved to {self._path}")
 
     def update(
@@ -532,12 +554,40 @@ _secrets_store: FileSecretsStore | None = None
 _store_lock = threading.Lock()
 
 
+def _validate_persistence_path(path: Path) -> None:
+    """Validate persistence path is safe.
+
+    Raises:
+        ValueError: If path contains path traversal components.
+    """
+    # Check that the path doesn't contain path traversal components
+    try:
+        # Use as_posix() for consistent comparison
+        original_parts = path.as_posix().split("/")
+        if ".." in original_parts:
+            raise ValueError(
+                f"Path traversal detected in persistence directory: {path}"
+            )
+    except ValueError:
+        # Re-raise path traversal errors
+        raise
+    except Exception:
+        # If parsing fails, reject for safety
+        raise ValueError(f"Invalid persistence directory path: {path}")
+
+
 def _get_persistence_dir(config: Config | None = None) -> Path:
-    """Get the persistence directory from config or default."""
+    """Get the persistence directory from config or default.
+
+    Raises:
+        ValueError: If the path contains path traversal components.
+    """
     # Check environment variable first
     env_dir = os.environ.get("OH_PERSISTENCE_DIR")
     if env_dir:
-        return Path(env_dir)
+        path = Path(env_dir)
+        _validate_persistence_path(path)
+        return path
 
     # Use config's conversations_path parent if available
     if config is not None:

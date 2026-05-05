@@ -197,34 +197,27 @@ def _strip_none_values(d: dict[str, Any]) -> dict[str, Any]:
 # Each tuple contains (pattern, replacement).
 # Multiple patterns for different formats Pydantic may use.
 _SENSITIVE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Pattern: field': 'value' or field": "value"
+    # Pattern: field': 'value' or field": "value" (quoted values)
     # Group 1 = field name, group 2 = value (unused in replacement)
+    # Use greedy match between quotes to handle special characters in secrets
     (
         re.compile(
             r"(api_key|secret|token|password|credential|key|auth)"
-            r"['\"]?\s*[:=]\s*['\"]([^'\"}\s,]+)['\"]",
+            r"['\"]?\s*[:=]\s*['\"](.+?)['\"]",
             re.IGNORECASE,
         ),
         r"\1=***REDACTED***",
     ),
-    # Pattern: field=value (no quotes)
+    # Pattern: field=value (unquoted) - match until delimiter
     # Group 1 = field name, group 2 = value (unused in replacement)
+    # Stop at common delimiters: space, comma, close brace/bracket, newline
     (
         re.compile(
             r"(api_key|secret|token|password|credential|key|auth)"
-            r"\s*=\s*([^\s,}\]]+)",
+            r"\s*=\s*([^\s,}\]\n]+)",
             re.IGNORECASE,
         ),
         r"\1=***REDACTED***",
-    ),
-    # Pattern: 'value' for Field(secret=True) - Pydantic shows just the value
-    # No capturing group for the secret value - replace the entire match
-    (
-        re.compile(
-            r"Input should be [^']+'[^']+'",
-            re.IGNORECASE,
-        ),
-        "Input should be ***REDACTED***",
     ),
 ]
 
@@ -249,6 +242,7 @@ def _sanitize_validation_error(error: ValidationError) -> str:
 
 def _merge_request_with_persisted_settings(
     request_data: dict[str, Any],
+    request_data_explicit: dict[str, Any],
     persisted_settings: PersistedSettings | None,
     default_working_dir: str,
 ) -> dict[str, Any]:
@@ -264,7 +258,9 @@ def _merge_request_with_persisted_settings(
     When workspace is not provided, uses the default working directory.
 
     Args:
-        request_data: The start conversation request as a dict.
+        request_data: The start conversation request as a dict (with Pydantic defaults).
+        request_data_explicit: Request data excluding Pydantic defaults - used to
+            determine which fields were explicitly set by the user.
         persisted_settings: The persisted settings (may be None if not configured).
         default_working_dir: Default working directory if not specified in request.
 
@@ -329,9 +325,13 @@ def _merge_request_with_persisted_settings(
     # uses SecurityAnalyzerBase (a Pydantic model). They are incompatible.
     persisted_conv = persisted_settings.conversation_settings.model_dump(mode="json")
 
-    # Apply persisted conversation settings as defaults for compatible fields
+    # Apply persisted conversation settings as defaults for compatible fields.
+    # Use request_data_explicit (excludes Pydantic defaults) to determine which
+    # fields were explicitly set. Pydantic fills in defaults before model_dump(),
+    # so we need exclude_defaults to know user intent.
     for key in ["max_iterations"]:
-        if key not in result or result[key] is None:
+        # Only apply persisted value if NOT explicitly set in request
+        if key not in request_data_explicit:
             if key in persisted_conv and persisted_conv[key] is not None:
                 result[key] = persisted_conv[key]
 
@@ -745,13 +745,20 @@ class ConversationService:
         # construct StoredConversation, not sent over the network.
         request_data = request.model_dump(mode="json", context={"expose_secrets": True})
 
+        # Also get request data excluding defaults to detect user-provided values.
+        # Pydantic fills in field defaults before model_dump(), so we need
+        # exclude_defaults=True to know which fields the user explicitly set.
+        request_data_explicit = request.model_dump(
+            mode="json", exclude_defaults=True, context={"expose_secrets": True}
+        )
+
         # Merge request with persisted settings (if available).
         # This allows users to start conversations without fully specifying
         # the agent configuration if they have previously saved settings.
         persisted_settings = self._load_persisted_settings()
         default_working_dir = str(self.conversations_dir.parent)
         merged_data = _merge_request_with_persisted_settings(
-            request_data, persisted_settings, default_working_dir
+            request_data, request_data_explicit, persisted_settings, default_working_dir
         )
 
         # Validate that after merging we have required settings

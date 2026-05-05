@@ -415,11 +415,19 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Validate response is a dict (server error may return null/list/string)
         if not isinstance(data, dict):
+            logger.warning(
+                "get_mcp_config received invalid response type from server: "
+                f"expected dict, got {type(data).__name__}"
+            )
             return {}
 
         # Extract from agent_settings structure
         agent_settings = data.get("agent_settings", {})
         if not isinstance(agent_settings, dict):
+            logger.warning(
+                "get_mcp_config received invalid agent_settings type: "
+                f"expected dict, got {type(agent_settings).__name__}"
+            )
             return {}
         mcp_config_data = agent_settings.get("mcp_config")
 

@@ -78,29 +78,37 @@ class PersistedSettings(BaseModel):
         Note:
             Secret values are temporarily exposed in memory during the merge
             operation. The merged dict is immediately consumed by model
-            construction and not persisted or logged. Any exceptions raised
-            during merge will not expose secrets in stack traces because
-            Pydantic re-wraps values in SecretStr before validation errors.
+            construction and not persisted or logged. The deep_merge call is
+            wrapped in try-except to prevent secret exposure in stack traces.
         """
         from openhands.agent_server.persistence.utils import deep_merge
 
         agent_update = payload.get("agent_settings_diff")
         if isinstance(agent_update, dict):
-            merged = deep_merge(
-                self.agent_settings.model_dump(
-                    mode="json", context={"expose_secrets": True}
-                ),
-                agent_update,
+            base_data = self.agent_settings.model_dump(
+                mode="json", context={"expose_secrets": True}
             )
+            try:
+                merged = deep_merge(base_data, agent_update)
+            except Exception as e:
+                # Re-raise without exposing secrets in the message
+                raise ValueError(
+                    f"Failed to merge agent settings: {type(e).__name__}"
+                ) from None
             # Use from_persisted to handle potential schema migrations
             self.agent_settings = AgentSettings.from_persisted(merged)
 
         conv_update = payload.get("conversation_settings_diff")
         if isinstance(conv_update, dict):
-            merged = deep_merge(
-                self.conversation_settings.model_dump(mode="json"),
-                conv_update,
-            )
+            try:
+                merged = deep_merge(
+                    self.conversation_settings.model_dump(mode="json"),
+                    conv_update,
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to merge conversation settings: {type(e).__name__}"
+                ) from None
             # Use from_persisted to handle potential schema migrations
             self.conversation_settings = ConversationSettings.from_persisted(merged)
 

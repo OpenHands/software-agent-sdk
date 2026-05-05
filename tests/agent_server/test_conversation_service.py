@@ -2511,3 +2511,56 @@ async def test_start_conversation_raises_missing_settings_error(tmp_path):
             await service.start_conversation(request)
 
         assert "LLM API key" in str(exc_info.value)
+
+
+class TestValidationErrorSanitization:
+    """Tests for ValidationError sanitization to prevent secret leakage."""
+
+    def test_sanitize_validation_error_redacts_api_key_in_quotes(self):
+        """Test that api_key values in quotes are redacted."""
+        from openhands.agent_server.conversation_service import (
+            _SENSITIVE_PATTERNS,
+        )
+
+        test_string = "api_key='sk-secret-key-123'"
+        result = test_string
+        for pattern, replacement in _SENSITIVE_PATTERNS:
+            result = pattern.sub(replacement, result)
+        assert "sk-secret-key-123" not in result
+        assert "***REDACTED***" in result
+
+    def test_sanitize_validation_error_redacts_special_chars_in_secret(self):
+        """Test that secrets with special characters are redacted."""
+        from openhands.agent_server.conversation_service import _SENSITIVE_PATTERNS
+
+        # Test secrets with special characters that previously bypassed sanitization
+        test_cases = [
+            ("api_key='sk-123,456'", "should redact comma"),
+            ("token='abc}xyz'", "should redact with brace"),
+            ('api_key="sk-key-with-space"', "should redact quoted value"),
+            ("password='p@ss!word#123'", "should redact special chars"),
+        ]
+
+        for test_string, description in test_cases:
+            result = test_string
+            for pattern, replacement in _SENSITIVE_PATTERNS:
+                result = pattern.sub(replacement, result)
+            assert "***REDACTED***" in result, f"Failed: {description}"
+            # Verify the actual secret value is not present
+            # Extract original value for verification
+            if "'" in test_string:
+                start = test_string.index("'") + 1
+                end = test_string.rindex("'")
+                original_value = test_string[start:end]
+                assert original_value not in result, f"Value leaked: {description}"
+
+    def test_sanitize_validation_error_preserves_non_sensitive_content(self):
+        """Test that non-sensitive validation error content is preserved."""
+        from openhands.agent_server.conversation_service import _SENSITIVE_PATTERNS
+
+        # Non-sensitive error messages should remain unchanged
+        test_string = "Input should be a valid integer [type=int_parsing]"
+        result = test_string
+        for pattern, replacement in _SENSITIVE_PATTERNS:
+            result = pattern.sub(replacement, result)
+        assert result == test_string
