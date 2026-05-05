@@ -60,6 +60,7 @@ from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
@@ -97,6 +98,10 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # -32603 = "Internal error" (JSON-RPC spec) — covers ACP server crashes,
 #          upstream model 500s, and transient infrastructure errors.
 _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
+
+# Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
+# used by the terminal tool and the default max_message_chars in LLM config.
+MAX_ACP_CONTENT_CHARS: int = 30_000
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
@@ -298,9 +303,26 @@ def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] |
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
         return None
-    return [
-        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content
-    ]
+    result = []
+    for content_block in content:
+        block_dict = (
+            content_block.model_dump(mode="json")
+            if hasattr(content_block, "model_dump")
+            else content_block
+        )
+        if (
+            isinstance(block_dict, dict)
+            and block_dict.get("type") == "text"
+            and isinstance(block_dict.get("text"), str)
+        ):
+            block_dict = {
+                **block_dict,
+                "text": maybe_truncate(
+                    block_dict["text"], truncate_after=MAX_ACP_CONTENT_CHARS
+                ),
+            }
+        result.append(block_dict)
+    return result
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -525,13 +547,18 @@ class _OpenHandsACPBridge:
         if self.on_event is None:
             return
         try:
+            raw_output = tc.get("raw_output")
+            if isinstance(raw_output, str):
+                raw_output = maybe_truncate(
+                    raw_output, truncate_after=MAX_ACP_CONTENT_CHARS
+                )
             event = ACPToolCallEvent(
                 tool_call_id=tc["tool_call_id"],
                 title=tc["title"],
                 status=tc.get("status"),
                 tool_kind=tc.get("tool_kind"),
                 raw_input=tc.get("raw_input"),
-                raw_output=tc.get("raw_output"),
+                raw_output=raw_output,
                 content=tc.get("content"),
                 is_error=tc.get("status") == "failed",
             )
