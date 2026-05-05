@@ -88,10 +88,9 @@ class TestSecrets:
             }
         )
         assert "API_KEY" in secrets.custom_secrets
-        assert (
-            secrets.custom_secrets["API_KEY"].secret.get_secret_value()
-            == "secret-value"
-        )
+        secret = secrets.custom_secrets["API_KEY"].secret
+        assert secret is not None
+        assert secret.get_secret_value() == "secret-value"
 
     def test_get_env_vars(self):
         """get_env_vars() should return secret values as dict."""
@@ -309,10 +308,9 @@ class TestFileSecretsStore:
 
         assert loaded is not None
         assert "MY_SECRET" in loaded.custom_secrets
-        assert (
-            loaded.custom_secrets["MY_SECRET"].secret.get_secret_value()
-            == "secret-value"
-        )
+        secret = loaded.custom_secrets["MY_SECRET"].secret
+        assert secret is not None
+        assert secret.get_secret_value() == "secret-value"
 
     def test_load_nonexistent(self, temp_dir):
         """Loading from nonexistent file should return None."""
@@ -381,10 +379,9 @@ class TestFileSecretsStore:
         store2 = FileSecretsStore(persistence_dir=temp_dir, cipher=cipher)
         loaded = store2.load()
         assert loaded is not None
-        assert (
-            loaded.custom_secrets["API_KEY"].secret.get_secret_value()
-            == "super-secret-value"
-        )
+        secret = loaded.custom_secrets["API_KEY"].secret
+        assert secret is not None
+        assert secret.get_secret_value() == "super-secret-value"
 
 
 class TestSchemaMigration:

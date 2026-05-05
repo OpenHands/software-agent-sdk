@@ -183,6 +183,7 @@ class Secrets(BaseModel):
         return {
             name: secret.secret.get_secret_value()
             for name, secret in self.custom_secrets.items()
+            if secret.secret is not None
         }
 
     def get_descriptions(self) -> dict[str, str | None]:
