@@ -293,7 +293,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 1
+AGENT_SETTINGS_SCHEMA_VERSION = 2
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 PersistedSettingsMigrator = Callable[[dict[str, Any]], dict[str, Any]]
@@ -367,6 +367,26 @@ def _migrate_agent_settings_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize the deprecated ``agent_kind: 'llm'`` discriminator to
+    ``'openhands'``.
+
+    Before the v1.19.0 ``LLMAgentSettings`` → ``OpenHandsAgentSettings`` rename,
+    persisted payloads carried ``agent_kind: 'llm'``. The two classes are
+    field-compatible (``LLMAgentSettings`` is a subclass of
+    ``OpenHandsAgentSettings`` that only narrows the discriminator literal),
+    and ``LLMAgentSettings`` is scheduled for removal in v1.22.0. Rewriting
+    the discriminator on read lets callers that explicitly validate as
+    ``OpenHandsAgentSettings`` (the canonical class) accept legacy data
+    without losing any fields.
+    """
+    migrated = dict(payload)
+    migrated["schema_version"] = 2
+    if migrated.get("agent_kind") == "llm":
+        migrated["agent_kind"] = "openhands"
+    return migrated
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -377,6 +397,7 @@ def _migrate_conversation_settings_v0_to_v1(
 
 _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_agent_settings_v0_to_v1,
+    1: _migrate_agent_settings_v1_to_v2,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
