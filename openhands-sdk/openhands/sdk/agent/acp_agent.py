@@ -28,11 +28,12 @@ from typing import TYPE_CHECKING, Any
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import text_block
+from acp.helpers import image_block, text_block
 from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ImageContentBlock,
     PromptResponse,
     RequestPermissionResponse,
     TextContentBlock,
@@ -53,12 +54,13 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
@@ -96,6 +98,10 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # -32603 = "Internal error" (JSON-RPC spec) — covers ACP server crashes,
 #          upstream model 500s, and transient infrastructure errors.
 _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
+
+# Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
+# used by the terminal tool and the default max_message_chars in LLM config.
+MAX_ACP_CONTENT_CHARS: int = 30_000
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
@@ -272,13 +278,51 @@ def _estimate_cost_from_tokens(
         return 0.0
 
 
+def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
+    """Convert an image URL (data URI or plain URL) to an ACP ImageContentBlock.
+
+    Data URIs (``data:<mime>;base64,<data>``) are parsed directly.
+    Plain URLs are passed via the ``uri`` field with a generic MIME type.
+    Returns ``None`` if the URL cannot be converted.
+    """
+    if url.startswith("data:"):
+        # Parse data URI: data:<mime>;base64,<data>
+        try:
+            header, data = url.split(",", 1)
+            mime_type = header.split(":", 1)[1].split(";", 1)[0]
+            return image_block(data=data, mime_type=mime_type)
+        except (ValueError, IndexError):
+            logger.warning("Failed to parse data URI for ACP image block")
+            return None
+    # Plain URL — pass as uri with a generic MIME type; the ACP server
+    # can fetch and detect the actual type.
+    return image_block(data="", mime_type="image/png", uri=url)
+
+
 def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
         return None
-    return [
-        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content
-    ]
+    result = []
+    for content_block in content:
+        block_dict = (
+            content_block.model_dump(mode="json")
+            if hasattr(content_block, "model_dump")
+            else content_block
+        )
+        if (
+            isinstance(block_dict, dict)
+            and block_dict.get("type") == "text"
+            and isinstance(block_dict.get("text"), str)
+        ):
+            block_dict = {
+                **block_dict,
+                "text": maybe_truncate(
+                    block_dict["text"], truncate_after=MAX_ACP_CONTENT_CHARS
+                ),
+            }
+        result.append(block_dict)
+    return result
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -503,13 +547,18 @@ class _OpenHandsACPBridge:
         if self.on_event is None:
             return
         try:
+            raw_output = tc.get("raw_output")
+            if isinstance(raw_output, str):
+                raw_output = maybe_truncate(
+                    raw_output, truncate_after=MAX_ACP_CONTENT_CHARS
+                )
             event = ACPToolCallEvent(
                 tool_call_id=tc["tool_call_id"],
                 title=tc["title"],
                 status=tc.get("status"),
                 tool_kind=tc.get("tool_kind"),
                 raw_input=tc.get("raw_input"),
-                raw_output=tc.get("raw_output"),
+                raw_output=raw_output,
                 content=tc.get("content"),
                 is_error=tc.get("status") == "failed",
             )
@@ -1128,23 +1177,27 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
-    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
-        """Build the prompt text for one ACP user turn."""
+    def _build_acp_prompt(
+        self, event: MessageEvent
+    ) -> list[TextContentBlock | ImageContentBlock] | None:
+        """Build the ACP content blocks for one user turn."""
         message = event.to_llm_message()
-        # Preserve all text blocks produced by the conversation layer, including
-        # any extended_content it already attached to the user turn.
-        text_parts = [
-            content.text
-            for content in message.content
-            if isinstance(content, TextContent) and content.text.strip()
-        ]
+        blocks: list[TextContentBlock | ImageContentBlock] = []
+        for content in message.content:
+            if isinstance(content, TextContent) and content.text.strip():
+                blocks.append(text_block(content.text))
+            elif isinstance(content, ImageContent):
+                for url in content.image_urls:
+                    acp_block = _image_url_to_acp_block(url)
+                    if acp_block is not None:
+                        blocks.append(acp_block)
         if self.agent_context:
             acp_prompt_context = self.agent_context.to_acp_prompt_context()
             if acp_prompt_context:
-                text_parts.append(acp_prompt_context)
-        if not text_parts:
+                blocks.append(text_block(acp_prompt_context))
+        if not blocks:
             return None
-        return "\n\n".join(text_parts)
+        return blocks
 
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
@@ -1159,14 +1212,14 @@ class ACPAgent(AgentBase):
         # Find the latest user message. Conversation implementations already
         # attach per-turn AgentContext extensions to MessageEvent.extended_content;
         # MessageEvent.to_llm_message() merges those extensions with the user text.
-        user_message = None
+        prompt_blocks = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                user_message = self._build_acp_prompt(event)
-                if user_message:
+                prompt_blocks = self._build_acp_prompt(event)
+                if prompt_blocks:
                     break
 
-        if user_message is None:
+        if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
@@ -1179,7 +1232,7 @@ class ACPAgent(AgentBase):
             async def _prompt() -> PromptResponse:
                 usage_sync = self._client.prepare_usage_sync(self._session_id or "")
                 response = await self._conn.prompt(
-                    [text_block(user_message)],
+                    prompt_blocks,
                     self._session_id,
                 )
                 if self._client.get_turn_usage_update(self._session_id or "") is None:
@@ -1199,9 +1252,9 @@ class ACPAgent(AgentBase):
             # Transient connection failures (network blips, server restarts) are
             # retried to preserve session state and avoid losing progress.
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
+                "Sending ACP prompt (timeout=%.0fs, blocks=%d)",
                 self.acp_prompt_timeout,
-                len(user_message),
+                len(prompt_blocks),
             )
 
             response: PromptResponse | None = None
@@ -1274,8 +1327,7 @@ class ACPAgent(AgentBase):
             # ACPToolCallEvents were already emitted live from
             # _OpenHandsACPBridge.session_update as each ToolCallStart /
             # ToolCallProgress notification arrived — no end-of-turn fan-out
-            # here. The final MessageEvent + FinishAction still close out
-            # the turn below.
+            # here. FinishAction closes out the turn below.
 
             # Build response message
             response_text = "".join(self._client.accumulated_text)
@@ -1283,18 +1335,6 @@ class ACPAgent(AgentBase):
 
             if not response_text:
                 response_text = "(No response from ACP server)"
-
-            message = Message(
-                role="assistant",
-                content=[TextContent(text=response_text)],
-                reasoning_content=thought_text if thought_text else None,
-            )
-
-            msg_event = MessageEvent(
-                source="agent",
-                llm_message=message,
-            )
-            on_event(msg_event)
 
             # ACP step() boundaries are full remote assistant turns, not
             # partial planning steps. Emit FinishAction to delimit that
@@ -1304,6 +1344,7 @@ class ACPAgent(AgentBase):
             action_event = ActionEvent(
                 source="agent",
                 thought=[],
+                reasoning_content=thought_text or None,
                 action=finish_action,
                 tool_name="finish",
                 tool_call_id=tc_id,

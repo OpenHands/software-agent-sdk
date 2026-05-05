@@ -1,5 +1,8 @@
 """Tests for tool registry module qualname tracking."""
 
+import pytest
+from deprecation import DeprecatedWarning
+
 from openhands.sdk.tool.registry import (
     get_tool_module_qualnames,
     list_registered_tools,
@@ -29,7 +32,8 @@ def test_get_tool_module_qualnames_with_callable():
         return []
 
     # Register the callable
-    register_tool("test_callable", test_factory)
+    with pytest.warns(DeprecatedWarning, match=r"register_tool\(callable_factory\)"):
+        register_tool("test_callable", test_factory)
 
     # Get the module qualnames
     qualnames = get_tool_module_qualnames()

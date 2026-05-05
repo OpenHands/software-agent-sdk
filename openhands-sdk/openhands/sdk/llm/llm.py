@@ -24,7 +24,6 @@ from pydantic.json_schema import SkipJsonSchema
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -94,6 +93,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
@@ -391,14 +391,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         description="The seed to use for random number generation.",
     )
-    safety_settings: list[dict[str, str]] | None = Field(
-        default=None,
-        deprecated=("Deprecated since v1.15.0 and scheduled for removal in v1.20.0."),
-        description=(
-            "No-op. Safety settings are no longer applied. "
-            "Deprecated since v1.15.0 and scheduled for removal in v1.20.0."
-        ),
-    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -460,20 +452,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
-    @field_validator("safety_settings", mode="before")
-    @classmethod
-    def _warn_safety_settings_deprecated(
-        cls, v: list[dict[str, str]] | None
-    ) -> list[dict[str, str]] | None:
-        if v is not None:
-            warn_deprecated(
-                "LLM.safety_settings",
-                deprecated_in="1.15.0",
-                removed_in="1.20.0",
-                details="Safety settings are no longer applied.",
-            )
-        return v
-
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
@@ -503,6 +481,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Set base_url (default to the app proxy when base_url is unset or None)
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
+
+        # Fix base_url for direct OpenAI - API expects /v1 suffix
+        # If base_url is "https://api.openai.com", set to None to use LiteLLM default
+        if model_val.startswith("openai/"):
+            base = d.get("base_url")
+            if base == "https://api.openai.com" or base == "https://api.openai.com/":
+                d["base_url"] = None  # Let LiteLLM use its default which includes /v1
 
         return d
 
@@ -1117,6 +1102,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._litellm_provider = provider
         return provider
 
+    def _infer_model_info_provider(self) -> str | None:
+        if self._model_info is not None:
+            provider = self._model_info.get("litellm_provider")
+            if isinstance(provider, str) and provider:
+                return provider
+
+        return self._infer_litellm_provider()
+
     def _get_litellm_api_key_value(self) -> str | None:
         api_key_value: str | None = None
         if self.api_key:
@@ -1429,6 +1422,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_model_info_provider(),
+            vision_enabled=vision_enabled,
+        )
 
         formatted_messages = [
             message.to_chat_dict(

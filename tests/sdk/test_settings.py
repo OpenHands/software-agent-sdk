@@ -330,7 +330,7 @@ def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
     settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 1
+    assert settings.schema_version == 2
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
@@ -346,13 +346,31 @@ def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    assert settings.schema_version == 1
+    # v1 → v2 is a no-op for ACP payloads, but the schema_version is bumped.
+    assert settings.schema_version == 2
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
+def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
+    """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
+    the canonical ``'openhands'`` discriminator on read."""
+    settings = AgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {"model": "legacy-model"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == 2
+    assert settings.agent_kind == "openhands"
+    assert settings.llm.model == "legacy-model"
+
+
 def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 1"):
-        AgentSettings.from_persisted({"schema_version": 2, "llm": {"model": "m"}})
+    with pytest.raises(ValueError, match="newer than supported version 2"):
+        AgentSettings.from_persisted({"schema_version": 3, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:

@@ -1,6 +1,6 @@
 [project]
 name = "openhands-sdk"
-version = "1.19.0"
+version = "1.20.0"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
@@ -11,7 +11,8 @@ dependencies = [
     "fastmcp>=3.0.0",
     "filelock>=3.20.1",
     "httpx[socks]>=0.27.0",
-    "litellm>=1.82.6,!=1.82.7,!=1.82.8",
+    "litellm>=1.83.7",
+    "pillow>=12.1.1",
     "pydantic>=2.12.5",
     "python-frontmatter>=1.1.0",
     "python-json-logger>=3.3.0",

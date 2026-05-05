@@ -97,41 +97,6 @@ def test_upload_file_query_param_missing_file(client, tmp_path):
 
 
 # =============================================================================
-# Upload Tests - Path Parameter (Legacy/Backwards Compatibility)
-# =============================================================================
-
-
-def test_upload_file_path_param_success(client, tmp_path):
-    """Test successful file upload with path parameter (legacy)."""
-    target_path = tmp_path / "uploaded_via_path.txt"
-    file_content = b"legacy upload content"
-
-    response = client.post(
-        f"/api/file/upload/{target_path}",
-        files={"file": ("test.txt", io.BytesIO(file_content), "text/plain")},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"success": True}
-    assert target_path.exists()
-    assert target_path.read_bytes() == file_content
-
-
-def test_upload_file_path_param_nested(client, tmp_path):
-    """Test file upload with nested path parameter."""
-    target_path = tmp_path / "deep" / "nested" / "path" / "file.txt"
-    file_content = b"deeply nested content"
-
-    response = client.post(
-        f"/api/file/upload/{target_path}",
-        files={"file": ("test.txt", io.BytesIO(file_content), "text/plain")},
-    )
-
-    assert response.status_code == 200
-    assert target_path.exists()
-
-
-# =============================================================================
 # Download Tests - Query Parameter (Preferred Method)
 # =============================================================================
 
@@ -188,40 +153,6 @@ def test_download_file_query_param_missing_path(client):
     response = client.get("/api/file/download")
 
     assert response.status_code == 422
-
-
-# =============================================================================
-# Download Tests - Path Parameter (Legacy/Backwards Compatibility)
-# =============================================================================
-
-
-def test_download_file_path_param_success(client, temp_file):
-    """Test successful file download with path parameter (legacy)."""
-    response = client.get(f"/api/file/download/{temp_file}")
-
-    assert response.status_code == 200
-    assert response.content == b"test file content"
-
-
-def test_download_file_path_param_nested(client, tmp_path):
-    """Test file download with nested path parameter."""
-    nested_file = tmp_path / "nested" / "dir" / "file.txt"
-    nested_file.parent.mkdir(parents=True)
-    nested_file.write_text("nested content")
-
-    response = client.get(f"/api/file/download/{nested_file}")
-
-    assert response.status_code == 200
-    assert response.content == b"nested content"
-
-
-def test_download_file_path_param_not_found(client, tmp_path):
-    """Test download with path parameter returns 404 when file doesn't exist."""
-    nonexistent = tmp_path / "does_not_exist.txt"
-
-    response = client.get(f"/api/file/download/{nonexistent}")
-
-    assert response.status_code == 404
 
 
 # =============================================================================
@@ -308,16 +239,10 @@ def test_download_file_with_special_characters_in_path(client, tmp_path):
     assert response.content == b"special path content"
 
 
-def test_file_legacy_routes_are_deprecated_in_openapi(client):
+def test_file_legacy_routes_are_removed_from_openapi(client):
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
-    openapi_schema = response.json()
-
-    upload_operation = openapi_schema["paths"]["/api/file/upload/{path}"]["post"]
-    assert upload_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in upload_operation["description"]
-
-    download_operation = openapi_schema["paths"]["/api/file/download/{path}"]["get"]
-    assert download_operation.get("deprecated") is True
-    assert "Deprecated since v1.15.0" in download_operation["description"]
+    openapi_paths = response.json()["paths"]
+    assert "/api/file/upload/{path}" not in openapi_paths
+    assert "/api/file/download/{path}" not in openapi_paths

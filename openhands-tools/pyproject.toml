@@ -1,6 +1,6 @@
 [project]
 name = "openhands-tools"
-version = "1.19.0"
+version = "1.20.0"
 description = "OpenHands Tools - Runtime tools for AI agents"
 
 requires-python = ">=3.12"
