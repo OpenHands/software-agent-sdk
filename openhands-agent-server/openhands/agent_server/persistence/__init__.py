@@ -1,6 +1,7 @@
 """Persistence module for settings and secrets storage."""
 
 from openhands.agent_server.persistence.models import (
+    SECRET_NAME_PATTERN,
     CustomSecret,
     CustomSecretCreate,
     CustomSecretResponse,
@@ -21,6 +22,8 @@ from openhands.agent_server.persistence.store import (
 
 
 __all__ = [
+    # Constants
+    "SECRET_NAME_PATTERN",
     # Models
     "CustomSecret",
     "CustomSecretCreate",

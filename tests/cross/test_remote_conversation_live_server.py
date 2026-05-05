@@ -1767,3 +1767,129 @@ def test_remote_state_exposes_invoked_skills(
     assert obs_text.rstrip().endswith("relative to that directory.")
 
     conv.close()
+
+
+def test_settings_and_secrets_api_with_live_server(server_env):
+    """End-to-end test for settings and secrets API endpoints.
+
+    Validates the full REST API for settings and secrets management
+    through the live agent-server, including:
+    - GET/PATCH settings
+    - GET/PUT/DELETE secrets
+    - Secret name validation
+    - Encryption/decryption round-trip
+    """
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        # ── Test settings endpoints ────────────────────────────────────────
+        # GET settings (initial state)
+        get_resp = client.get("/api/settings")
+        assert get_resp.status_code == 200
+        initial = get_resp.json()
+        assert "agent_settings" in initial
+        assert "conversation_settings" in initial
+        assert "llm_api_key_is_set" in initial
+
+        # PATCH settings (update LLM model)
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()
+        assert patched["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+        # ── Test secrets CRUD endpoints ────────────────────────────────────
+        # List secrets (should be empty initially)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        assert list_resp.json()["secrets"] == []
+
+        # Create a secret
+        create_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-test-live-server-12345",
+                "description": "Test API key for live server test",
+            },
+        )
+        assert create_resp.status_code == 200
+        created = create_resp.json()
+        assert created["name"] == "TEST_API_KEY"
+        assert created["description"] == "Test API key for live server test"
+
+        # List secrets again (should have one)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        secrets = list_resp.json()["secrets"]
+        assert len(secrets) == 1
+        assert secrets[0]["name"] == "TEST_API_KEY"
+        # Value should NOT be returned in list
+        assert "value" not in secrets[0]
+
+        # Get secret value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-test-live-server-12345"
+
+        # Update the secret (upsert)
+        update_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-updated-value",
+                "description": "Updated description",
+            },
+        )
+        assert update_resp.status_code == 200
+
+        # Verify updated value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-updated-value"
+
+        # Create another secret
+        client.put(
+            "/api/settings/secrets",
+            json={"name": "ANOTHER_SECRET", "value": "another-value"},
+        )
+        list_resp = client.get("/api/settings/secrets")
+        assert len(list_resp.json()["secrets"]) == 2
+
+        # Delete one secret
+        delete_resp = client.delete("/api/settings/secrets/TEST_API_KEY")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["deleted"] is True
+
+        # Verify deleted
+        get_deleted_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert get_deleted_resp.status_code == 404
+
+        # ── Test secret name validation ────────────────────────────────────
+        # Invalid name: starts with number
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "123_invalid", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # Invalid name: contains special characters
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "invalid-name", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # ── Test settings with encrypted secrets ───────────────────────────
+        # Update LLM API key
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"api_key": "sk-live-test-key"}}},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["llm_api_key_is_set"] is True
+        # Response should redact the key (no X-Expose-Secrets header)
+        assert patch_resp.json()["agent_settings"]["llm"]["api_key"] == "**********"
+
+        # Cleanup
+        client.delete("/api/settings/secrets/ANOTHER_SECRET")

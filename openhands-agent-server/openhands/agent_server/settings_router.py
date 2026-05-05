@@ -1,4 +1,3 @@
-import re
 from functools import lru_cache
 from typing import Any, Literal, cast
 
@@ -6,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, ValidationError
 
 from openhands.agent_server.persistence import (
+    SECRET_NAME_PATTERN,
     CustomSecretCreate,
     CustomSecretResponse,
     PersistedSettings,
@@ -35,9 +35,6 @@ SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
 
 settings_router = APIRouter(prefix="/settings", tags=["Settings"])
-
-# Validation pattern for secret names
-_SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
 # Valid values for X-Expose-Secrets header
 ExposeSecretsMode = Literal["encrypted", "plaintext"]
@@ -99,7 +96,7 @@ def _validate_secret_name(name: str) -> None:
     Raises:
         HTTPException: 422 if name format is invalid.
     """
-    if not _SECRET_NAME_PATTERN.match(name):
+    if not SECRET_NAME_PATTERN.match(name):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(

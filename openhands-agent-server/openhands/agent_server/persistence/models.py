@@ -207,7 +207,9 @@ class PersistedSettings(BaseModel):
         return data
 
 
-_SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
+# Validation pattern for secret names - exported for use by settings_router
+# Names: start with letter, alphanumeric + underscores, 1-64 chars
+SECRET_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
 
 class CustomSecret(BaseModel):
@@ -232,7 +234,7 @@ class CustomSecret(BaseModel):
         Note: The router also validates names, but this provides defense-in-depth
         for secrets created directly via the store (bypassing the HTTP layer).
         """
-        if not _SECRET_NAME_PATTERN.match(v):
+        if not SECRET_NAME_PATTERN.match(v):
             raise ValueError(
                 "Secret name must start with a letter, contain only "
                 "letters/numbers/underscores, and be 1-64 characters"
