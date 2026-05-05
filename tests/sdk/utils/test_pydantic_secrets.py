@@ -168,7 +168,7 @@ def test_validate_secret_invalid_type_int_raises_error(mock_info):
     fails when trying to call .strip() on the value.
     """
     with pytest.raises((TypeError, AttributeError)):
-        validate_secret(123, mock_info({}))
+        validate_secret(123, mock_info({}))  # type: ignore[arg-type]
 
 
 def test_validate_secret_invalid_type_dict_returns_none(mock_info):
@@ -177,7 +177,7 @@ def test_validate_secret_invalid_type_dict_returns_none(mock_info):
     Empty dict is falsy, so it's treated as empty/missing secret.
     Note: Non-empty dicts would fail when .strip() is called.
     """
-    result = validate_secret({}, mock_info({}))
+    result = validate_secret({}, mock_info({}))  # type: ignore[arg-type]
     assert result is None
 
 
@@ -187,20 +187,20 @@ def test_validate_secret_invalid_type_list_returns_none(mock_info):
     Empty list is falsy, so it's treated as empty/missing secret.
     Note: Non-empty lists would fail when .strip() is called.
     """
-    result = validate_secret([], mock_info({}))
+    result = validate_secret([], mock_info({}))  # type: ignore[arg-type]
     assert result is None
 
 
 def test_validate_secret_nonempty_dict_raises_error(mock_info):
     """validate_secret raises error for non-empty dict (invalid type)."""
     with pytest.raises((TypeError, AttributeError)):
-        validate_secret({"key": "value"}, mock_info({}))
+        validate_secret({"key": "value"}, mock_info({}))  # type: ignore[arg-type]
 
 
 def test_validate_secret_nonempty_list_raises_error(mock_info):
     """validate_secret raises error for non-empty list (invalid type)."""
     with pytest.raises((TypeError, AttributeError)):
-        validate_secret(["value"], mock_info({}))
+        validate_secret(["value"], mock_info({}))  # type: ignore[arg-type]
 
 
 def test_validate_secret_string_returns_secretstr(mock_info):
