@@ -61,9 +61,11 @@ class ManagedAPIServer:
 
         # Set OH_SECRET_KEY to enable encrypted secrets feature
         # In production, this should be a secure randomly generated key
+        # Set TMUX_TMPDIR to a short path to avoid socket path length issues on macOS
         env = {
             "LOG_JSON": "true",
             "OH_SECRET_KEY": "example-secret-key-for-demo-only-32b",
+            "TMUX_TMPDIR": "/tmp/oh-tmux",
             **os.environ,
         }
 
