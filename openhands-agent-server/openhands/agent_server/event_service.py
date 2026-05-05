@@ -24,7 +24,11 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import AgentErrorEvent, StreamingDeltaEvent
+from openhands.sdk.event import (
+    AgentErrorEvent,
+    ObservationBaseEvent,
+    StreamingDeltaEvent,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm.streaming import LLMStreamChunk
@@ -611,16 +615,25 @@ class EventService:
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
-                error_event = AgentErrorEvent(
-                    tool_name=first_action.tool_name,
-                    tool_call_id=first_action.tool_call_id,
-                    error=(
-                        "A restart occurred while this tool was in progress. "
-                        "This may indicate a fatal memory error or system crash. "
-                        "The tool execution was interrupted and did not complete."
-                    ),
+                # Skip if any observation-like event already exists for this
+                # tool_call_id, to avoid duplicate observations when an
+                # observation matches by tool_call_id but not action_id.
+                already_observed = any(
+                    isinstance(e, ObservationBaseEvent)
+                    and e.tool_call_id == first_action.tool_call_id
+                    for e in state.events
                 )
-                self._conversation._on_event(error_event)
+                if not already_observed:
+                    error_event = AgentErrorEvent(
+                        tool_name=first_action.tool_name,
+                        tool_call_id=first_action.tool_call_id,
+                        error=(
+                            "A restart occurred while this tool was in progress. "
+                            "This may indicate a fatal memory error or system crash. "
+                            "The tool execution was interrupted and did not complete."
+                        ),
+                    )
+                    self._conversation._on_event(error_event)
 
         # Publish initial state update
         await self._publish_state_update()
