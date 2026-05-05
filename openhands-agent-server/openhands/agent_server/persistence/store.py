@@ -42,17 +42,25 @@ _FILE_MODE = stat.S_IRUSR | stat.S_IWUSR  # 0o600 - rw-------
 def _ensure_secure_directory(path: Path) -> None:
     """Ensure directory exists with secure permissions.
 
-    Creates the directory with owner-only permissions (0o700) if it doesn't exist.
+    Creates all parent directories with secure permissions (0o700).
     If it already exists, ensures permissions are correct.
     """
+    if not path.exists():
+        # Create parents with secure permissions
+        current = path
+        to_create: list[Path] = []
+        while not current.exists():
+            to_create.append(current)
+            current = current.parent
+
+        for dir_path in reversed(to_create):
+            dir_path.mkdir(mode=_DIR_MODE, exist_ok=True)
+
+    # Ensure permissions are correct even if dir already existed
     try:
-        path.mkdir(parents=True, exist_ok=False, mode=_DIR_MODE)
-    except FileExistsError:
-        # Directory exists - ensure permissions are correct
-        try:
-            path.chmod(_DIR_MODE)
-        except OSError:
-            pass  # Best effort - may fail if not owner
+        path.chmod(_DIR_MODE)
+    except OSError as e:
+        logger.warning(f"Failed to set permissions on {path}: {e}")
 
 
 @contextmanager
@@ -87,6 +95,12 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except Exception:
+        # Note: os.fdopen() takes ownership of the fd on success.
+        # If it fails, we need to close fd manually.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
         # Clean up on error
         try:
             tmp_path.unlink(missing_ok=True)
@@ -168,6 +182,11 @@ class FileSettingsStore(SettingsStore):
         cipher: Cipher | None = None,
         filename: str = "settings.json",
     ):
+        # Validate filename to prevent path traversal
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            raise ValueError(
+                "filename must not contain path separators or start with '.'"
+            )
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename

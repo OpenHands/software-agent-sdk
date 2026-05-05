@@ -230,6 +230,8 @@ def _merge_request_with_persisted_settings(
 
     # Handle agent - build from persisted settings if not provided
     agent_data = result.get("agent")
+    if agent_data is not None and not isinstance(agent_data, dict):
+        raise ValueError("'agent' must be an object or null")
     if agent_data is None:
         # Build entire agent from persisted settings
         agent = persisted_settings.agent_settings.create_agent()
@@ -288,6 +290,13 @@ def _validate_merged_agent_settings(agent_data: dict[str, Any]) -> None:
     Raises:
         MissingSettingsError: If required settings are missing.
     """
+    # Guard against None/non-dict agent data
+    if not isinstance(agent_data, dict):
+        raise MissingSettingsError(
+            "No agent configuration available. "
+            "Please provide an agent in the request or save settings via /api/settings."
+        )
+
     # ACPAgent doesn't need an LLM API key - it uses a dummy LLM
     if _is_acp_agent(agent_data):
         return

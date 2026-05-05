@@ -356,8 +356,12 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 continue
             if names is not None and name not in names:
                 continue
+            # URL-encode secret name to handle special characters
+            from urllib.parse import quote
+
+            encoded_name = quote(name, safe="")
             result[name] = LookupSecret(
-                url=f"{self.host}{_SECRETS_API_PATH}/{name}",
+                url=f"{self.host}{_SECRETS_API_PATH}/{encoded_name}",
                 headers=self._headers,
                 description=item.get("description"),
             )
@@ -465,6 +469,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if stdio_server.get("env"):
                 server_config["env"] = stdio_server["env"]
             # STDIO servers have an explicit name field
-            mcp_servers[stdio_server["name"]] = server_config
+            server_name = stdio_server["name"]
+            if server_name in mcp_servers:
+                logger.warning(
+                    f"Duplicate MCP server name '{server_name}' - using latest definition"
+                )
+            mcp_servers[server_name] = server_config
 
         return mcp_servers

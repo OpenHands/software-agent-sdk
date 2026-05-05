@@ -151,7 +151,7 @@ class CustomSecret(BaseModel):
     """A custom secret with name, value, and optional description."""
 
     name: str
-    secret: SecretStr
+    secret: SecretStr | None
     description: str | None = None
 
     @field_validator("secret")
@@ -164,17 +164,6 @@ class CustomSecret(BaseModel):
     @field_serializer("secret", when_used="always")
     def _serialize_secret(self, v: SecretStr | None, info: SerializationInfo):
         return serialize_secret(v, info)
-
-    @classmethod
-    def from_value(cls, value: dict[str, Any] | str) -> CustomSecret:
-        """Create from dict or plain string value."""
-        if isinstance(value, str):
-            return cls(name="", secret=SecretStr(value))
-        return cls(
-            name=value.get("name", ""),
-            secret=SecretStr(value.get("secret", "")),
-            description=value.get("description"),
-        )
 
 
 class Secrets(BaseModel):

@@ -154,7 +154,7 @@ async def get_settings(
     if should_expose and settings.llm_api_key_is_set:
         client_host = request.client.host if request.client else "unknown"
         logger.info(
-            "LLM API key exposed via settings API",
+            "Secrets exposed via settings API (includes LLM, MCP, and other agent settings)",
             extra={"client_host": client_host, "expose_via_header": expose_via_header},
         )
 
@@ -199,6 +199,9 @@ async def update_settings(
             settings = store.update(apply_update)
         except ValidationError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except (OSError, PermissionError):
+            logger.error("Settings update failed", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to update settings")
 
     return SettingsResponse(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
@@ -208,6 +211,11 @@ async def update_settings(
 
 
 # ── Secrets CRUD Endpoints ───────────────────────────────────────────────
+# TODO: Consider adding rate limiting to secret endpoints to prevent:
+# 1. Brute-force enumeration of secret names
+# 2. DoS via repeated file operations
+# 3. Timing attacks to determine existence
+# See: https://github.com/laurentS/slowapi for FastAPI rate limiting
 
 
 @settings_router.get(SECRETS_PATH, response_model=SecretsResponse)
@@ -271,11 +279,15 @@ async def create_secret(
     config = _get_config(request)
     store = get_secrets_store(config)
 
-    store.set_secret(
-        name=secret.name,
-        value=secret.value.get_secret_value(),
-        description=secret.description,
-    )
+    try:
+        store.set_secret(
+            name=secret.name,
+            value=secret.value.get_secret_value(),
+            description=secret.description,
+        )
+    except (OSError, PermissionError):
+        logger.error("Failed to save secret", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to save secret")
 
     logger.info(
         "Secret created/updated",
