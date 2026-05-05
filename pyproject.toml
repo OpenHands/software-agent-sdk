@@ -27,6 +27,7 @@ openhands-agent-server = { workspace = true }
 dev = [
     "pre-commit>=4.3.0",
     "packaging>=24.2",
+    "pillow>=12.1.1",
     "psutil>=7.0.0",
     "pyright[nodejs]>=1.1.405",
     "pytest>=9.0.3",
