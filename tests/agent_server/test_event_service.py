@@ -1412,7 +1412,7 @@ class TestEventServiceStartWithRunningStatus:
         self, event_service, tmp_path
     ):
         """Don't synthesize AgentErrorEvent if the loaded state already carries an
-        ObservationBaseEvent for the unmatched action's tool_call_id (issue #3045).
+        ObservationBaseEvent for the unmatched action's tool_call_id.
 
         Reproduces the gap get_unmatched_actions misses: an ObservationEvent that
         matches by tool_call_id but not by action_id (e.g. action_id rewritten on
