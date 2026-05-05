@@ -38,6 +38,7 @@ from openhands.sdk.event import (
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -185,9 +186,9 @@ class TestACPAgentSerialization:
 
         dumped = agent.model_dump()
         assert dumped["acp_env"] == {
-            "OPENAI_API_KEY": "<redacted>",
-            "GEMINI_API_KEY": "<redacted>",
-            "GEMINI_BASE_URL": "<redacted>",
+            "OPENAI_API_KEY": REDACTED_SECRET_VALUE,
+            "GEMINI_API_KEY": REDACTED_SECRET_VALUE,
+            "GEMINI_BASE_URL": REDACTED_SECRET_VALUE,
         }
 
         # JSON path that produced the original leaks must not contain any of
@@ -196,7 +197,7 @@ class TestACPAgentSerialization:
         assert "sk-real-secret-do-not-leak" not in dumped_json
         assert "sk-other-secret" not in dumped_json
         assert "https://llm-proxy.example/" not in dumped_json
-        assert '"<redacted>"' in dumped_json
+        assert REDACTED_SECRET_VALUE in dumped_json
 
     def test_acp_env_exposed_with_expose_secrets(self):
         """``expose_secrets=True`` returns the real values for transport use."""

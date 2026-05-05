@@ -61,6 +61,7 @@ from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.pydantic_secrets import serialize_secrets_dict
 
 
 logger = get_logger(__name__)
@@ -706,21 +707,12 @@ class ACPAgent(AgentBase):
     def _serialize_acp_env(self, value: dict[str, str], info) -> dict[str, str]:
         """Mask ``acp_env`` values during serialization to prevent secret leakage.
 
-        ``acp_env`` carries provider credentials (e.g. ``ANTHROPIC_API_KEY``,
-        ``OPENAI_API_KEY``, ``GEMINI_API_KEY``) into the ACP subprocess. Without
-        masking, these values land in any persisted agent state — including the
-        conversation history dumps consumed by trace tooling — exposing live
-        proxy keys.
-
-        Pass ``context={"expose_secrets": True}`` to ``model_dump`` /
-        ``model_dump_json`` to recover the real values (e.g. when shipping the
-        agent to a remote agent-server). The runtime path
-        (:meth:`_start_acp_server`) reads ``self.acp_env`` directly and is not
-        affected by this serializer.
+        Delegates to :func:`serialize_secrets_dict` which follows the same
+        contract as :func:`serialize_secret` (cipher / expose_secrets / redact).
+        The runtime path (:meth:`_start_acp_server`) reads ``self.acp_env``
+        directly and is not affected by this serializer.
         """
-        if info.context and info.context.get("expose_secrets"):
-            return dict(value)
-        return dict.fromkeys(value, "<redacted>")
+        return serialize_secrets_dict(value, info)
 
     acp_session_mode: str | None = Field(
         default=None,

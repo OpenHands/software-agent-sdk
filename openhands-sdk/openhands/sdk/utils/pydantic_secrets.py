@@ -39,6 +39,29 @@ def serialize_secret(v: SecretStr | None, info):
     return v
 
 
+def serialize_secrets_dict(d: dict[str, str], info) -> dict[str, str]:
+    """Serialize a ``dict[str, str]`` whose **values** are all secrets.
+
+    Follows the same contract as :func:`serialize_secret`:
+
+    * *cipher* in context → each value is encrypted.
+    * ``expose_secrets=True`` → real values returned.
+    * default → every value is replaced with :data:`REDACTED_SECRET_VALUE`.
+    """
+    if info.context and info.context.get("cipher"):
+        cipher: Cipher = info.context.get("cipher")
+        return {
+            k: encrypted
+            for k, v in d.items()
+            if (encrypted := cipher.encrypt(SecretStr(v))) is not None
+        }
+
+    if info.context and info.context.get("expose_secrets"):
+        return dict(d)
+
+    return dict.fromkeys(d, REDACTED_SECRET_VALUE)
+
+
 def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     """
     Deserialize secret fields, handling encryption and empty values.
