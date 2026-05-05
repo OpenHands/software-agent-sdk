@@ -9,6 +9,73 @@ triggers:
 
 You are an expert code reviewer for the **OpenHands/software-agent-sdk** repository. This skill provides repo-specific review guidelines. Be direct but constructive.
 
+## Bot Approval Gate - PR Author Responsibilities
+
+The PR review bot serves as the **first line of defense** before human reviewers get involved. This section defines the process for getting a PR through bot review and into human review.
+
+### PR author owns the bot relationship
+
+- The **PR author** is solely responsible for invoking the review bot, iterating with it, and addressing its comments.
+- Other maintainers/reviewers **must not** re-invoke the review bot on someone else's PR. If you are a reviewer and want feedback, do a human review or ask a targeted question.
+- The PR author should iterate with the bot until either:
+  1. The bot approves the PR, **or**
+  2. The author explicitly disagrees with a bot comment by replying with a justification (e.g., "This security concern does not apply because this is an eval harness with no production exposure").
+
+### When to request human review
+
+Human review should be requested **only after** the review bot's comments have been addressed:
+
+- All bot comments are either resolved or have an explicit reply with justification for disagreeing.
+- If the bot flagged missing evidence artifacts (see below), those artifacts have been provided.
+- The bot has been re-invoked at least once after addressing its comments to confirm no new issues arise.
+
+### Human reviewers: do not substitute AI for your review
+
+When a human review is requested, reviewers must provide **actual human feedback**:
+
+- **Do not** just invoke the review bot and leave that as your review. The PR author can already do that themselves.
+- **Do** read the code, check that the bot's concerns were adequately addressed, and provide your own judgment.
+- You **may** ask targeted AI questions (e.g., "What are the implications of this change on the event serialization path?") but this supplements, not replaces, your review.
+- If you notice the bot's comments were not addressed, you can comment asking the author to address them - but do not re-invoke the bot yourself.
+
+## Evidence Artifacts Requirement
+
+PRs that change behavior (not docs-only, not config-only, not test-only) **must** include evidence that the change works end-to-end.
+
+### What counts as evidence
+
+Evidence should be placed in a `.pr/` directory at the repo root. Valid evidence includes:
+
+- **Command logs**: The exact commands run and their stdout/stderr output (e.g., `.pr/test-run.log`)
+- **Screenshots or videos**: For UI/frontend changes (e.g., `.pr/screenshot-before.png`, `.pr/screenshot-after.png`)
+- **Example input/output**: For API or CLI changes, show the request and response (e.g., `.pr/api-example.md`)
+- **Agent conversation links**: For agent-generated work, include a link to the originating conversation (e.g., `https://app.all-hands.dev/conversations/{id}`)
+
+### What does NOT count as evidence
+
+- "Tested locally" without concrete artifacts
+- Only `pytest` output (tests are expected to pass via CI; evidence means proof beyond the test suite)
+- Empty `.pr/` directory
+
+### How the bot enforces this
+
+When reviewing a PR that modifies source code under `openhands-sdk/`, `openhands-tools/`, `openhands-workspace/`, or `openhands-agent-server/`:
+
+1. Check if a `.pr/` directory exists with at least one artifact file.
+2. If no `.pr/` directory or no artifacts exist, flag this as a **blocking issue** in the review:
+   > "**Missing evidence artifacts**: This PR changes production code but does not include evidence that the change works end-to-end. Please add logs, screenshots, or example output to a `.pr/` directory. See the [Evidence Artifacts Requirement](https://github.com/OpenHands/software-agent-sdk/blob/main/.agents/skills/custom-codereview-guide.md#evidence-artifacts-requirement) for details."
+3. The `.pr/` directory is automatically cleaned up when the PR is approved (via the `pr-artifacts.yml` workflow), so authors should not worry about it persisting in the main branch.
+
+### Exemptions
+
+Evidence artifacts are **not required** for:
+
+- Documentation-only changes (README, docstrings, comments)
+- Configuration-only changes (CI workflows, linter configs, `.gitignore`)
+- Test-only changes (adding/updating tests without changing production code)
+- Dependency version bumps
+- Release PRs
+
 ## Review Decisions
 
 You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHANGES.
@@ -61,6 +128,7 @@ Examples of straightforward and low-risk PRs you should approve (non-exhaustive)
 
 **DO NOT APPROVE** PRs that have any of the following issues:
 
+- **Missing evidence artifacts**: PR changes production code but has no `.pr/` directory with end-to-end proof (see [Evidence Artifacts Requirement](#evidence-artifacts-requirement) above)
 - **Package version bumps in non-release PRs**: If any `pyproject.toml` file has changes to the `version` field (e.g., `version = "1.12.0"` → `version = "1.13.0"`), and the PR is NOT explicitly a release PR (title/description doesn't indicate it's a release), **DO NOT APPROVE**. Version numbers should only be changed in dedicated release PRs managed by maintainers.
   - Check: Look for changes to `version = "..."` in any `*/pyproject.toml` files
   - Exception: PRs with titles like "release: v1.x.x" or "chore: bump version to 1.x.x" from maintainers
@@ -240,3 +308,4 @@ If a PR is approvable, just approve it. Don't add "one small suggestion" or "con
 - Suggest alternatives, not mandates
 - Approve quickly when code is good ("LGTM!")
 - Use GitHub suggestion syntax for code fixes
+
