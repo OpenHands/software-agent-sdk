@@ -431,31 +431,35 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         # Transform SSE servers → RemoteMCPServer format
         for i, sse_server in enumerate(mcp_config_data.get("sse_servers") or []):
-            if not isinstance(sse_server, dict) or "url" not in sse_server:
+            if not isinstance(sse_server, dict):
                 continue  # Skip malformed entries
+            url = sse_server.get("url")
+            if not url or not isinstance(url, str):
+                continue  # Skip entries without valid URL
             server_config: dict[str, Any] = {
-                "url": sse_server["url"],
+                "url": url,
                 "transport": "sse",
             }
-            if sse_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {sse_server['api_key']}"
-                }
+            api_key = sse_server.get("api_key")
+            if api_key and isinstance(api_key, str):
+                server_config["headers"] = {"Authorization": f"Bearer {api_key}"}
             # SSE servers don't have names, use index
             mcp_servers[f"sse_{i}"] = server_config
 
         # Transform SHTTP servers → RemoteMCPServer format
         for i, shttp_server in enumerate(mcp_config_data.get("shttp_servers") or []):
-            if not isinstance(shttp_server, dict) or "url" not in shttp_server:
+            if not isinstance(shttp_server, dict):
                 continue  # Skip malformed entries
+            url = shttp_server.get("url")
+            if not url or not isinstance(url, str):
+                continue  # Skip entries without valid URL
             server_config = {
-                "url": shttp_server["url"],
+                "url": url,
                 "transport": "streamable-http",
             }
-            if shttp_server.get("api_key"):
-                server_config["headers"] = {
-                    "Authorization": f"Bearer {shttp_server['api_key']}"
-                }
+            api_key = shttp_server.get("api_key")
+            if api_key and isinstance(api_key, str):
+                server_config["headers"] = {"Authorization": f"Bearer {api_key}"}
             # SHTTP servers don't have names, use index
             mcp_servers[f"shttp_{i}"] = server_config
 
@@ -463,16 +467,21 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         for stdio_server in mcp_config_data.get("stdio_servers") or []:
             if not isinstance(stdio_server, dict):
                 continue  # Skip malformed entries
-            if "command" not in stdio_server or "name" not in stdio_server:
-                continue  # Skip entries missing required fields
+            command = stdio_server.get("command")
+            server_name = stdio_server.get("name")
+            if not command or not isinstance(command, str):
+                continue  # Skip entries without valid command
+            if not server_name or not isinstance(server_name, str):
+                continue  # Skip entries without valid name
+            args = stdio_server.get("args", [])
             server_config = {
-                "command": stdio_server["command"],
-                "args": stdio_server.get("args", []),
+                "command": command,
+                "args": args if isinstance(args, list) else [],
             }
-            if stdio_server.get("env"):
-                server_config["env"] = stdio_server["env"]
+            env = stdio_server.get("env")
+            if env and isinstance(env, dict):
+                server_config["env"] = env
             # STDIO servers have an explicit name field
-            server_name = stdio_server["name"]
             if server_name in mcp_servers:
                 logger.warning(f"Duplicate MCP server name '{server_name}'")
             mcp_servers[server_name] = server_config

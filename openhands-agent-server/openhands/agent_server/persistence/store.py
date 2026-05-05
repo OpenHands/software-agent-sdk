@@ -2,14 +2,16 @@
 
 Following the same pattern as OpenHands app-server's FileSettingsStore
 and FileSecretsStore for consistency.
+
+Note: File locking uses Unix fcntl module. On Windows, locking is a no-op.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import stat
+import sys
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
@@ -26,6 +28,12 @@ from openhands.agent_server.persistence.models import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.cipher import Cipher
+
+# fcntl is Unix-only; on Windows, file locking is a no-op
+if sys.platform != "win32":
+    import fcntl
+else:
+    fcntl = None  # type: ignore[assignment]
 
 
 if TYPE_CHECKING:
@@ -65,12 +73,17 @@ def _ensure_secure_directory(path: Path) -> None:
 
 @contextmanager
 def _file_lock(lock_path: Path) -> Iterator[None]:
-    """Context manager for file-based locking (Unix fcntl).
+    """Context manager for file-based locking.
 
-    Provides exclusive lock to prevent race conditions during
-    read-modify-write operations.
+    Uses Unix fcntl for exclusive locking to prevent race conditions during
+    read-modify-write operations. On Windows, locking is a no-op (not supported).
     """
     _ensure_secure_directory(lock_path.parent)
+    if fcntl is None:
+        # Windows: no file locking support, just yield
+        yield
+        return
+
     with open(lock_path, "w", encoding="utf-8") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -274,6 +287,11 @@ class FileSecretsStore(SecretsStore):
         cipher: Cipher | None = None,
         filename: str = "secrets.json",
     ):
+        # Validate filename to prevent path traversal
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            raise ValueError(
+                "filename must not contain path separators or start with '.'"
+            )
         self.persistence_dir = Path(persistence_dir)
         self.cipher = cipher
         self.filename = filename
@@ -319,14 +337,18 @@ class FileSecretsStore(SecretsStore):
         logger.debug(f"Secrets saved to {self._path}")
 
     def get_secret(self, name: str) -> str | None:
-        """Get a single secret value by name."""
-        secrets = self.load()
-        if secrets is None:
-            return None
-        secret = secrets.custom_secrets.get(name)
-        if secret is None or secret.secret is None:
-            return None
-        return secret.secret.get_secret_value()
+        """Get a single secret value by name.
+
+        Uses file locking to prevent reading during concurrent writes.
+        """
+        with _file_lock(self._lock_path):
+            secrets = self.load()
+            if secrets is None:
+                return None
+            secret = secrets.custom_secrets.get(name)
+            if secret is None or secret.secret is None:
+                return None
+            return secret.secret.get_secret_value()
 
     def set_secret(self, name: str, value: str, description: str | None = None) -> None:
         """Set a single secret with file locking to prevent race conditions."""

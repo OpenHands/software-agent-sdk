@@ -187,7 +187,8 @@ async def update_settings(
 
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
-        # No updates - just return current settings
+        # No updates - warn and return current settings
+        logger.warning("Empty settings update payload received")
         settings = store.load() or PersistedSettings()
     else:
         # Apply updates atomically with file locking
@@ -197,12 +198,25 @@ async def update_settings(
 
         try:
             settings = store.update(apply_update)
+            # Audit log: settings modified
+            client_host = request.client.host if request.client else "unknown"
+            logger.info(
+                "Settings updated",
+                extra={
+                    "client_host": client_host,
+                    "agent_settings_modified": "agent_settings_diff" in update_data,
+                    "conversation_settings_modified": (
+                        "conversation_settings_diff" in update_data
+                    ),
+                },
+            )
         except ValidationError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except (OSError, PermissionError):
             logger.error("Settings update failed", exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to update settings")
 
+    # Don't expose secrets in PATCH response (consistent with GET behavior)
     return SettingsResponse(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
