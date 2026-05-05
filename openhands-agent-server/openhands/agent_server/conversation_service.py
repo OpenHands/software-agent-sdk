@@ -477,10 +477,18 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        stored = StoredConversation(
-            id=conversation_id,
-            **request.model_dump(mode="json", context={"expose_secrets": True}),
-        )
+        request_data = request.model_dump(mode="json", context={"expose_secrets": True})
+
+        # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
+        # cipher-encrypted and need decryption during model validation. Pass the
+        # cipher in the validation context so validate_secret() can decrypt them.
+        if request.secrets_encrypted and self.cipher is not None:
+            stored = StoredConversation.model_validate(
+                {"id": conversation_id, **request_data},
+                context={"cipher": self.cipher},
+            )
+        else:
+            stored = StoredConversation(id=conversation_id, **request_data)
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
