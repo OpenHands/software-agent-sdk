@@ -121,10 +121,7 @@ async def batch_get_acp_conversations(
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post(
-    "",
-    responses={422: {"description": "Missing required settings"}},
-)
+@conversation_router_acp.post("")
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
