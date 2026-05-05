@@ -324,7 +324,9 @@ class FileSecretsStore(SecretsStore):
         if secrets is None:
             return None
         secret = secrets.custom_secrets.get(name)
-        return secret.secret.get_secret_value() if secret else None
+        if secret is None or secret.secret is None:
+            return None
+        return secret.secret.get_secret_value()
 
     def set_secret(self, name: str, value: str, description: str | None = None) -> None:
         """Set a single secret with file locking to prevent race conditions."""

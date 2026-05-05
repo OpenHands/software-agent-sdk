@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 from urllib.request import urlopen
 
 import httpx
@@ -11,6 +12,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
+
 
 logger = get_logger(__name__)
 
@@ -360,8 +362,6 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             if names is not None and name not in names:
                 continue
             # URL-encode secret name to handle special characters
-            from urllib.parse import quote
-
             encoded_name = quote(name, safe="")
             result[name] = LookupSecret(
                 url=f"{self.host}{_SECRETS_API_PATH}/{encoded_name}",
