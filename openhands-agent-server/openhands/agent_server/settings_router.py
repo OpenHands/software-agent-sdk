@@ -154,7 +154,7 @@ async def get_settings(
     if should_expose and settings.llm_api_key_is_set:
         client_host = request.client.host if request.client else "unknown"
         logger.info(
-            "Secrets exposed via settings API (includes LLM, MCP, and other agent settings)",
+            "Secrets exposed via settings API (LLM, MCP, agent settings)",
             extra={"client_host": client_host, "expose_via_header": expose_via_header},
         )
 

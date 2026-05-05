@@ -7,9 +7,12 @@ import httpx
 from pydantic import PrivateAttr
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
+
+logger = get_logger(__name__)
 
 
 if TYPE_CHECKING:
@@ -471,9 +474,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             # STDIO servers have an explicit name field
             server_name = stdio_server["name"]
             if server_name in mcp_servers:
-                logger.warning(
-                    f"Duplicate MCP server name '{server_name}' - using latest definition"
-                )
+                logger.warning(f"Duplicate MCP server name '{server_name}'")
             mcp_servers[server_name] = server_config
 
         return mcp_servers

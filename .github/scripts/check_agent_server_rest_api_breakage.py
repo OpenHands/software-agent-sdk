@@ -542,9 +542,11 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 # 1. The property type changes from `object` to `anyOf[object, null]`
 # 2. Nested properties appear "removed" from the old path structure
 #
-# NOTE: These patterns are TEMPORARY for PR #3026 (making agent/workspace optional).
-# They match ALL nested properties, creating a blind spot for legitimate breaking changes.
-# TODO(@all-hands-bot): Remove these patterns after PR #3026 is merged and verified in production.
+# NOTE: These patterns are TEMPORARY for PR #3026 (making agent/workspace
+# optional). They match ALL nested properties, creating a blind spot for
+# legitimate breaking changes.
+# TODO(@all-hands-bot): Remove these patterns after PR #3026 is merged
+# and verified in production.
 #
 # These patterns deliberately match ANY nested property under agent/ or workspace/.
 # This is because making a top-level property optional causes oasdiff to report all
