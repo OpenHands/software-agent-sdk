@@ -280,7 +280,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         from openhands.sdk.llm.llm import LLM
 
         response = self.client.get(
-            _SETTINGS_API_BASE, params={"expose_secrets": "true"}
+            _SETTINGS_API_BASE, headers={"X-Expose-Secrets": "true"}
         )
         response.raise_for_status()
         data = response.json()
