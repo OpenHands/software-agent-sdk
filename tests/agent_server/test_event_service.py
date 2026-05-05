@@ -1401,6 +1401,44 @@ class TestEventServiceStartWithRunningStatus:
             ]
             assert len(error_event_calls) == 0
 
+    @pytest.mark.asyncio
+    async def test_start_initializes_workspace_as_git_repo(
+        self, event_service, tmp_path
+    ):
+        """A fresh workspace dir should be `git init`-ed during start().
+
+        Without this, /api/git/changes 500s on non-repo workspaces and
+        agent-created files never appear in the Changes tab.
+        """
+        # Arrange
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = tmp_path / "fresh_workspace"
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(workspace_dir))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Act
+            await event_service.start()
+
+        # Assert
+        assert (workspace_dir / ".git").exists()
+
 
 class TestEventServiceConcurrentSubscriptions:
     """Test cases for concurrent subscription handling without deadlocks.

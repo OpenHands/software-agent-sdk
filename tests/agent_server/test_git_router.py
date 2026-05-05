@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.sdk.git.exceptions import GitRepositoryError
 from openhands.sdk.git.models import GitChange, GitChangeStatus, GitDiff
 
 
@@ -67,14 +68,60 @@ async def test_git_changes_query_param_empty_result(client):
 
 @pytest.mark.asyncio
 async def test_git_changes_query_param_with_exception(client):
-    """Test git changes endpoint with query parameter when git operation fails."""
+    """Test that unexpected git failures still surface as 500."""
     with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
-        mock_git_changes.side_effect = Exception("Git repository not found")
+        mock_git_changes.side_effect = RuntimeError("unexpected failure")
 
         test_path = "nonexistent/repo"
         response = client.get("/api/git/changes", params={"path": test_path})
 
         assert response.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_git_changes_returns_empty_list_when_path_is_not_git_repo(client):
+    """Non-repo workspaces should yield 200 + [] instead of 500.
+
+    Reproduces the v1-conversation bug where the workspace dir exists but
+    has never been `git init`-ed: the endpoint must not crash the
+    Changes tab.
+    """
+    # Arrange
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.side_effect = GitRepositoryError(
+            "Not a git repository: /Users/hieple/.openhands/agent-server-gui"
+        )
+
+        # Act
+        response = client.get(
+            "/api/git/changes",
+            params={"path": "/Users/hieple/.openhands/agent-server-gui"},
+        )
+
+        # Assert
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+@pytest.mark.asyncio
+async def test_git_diff_returns_empty_diff_when_path_is_not_git_repo(client):
+    """Non-repo paths to /api/git/diff should yield 200 with null fields."""
+    # Arrange
+    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
+        mock_git_diff.side_effect = GitRepositoryError(
+            "Not a git repository: /tmp/not-a-repo"
+        )
+
+        # Act
+        response = client.get(
+            "/api/git/diff", params={"path": "/tmp/not-a-repo/file.py"}
+        )
+
+        # Assert
+        assert response.status_code == 200
+        body = response.json()
+        assert body["modified"] is None
+        assert body["original"] is None
 
 
 @pytest.mark.asyncio
