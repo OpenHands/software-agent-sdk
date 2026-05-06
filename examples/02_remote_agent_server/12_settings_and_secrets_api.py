@@ -303,12 +303,17 @@ with ManagedAPIServer(port=8765) as server:
                 logger.info(f"   Agent response: {display_response}")
                 logger.info("   ✅ Agent completed the task using the secret!")
 
-        # Get conversation metrics
+        # Get conversation metrics from stats
         response = client.get(f"/api/conversations/{conversation_id}")
         if response.status_code == 200:
             conversation_data = response.json()
-            metrics = conversation_data.get("metrics") or {}
-            accumulated_cost = metrics.get("accumulated_cost", 0.0)
+            # Metrics are tracked per-LLM usage in stats.usage_to_metrics
+            stats = conversation_data.get("stats") or {}
+            usage_to_metrics = stats.get("usage_to_metrics") or {}
+            # Sum accumulated_cost across all LLM usages
+            accumulated_cost = sum(
+                m.get("accumulated_cost", 0.0) for m in usage_to_metrics.values()
+            )
 
         # Clean up - delete conversation
         client.delete(f"/api/conversations/{conversation_id}")
