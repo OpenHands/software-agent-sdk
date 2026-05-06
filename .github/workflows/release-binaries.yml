@@ -1,0 +1,127 @@
+---
+name: Publish agent-server release binaries
+
+# Build the agent-server PyInstaller binary on Linux and macOS
+# (x86_64 + arm64) and attach the artifacts to the GitHub release.
+
+on:
+    release:
+        types: [published]
+    workflow_dispatch:
+        inputs:
+            release_tag:
+                description: Existing release tag to attach binaries to (e.g. v1.20.1)
+                required: true
+                type: string
+
+permissions:
+    contents: write
+
+jobs:
+    build:
+        name: Build (${{ matrix.artifact }})
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: ubuntu-latest
+                      artifact: openhands-agent-server-linux-x86_64
+                    - os: macos-13
+                      artifact: openhands-agent-server-macos-x86_64
+                    - os: macos-14
+                      artifact: openhands-agent-server-macos-arm64
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Install dependencies
+              run: uv sync --dev
+
+            - name: Build binary
+              run: make build-server
+
+            - name: Smoke-test binary
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  ./dist/openhands-agent-server --help
+
+                  echo "Testing server startup and template loading..."
+                  ./dist/openhands-agent-server --port 8002 > server_test.log 2>&1 &
+                  SERVER_PID=$!
+
+                  # Give the server time to boot
+                  sleep 5
+
+                  if grep -q "system_prompt.j2.*not found" server_test.log; then
+                      echo "ERROR: Template files not found in binary!"
+                      cat server_test.log
+                      kill $SERVER_PID 2>/dev/null || true
+                      exit 1
+                  fi
+
+                  if ! kill -0 $SERVER_PID 2>/dev/null; then
+                      echo "ERROR: Server failed to start!"
+                      cat server_test.log
+                      exit 1
+                  fi
+
+                  if curl -f -s http://localhost:8002/health >/dev/null 2>&1; then
+                      echo "✓ Health endpoint accessible"
+                  else
+                      echo "⚠ Health endpoint not accessible (may be expected)"
+                  fi
+
+                  kill $SERVER_PID 2>/dev/null || true
+                  wait $SERVER_PID 2>/dev/null || true
+                  rm -f server_test.log
+
+                  echo "✓ Binary smoke test passed"
+
+            - name: Stage release asset
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  mkdir -p release-assets
+                  cp dist/openhands-agent-server "release-assets/${{ matrix.artifact }}"
+                  ( cd release-assets && shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256" )
+                  ls -la release-assets/
+
+            - name: Upload workflow artifact
+              uses: actions/upload-artifact@v7
+              with:
+                  name: ${{ matrix.artifact }}
+                  path: release-assets/${{ matrix.artifact }}*
+                  retention-days: 7
+                  if-no-files-found: error
+
+            - name: Resolve release tag
+              id: tag
+              shell: bash
+              run: |
+                  if [[ "${{ github.event_name }}" == "release" ]]; then
+                      echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "tag=${{ inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Attach binary to release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ steps.tag.outputs.tag }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  gh release upload "$TAG" \
+                      "release-assets/${{ matrix.artifact }}" \
+                      "release-assets/${{ matrix.artifact }}.sha256" \
+                      --clobber \
+                      --repo "${{ github.repository }}"
