@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pathlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -337,7 +337,10 @@ class AgentContext(BaseModel):
         return self.get_system_message_suffix()
 
     def get_user_message_suffix(
-        self, user_message: Message, skip_skill_names: list[str]
+        self,
+        user_message: Message,
+        skip_skill_names: list[str],
+        resolve_skill_content: Callable[[Skill], str] | None = None,
     ) -> tuple[TextContent, list[str]] | None:
         """Augment the user’s message with knowledge recalled from skills.
 
@@ -345,6 +348,10 @@ class AgentContext(BaseModel):
         - Extracting the text content of the user message
         - Matching skill triggers against the query
         - Returning formatted knowledge and triggered skill names if relevant skills were triggered
+
+        ``resolve_skill_content`` lets the caller materialize each triggered
+        skill's content (e.g. running a forked subagent for ``context='fork'``
+        skills). When omitted, ``skill.content`` is used as-is.
         """  # noqa: E501
 
         user_message_suffix = None
@@ -367,15 +374,20 @@ class AgentContext(BaseModel):
             trigger = skill.match_trigger(query)
             if trigger and skill.name not in skip_skill_names:
                 logger.info(
-                    "Skill '%s' triggered by keyword '%s'",
+                    "Skill ‘%s’ triggered by keyword ‘%s’",
                     skill.name,
                     trigger,
+                )
+                content = (
+                    resolve_skill_content(skill)
+                    if resolve_skill_content is not None
+                    else skill.content
                 )
                 recalled_knowledge.append(
                     SkillKnowledge(
                         name=skill.name,
                         trigger=trigger,
-                        content=skill.content,
+                        content=content,
                         location=skill.source,
                     )
                 )
