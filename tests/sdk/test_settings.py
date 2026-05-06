@@ -582,9 +582,7 @@ def test_acp_resolve_acp_env_explicit_entries_override_provider_env() -> None:
         acp_env={"ANTHROPIC_API_KEY": "sk-explicit-override"},
     )
 
-    assert settings.resolve_acp_env() == {
-        "ANTHROPIC_API_KEY": "sk-explicit-override"
-    }
+    assert settings.resolve_acp_env() == {"ANTHROPIC_API_KEY": "sk-explicit-override"}
 
 
 def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
