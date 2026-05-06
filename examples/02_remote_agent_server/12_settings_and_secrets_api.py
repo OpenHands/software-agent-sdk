@@ -307,7 +307,7 @@ with ManagedAPIServer(port=8765) as server:
         response = client.get(f"/api/conversations/{conversation_id}")
         if response.status_code == 200:
             conversation_data = response.json()
-            metrics = conversation_data.get("metrics", {})
+            metrics = conversation_data.get("metrics") or {}
             accumulated_cost = metrics.get("accumulated_cost", 0.0)
 
         # Clean up - delete conversation
