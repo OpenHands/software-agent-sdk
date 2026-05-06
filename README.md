@@ -195,3 +195,72 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 </picture>
 </div>
 
+
+---
+
+## FAQ
+
+### General
+
+**What is the OpenHands Software Agent SDK?**
+The OpenHands Software Agent SDK is a set of Python and REST APIs for building agents that work with code. It powers the OpenHands CLI and OpenHands Cloud, and can be used for one-off tasks, routine maintenance, or major refactors involving multiple agents.
+
+**What license does the SDK use?**
+The SDK is licensed under MIT.
+
+**Where can I find the full documentation?**
+Visit [docs.openhands.dev/sdk](https://docs.openhands.dev/sdk) for getting started guides, architecture docs, API reference, and tutorials.
+
+### Installation & Setup
+
+**How do I install the SDK?**
+Install via pip: `pip install openhands-sdk`. For local development from the repository, run `make build` to install workspace dependencies and pre-commit hooks. See the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started) for detailed instructions.
+
+**What Python version is required?**
+Python 3.10 or later is required.
+
+**Do I need an LLM API key?**
+Yes. The SDK requires an LLM provider API key (e.g., Anthropic, OpenAI). Configure it via environment variables or the LLM constructor.
+
+### Core Concepts
+
+**What are the main components of the SDK?**
+- **Agent**: The core AI agent with an LLM and tools
+- **Conversation**: Manages the interaction between user and agent
+- **Tool**: Extensible capabilities (Terminal, File Editor, Task Tracker, etc.)
+- **Workspace**: The directory where the agent operates (local or ephemeral)
+- **Agent Server**: Optional remote server for running agents in Docker/Kubernetes
+
+**What tools are included?**
+Built-in tools include TerminalTool, FileEditorTool, and TaskTrackerTool. You can also create custom tools or use MCP tools.
+
+**Can I use the SDK with my own LLM?**
+Yes. The SDK supports any LLM provider through the LLM constructor. Configure the model name and API key, and the SDK handles the rest.
+
+### Usage
+
+**What kinds of tasks can I automate?**
+- One-off tasks: building READMEs, generating documentation
+- Routine maintenance: updating dependencies, code formatting
+- Major tasks: refactors, rewrites, multi-agent workflows
+- Custom developer experiences: the SDK is the engine behind OpenHands CLI and Cloud
+
+**Can agents run in containers?**
+Yes. Agents can use the local machine as their workspace, or run inside ephemeral workspaces (Docker or Kubernetes) using the Agent Server.
+
+**How do I handle errors?**
+The SDK provides structured error handling through Conversation exceptions. Check the [documentation](https://docs.openhands.dev/sdk) for error handling patterns and debugging tips.
+
+### Troubleshooting
+
+**ImportError when importing openhands.sdk**
+Ensure you have Python 3.10+ and the latest SDK version: `pip install --upgrade openhands-sdk`. If using a virtual environment, make sure it is activated.
+
+**Agent hangs or times out**
+Check your LLM API key is valid and has sufficient quota. For large codebases, consider increasing the timeout or using a more capable model.
+
+**Workspace permission errors**
+Ensure the agent has read/write access to the workspace directory. When using Docker-based workspaces, verify Docker is running and you have sufficient permissions.
+
+**How do I join the community?**
+Join the [OpenHands Slack](https://openhands.dev/joinslack) for support, discussions, and updates.
