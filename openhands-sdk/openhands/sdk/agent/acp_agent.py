@@ -104,6 +104,20 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
 
+# Env vars that must be removed from the subprocess environment when a
+# particular "dominant" env var is present.
+#
+# Rationale: some auth mechanisms are mutually exclusive and their env vars
+# conflict.  For example, CLAUDE_CONFIG_DIR activates Claude Code's OAuth
+# credential-file flow.  If ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL are
+# also present they redirect requests to a different endpoint (e.g. a proxy)
+# that doesn't support OAuth bearer tokens, breaking authentication silently.
+# When CLAUDE_CONFIG_DIR is detected we strip the conflicting vars so the
+# subprocess can reach api.anthropic.com with its own OAuth token.
+_ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
+    "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
+}
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -958,6 +972,14 @@ class ACPAgent(AgentBase):
                         env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
+
+        # Strip env vars that conflict with an active auth mechanism.
+        # E.g. CLAUDE_CONFIG_DIR (OAuth credential file) conflicts with
+        # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (API-key + proxy auth).
+        for dominant, conflicts in _ENV_CONFLICT_MAP.items():
+            if dominant in env:
+                for conflict in conflicts:
+                    env.pop(conflict, None)
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
