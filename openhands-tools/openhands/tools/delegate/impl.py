@@ -11,6 +11,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.base import Event
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent import get_agent_factory
 from openhands.sdk.tool.tool import ToolExecutor
@@ -195,6 +196,24 @@ class DelegateExecutor(ToolExecutor):
                 else:
                     subagents_persistence_dir = None
 
+                # Build a forwarding callback that tags every sub-agent
+                # event with the agent_id and forwards it through the
+                # parent conversation's callback chain.  The parent's
+                # _default_callback skips events with subagent_id set,
+                # so they are published to external subscribers (e.g.
+                # PubSub → WebSocket) without being persisted in the
+                # parent's event log.
+                parent_on_event = parent_conversation._on_event
+
+                def _forward_event(
+                    event: Event,
+                    *,
+                    _aid: str = agent_id,
+                    _cb: Callable[[Event], None] = parent_on_event,
+                ) -> None:
+                    tagged = event.model_copy(update={"subagent_id": _aid})
+                    _cb(tagged)
+
                 # Use max_iteration_per_run from agent definition if set
                 conv_kwargs: dict = {
                     "agent": worker_agent,
@@ -202,6 +221,7 @@ class DelegateExecutor(ToolExecutor):
                     "visualizer": sub_visualizer,
                     "hook_config": factory.definition.hooks,
                     "persistence_dir": subagents_persistence_dir,
+                    "callbacks": [_forward_event],
                 }
 
                 if factory.definition.max_iteration_per_run is not None:

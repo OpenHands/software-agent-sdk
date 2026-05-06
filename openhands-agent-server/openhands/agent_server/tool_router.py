@@ -16,6 +16,7 @@ register_default_tools(enable_browser=True)
 register_builtins_agents(enable_browser=True)
 register_gemini_tools(enable_browser=True)
 register_planning_tools()
+register_builtins_agents()
 
 
 # Tool listing

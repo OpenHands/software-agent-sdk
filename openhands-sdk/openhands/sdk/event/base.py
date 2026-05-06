@@ -30,6 +30,14 @@ class Event(DiscriminatedUnionMixin, ABC):
         description="Event timestamp",
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
+    subagent_id: str | None = Field(
+        default=None,
+        description=(
+            "If set, identifies the sub-agent that produced this event. "
+            "Events forwarded from a sub-agent carry its identifier so "
+            "clients can attribute them to the correct delegation context."
+        ),
+    )
 
     @property
     def visualize(self) -> Text:
