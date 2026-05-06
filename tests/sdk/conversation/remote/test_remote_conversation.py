@@ -175,7 +175,7 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_acp_remote_conversation_uses_acp_conversation_contract(
+    def test_acp_remote_conversation_uses_acp_agent_kind(
         self, mock_ws_client
     ):
         acp_agent = ACPAgent(acp_command=["echo", "test"])
@@ -417,7 +417,7 @@ class TestRemoteConversation:
         mock_client_instance.request.side_effect = request_side_effect
 
         with pytest.raises(
-            ValueError, match="only available through the ACP conversation contract"
+            ValueError, match="was started with an ACP agent"
         ):
             RemoteConversation(
                 agent=self.agent,
