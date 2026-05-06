@@ -48,8 +48,11 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
+    ACP_PROVIDERS,
     ACPAgentSettings,
+    ACPProviderInfo,
     AgentSettings,
+    AgentSettingsBase,
     AgentSettingsConfig,
     CondenserSettings,
     ConversationSettings,
@@ -60,8 +63,10 @@ from openhands.sdk.settings import (
     SettingsSectionSchema,
     VerificationSettings,
     default_agent_settings,
+    detect_acp_provider_by_agent_name,
     export_agent_settings_schema,
     export_settings_schema,
+    get_acp_provider,
     validate_agent_settings,
 )
 
@@ -183,13 +188,18 @@ __all__ = [
     "CondenserSettings",
     "ConversationSettings",
     "VerificationSettings",
+    "ACP_PROVIDERS",
     "ACPAgentSettings",
+    "ACPProviderInfo",
     "AgentSettings",
+    "AgentSettingsBase",
     "AgentSettingsConfig",
     "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "default_agent_settings",
+    "detect_acp_provider_by_agent_name",
     "export_agent_settings_schema",
+    "get_acp_provider",
     "validate_agent_settings",
     "SettingsChoice",
     "SettingProminence",
