@@ -822,7 +822,10 @@ def test_acp_settings_api_key_env_var_from_registry() -> None:
 
 
 def test_acp_settings_base_url_env_var_from_registry() -> None:
-    assert ACPAgentSettings(acp_server="claude-code").base_url_env_var == "ANTHROPIC_BASE_URL"
+    assert (
+        ACPAgentSettings(acp_server="claude-code").base_url_env_var
+        == "ANTHROPIC_BASE_URL"
+    )
     assert ACPAgentSettings(acp_server="codex").base_url_env_var == "OPENAI_BASE_URL"
     assert (
         ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
