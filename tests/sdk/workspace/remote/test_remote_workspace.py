@@ -402,3 +402,272 @@ def test_alive_with_normalized_host(mock_urlopen):
 def test_alive_is_property():
     """Test that alive is a property, not a method."""
     assert isinstance(RemoteWorkspace.alive, property)
+
+
+# ── Settings Methods Tests ────────────────────────────────────────────────
+
+
+def test_get_llm_returns_configured_llm(monkeypatch):
+    """Test get_llm returns an LLM with persisted settings."""
+    from pydantic import SecretStr
+
+    # Allow short context windows for testing
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "gpt-4",
+                "api_key": "sk-test-key",
+                "base_url": "https://api.openai.com/v1",
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm()
+
+    # Verify the LLM was created with correct settings
+    assert llm.model == "gpt-4"
+    # api_key can be str | SecretStr | None
+    assert llm.api_key is not None
+    if isinstance(llm.api_key, SecretStr):
+        assert llm.api_key.get_secret_value() == "sk-test-key"
+    else:
+        assert llm.api_key == "sk-test-key"
+    assert llm.base_url == "https://api.openai.com/v1"
+
+    # Verify API was called with correct headers
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert call_args[0][0] == "/api/settings"
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+
+def test_get_llm_with_kwargs_override(monkeypatch):
+    """Test get_llm allows kwargs to override persisted settings."""
+    from pydantic import SecretStr
+
+    # Allow short context windows for testing
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "gpt-3.5-turbo",
+                "api_key": "sk-persisted-key",
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    # Override model but use persisted API key
+    llm = workspace.get_llm(model="gpt-4o")
+
+    assert llm.model == "gpt-4o"  # Overridden
+    # api_key can be str | SecretStr | None
+    assert llm.api_key is not None
+    if isinstance(llm.api_key, SecretStr):
+        assert llm.api_key.get_secret_value() == "sk-persisted-key"
+    else:
+        assert llm.api_key == "sk-persisted-key"
+
+
+def test_get_llm_raises_on_undefined_host():
+    """Test get_llm raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_llm()
+
+
+def test_get_secrets_returns_lookup_secrets():
+    """Test get_secrets returns LookupSecret references."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub personal access token"},
+            {"name": "OPENAI_API_KEY", "description": None},
+        ]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets()
+
+    assert len(secrets) == 2
+    assert "GITHUB_TOKEN" in secrets
+    assert "OPENAI_API_KEY" in secrets
+
+    # Check LookupSecret structure
+    gh_secret = secrets["GITHUB_TOKEN"]
+    assert gh_secret.url == "http://localhost:8000/api/settings/secrets/GITHUB_TOKEN"
+    assert gh_secret.headers == {"X-Session-API-Key": "test-key"}
+    assert gh_secret.description == "GitHub personal access token"
+
+    openai_secret = secrets["OPENAI_API_KEY"]
+    assert openai_secret.description is None
+
+
+def test_get_secrets_filters_by_names():
+    """Test get_secrets filters secrets by names when provided."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub token"},
+            {"name": "OPENAI_API_KEY", "description": "OpenAI key"},
+            {"name": "AWS_ACCESS_KEY", "description": "AWS key"},
+        ]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    # Request only specific secrets
+    secrets = workspace.get_secrets(names=["GITHUB_TOKEN", "AWS_ACCESS_KEY"])
+
+    assert len(secrets) == 2
+    assert "GITHUB_TOKEN" in secrets
+    assert "AWS_ACCESS_KEY" in secrets
+    assert "OPENAI_API_KEY" not in secrets
+
+
+def test_get_secrets_returns_empty_dict_when_no_secrets():
+    """Test get_secrets returns empty dict when no secrets exist."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {"secrets": []}
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets()
+
+    assert secrets == {}
+
+
+def test_get_secrets_raises_on_undefined_host():
+    """Test get_secrets raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_secrets()
+
+
+def test_get_mcp_config_returns_config():
+    """Test get_mcp_config returns MCP configuration."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "mcp_config": {
+                "mcpServers": {
+                    "shttp_0": {
+                        "url": "https://mcp.example.com/api",
+                        "transport": "streamable-http",
+                    }
+                }
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert "mcpServers" in config
+    assert "shttp_0" in config["mcpServers"]
+    assert config["mcpServers"]["shttp_0"]["url"] == "https://mcp.example.com/api"
+
+    # Verify API was called with correct headers
+    call_args = mock_client.get.call_args
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+
+
+def test_get_mcp_config_returns_empty_dict_when_no_config():
+    """Test get_mcp_config returns empty dict when no MCP config exists."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {"llm": {"model": "gpt-4"}},
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert config == {}
+
+
+def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none():
+    """Test get_mcp_config returns empty dict when mcp_config is None."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {"llm": {"model": "gpt-4"}, "mcp_config": None},
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert config == {}
+
+
+def test_get_mcp_config_raises_on_undefined_host():
+    """Test get_mcp_config raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_mcp_config()

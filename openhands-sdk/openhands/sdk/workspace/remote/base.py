@@ -1,15 +1,35 @@
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.request import urlopen
 
 import httpx
+import tenacity
 from pydantic import PrivateAttr
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.secret import LookupSecret
+
+
+logger = get_logger(__name__)
+
+# Number of retry attempts for transient API failures
+_MAX_RETRIES = 3
+
+
+def _is_retryable_error(error: BaseException) -> bool:
+    """Return True for transient errors that are worth retrying."""
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code >= 500
+    return isinstance(error, (httpx.ConnectError, httpx.TimeoutException))
 
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
@@ -232,3 +252,182 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             The conversation ID if one has been registered, None otherwise.
         """
         return None
+
+    # ── Settings Methods ──────────────────────────────────────────────────
+    # These methods fetch configuration from the agent-server's persisted
+    # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
+    # to use alternative endpoints (e.g., Cloud API).
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_llm(self, **llm_kwargs: Any) -> "LLM":
+        """Fetch LLM settings from the agent-server's persisted settings.
+
+        Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
+        to retrieve the LLM configuration (model, api_key, base_url) and returns
+        a fully usable ``LLM`` instance. Retries up to 3 times on transient
+        errors (network issues, server 5xx).
+
+        Args:
+            **llm_kwargs: Additional keyword arguments passed to the LLM
+                constructor, allowing overrides of any LLM parameter
+                (e.g., ``model``, ``temperature``).
+
+        Returns:
+            An LLM instance configured with the persisted settings.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the workspace host is not set.
+
+        Example:
+            >>> with DockerWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     agent = Agent(llm=llm, tools=get_default_tools())
+        """
+        from openhands.sdk.llm.llm import LLM
+
+        if not self.host or self.host == "undefined":
+            raise RuntimeError("Workspace host is not set")
+
+        headers = dict(self._headers)
+        headers["X-Expose-Secrets"] = "plaintext"
+
+        response = self.client.get("/api/settings", headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        agent_settings = data.get("agent_settings", {})
+        llm_config = agent_settings.get("llm", {})
+
+        kwargs: dict[str, Any] = {}
+        if llm_config.get("model"):
+            kwargs["model"] = llm_config["model"]
+        if llm_config.get("api_key"):
+            kwargs["api_key"] = llm_config["api_key"]
+        if llm_config.get("base_url"):
+            kwargs["base_url"] = llm_config["base_url"]
+
+        # User-provided kwargs take precedence
+        kwargs.update(llm_kwargs)
+
+        return LLM(**kwargs)
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_secrets(self, names: list[str] | None = None) -> dict[str, "LookupSecret"]:
+        """Build ``LookupSecret`` references for the agent-server's secrets.
+
+        Fetches the list of available secret **names** from the agent-server
+        (no raw values) and returns a dict of ``LookupSecret`` objects whose
+        URLs point to per-secret endpoints. The agent-server resolves each
+        ``LookupSecret`` lazily, so raw values **never** transit through
+        the SDK client.
+
+        The returned dict is compatible with ``conversation.update_secrets()``.
+
+        Args:
+            names: Optional list of secret names to include. If ``None``,
+                all available secrets are returned.
+
+        Returns:
+            A dictionary mapping secret names to ``LookupSecret`` instances.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the workspace host is not set.
+
+        Example:
+            >>> with DockerWorkspace(...) as workspace:
+            ...     secrets = workspace.get_secrets()
+            ...     conversation.update_secrets(secrets)
+            ...
+            ...     # Or a subset
+            ...     gh = workspace.get_secrets(names=["GITHUB_TOKEN"])
+            ...     conversation.update_secrets(gh)
+        """
+        from openhands.sdk.secret import LookupSecret
+
+        if not self.host or self.host == "undefined":
+            raise RuntimeError("Workspace host is not set")
+
+        response = self.client.get("/api/settings/secrets", headers=self._headers)
+        response.raise_for_status()
+        data = response.json()
+
+        result: dict[str, LookupSecret] = {}
+        for item in data.get("secrets", []):
+            name = item["name"]
+            if names is not None and name not in names:
+                continue
+            result[name] = LookupSecret(
+                url=f"{self.host}/api/settings/secrets/{name}",
+                headers=dict(self._headers),
+                description=item.get("description"),
+            )
+
+        return result
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(_MAX_RETRIES),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
+        retry=tenacity.retry_if_exception(_is_retryable_error),
+        reraise=True,
+    )
+    def get_mcp_config(self) -> dict[str, Any]:
+        """Fetch MCP configuration from the agent-server's persisted settings.
+
+        Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
+        to retrieve the MCP configuration and transforms it into the format
+        expected by the SDK Agent and ``fastmcp.mcp_config.MCPConfig``.
+
+        Returns:
+            A dictionary with ``mcpServers`` key containing server configurations
+            (compatible with ``MCPConfig.model_validate()``), or an empty dict
+            if no MCP config is set.
+
+        Raises:
+            httpx.HTTPStatusError: If the API request fails.
+            RuntimeError: If the workspace host is not set.
+
+        Example:
+            >>> with DockerWorkspace(...) as workspace:
+            ...     llm = workspace.get_llm()
+            ...     mcp_config = workspace.get_mcp_config()
+            ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
+            ...
+            ...     # Or validate as MCPConfig:
+            ...     from fastmcp.mcp_config import MCPConfig
+            ...     config = MCPConfig.model_validate(mcp_config)
+        """
+        if not self.host or self.host == "undefined":
+            raise RuntimeError("Workspace host is not set")
+
+        headers = dict(self._headers)
+        headers["X-Expose-Secrets"] = "plaintext"
+
+        response = self.client.get("/api/settings", headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        agent_settings = data.get("agent_settings", {})
+        mcp_config_data = agent_settings.get("mcp_config")
+
+        if not mcp_config_data:
+            return {}
+
+        # The agent-server stores MCP config in MCPConfig format already
+        # (with mcpServers key), so we can return it directly if present
+        if "mcpServers" in mcp_config_data:
+            return mcp_config_data
+
+        # Handle legacy format or empty config
+        return {}
