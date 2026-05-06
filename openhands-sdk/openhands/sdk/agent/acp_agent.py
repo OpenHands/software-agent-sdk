@@ -188,9 +188,6 @@ def _select_auth_method(
 
 
 
-def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session metadata for server-specific model selection."""
-    return build_session_model_meta(agent_name, acp_model)
 
 
 async def _maybe_set_session_model(
@@ -203,7 +200,7 @@ async def _maybe_set_session_model(
 
     Uses :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
     to check whether the server supports ``set_session_model``.
-    claude-agent-acp uses session ``_meta`` instead (see :func:`_build_session_meta`).
+    claude-agent-acp uses session ``_meta`` via :func:`~openhands.sdk.settings.acp_providers.build_session_model_meta` instead.
     """
     if not acp_model:
         return
@@ -1093,7 +1090,7 @@ class ACPAgent(AgentBase):
                 # Build _meta content for session options (e.g. model selection).
                 # Extra kwargs to new_session() become the _meta dict in the
                 # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-                session_meta = _build_session_meta(agent_name, self.acp_model)
+                session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
             await _maybe_set_session_model(

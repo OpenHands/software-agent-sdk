@@ -13,7 +13,6 @@ from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
-    _build_session_meta,
     _estimate_cost_from_tokens,
     _extract_token_usage,
     _image_url_to_acp_block,
@@ -2620,19 +2619,6 @@ class TestSelectAuthMethod:
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
-
-
-class TestBuildSessionMeta:
-    def test_claude_agent_adds_model_override(self):
-        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
-            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
-        }
-
-    def test_codex_agent_does_not_use_session_meta(self):
-        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
-
-    def test_missing_model_does_not_add_session_meta(self):
-        assert _build_session_meta("claude-agent-acp", None) == {}
 
 
 class TestMaybeSetSessionModel:
