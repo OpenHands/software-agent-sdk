@@ -69,6 +69,7 @@ done
 | `commit0` | Commit0 — commit generation tasks |
 | `swebenchmultimodal` | SWE-bench Multimodal — tasks with images |
 | `terminalbench` | TerminalBench — terminal interaction tasks |
+| `programbench` | ProgramBench — program-repair tasks against gold-standard test binaries |
 
 ### Trigger Options
 
