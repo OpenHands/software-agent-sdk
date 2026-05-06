@@ -1,0 +1,94 @@
+---
+name: UV dependency security
+
+on:
+    pull_request:
+        branches: ['**']
+        paths:
+            - pyproject.toml
+            - uv.lock
+            - .github/scripts/scan_uv_lock_security.py
+            - .github/workflows/uv-dependency-security.yml
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    uv-dependency-security:
+        runs-on: ubuntu-24.04
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.13'
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+
+            - name: Prepare base uv.lock
+              if: github.event_name == 'pull_request'
+              run: |
+                  git fetch origin "${{ github.base_ref }}" --depth=1
+                  git show "origin/${{ github.base_ref }}:uv.lock" > /tmp/base-uv.lock
+
+            - name: Run static uv lock scan
+              id: static_scan
+              run: |
+                  args=(
+                    --lockfile uv.lock
+                    --pyproject pyproject.toml
+                    --download-dir .agent_tmp/uv-security-scan
+                    --write-requirements /tmp/selected-packages.txt
+                  )
+                  if [ -f /tmp/base-uv.lock ]; then
+                    args+=(--base-lockfile /tmp/base-uv.lock)
+                  fi
+
+                  python .github/scripts/scan_uv_lock_security.py "${args[@]}" \
+                    | tee /tmp/uv-dependency-security-report.md
+                  status=${PIPESTATUS[0]}
+
+                  cat /tmp/uv-dependency-security-report.md >> "$GITHUB_STEP_SUMMARY"
+                  echo "status=$status" >> "$GITHUB_OUTPUT"
+
+            - name: Run pip-audit on selected packages
+              id: pip_audit
+              run: |
+                  if [ ! -s /tmp/selected-packages.txt ]; then
+                    echo "No selected packages to audit." | tee /tmp/pip-audit-report.txt
+                    echo "status=0" >> "$GITHUB_OUTPUT"
+                    cat /tmp/pip-audit-report.txt >> "$GITHUB_STEP_SUMMARY"
+                    exit 0
+                  fi
+
+                  uvx --from pip-audit pip-audit \
+                    --desc \
+                    --progress-spinner off \
+                    --requirement /tmp/selected-packages.txt \
+                    | tee /tmp/pip-audit-report.txt
+                  status=${PIPESTATUS[0]}
+
+                  cat /tmp/pip-audit-report.txt >> "$GITHUB_STEP_SUMMARY"
+                  echo "status=$status" >> "$GITHUB_OUTPUT"
+
+            - name: Enforce dependency security policy
+              run: |
+                  static_status="${{ steps.static_scan.outputs.status }}"
+                  audit_status="${{ steps.pip_audit.outputs.status }}"
+
+                  if [ "$static_status" != "0" ]; then
+                    echo "Static uv lock scan failed policy checks."
+                    exit 1
+                  fi
+
+                  if [ "$audit_status" != "0" ]; then
+                    echo "pip-audit reported known advisories for the selected packages."
+                    exit 1
+                  fi
