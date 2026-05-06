@@ -693,11 +693,6 @@ class OpenHandsAgentSettings(BaseModel):
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
     )
-
-    @field_validator("agent_context", mode="before")
-    @classmethod
-    def _agent_context_none_to_default(cls, v: object) -> object:
-        return AgentContext() if v is None else v
     condenser: CondenserSettings = Field(
         default_factory=CondenserSettings,
         description="Condenser settings for the agent.",
