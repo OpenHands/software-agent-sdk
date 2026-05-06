@@ -238,8 +238,8 @@ with ManagedAPIServer(port=8765) as server:
                     {
                         "type": "text",
                         "text": f"Echo the value of the ${secret_name} environment "
-                        "variable and save it to a file called 'secret_test.txt'. "
-                        "Then confirm the file was created.",
+                        "variable to see if you have access. "
+                        "If so just respond `YES`, otherwise `NO`.",                    
                     }
                 ],
                 "run": True,  # Auto-run after sending message
