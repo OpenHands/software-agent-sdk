@@ -92,41 +92,43 @@ class ACPProviderInfo:
     """
 
 
-ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType({
-    "claude-code": ACPProviderInfo(
-        key="claude-code",
-        display_name="Claude Code",
-        default_command=("npx", "-y", "@agentclientprotocol/claude-agent-acp"),
-        api_key_env_var="ANTHROPIC_API_KEY",
-        base_url_env_var=None,
-        default_session_mode="bypassPermissions",
-        agent_name_patterns=("claude-agent",),
-        supports_set_session_model=False,
-        session_meta_key="claudeCode",
-    ),
-    "codex": ACPProviderInfo(
-        key="codex",
-        display_name="Codex",
-        default_command=("npx", "-y", "@zed-industries/codex-acp"),
-        api_key_env_var="OPENAI_API_KEY",
-        base_url_env_var=None,
-        default_session_mode="full-access",
-        agent_name_patterns=("codex-acp",),
-        supports_set_session_model=True,
-        session_meta_key=None,
-    ),
-    "gemini-cli": ACPProviderInfo(
-        key="gemini-cli",
-        display_name="Gemini CLI",
-        default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
-        api_key_env_var="GEMINI_API_KEY",
-        base_url_env_var="GEMINI_BASE_URL",
-        default_session_mode="yolo",
-        agent_name_patterns=("gemini-cli",),
-        supports_set_session_model=True,
-        session_meta_key=None,
-    ),
-})
+ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
+    {
+        "claude-code": ACPProviderInfo(
+            key="claude-code",
+            display_name="Claude Code",
+            default_command=("npx", "-y", "@agentclientprotocol/claude-agent-acp"),
+            api_key_env_var="ANTHROPIC_API_KEY",
+            base_url_env_var=None,
+            default_session_mode="bypassPermissions",
+            agent_name_patterns=("claude-agent",),
+            supports_set_session_model=False,
+            session_meta_key="claudeCode",
+        ),
+        "codex": ACPProviderInfo(
+            key="codex",
+            display_name="Codex",
+            default_command=("npx", "-y", "@zed-industries/codex-acp"),
+            api_key_env_var="OPENAI_API_KEY",
+            base_url_env_var=None,
+            default_session_mode="full-access",
+            agent_name_patterns=("codex-acp",),
+            supports_set_session_model=True,
+            session_meta_key=None,
+        ),
+        "gemini-cli": ACPProviderInfo(
+            key="gemini-cli",
+            display_name="Gemini CLI",
+            default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
+            api_key_env_var="GEMINI_API_KEY",
+            base_url_env_var="GEMINI_BASE_URL",
+            default_session_mode="yolo",
+            agent_name_patterns=("gemini-cli",),
+            supports_set_session_model=True,
+            session_meta_key=None,
+        ),
+    }
+)
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
 
 
@@ -152,9 +154,7 @@ def detect_acp_provider_by_agent_name(agent_name: str) -> ACPProviderInfo | None
     return None
 
 
-def build_session_model_meta(
-    agent_name: str, acp_model: str | None
-) -> dict[str, Any]:
+def build_session_model_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
     """Build ACP session ``_meta`` content for model selection.
 
     Returns the dict to spread into ``new_session()`` kwargs for providers
