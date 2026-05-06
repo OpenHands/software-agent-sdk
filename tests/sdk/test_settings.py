@@ -692,3 +692,63 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
         agent_settings=ACPAgentSettings(acp_command=["x"]),
     )
     assert isinstance(acp_conv.agent_settings, ACPAgentSettings)
+
+
+def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+
+    assert settings.acp_env["OPENAI_API_KEY"] == "sk-real-secret"
+    assert "sk-real-secret" not in settings.model_dump_json()
+    assert settings.model_dump(mode="json")["acp_env"] == {
+        "OPENAI_API_KEY": "**********"
+    }
+
+    exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
+
+
+def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+
+    blob = settings.model_dump_json()
+    assert "sk-mcp-secret" not in blob
+    assert "tok-mcp-secret" not in blob
+
+    exposed = settings.model_dump(context={"expose_secrets": True})
+    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
+    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
+    # create_agent must hand the runtime real env/headers (the field serializer
+    # redacts mcp_config for transit only).
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                }
+            }
+        }
+    )
+    agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
+
+    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"

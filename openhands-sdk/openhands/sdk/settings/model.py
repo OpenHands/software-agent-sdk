@@ -12,6 +12,7 @@ from pydantic import (
     Discriminator,
     Field,
     SecretStr,
+    SerializationInfo,
     Tag,
     TypeAdapter,
     field_serializer,
@@ -26,6 +27,8 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.utils.pydantic_secrets import serialize_secret
+from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
 from .metadata import (
@@ -724,10 +727,16 @@ class OpenHandsAgentSettings(BaseModel):
         return value
 
     @field_serializer("mcp_config")
-    def _serialize_mcp_config(self, value: MCPConfig | None) -> dict[str, Any]:
+    def _serialize_mcp_config(
+        self, value: MCPConfig | None, info: SerializationInfo
+    ) -> dict[str, Any]:
         if value is None:
             return {}
-        return value.model_dump(exclude_none=True, exclude_defaults=True)
+        dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
+        if info.context and info.context.get("expose_secrets"):
+            return dumped
+        # ``sanitize_dict`` redacts ``env`` / ``headers`` (REDACT_ALL_VALUES_KEYS).
+        return sanitize_dict(dumped)
 
     @classmethod
     def export_schema(cls) -> SettingsSchema:
@@ -747,10 +756,16 @@ class OpenHandsAgentSettings(BaseModel):
         """
         from openhands.sdk.agent import Agent
 
+        # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
+        mcp_config = (
+            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+            if self.mcp_config is not None
+            else {}
+        )
         return Agent(
             llm=self.llm,
             tools=self.tools,
-            mcp_config=self._serialize_mcp_config(self.mcp_config),
+            mcp_config=mcp_config,
             agent_context=self.agent_context,
             condenser=self.build_condenser(self.llm),
             critic=self.build_critic(),
@@ -901,6 +916,12 @@ class ACPAgentSettings(BaseModel):
             ).model_dump(),
         },
     )
+
+    @field_serializer("acp_env", when_used="always")
+    def _serialize_acp_env(self, value: dict[str, str], info):
+        """Mask ``acp_env`` values via :func:`serialize_secret`."""
+        return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
+
     acp_model: str | None = Field(
         default=None,
         description=(
