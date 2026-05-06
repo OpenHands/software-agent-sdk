@@ -24,7 +24,7 @@ import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -58,6 +58,10 @@ from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextC
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_providers import (
+    build_session_model_meta,
+    detect_acp_provider_by_agent_name,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -104,6 +108,20 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # used by the terminal tool and the default max_message_chars in LLM config.
 MAX_ACP_CONTENT_CHARS: int = 30_000
 
+# Env vars that must be removed from the subprocess environment when a
+# particular "dominant" env var is present.
+#
+# Rationale: some auth mechanisms are mutually exclusive and their env vars
+# conflict.  For example, CLAUDE_CONFIG_DIR activates Claude Code's OAuth
+# credential-file flow.  If ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL are
+# also present they redirect requests to a different endpoint (e.g. a proxy)
+# that doesn't support OAuth bearer tokens, breaking authentication silently.
+# When CLAUDE_CONFIG_DIR is detected we strip the conflicting vars so the
+# subprocess can reach api.anthropic.com with its own OAuth token.
+_ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
+    "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
+}
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -145,14 +163,6 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
-# Known ACP server name → bypass-permissions mode ID mappings.
-_BYPASS_MODE_MAP: dict[str, str] = {
-    "claude-agent": "bypassPermissions",
-    "codex-acp": "full-access",
-    "gemini-cli": "yolo",
-}
-_DEFAULT_BYPASS_MODE = "full-access"
-
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
 # required credential source is present.
@@ -191,45 +201,23 @@ def _select_auth_method(
     return None
 
 
-def _resolve_bypass_mode(agent_name: str) -> str:
-    """Return the session mode ID that bypasses all permission prompts.
-
-    Different ACP servers use different mode IDs for the same concept:
-    - claude-agent-acp → ``bypassPermissions``
-    - codex-acp        → ``full-access``
-    - gemini-cli       → ``yolo``
-
-    Falls back to ``full-access`` for unknown servers.
-    """
-    for key, mode in _BYPASS_MODE_MAP.items():
-        if key in agent_name.lower():
-            return mode
-    return _DEFAULT_BYPASS_MODE
-
-
-def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session metadata for server-specific model selection."""
-    if not acp_model:
-        return {}
-    # claude-agent-acp: model selection via session _meta (claudeCode.options.model)
-    if "claude" in agent_name.lower():
-        return {"claudeCode": {"options": {"model": acp_model}}}
-    # codex-acp, gemini-cli: use protocol-level set_session_model instead (see below)
-    return {}
-
-
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
     session_id: str,
     acp_model: str | None,
 ) -> None:
-    """Apply a protocol-level session model override when the server supports it."""
+    """Apply a protocol-level session model override when the server supports it.
+
+    Uses :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
+    to check whether the server supports ``set_session_model``.
+    claude-agent-acp uses session ``_meta`` via
+    :func:`~openhands.sdk.settings.acp_providers.build_session_model_meta` instead.
+    """
     if not acp_model:
         return
-    # codex-acp, gemini-cli: model selection via set_session_model protocol method
-    # claude-agent-acp: uses session _meta instead (see _build_session_meta)
-    if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
@@ -841,7 +829,29 @@ class ACPAgent(AgentBase):
             except Exception:
                 logger.debug("Stats update callback failed", exc_info=True)
 
-    # -- Override base properties to be no-ops for ACP ---------------------
+    # -- Capability helpers ------------------------------------------------
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``False`` — the ACP server manages its own toolset."""
+        return False
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``False`` — MCP configuration is owned by the ACP subprocess."""
+        return False
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``False`` — the ACP server manages its own context window."""
+        return False
+
+    @property
+    def agent_kind(self) -> Literal["acp"]:
+        """ACP agents have ``agent_kind == "acp"``."""
+        return "acp"
+
+    # -- ACP-specific runtime properties -----------------------------------
 
     @property
     def agent_name(self) -> str:
@@ -959,6 +969,14 @@ class ACPAgent(AgentBase):
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
+        # Strip env vars that conflict with an active auth mechanism.
+        # E.g. CLAUDE_CONFIG_DIR (OAuth credential file) conflicts with
+        # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (API-key + proxy auth).
+        for dominant, conflicts in _ENV_CONFLICT_MAP.items():
+            if dominant in env:
+                for conflict in conflicts:
+                    env.pop(conflict, None)
+
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
 
@@ -1042,9 +1060,14 @@ class ACPAgent(AgentBase):
                     # through LiteLLM proxy. claude-agent-acp and codex-acp
                     # read their provider base URL from env vars directly.
                     if method_id == "gemini-api-key":
-                        gemini_base_url = env.get("GEMINI_BASE_URL")
-                        if gemini_base_url:
-                            auth_kwargs["gateway"] = {"baseUrl": gemini_base_url}
+                        provider = detect_acp_provider_by_agent_name(agent_name)
+                        base_url_var = (
+                            provider.base_url_env_var if provider is not None else None
+                        )
+                        if base_url_var:
+                            base_url = env.get(base_url_var)
+                            if base_url:
+                                auth_kwargs["gateway"] = {"baseUrl": base_url}
                     await conn.authenticate(method_id=method_id, **auth_kwargs)
                 else:
                     logger.warning(
@@ -1087,7 +1110,7 @@ class ACPAgent(AgentBase):
                 # Build _meta content for session options (e.g. model selection).
                 # Extra kwargs to new_session() become the _meta dict in the
                 # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-                session_meta = _build_session_meta(agent_name, self.acp_model)
+                session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
             await _maybe_set_session_model(
@@ -1097,15 +1120,17 @@ class ACPAgent(AgentBase):
                 self.acp_model,
             )
 
-            # Resolve the permission mode to use.  Different ACP servers
-            # use different mode IDs for the same concept (no-prompts):
-            #   - claude-agent-acp → "bypassPermissions"
-            #   - codex-acp        → "full-access"
-            mode_id = self.acp_session_mode
-            if mode_id is None:
-                mode_id = _resolve_bypass_mode(agent_name)
-            logger.info("Setting ACP session mode: %s", mode_id)
-            await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+            # Resolve the permission mode.  Known providers each have their
+            # own mode ID (bypassPermissions, full-access, yolo …).
+            # Unknown/custom servers get None — skip the call rather than
+            # sending a provider-specific string they won't recognise.
+            provider = detect_acp_provider_by_agent_name(agent_name)
+            mode_id = self.acp_session_mode or (
+                provider.default_session_mode if provider else None
+            )
+            if mode_id is not None:
+                logger.info("Setting ACP session mode: %s", mode_id)
+                await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
             return conn, process, filtered_reader, session_id, agent_name, agent_version
 

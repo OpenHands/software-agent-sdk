@@ -63,15 +63,10 @@ LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
 
 
-def _uses_acp_conversation_contract(agent: AgentBase) -> bool:
-    return getattr(agent, "kind", agent.__class__.__name__) == "ACPAgent"
-
-
-def _conversation_contract_mismatch_message(conversation_id: ConversationID) -> str:
+def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
     return (
-        f"Conversation {conversation_id} exists but is only available through the "
-        "ACP conversation contract. Attach with ACPAgent or use "
-        "/api/acp/conversations."
+        f"Conversation {conversation_id} was started with an ACP agent. "
+        "Attach with ACPAgent or use /api/acp/conversations."
     )
 
 
@@ -708,7 +703,7 @@ class RemoteConversation(BaseConversation):
         self._client = workspace.client
         self._conversation_info_base_path = (
             ACP_CONVERSATIONS_PATH
-            if _uses_acp_conversation_contract(agent)
+            if agent.agent_kind == "acp"
             else LEGACY_CONVERSATIONS_PATH
         )
         self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
@@ -725,7 +720,7 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if not _uses_acp_conversation_contract(agent):
+                if agent.agent_kind != "acp":
                     acp_resp = _send_request(
                         self._client,
                         "GET",
@@ -733,9 +728,7 @@ class RemoteConversation(BaseConversation):
                         acceptable_status_codes={404},
                     )
                     if acp_resp.status_code != 404:
-                        raise ValueError(
-                            _conversation_contract_mismatch_message(conversation_id)
-                        )
+                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:

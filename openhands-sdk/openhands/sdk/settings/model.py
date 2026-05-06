@@ -28,6 +28,7 @@ from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.workspace import LocalWorkspace
 
+from .acp_providers import ACPProviderInfo, get_acp_provider
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -295,6 +296,46 @@ _RequestT = TypeVar("_RequestT")
 
 AGENT_SETTINGS_SCHEMA_VERSION = 2
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+
+
+class AgentSettingsBase(BaseModel):
+    """Shared base for all agent-settings variants.
+
+    Provides the three pieces common to every variant:
+
+    - :attr:`schema_version` — used for persisted-payload migrations.
+    - :meth:`export_schema` — structured field description for UIs.
+    - :meth:`create_agent` — canonical construction path; concrete subclasses
+      must override this.
+
+    The ``llm`` field is intentionally *not* hoisted here — its semantics
+    differ between variants (execution config vs. attribution identity) and
+    the metadata overrides would make a shared field awkward.
+
+    Use :data:`AgentSettingsConfig` as the type for fields that may hold
+    either the :class:`OpenHandsAgentSettings` or :class:`ACPAgentSettings`
+    variant. Use :func:`validate_agent_settings` to validate raw payloads.
+    """
+
+    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+
+    @classmethod
+    def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable settings."""
+        return export_settings_schema(cls)
+
+    def create_agent(self) -> AgentBase:
+        """Build an agent from these settings.
+
+        Subclasses (:class:`OpenHandsAgentSettings`, :class:`ACPAgentSettings`)
+        override this to return the appropriate
+        :class:`~openhands.sdk.agent.base.AgentBase` subclass.
+        Calling this on the base class directly raises :exc:`NotImplementedError`.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement create_agent()"
+        )
+
 
 PersistedSettingsMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -605,28 +646,18 @@ ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
-the other choices map to a default npx command (see
-:data:`_DEFAULT_ACP_COMMANDS`).
+the other choices map to a default npx command stored in
+:data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
 """
 
 
-_DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
-    "claude-code": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
-    "codex": ["npx", "-y", "@zed-industries/codex-acp"],
-    # gemini-cli's ACP mode is activated via ``--acp`` (``--experimental-acp``
-    # is deprecated in the gemini-cli >=0.38 releases).
-    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--acp"],
-}
-
-
-class OpenHandsAgentSettings(BaseModel):
+class OpenHandsAgentSettings(AgentSettingsBase):
     """Settings for a standard LLM-backed :class:`Agent`.
 
     This is the long-standing ``AgentSettings`` shape; fields here build
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
-    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["openhands"] = Field(
         default="openhands",
         description=(
@@ -729,11 +760,6 @@ class OpenHandsAgentSettings(BaseModel):
             return {}
         return value.model_dump(exclude_none=True, exclude_defaults=True)
 
-    @classmethod
-    def export_schema(cls) -> SettingsSchema:
-        """Export a structured schema describing configurable agent settings."""
-        return export_settings_schema(cls)
-
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
 
@@ -807,7 +833,7 @@ class OpenHandsAgentSettings(BaseModel):
         )
 
 
-class ACPAgentSettings(BaseModel):
+class ACPAgentSettings(AgentSettingsBase):
     """Settings for an ACP (Agent Client Protocol) agent.
 
     ``create_agent()`` returns an :class:`ACPAgent` that delegates to a
@@ -820,7 +846,6 @@ class ACPAgentSettings(BaseModel):
     bookkeeping and pricing lookups, not for making LLM requests.
     """
 
-    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["acp"] = Field(
         default="acp",
         description=(
@@ -970,38 +995,90 @@ class ACPAgentSettings(BaseModel):
             ).model_dump()
         },
     )
+    agent_context: AgentContext | None = Field(
+        default=None,
+        description=(
+            "Prompt-only context for the ACP server. Secrets are injected into "
+            "the subprocess environment by ACPAgent."
+        ),
+    )
 
-    @classmethod
-    def export_schema(cls) -> SettingsSchema:
-        """Export a structured schema describing configurable ACP settings."""
-        return export_settings_schema(cls)
+    @property
+    def provider_info(self) -> ACPProviderInfo | None:
+        """Registry entry for :attr:`acp_server`, or ``None`` for ``'custom'``."""
+        return get_acp_provider(self.acp_server)
 
     @property
     def api_key_env_var(self) -> str | None:
         """Env var name the ACP subprocess expects for its API key.
 
-        Returns ``None`` for ``'custom'`` servers — users manage credentials
-        entirely via :attr:`acp_env` in that case.
+        Delegates to the :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`
+        registry.  Returns ``None`` for ``'custom'`` servers — users manage
+        credentials entirely via :attr:`acp_env` in that case.
+        """
+        info = self.provider_info
+        return info.api_key_env_var if info is not None else None
 
-        Mapping:
-        - ``claude-code``  → ``ANTHROPIC_API_KEY``
-        - ``codex``        → ``OPENAI_API_KEY``
-        - ``gemini-cli``   → ``GEMINI_API_KEY``
-        - ``custom``       → ``None``
+    @property
+    def base_url_env_var(self) -> str | None:
+        """Env var for proxy/base-URL routing, or ``None`` if unsupported.
+
+        Delegates to the :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`
+        registry.
+        """
+        info = self.provider_info
+        return info.base_url_env_var if info is not None else None
+
+    def resolve_provider_env(self) -> dict[str, str]:
+        """Derive provider-native env vars from the attribution LLM settings.
+
+        Built-in ACP providers read credentials and optional base URLs from
+        provider-specific env var names. This helper translates the generic
+        :attr:`llm` settings into that provider-native subprocess environment.
+        Custom servers return an empty mapping.
+        """
+        env: dict[str, str] = {}
+
+        api_key = self.llm.api_key
+        if api_key is not None and self.api_key_env_var:
+            key_value = (
+                api_key.get_secret_value()
+                if isinstance(api_key, SecretStr)
+                else str(api_key)
+            )
+            key_value = key_value.strip()
+            if key_value:
+                env[self.api_key_env_var] = key_value
+
+        base_url = self.llm.base_url
+        if base_url is not None and self.base_url_env_var:
+            base_url_value = str(base_url).strip()
+            if base_url_value:
+                env[self.base_url_env_var] = base_url_value
+
+        return env
+
+    def resolve_acp_env(self) -> dict[str, str]:
+        """Return the effective ACP subprocess environment.
+
+        Explicit :attr:`acp_env` entries override provider-derived env vars.
+        ``ACPAgent`` then injects :attr:`agent_context` secrets only for keys
+        that are still absent, preserving the overall priority:
+
+        ``acp_env > provider env > agent_context.secrets``.
         """
         return {
-            "claude-code": "ANTHROPIC_API_KEY",
-            "codex": "OPENAI_API_KEY",
-            "gemini-cli": "GEMINI_API_KEY",
-        }.get(self.acp_server)
+            **self.resolve_provider_env(),
+            **dict(self.acp_env),
+        }
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
 
         Uses :attr:`acp_command` verbatim when non-empty; otherwise looks
-        up the default for :attr:`acp_server`. Raises ``ValueError`` when
-        the server is ``'custom'`` but no explicit command is set (there
-        is no sensible default to fall back to).
+        up the default from :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
+        Raises ``ValueError`` when :attr:`acp_server` is ``'custom'`` but
+        no explicit command is set (there is no sensible default to fall back to).
         """
         if self.acp_command:
             return list(self.acp_command)
@@ -1010,12 +1087,12 @@ class ACPAgentSettings(BaseModel):
                 "ACPAgentSettings.acp_command must be set when "
                 "acp_server='custom' — there is no default to fall back to"
             )
-        default = _DEFAULT_ACP_COMMANDS.get(self.acp_server)
-        if default is None:
+        info = get_acp_provider(self.acp_server)
+        if info is None:
             raise ValueError(
                 f"No default ACP command for acp_server={self.acp_server!r}"
             )
-        return list(default)
+        return list(info.default_command)
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
@@ -1030,10 +1107,11 @@ class ACPAgentSettings(BaseModel):
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
-            acp_env=dict(self.acp_env),
+            acp_env=self.resolve_acp_env(),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            agent_context=self.agent_context,
         )
 
 
