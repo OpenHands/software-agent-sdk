@@ -122,18 +122,9 @@ class AgentContext(BaseModel):
     def _serialize_secrets(
         self, value: Mapping[str, SecretValue] | None, info
     ) -> dict[str, Any] | None:
-        """Mask raw-string secret values during serialization.
-
-        ``secrets`` accepts both raw strings and ``SecretSource`` instances
-        (see ``SecretValue``). ``SecretSource`` subclasses already mask their
-        own contents via ``serialize_secret`` field serializers; raw strings
-        had no such guard and leaked verbatim. Wrap each plain string in
-        ``SecretStr`` so it goes through the same ``serialize_secret`` policy
-        (default → ``**********``; ``expose_secrets=True`` → real value;
-        ``cipher`` → encrypted).
-        """
-        if not value:
-            return value if value is None else {}
+        """Mask raw-string ``secrets`` values via :func:`serialize_secret`."""
+        if value is None:
+            return None
         out: dict[str, Any] = {}
         for k, v in value.items():
             if isinstance(v, SecretSource):

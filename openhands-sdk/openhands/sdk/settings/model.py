@@ -735,9 +735,7 @@ class OpenHandsAgentSettings(BaseModel):
         dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
         if info.context and info.context.get("expose_secrets"):
             return dumped
-        # Redact ``env`` / ``headers`` values that commonly hold provider
-        # credentials. ``sanitize_dict`` already treats both keys as
-        # secret-bearing containers (see ``REDACT_ALL_VALUES_KEYS``).
+        # ``sanitize_dict`` redacts ``env`` / ``headers`` (REDACT_ALL_VALUES_KEYS).
         return sanitize_dict(dumped)
 
     @classmethod
@@ -758,9 +756,7 @@ class OpenHandsAgentSettings(BaseModel):
         """
         from openhands.sdk.agent import Agent
 
-        # Dump MCPConfig directly here (bypassing ``_serialize_mcp_config`` which
-        # redacts secrets); the runtime needs the real env/headers to start MCP
-        # servers.
+        # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
         mcp_config = (
             self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
             if self.mcp_config is not None
@@ -923,13 +919,7 @@ class ACPAgentSettings(BaseModel):
 
     @field_serializer("acp_env", when_used="always")
     def _serialize_acp_env(self, value: dict[str, str], info):
-        """Mask ``acp_env`` values via :func:`serialize_secret`.
-
-        Mirrors ``ACPAgent._serialize_acp_env``; without this the same proxy
-        keys (``OPENAI_API_KEY``, ``GEMINI_API_KEY``, ...) leak whenever
-        ``ACPAgentSettings`` is serialised (settings persistence, REST
-        round-trips, etc.).
-        """
+        """Mask ``acp_env`` values via :func:`serialize_secret`."""
         return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
 
     acp_model: str | None = Field(

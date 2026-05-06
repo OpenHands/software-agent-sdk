@@ -695,12 +695,6 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 
 
 def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
-    """``ACPAgentSettings.acp_env`` must mask values in default serialization.
-
-    Sibling of the ``ACPAgent.acp_env`` masking shipped in #3066: settings
-    persistence and REST round-trips would otherwise leak the same provider
-    keys into transit/storage.
-    """
     settings = ACPAgentSettings(
         acp_command=["echo", "test"],
         acp_env={"OPENAI_API_KEY": "sk-real-secret"},
@@ -717,7 +711,6 @@ def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    """Provider keys inside ``mcp_config.env`` / ``headers`` must be masked."""
     mcp_config = MCPConfig.model_validate(
         {
             "mcpServers": {
@@ -743,11 +736,8 @@ def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
 
 
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
-    """``create_agent`` must hand the runtime real env/headers, not redacted ones.
-
-    The serializer redacts ``mcp_config`` for transit; ``create_agent`` dumps
-    the model directly so MCP servers still start with valid credentials.
-    """
+    # create_agent must hand the runtime real env/headers (the field serializer
+    # redacts mcp_config for transit only).
     mcp_config = MCPConfig.model_validate(
         {
             "mcpServers": {
