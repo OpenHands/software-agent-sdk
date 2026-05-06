@@ -835,8 +835,8 @@ class ACPAgent(AgentBase):
         return False
 
     @property
-    def conversation_contract(self) -> Literal["acp"]:
-        """ACP agents require the ACP-capable agent-server contract."""
+    def agent_kind(self) -> Literal["acp"]:
+        """ACP agents have ``agent_kind == "acp"``."""
         return "acp"
 
     # -- ACP-specific runtime properties -----------------------------------

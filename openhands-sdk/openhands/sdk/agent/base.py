@@ -742,8 +742,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return True
 
     @property
-    def conversation_contract(self) -> Literal["openhands", "acp"]:
-        """Agent-server conversation contract this agent requires."""
+    def agent_kind(self) -> Literal["openhands", "acp"]:
+        """Agent kind, matching the ``agent_kind`` settings discriminator."""
         return "openhands"
 
     def ask_agent(self, question: str) -> str | None:  # noqa: ARG002

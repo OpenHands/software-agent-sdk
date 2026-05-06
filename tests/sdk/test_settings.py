@@ -852,7 +852,7 @@ def test_regular_agent_supports_all_capabilities() -> None:
     assert agent.supports_openhands_tools is True
     assert agent.supports_openhands_mcp is True
     assert agent.supports_condenser is True
-    assert agent.conversation_contract == "openhands"
+    assert agent.agent_kind == "openhands"
 
 
 def test_acp_agent_reports_no_openhands_capabilities() -> None:
@@ -862,4 +862,4 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
     assert agent.supports_openhands_tools is False
     assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
-    assert agent.conversation_contract == "acp"
+    assert agent.agent_kind == "acp"
