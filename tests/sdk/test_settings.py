@@ -29,7 +29,11 @@ from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.settings import CondenserSettings, VerificationSettings
+from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    CondenserSettings,
+    VerificationSettings,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -763,8 +767,8 @@ def test_agent_settings_base_is_parent_of_both_variants() -> None:
 def test_agent_settings_base_schema_version_inherited() -> None:
     openhands = OpenHandsAgentSettings()
     acp = ACPAgentSettings(acp_command=["x"])
-    assert openhands.schema_version == 1
-    assert acp.schema_version == 1
+    assert openhands.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert acp.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
 
 
 def test_agent_settings_base_export_schema_works_on_both_variants() -> None:
