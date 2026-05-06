@@ -1031,3 +1031,41 @@ templates.",
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
         assert "The current date and time is: 2024-03-15T14:30:00" in result
+
+
+def test_agent_context_secrets_raw_strings_redacted_by_default():
+    """Raw-string entries in ``secrets`` must be masked during serialization.
+
+    ``SecretSource`` instances mask via their own field serializers; raw
+    strings had no guard and leaked verbatim. Wire shape is preserved (the
+    string just becomes ``"**********"``); ``expose_secrets=True`` recovers
+    the real value.
+    """
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_real_secret"})
+
+    # In-memory state still holds the raw value (consumers like
+    # ``_start_acp_server`` read it directly).
+    assert context.secrets is not None
+    assert context.secrets["GITHUB_TOKEN"] == "ghp_real_secret"
+
+    blob = context.model_dump_json()
+    assert "ghp_real_secret" not in blob
+    assert context.model_dump(mode="json")["secrets"] == {"GITHUB_TOKEN": "**********"}
+
+    exposed = context.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["secrets"] == {"GITHUB_TOKEN": "ghp_real_secret"}
+
+
+def test_agent_context_secrets_static_secret_still_masked():
+    """``SecretSource`` entries continue to mask via their own serializer."""
+    from openhands.sdk.secret import StaticSecret
+
+    context = AgentContext(
+        secrets={"TOKEN": StaticSecret(value=SecretStr("static-secret"))},
+    )
+
+    blob = context.model_dump_json()
+    assert "static-secret" not in blob
+
+    exposed = context.model_dump(context={"expose_secrets": True})
+    assert exposed["secrets"]["TOKEN"]["value"] == "static-secret"
