@@ -105,3 +105,10 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
             "Please review what you've done and verify each requirement is met.\n"
             "List what's working and what needs fixing, then complete the task.\n"
         )
+
+    def should_refine(self, critic_result: CriticResult) -> bool:
+        """Evaluate whether iterative refinement should continue."""
+        if self.iterative_refinement is None:
+            return False
+
+        return critic_result.score < self.iterative_refinement.success_threshold
