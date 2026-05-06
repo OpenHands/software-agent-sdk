@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import unicodedata
 from typing import Any
 
@@ -154,6 +155,171 @@ def _extract_content(action: ActionEvent) -> str:
 def _extract_exec_content(action: ActionEvent) -> str:
     """Flat string from executable fields only -- the shell-pattern surface."""
     return " ".join(_extract_exec_segments(action))[:_EXTRACT_HARD_CAP]
+
+
+def _split_shell_segments(command: str) -> list[str]:
+    """Split shell text on top-level command operators.
+
+    We split only on real command separators/operators: ``;``, ``&&``, ``||``,
+    and ``|``. Splits are ignored inside single/double quotes and for escaped
+    characters (``\\;``, ``\\|``). This is intentionally lightweight; it is not
+    a full POSIX shell parser.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    in_single = False
+    in_double = False
+    escaped = False
+    i = 0
+
+    def _flush() -> None:
+        text = "".join(current).strip()
+        if text:
+            segments.append(text)
+        current.clear()
+
+    while i < len(command):
+        ch = command[i]
+
+        if escaped:
+            current.append(ch)
+            escaped = False
+            i += 1
+            continue
+
+        if ch == "\\":
+            current.append(ch)
+            escaped = True
+            i += 1
+            continue
+
+        if not in_double and ch == "'":
+            in_single = not in_single
+            current.append(ch)
+            i += 1
+            continue
+
+        if not in_single and ch == '"':
+            in_double = not in_double
+            current.append(ch)
+            i += 1
+            continue
+
+        if not in_single and not in_double:
+            nxt = command[i + 1] if i + 1 < len(command) else ""
+            if ch == ";":
+                _flush()
+                i += 1
+                continue
+            if ch == "&" and nxt == "&":
+                _flush()
+                i += 2
+                continue
+            if ch == "|" and nxt == "|":
+                _flush()
+                i += 2
+                continue
+            if ch == "|":
+                _flush()
+                i += 1
+                continue
+
+        current.append(ch)
+        i += 1
+
+    _flush()
+    return segments
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+
+
+def _tokenize_shell_segment(segment: str) -> list[str]:
+    """Tokenize one shell segment with a safe fallback."""
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError:
+        # Unterminated quote or malformed shell text: preserve best-effort scan.
+        return segment.split()
+
+
+def _is_redirection_token(token: str) -> bool:
+    """Return True for common redirection token forms.
+
+    Covers both split forms (``2>``, ``>&``) and compact forms (``2>&1``,
+    ``>/tmp/x``). These tokens should not affect destructive flag detection.
+    """
+    if not token:
+        return False
+    if re.fullmatch(r"\d*(?:>>?|<<?|<>|>&|<&)", token):
+        return True
+    if re.fullmatch(r"\d+>&\d+", token):
+        return True
+    if token.startswith((">", "<")):
+        return True
+    if token[:1].isdigit() and len(token) > 1 and token[1] in {">", "<"}:
+        return True
+    return False
+
+
+def _segment_has_rm_recursive_force(tokens: list[str]) -> bool:
+    """Detect ``rm`` with both recursive and force flags in one segment.
+
+    Strategy:
+    - command must start with ``rm`` (optionally after env assignments)
+    - flags may appear in any order and position after the command
+    - positional args and redirections are ignored
+    - supports combined short flags (``-rf``, ``-fr``, ``-rfx``), and
+      long flags (``--recursive``, ``--force``)
+    """
+    idx = 0
+    while idx < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[idx]):
+        idx += 1
+
+    if idx >= len(tokens):
+        return False
+
+    command = tokens[idx].lower()
+    if command != "rm" and not command.endswith("/rm"):
+        return False
+
+    has_recursive = False
+    has_force = False
+
+    for token in tokens[idx + 1 :]:
+        if token == "--":
+            break
+        if _is_redirection_token(token):
+            continue
+
+        if token.startswith("--"):
+            if token == "--recursive":
+                has_recursive = True
+            elif token == "--force":
+                has_force = True
+            continue
+
+        if token.startswith("-") and token != "-":
+            flags = token[1:]
+            if "r" in flags or "R" in flags:
+                has_recursive = True
+            if "f" in flags:
+                has_force = True
+
+    return has_recursive and has_force
+
+
+def _has_rm_recursive_force(command: str) -> bool:
+    """Return True if any top-level segment runs ``rm`` with recursive+force.
+
+    This avoids fixed-width regex windows and scans arbitrarily long segments
+    in linear time. It is intentionally conservative and does not attempt a
+    full shell grammar (command substitution, alias expansion, functions).
+    """
+    for segment in _split_shell_segments(command):
+        if _segment_has_rm_recursive_force(_tokenize_shell_segment(segment)):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------

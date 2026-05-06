@@ -288,6 +288,17 @@ _HIGH_CASES = [
     ("rm -rf /", "rm -rf"),
     ("rm -fr /home", "rm -fr"),
     ("rm -r -f /tmp", "rm -r -f"),
+    ("rm / -rf", "rm flags after positional arg"),
+    ("rm /etc -r -f", "rm flags after target path"),
+    ("rm -r 2>&1 -f /", "rm with interleaved redirection"),
+    (
+        "rm -r "
+        + ("A" * 250)
+        + " -f /",
+        "rm long argument between flags",
+    ),
+    ("rm --no-preserve-root -rf /", "rm with intervening long option"),
+    ("rm --preserve-root=all -r -f /tmp", "rm split flags with long option"),
     ("rm --recursive --force /", "rm --recursive --force"),
     ("sudo rm secret.db", "sudo rm"),
     ("mkfs.ext4 /dev/sda", "mkfs"),
@@ -338,6 +349,9 @@ _LOW_CASES = [
     ("cat README.md", "cat"),
     ("pwd", "pwd"),
     ("git status", "git status"),
+    ("germ -rf /", "substring germ must not match rm"),
+    ("rm -r /tmp", "rm recursive without force"),
+    ("rm -f /tmp/file.txt", "rm force without recursive"),
 ]
 
 
