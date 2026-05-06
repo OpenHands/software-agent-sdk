@@ -239,7 +239,7 @@ with ManagedAPIServer(port=8765) as server:
                         "type": "text",
                         "text": f"Echo the value of the ${secret_name} environment "
                         "variable to see if you have access. "
-                        "If so just respond `YES`, otherwise `NO`.",                    
+                        "If so just respond `YES`, otherwise `NO`.",
                     }
                 ],
                 "run": True,  # Auto-run after sending message
