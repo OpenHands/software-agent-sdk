@@ -625,8 +625,9 @@ def test_get_mcp_config_returns_config():
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
 
 
-def test_get_mcp_config_returns_empty_dict_when_no_config():
+def test_get_mcp_config_returns_empty_dict_when_no_config(monkeypatch):
     """Test get_mcp_config returns empty dict when no MCP config exists."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
     mock_client = MagicMock()
@@ -645,8 +646,9 @@ def test_get_mcp_config_returns_empty_dict_when_no_config():
     assert config == {}
 
 
-def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none():
+def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none(monkeypatch):
     """Test get_mcp_config returns empty dict when mcp_config is None."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
     mock_client = MagicMock()

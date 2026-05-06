@@ -18,6 +18,8 @@ from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspac
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.secret import LookupSecret
+    from openhands.sdk.settings import OpenHandsAgentSettings
+    from openhands.sdk.settings.model import ACPAgentSettings, LLMAgentSettings
 
 
 logger = get_logger(__name__)
@@ -259,6 +261,29 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     # settings endpoints. Subclasses like OpenHandsCloudWorkspace may override
     # to use alternative endpoints (e.g., Cloud API).
 
+    def _fetch_agent_settings(
+        self,
+    ) -> "OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings":
+        """Call ``GET /api/settings`` and return a validated settings model.
+
+        Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
+        api_key) are returned as plain strings.  The outer response is
+        validated via :class:`SettingsResponse`, then the ``agent_settings``
+        dict is validated through :func:`validate_agent_settings` which
+        picks the correct discriminated-union variant
+        (``OpenHandsAgentSettings`` or ``ACPAgentSettings``).
+        """
+        from openhands.sdk.settings import validate_agent_settings
+
+        headers = dict(self._headers)
+        headers["X-Expose-Secrets"] = "plaintext"
+
+        response = self.client.get("/api/settings", headers=headers)
+        response.raise_for_status()
+
+        data = SettingsResponse.model_validate(response.json())
+        return validate_agent_settings(data.agent_settings)
+
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),
         wait=tenacity.wait_exponential(multiplier=1, min=1, max=5),
@@ -269,14 +294,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Fetch LLM settings from the agent-server's persisted settings.
 
         Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the LLM configuration (model, api_key, base_url) and returns
-        a fully usable ``LLM`` instance. Retries up to 3 times on transient
-        errors (network issues, server 5xx).
+        to retrieve the full LLM configuration and returns a fully usable
+        ``LLM`` instance.  All persisted LLM fields (model, api_key,
+        base_url, temperature, max_output_tokens, …) are preserved.
 
         Args:
-            **llm_kwargs: Additional keyword arguments passed to the LLM
-                constructor, allowing overrides of any LLM parameter
-                (e.g., ``model``, ``temperature``).
+            **llm_kwargs: Additional keyword arguments that override
+                persisted values (e.g., ``model``, ``temperature``).
 
         Returns:
             An LLM instance configured with the persisted settings.
@@ -295,25 +319,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        headers = dict(self._headers)
-        headers["X-Expose-Secrets"] = "plaintext"
+        settings = self._fetch_agent_settings()
 
-        response = self.client.get("/api/settings", headers=headers)
-        response.raise_for_status()
+        if not llm_kwargs:
+            return settings.llm
 
-        # Validate response using shared SDK model
-        data = SettingsResponse.model_validate(response.json())
-
-        llm_config = data.agent_settings.get("llm", {})
-
-        # Start with all persisted LLM config fields
-        # The server returns agent_settings.llm as a serialized LLM model_dump()
-        kwargs: dict[str, Any] = dict(llm_config)
-
-        # User-provided kwargs take precedence over persisted settings
-        kwargs.update(llm_kwargs)
-
-        return LLM(**kwargs)
+        # Dump persisted LLM config and merge overrides, then
+        # reconstruct so Pydantic validators run on the merged values
+        llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
+        llm_data.update(llm_kwargs)
+        return LLM(**llm_data)
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),
@@ -385,8 +400,8 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Fetch MCP configuration from the agent-server's persisted settings.
 
         Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the MCP configuration and transforms it into the format
-        expected by the SDK Agent and ``fastmcp.mcp_config.MCPConfig``.
+        to retrieve the MCP configuration and returns a dict compatible with
+        ``MCPConfig.model_validate()`` and the ``Agent(mcp_config=...)`` kwarg.
 
         Returns:
             A dictionary with ``mcpServers`` key containing server configurations
@@ -407,27 +422,18 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             ...     from fastmcp.mcp_config import MCPConfig
             ...     config = MCPConfig.model_validate(mcp_config)
         """
+        from openhands.sdk.settings import OpenHandsAgentSettings
+
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        headers = dict(self._headers)
-        headers["X-Expose-Secrets"] = "plaintext"
+        settings = self._fetch_agent_settings()
 
-        response = self.client.get("/api/settings", headers=headers)
-        response.raise_for_status()
-
-        # Validate response using shared SDK model
-        data = SettingsResponse.model_validate(response.json())
-
-        mcp_config_data = data.agent_settings.get("mcp_config")
-
-        if not mcp_config_data:
+        # mcp_config only exists on OpenHandsAgentSettings, not ACPAgentSettings
+        if not isinstance(settings, OpenHandsAgentSettings):
             return {}
 
-        # The agent-server stores MCP config in MCPConfig format already
-        # (with mcpServers key), so we can return it directly if present
-        if "mcpServers" in mcp_config_data:
-            return mcp_config_data
+        if settings.mcp_config is None:
+            return {}
 
-        # Handle legacy format or empty config
-        return {}
+        return settings.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
