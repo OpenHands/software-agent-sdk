@@ -728,9 +728,7 @@ class RemoteConversation(BaseConversation):
                         acceptable_status_codes={404},
                     )
                     if acp_resp.status_code != 404:
-                        raise ValueError(
-                            _agent_kind_mismatch_message(conversation_id)
-                        )
+                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
