@@ -308,11 +308,14 @@ MODELS = {
         },
     },
     # https://openai.com/index/introducing-gpt-oss/
+    # https://models.litellm.ai/ (fireworks_ai provider)
     "gpt-oss-120b": {
         "id": "gpt-oss-120b",
         "display_name": "GPT OSS 120B",
         "llm_config": {
-            "model": "litellm_proxy/gpt-oss-120b",
+            "model": (
+                "litellm_proxy/fireworks_ai/accounts/fireworks/models/gpt-oss-120b"
+            ),
             "temperature": 0.0,
         },
     },
