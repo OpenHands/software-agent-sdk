@@ -110,6 +110,9 @@ class MCPToolExecutor(ToolExecutor):
                 tool_name=self.tool_name,
             )
 
+    def close(self) -> None:
+        self.client.sync_close()
+
 
 _mcp_dynamic_action_type: dict[str, type[Schema]] = {}
 

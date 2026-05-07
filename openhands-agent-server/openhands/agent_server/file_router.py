@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -6,12 +7,12 @@ from fastapi import (
     APIRouter,
     File,
     HTTPException,
-    Path as FastApiPath,
     Query,
     UploadFile,
     status,
 )
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -20,6 +21,20 @@ from openhands.agent_server.conversation_service import get_default_conversation
 from openhands.agent_server.models import ExecuteBashRequest, Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.logger import get_logger
+
+
+class SubdirectoryEntry(BaseModel):
+    name: str
+    path: str
+
+
+class SubdirectoryPage(BaseModel):
+    items: list[SubdirectoryEntry]
+    next_page_id: str | None = None
+
+
+class HomeResponse(BaseModel):
+    home: str
 
 
 logger = get_logger(__name__)
@@ -109,21 +124,6 @@ async def upload_file_query(
     return await _upload_file(path, file)
 
 
-@file_router.post("/upload/{path:path}", deprecated=True)
-async def upload_file_path(
-    path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
-    file: Annotated[UploadFile, File(...)],
-) -> Success:
-    """Upload a file using path parameter (legacy, for backwards compatibility).
-
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/upload?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
-    """
-    return await _upload_file(path, file)
-
-
 @file_router.get("/download")
 async def download_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
@@ -132,18 +132,95 @@ async def download_file_query(
     return await _download_file(path)
 
 
-@file_router.get("/download/{path:path}", deprecated=True)
-async def download_file_path(
-    path: Annotated[str, FastApiPath(description="Absolute file path.")],
-) -> FileResponse:
-    """Download a file using path parameter (legacy, for backwards compatibility).
+@file_router.get("/home")
+async def get_home_directory() -> HomeResponse:
+    """Return the agent-server user's home directory.
 
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/download?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
+    Used by the GUI to start a folder-browser at a sensible default location.
     """
-    return await _download_file(path)
+    return HomeResponse(home=str(Path.home()))
+
+
+@file_router.get("/search_subdirs")
+async def search_subdirs(
+    path: Annotated[
+        str,
+        Query(description="Absolute directory path to list subdirectories of"),
+    ],
+    page_id: Annotated[
+        str | None,
+        Query(title="Optional next_page_id from the previously returned page"),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(title="The max number of results in the page", gt=0, lte=100),
+    ] = 100,
+) -> SubdirectoryPage:
+    """Search / List immediate subdirectories of `path`.
+
+    Used by the GUI's workspace picker. Hidden entries (names starting with '.')
+    and symlinks are skipped. Files are skipped. Returns absolute paths so the
+    GUI can use a result directly as ``workspace.working_dir``.
+
+    Results are sorted case-insensitively by name and paginated. ``page_id`` is
+    the ``next_page_id`` returned by the previous page (the lowercase name of
+    the first item to include on the next page).
+    """
+    assert limit > 0
+    assert limit <= 100
+
+    target = Path(path)
+    if not target.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+    if not target.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Directory not found",
+        )
+    if not target.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is not a directory",
+        )
+
+    entries: list[SubdirectoryEntry] = []
+    try:
+        with os.scandir(target) as scanner:
+            for entry in scanner:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                entries.append(
+                    SubdirectoryEntry(name=entry.name, path=str(target / entry.name))
+                )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+
+    entries.sort(key=lambda e: e.name.lower())
+
+    start_index = 0
+    if page_id:
+        for i, entry in enumerate(entries):
+            if entry.name.lower() == page_id:
+                start_index = i
+                break
+
+    page_items = entries[start_index : start_index + limit]
+    next_page_id: str | None = None
+    if start_index + limit < len(entries):
+        next_page_id = entries[start_index + limit].name.lower()
+
+    return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")

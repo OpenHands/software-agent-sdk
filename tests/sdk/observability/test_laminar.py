@@ -1,9 +1,24 @@
 """Tests for Laminar observability configuration."""
 
+import inspect
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_observability_cache():
+    """Reset the module-level _observability_enabled flag between tests.
+
+    The flag is sticky-True by design (see laminar.py docstring), so it
+    leaks across tests. This fixture isolates each test from prior state.
+    """
+    from openhands.sdk.observability import laminar
+
+    laminar._observability_enabled = False
+    yield
+    laminar._observability_enabled = False
 
 
 @pytest.mark.parametrize(
@@ -62,13 +77,10 @@ def test_lmnr_base_url_passed_to_laminar():
         os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
         os.environ["LMNR_BASE_URL"] = "https://custom.lmnr.ai"
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()
@@ -99,13 +111,10 @@ def test_lmnr_base_url_not_passed_when_empty():
         if "LMNR_BASE_URL" in os.environ:
             del os.environ["LMNR_BASE_URL"]
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()
@@ -164,6 +173,28 @@ def test_get_bool_env(env_value, expected):
             del os.environ["TEST_BOOL_VAR"]
 
 
+def test_observe_preserves_async_signature():
+    """@observe must keep an async function async so introspection works.
+
+    Regression test for a bug where the lazy wrapper was unconditionally
+    sync, causing `inspect.iscoroutinefunction` to return False for
+    decorated async methods. That broke `MCPToolExecutor.__call__`, which
+    relies on `iscoroutinefunction` in `run_async` to dispatch the call.
+    """
+    from openhands.sdk.observability.laminar import observe
+
+    @observe(name="async_fn")
+    async def async_fn(x: int) -> int:
+        return x + 1
+
+    @observe(name="sync_fn")
+    def sync_fn(x: int) -> int:
+        return x + 1
+
+    assert inspect.iscoroutinefunction(async_fn)
+    assert not inspect.iscoroutinefunction(sync_fn)
+
+
 @pytest.mark.parametrize(
     ("force_http_value", "expected_force_http"),
     [
@@ -186,13 +217,10 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
         elif "LMNR_FORCE_HTTP" in os.environ:
             del os.environ["LMNR_FORCE_HTTP"]
 
-        with patch("openhands.sdk.observability.laminar.Laminar") as mock_laminar:
-            with patch("openhands.sdk.observability.laminar.LaminarLiteLLMCallback"):
-                with patch(
-                    "openhands.sdk.observability.laminar.litellm"
-                ) as mock_litellm:
+        with patch("lmnr.Laminar") as mock_laminar:
+            with patch("lmnr.LaminarLiteLLMCallback"):
+                with patch("litellm.callbacks", new=MagicMock()):
                     mock_laminar.is_initialized.return_value = False
-                    mock_litellm.callbacks = MagicMock()
                     from openhands.sdk.observability.laminar import maybe_init_laminar
 
                     maybe_init_laminar()

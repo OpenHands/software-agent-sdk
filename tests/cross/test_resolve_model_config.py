@@ -650,3 +650,11 @@ def test_deepseek_v4_pro_config():
     assert model["id"] == "deepseek-v4-pro"
     assert model["display_name"] == "DeepSeek V4 Pro"
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-pro"
+ 
+def test_deepseek_v4_flash_config():
+    """Test that deepseek-v4-flash has correct configuration."""
+    model = MODELS["deepseek-v4-flash"]
+
+    assert model["id"] == "deepseek-v4-flash"
+    assert model["display_name"] == "DeepSeek V4 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"

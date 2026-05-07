@@ -5,11 +5,15 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import shutil
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -17,6 +21,7 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from pydantic import SecretStr
 
+from openhands.agent_server.__main__ import preload_modules
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
@@ -46,8 +51,12 @@ from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
-@pytest.fixture
-def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+@contextmanager
+def live_server_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    import_modules: str | None = None,
+) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
     We set OPENHANDS_AGENT_SERVER_CONFIG_PATH before creating the app so that
@@ -59,9 +68,6 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     workspace_path = tmp_path / "workspace"
 
     # Ensure clean directories (both tmp and any leftover in cwd)
-    import shutil
-    from pathlib import Path
-
     # Clean up any leftover directories from previous runs in current working directory
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
@@ -100,6 +106,9 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     # Ensure default config uses our file and disable any env key override
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
+
+    if import_modules is not None:
+        preload_modules(import_modules)
 
     # Build app after env is set
     from openhands.agent_server.api import create_app
@@ -153,6 +162,20 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
             shutil.rmtree(cwd_conversations)
 
 
+def test_health_endpoints_return_ok_json(server_env):
+    with httpx.Client() as client:
+        for endpoint in ("/alive", "/health"):
+            response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+
+
+@pytest.fixture
+def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+    with live_server_env(tmp_path, monkeypatch) as env:
+        yield env
+
+
 @pytest.fixture
 def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch LLM.completion to a deterministic assistant message response."""
@@ -200,6 +223,128 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+
+def test_preloaded_custom_tool_resolves_in_live_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A startup-preloaded tool is available during live conversation creation."""
+    from openhands.sdk.tool import Tool, registry as tool_registry
+
+    package_name = "preload_live_server_tools_2771"
+    module_qualname = f"{package_name}.tools"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "tools.py").write_text(
+        textwrap.dedent(
+            """\
+            from __future__ import annotations
+
+            from collections.abc import Sequence
+            from typing import ClassVar
+
+            from openhands.sdk.tool import (
+                Action,
+                Observation,
+                ToolDefinition,
+                ToolExecutor,
+                register_tool,
+            )
+
+
+            class PreloadedAction(Action):
+                pass
+
+
+            class PreloadedObservation(Observation):
+                pass
+
+
+            class PreloadedExecutor(
+                ToolExecutor[PreloadedAction, PreloadedObservation]
+            ):
+                def __call__(
+                    self,
+                    action: PreloadedAction,
+                    conversation=None,
+                ) -> PreloadedObservation:
+                    return PreloadedObservation.from_text("preloaded")
+
+
+            class PreloadedLiveServerTool(
+                ToolDefinition[PreloadedAction, PreloadedObservation]
+            ):
+                name: ClassVar[str] = "preloaded_live_server_tool"
+
+                @classmethod
+                def create(
+                    cls, conv_state=None, **params
+                ) -> Sequence[PreloadedLiveServerTool]:
+                    return [
+                        cls(
+                            description="Tool registered by startup preload.",
+                            action_type=PreloadedAction,
+                            observation_type=PreloadedObservation,
+                            executor=PreloadedExecutor(),
+                        )
+                    ]
+
+
+            register_tool(PreloadedLiveServerTool.name, PreloadedLiveServerTool)
+            """
+        )
+    )
+
+    registry_snapshot = dict(tool_registry._REG)
+    usability_snapshot = dict(tool_registry._USABILITY_REG)
+    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop(package_name, None)
+    sys.modules.pop(module_qualname, None)
+
+    try:
+        with live_server_env(
+            tmp_path, monkeypatch, import_modules=module_qualname
+        ) as env:
+            llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+            agent = Agent(
+                llm=llm,
+                tools=[Tool(name="preloaded_live_server_tool")],
+                include_default_tools=[],
+            )
+            payload = {
+                "agent": agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
+                "workspace": {"working_dir": "/tmp/workspace/project"},
+                "initial_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Initialize tools."}],
+                },
+                "tool_module_qualnames": {},
+            }
+
+            with httpx.Client(base_url=env["host"]) as client:
+                response = client.post("/api/conversations", json=payload, timeout=10)
+
+            assert response.status_code == 201, response.text
+            conversation_id = UUID(response.json()["id"])
+            event_service = env["conversation_service"]._event_services[conversation_id]
+            assert event_service._conversation is not None
+            assert (
+                "preloaded_live_server_tool"
+                in event_service._conversation.agent.tools_map
+            )
+    finally:
+        sys.modules.pop(package_name, None)
+        sys.modules.pop(module_qualname, None)
+        tool_registry._REG.clear()
+        tool_registry._REG.update(registry_snapshot)
+        tool_registry._USABILITY_REG.clear()
+        tool_registry._USABILITY_REG.update(usability_snapshot)
+        tool_registry._MODULE_QUALNAMES.clear()
+        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
 
 
 def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
@@ -1497,6 +1642,16 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
     conv.close()
 
 
+def test_server_info_exposes_usable_tools(server_env):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get("/server_info", timeout=10.0)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload.get("usable_tools"), list)
+    assert "terminal" in payload["usable_tools"]
+
+
 def test_remote_state_exposes_invoked_skills(
     server_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -1620,3 +1775,129 @@ def test_remote_state_exposes_invoked_skills(
     assert obs_text.rstrip().endswith("relative to that directory.")
 
     conv.close()
+
+
+def test_settings_and_secrets_api_with_live_server(server_env):
+    """End-to-end test for settings and secrets API endpoints.
+
+    Validates the full REST API for settings and secrets management
+    through the live agent-server, including:
+    - GET/PATCH settings
+    - GET/PUT/DELETE secrets
+    - Secret name validation
+    - Encryption/decryption round-trip
+    """
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        # ── Test settings endpoints ────────────────────────────────────────
+        # GET settings (initial state)
+        get_resp = client.get("/api/settings")
+        assert get_resp.status_code == 200
+        initial = get_resp.json()
+        assert "agent_settings" in initial
+        assert "conversation_settings" in initial
+        assert "llm_api_key_is_set" in initial
+
+        # PATCH settings (update LLM model)
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()
+        assert patched["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+        # ── Test secrets CRUD endpoints ────────────────────────────────────
+        # List secrets (should be empty initially)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        assert list_resp.json()["secrets"] == []
+
+        # Create a secret
+        create_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-test-live-server-12345",
+                "description": "Test API key for live server test",
+            },
+        )
+        assert create_resp.status_code == 200
+        created = create_resp.json()
+        assert created["name"] == "TEST_API_KEY"
+        assert created["description"] == "Test API key for live server test"
+
+        # List secrets again (should have one)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        secrets = list_resp.json()["secrets"]
+        assert len(secrets) == 1
+        assert secrets[0]["name"] == "TEST_API_KEY"
+        # Value should NOT be returned in list
+        assert "value" not in secrets[0]
+
+        # Get secret value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-test-live-server-12345"
+
+        # Update the secret (upsert)
+        update_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-updated-value",
+                "description": "Updated description",
+            },
+        )
+        assert update_resp.status_code == 200
+
+        # Verify updated value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-updated-value"
+
+        # Create another secret
+        client.put(
+            "/api/settings/secrets",
+            json={"name": "ANOTHER_SECRET", "value": "another-value"},
+        )
+        list_resp = client.get("/api/settings/secrets")
+        assert len(list_resp.json()["secrets"]) == 2
+
+        # Delete one secret
+        delete_resp = client.delete("/api/settings/secrets/TEST_API_KEY")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["deleted"] is True
+
+        # Verify deleted
+        get_deleted_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert get_deleted_resp.status_code == 404
+
+        # ── Test secret name validation ────────────────────────────────────
+        # Invalid name: starts with number
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "123_invalid", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # Invalid name: contains special characters
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "invalid-name", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # ── Test settings with encrypted secrets ───────────────────────────
+        # Update LLM API key
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"api_key": "sk-live-test-key"}}},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["llm_api_key_is_set"] is True
+        # Response should redact the key (no X-Expose-Secrets header)
+        assert patch_resp.json()["agent_settings"]["llm"]["api_key"] == "**********"
+
+        # Cleanup
+        client.delete("/api/settings/secrets/ANOTHER_SECRET")

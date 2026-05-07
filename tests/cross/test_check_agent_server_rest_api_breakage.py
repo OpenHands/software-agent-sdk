@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -27,10 +28,12 @@ _find_deprecation_policy_errors = _prod._find_deprecation_policy_errors
 _find_sdk_deprecated_fastapi_routes_in_file = (
     _prod._find_sdk_deprecated_fastapi_routes_in_file
 )
+_filter_public_rest_openapi = _prod._filter_public_rest_openapi
 _get_baseline_version = _prod._get_baseline_version
 _normalize_openapi_for_oasdiff = _prod._normalize_openapi_for_oasdiff
 _parse_openapi_deprecation_description = _prod._parse_openapi_deprecation_description
 _validate_removed_operations = _prod._validate_removed_operations
+_validate_removed_schema_properties = _prod._validate_removed_schema_properties
 _rest_route_deprecation_re = _prod.REST_ROUTE_DEPRECATION_RE
 _deprecation_check_re = _deprecations_prod.REST_ROUTE_DEPRECATION_RE
 
@@ -44,6 +47,67 @@ def _schema_with_operation(path: str, method: str, operation: dict) -> dict:
             }
         },
     }
+
+
+def _schema_with_property(property_name: str, property_schema: dict) -> dict:
+    return {
+        "components": {
+            "schemas": {
+                "Model": {
+                    "type": "object",
+                    "properties": {property_name: property_schema},
+                }
+            }
+        },
+        "paths": {},
+    }
+
+
+def test_filter_public_rest_openapi_keeps_only_api_paths():
+    schema = {
+        "paths": {
+            "/health": {"get": {"responses": {}}},
+            "/ready": {"get": {"responses": {}}},
+            "/api/conversations": {"get": {"responses": {}}},
+            "/api/tools/": {"get": {"responses": {}}},
+        },
+        "components": {"schemas": {"Foo": {"type": "string"}}},
+    }
+
+    filtered = _filter_public_rest_openapi(schema)
+
+    assert set(filtered["paths"]) == {"/api/conversations", "/api/tools/"}
+    assert filtered["components"] == schema["components"]
+
+
+def test_find_deprecation_policy_errors_ignores_non_public_paths():
+    schema = {
+        "paths": {
+            "/health": {
+                "get": {
+                    "description": (
+                        "Deprecated since v1.2.3 and scheduled for removal in v1.5.0."
+                    ),
+                    "responses": {},
+                }
+            },
+            "/api/foo": {
+                "get": {
+                    "description": (
+                        "Deprecated since v1.2.3 and scheduled for removal in v1.5.0."
+                    ),
+                    "responses": {},
+                }
+            },
+        }
+    }
+
+    filtered = _filter_public_rest_openapi(schema)
+
+    assert _find_deprecation_policy_errors(filtered) == [
+        "GET /api/foo documents deprecation in its description but is not marked "
+        "deprecated=true in OpenAPI."
+    ]
 
 
 def test_find_deprecation_policy_errors_requires_openapi_deprecated_flag():
@@ -279,9 +343,84 @@ def test_validate_removed_operations_allows_scheduled_removal(capsys):
     assert "scheduled removal version v1.19.0" in capsys.readouterr().out
 
 
+def test_validate_removed_schema_properties_allows_scheduled_removal(capsys):
+    prev_schema = _schema_with_property(
+        "old_field",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.14.0 and scheduled for removal in v1.19.0."
+            ),
+        },
+    )
+
+    errors = _validate_removed_schema_properties(
+        [
+            {
+                "id": "response-property-removed",
+                "text": "removed the optional property `agent/llm/old_field`",
+            }
+        ],
+        prev_schema,
+        "1.19.0",
+    )
+
+    assert errors == []
+    assert "schema property 'old_field'" in capsys.readouterr().out
+
+
+def test_validate_removed_schema_properties_requires_deprecation():
+    prev_schema = _schema_with_property("old_field", {"type": "string"})
+
+    errors = _validate_removed_schema_properties(
+        [
+            {
+                "id": "response-property-removed",
+                "text": "removed the optional property `agent/llm/old_field`",
+            }
+        ],
+        prev_schema,
+        "1.19.0",
+    )
+
+    assert errors == [
+        "Removed schema property 'old_field' without prior deprecation "
+        "(deprecated=true)."
+    ]
+
+
+def test_validate_removed_schema_properties_requires_removal_target_to_be_reached():
+    prev_schema = _schema_with_property(
+        "old_field",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.14.0 and scheduled for removal in v1.20.0."
+            ),
+        },
+    )
+
+    errors = _validate_removed_schema_properties(
+        [
+            {
+                "id": "request-property-removed",
+                "text": "removed the request property `llm/old_field`",
+            }
+        ],
+        prev_schema,
+        "1.19.0",
+    )
+
+    assert errors == [
+        "Removed schema property 'old_field' before its scheduled removal "
+        "version(s): v1.20.0 (current version: v1.19.0). REST API property "
+        "removals require 5 minor releases of deprecation runway."
+    ]
+
+
 def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsys):
     prev_schema = _schema_with_operation(
-        "/foo",
+        "/api/foo",
         "get",
         {
             "deprecated": True,
@@ -311,8 +450,12 @@ def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsy
             [
                 {
                     "id": "removed-operation",
-                    "details": {"path": "/foo", "method": "get", "deprecated": True},
-                    "text": "removed GET /foo",
+                    "details": {
+                        "path": "/api/foo",
+                        "method": "get",
+                        "deprecated": True,
+                    },
+                    "text": "removed GET /api/foo",
                 }
             ],
             1,
@@ -326,11 +469,59 @@ def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsy
     assert "scheduled removal versions have been reached" in captured.out
 
 
+def test_main_allows_scheduled_property_removal_with_documented_target(
+    monkeypatch, capsys
+):
+    prev_schema = _schema_with_property(
+        "old_field",
+        {
+            "deprecated": True,
+            "description": (
+                "Deprecated since v1.9.0 and scheduled for removal in v1.14.0."
+            ),
+        },
+    )
+
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.14.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.13.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: prev_schema,
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-removed",
+                    "details": {},
+                    "text": "removed the optional property `agent/llm/old_field`",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "schema property 'old_field'" in captured.out
+    assert "or properties whose scheduled removal versions" in captured.out
+
+
 def test_main_allows_scheduled_removal_when_baseline_matches_current(
     monkeypatch, capsys
 ):
     prev_schema = _schema_with_operation(
-        "/foo",
+        "/api/foo",
         "get",
         {
             "deprecated": True,
@@ -360,8 +551,12 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
             [
                 {
                     "id": "removed-operation",
-                    "details": {"path": "/foo", "method": "get", "deprecated": True},
-                    "text": "removed GET /foo",
+                    "details": {
+                        "path": "/api/foo",
+                        "method": "get",
+                        "deprecated": True,
+                    },
+                    "text": "removed GET /api/foo",
                 }
             ],
             1,
@@ -372,6 +567,47 @@ def test_main_allows_scheduled_removal_when_baseline_matches_current(
 
     captured = capsys.readouterr()
     assert "scheduled removal versions have been reached" in captured.out
+
+
+def test_main_filters_non_public_paths_before_oasdiff(monkeypatch):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_current_openapi",
+        lambda: {
+            "paths": {
+                "/health": {"get": {"responses": {}}},
+                "/api/foo": {"get": {"responses": {}}},
+            }
+        },
+    )
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod,
+        "_generate_openapi_for_git_ref",
+        lambda _ref: {
+            "paths": {
+                "/ready": {"get": {"responses": {}}},
+                "/api/foo": {"get": {"responses": {}}},
+            }
+        },
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+
+    def fake_run_oasdiff(prev_spec: Path, cur_spec: Path):
+        prev_schema = json.loads(prev_spec.read_text())
+        cur_schema = json.loads(cur_spec.read_text())
+        assert set(prev_schema["paths"]) == {"/api/foo"}
+        assert set(cur_schema["paths"]) == {"/api/foo"}
+        return [], 0
+
+    monkeypatch.setattr(_prod, "_run_oasdiff_breakage_check", fake_run_oasdiff)
+
+    assert _prod.main() == 0
 
 
 def test_main_rejects_non_removal_breakage_even_with_newer_version(monkeypatch, capsys):
@@ -431,14 +667,23 @@ def test_split_breaking_changes_separates_three_buckets():
             "text": "added body anyOf member",
         },
         {
+            "id": "response-property-removed",
+            "details": {},
+            "text": "removed the optional property `agent/llm/old_field`",
+        },
+        {
             "id": "response-body-changed",
             "details": {},
             "text": "response body changed",
         },
     ]
-    removed, additive_oneof, other = _prod._split_breaking_changes(changes)
+    removed, removed_properties, additive_oneof, other = _prod._split_breaking_changes(
+        changes
+    )
     assert len(removed) == 1
     assert removed[0]["path"] == "/foo"
+    assert len(removed_properties) == 1
+    assert removed_properties[0]["id"] == "response-property-removed"
     assert {change["id"] for change in additive_oneof} == {
         "response-property-one-of-added",
         "response-body-one-of-added",

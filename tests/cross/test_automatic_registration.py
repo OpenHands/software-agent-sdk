@@ -47,6 +47,31 @@ def test_browser_tool_automatic_registration():
     assert "browser_tool_set" in registered_tools
 
 
+def test_browser_tool_usable_listing_respects_chromium_availability(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Usable tools should follow the browser tool's Chromium availability."""
+    import openhands.tools.browser_use.definition  # noqa: F401
+    from openhands.sdk.tool.registry import list_usable_tools
+    from openhands.tools.browser_use.definition import BrowserToolSet
+
+    assert "browser_tool_set" in list_registered_tools()
+
+    monkeypatch.setattr(
+        BrowserToolSet,
+        "is_usable",
+        classmethod(lambda cls: False),
+    )
+    assert "browser_tool_set" not in list_usable_tools()
+
+    monkeypatch.setattr(
+        BrowserToolSet,
+        "is_usable",
+        classmethod(lambda cls: True),
+    )
+    assert "browser_tool_set" in list_usable_tools()
+
+
 def test_grep_tool_automatic_registration():
     """Test that GrepTool is automatically registered when imported."""
     # Import the module to trigger registration

@@ -9,6 +9,13 @@ import pytest
 from openhands.tools.browser_use.impl import BrowserToolExecutor, _install_chromium
 
 
+@pytest.fixture(autouse=True)
+def clear_chromium_detection_cache():
+    BrowserToolExecutor.check_chromium_available.cache_clear()
+    yield
+    BrowserToolExecutor.check_chromium_available.cache_clear()
+
+
 class TestChromiumDetection:
     """Test Chromium detection functionality."""
 
@@ -21,6 +28,18 @@ class TestChromiumDetection:
         ):
             result = executor.check_chromium_available()
             assert result == "/usr/bin/chromium"
+
+    def test_check_chromium_available_is_cached(self):
+        """Test that Chromium detection is memoized across repeated calls."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        with (
+            patch.object(Path, "exists", return_value=False),
+            patch("shutil.which", return_value="/usr/bin/chromium") as mock_which,
+        ):
+            assert executor.check_chromium_available() == "/usr/bin/chromium"
+            assert executor.check_chromium_available() == "/usr/bin/chromium"
+
+        assert mock_which.call_count == 1
 
     def test_check_chromium_available_multiple_binaries(self):
         """Test that first available binary is returned."""

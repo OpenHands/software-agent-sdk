@@ -24,15 +24,16 @@ import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
-from acp.helpers import text_block
+from acp.helpers import image_block, text_block
 from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    ImageContentBlock,
     PromptResponse,
     RequestPermissionResponse,
     TextContentBlock,
@@ -41,7 +42,7 @@ from acp.schema import (
     UsageUpdate,
 )
 from acp.transports import default_environment
-from pydantic import Field, PrivateAttr
+from pydantic import Field, PrivateAttr, SecretStr, field_serializer
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -53,12 +54,18 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_providers import (
+    build_session_model_meta,
+    detect_acp_provider_by_agent_name,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
+from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.pydantic_secrets import serialize_secret
 
 
 logger = get_logger(__name__)
@@ -96,6 +103,24 @@ _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFEr
 # -32603 = "Internal error" (JSON-RPC spec) — covers ACP server crashes,
 #          upstream model 500s, and transient infrastructure errors.
 _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
+
+# Maximum characters for ACP tool call content — matches MAX_CMD_OUTPUT_SIZE
+# used by the terminal tool and the default max_message_chars in LLM config.
+MAX_ACP_CONTENT_CHARS: int = 30_000
+
+# Env vars that must be removed from the subprocess environment when a
+# particular "dominant" env var is present.
+#
+# Rationale: some auth mechanisms are mutually exclusive and their env vars
+# conflict.  For example, CLAUDE_CONFIG_DIR activates Claude Code's OAuth
+# credential-file flow.  If ANTHROPIC_API_KEY or ANTHROPIC_BASE_URL are
+# also present they redirect requests to a different endpoint (e.g. a proxy)
+# that doesn't support OAuth bearer tokens, breaking authentication silently.
+# When CLAUDE_CONFIG_DIR is detected we strip the conflicting vars so the
+# subprocess can reach api.anthropic.com with its own OAuth token.
+_ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
+    "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
+}
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
@@ -138,14 +163,6 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
-# Known ACP server name → bypass-permissions mode ID mappings.
-_BYPASS_MODE_MAP: dict[str, str] = {
-    "claude-agent": "bypassPermissions",
-    "codex-acp": "full-access",
-    "gemini-cli": "yolo",
-}
-_DEFAULT_BYPASS_MODE = "full-access"
-
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
 # required credential source is present.
@@ -184,45 +201,23 @@ def _select_auth_method(
     return None
 
 
-def _resolve_bypass_mode(agent_name: str) -> str:
-    """Return the session mode ID that bypasses all permission prompts.
-
-    Different ACP servers use different mode IDs for the same concept:
-    - claude-agent-acp → ``bypassPermissions``
-    - codex-acp        → ``full-access``
-    - gemini-cli       → ``yolo``
-
-    Falls back to ``full-access`` for unknown servers.
-    """
-    for key, mode in _BYPASS_MODE_MAP.items():
-        if key in agent_name.lower():
-            return mode
-    return _DEFAULT_BYPASS_MODE
-
-
-def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
-    """Build ACP session metadata for server-specific model selection."""
-    if not acp_model:
-        return {}
-    # claude-agent-acp: model selection via session _meta (claudeCode.options.model)
-    if "claude" in agent_name.lower():
-        return {"claudeCode": {"options": {"model": acp_model}}}
-    # codex-acp, gemini-cli: use protocol-level set_session_model instead (see below)
-    return {}
-
-
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
     session_id: str,
     acp_model: str | None,
 ) -> None:
-    """Apply a protocol-level session model override when the server supports it."""
+    """Apply a protocol-level session model override when the server supports it.
+
+    Uses :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
+    to check whether the server supports ``set_session_model``.
+    claude-agent-acp uses session ``_meta`` via
+    :func:`~openhands.sdk.settings.acp_providers.build_session_model_meta` instead.
+    """
     if not acp_model:
         return
-    # codex-acp, gemini-cli: model selection via set_session_model protocol method
-    # claude-agent-acp: uses session _meta instead (see _build_session_meta)
-    if "codex-acp" in agent_name.lower() or "gemini-cli" in agent_name.lower():
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
@@ -272,13 +267,51 @@ def _estimate_cost_from_tokens(
         return 0.0
 
 
+def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
+    """Convert an image URL (data URI or plain URL) to an ACP ImageContentBlock.
+
+    Data URIs (``data:<mime>;base64,<data>``) are parsed directly.
+    Plain URLs are passed via the ``uri`` field with a generic MIME type.
+    Returns ``None`` if the URL cannot be converted.
+    """
+    if url.startswith("data:"):
+        # Parse data URI: data:<mime>;base64,<data>
+        try:
+            header, data = url.split(",", 1)
+            mime_type = header.split(":", 1)[1].split(";", 1)[0]
+            return image_block(data=data, mime_type=mime_type)
+        except (ValueError, IndexError):
+            logger.warning("Failed to parse data URI for ACP image block")
+            return None
+    # Plain URL — pass as uri with a generic MIME type; the ACP server
+    # can fetch and detect the actual type.
+    return image_block(data="", mime_type="image/png", uri=url)
+
+
 def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
         return None
-    return [
-        c.model_dump(mode="json") if hasattr(c, "model_dump") else c for c in content
-    ]
+    result = []
+    for content_block in content:
+        block_dict = (
+            content_block.model_dump(mode="json")
+            if hasattr(content_block, "model_dump")
+            else content_block
+        )
+        if (
+            isinstance(block_dict, dict)
+            and block_dict.get("type") == "text"
+            and isinstance(block_dict.get("text"), str)
+        ):
+            block_dict = {
+                **block_dict,
+                "text": maybe_truncate(
+                    block_dict["text"], truncate_after=MAX_ACP_CONTENT_CHARS
+                ),
+            }
+        result.append(block_dict)
+    return result
 
 
 async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
@@ -503,13 +536,18 @@ class _OpenHandsACPBridge:
         if self.on_event is None:
             return
         try:
+            raw_output = tc.get("raw_output")
+            if isinstance(raw_output, str):
+                raw_output = maybe_truncate(
+                    raw_output, truncate_after=MAX_ACP_CONTENT_CHARS
+                )
             event = ACPToolCallEvent(
                 tool_call_id=tc["tool_call_id"],
                 title=tc["title"],
                 status=tc.get("status"),
                 tool_kind=tc.get("tool_kind"),
                 raw_input=tc.get("raw_input"),
-                raw_output=tc.get("raw_output"),
+                raw_output=raw_output,
                 content=tc.get("content"),
                 is_error=tc.get("status") == "failed",
             )
@@ -652,6 +690,12 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+
+    @field_serializer("acp_env", when_used="always")
+    def _serialize_acp_env(self, value: dict[str, str], info):
+        """Mask ``acp_env`` values via :func:`serialize_secret`."""
+        return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
+
     acp_session_mode: str | None = Field(
         default=None,
         description=(
@@ -785,7 +829,29 @@ class ACPAgent(AgentBase):
             except Exception:
                 logger.debug("Stats update callback failed", exc_info=True)
 
-    # -- Override base properties to be no-ops for ACP ---------------------
+    # -- Capability helpers ------------------------------------------------
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``False`` — the ACP server manages its own toolset."""
+        return False
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``False`` — MCP configuration is owned by the ACP subprocess."""
+        return False
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``False`` — the ACP server manages its own context window."""
+        return False
+
+    @property
+    def agent_kind(self) -> Literal["acp"]:
+        """ACP agents have ``agent_kind == "acp"``."""
+        return "acp"
+
+    # -- ACP-specific runtime properties -----------------------------------
 
     @property
     def agent_name(self) -> str:
@@ -903,6 +969,14 @@ class ACPAgent(AgentBase):
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
+        # Strip env vars that conflict with an active auth mechanism.
+        # E.g. CLAUDE_CONFIG_DIR (OAuth credential file) conflicts with
+        # ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL (API-key + proxy auth).
+        for dominant, conflicts in _ENV_CONFLICT_MAP.items():
+            if dominant in env:
+                for conflict in conflicts:
+                    env.pop(conflict, None)
+
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
 
@@ -986,9 +1060,14 @@ class ACPAgent(AgentBase):
                     # through LiteLLM proxy. claude-agent-acp and codex-acp
                     # read their provider base URL from env vars directly.
                     if method_id == "gemini-api-key":
-                        gemini_base_url = env.get("GEMINI_BASE_URL")
-                        if gemini_base_url:
-                            auth_kwargs["gateway"] = {"baseUrl": gemini_base_url}
+                        provider = detect_acp_provider_by_agent_name(agent_name)
+                        base_url_var = (
+                            provider.base_url_env_var if provider is not None else None
+                        )
+                        if base_url_var:
+                            base_url = env.get(base_url_var)
+                            if base_url:
+                                auth_kwargs["gateway"] = {"baseUrl": base_url}
                     await conn.authenticate(method_id=method_id, **auth_kwargs)
                 else:
                     logger.warning(
@@ -1031,7 +1110,7 @@ class ACPAgent(AgentBase):
                 # Build _meta content for session options (e.g. model selection).
                 # Extra kwargs to new_session() become the _meta dict in the
                 # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
-                session_meta = _build_session_meta(agent_name, self.acp_model)
+                session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
             await _maybe_set_session_model(
@@ -1041,15 +1120,17 @@ class ACPAgent(AgentBase):
                 self.acp_model,
             )
 
-            # Resolve the permission mode to use.  Different ACP servers
-            # use different mode IDs for the same concept (no-prompts):
-            #   - claude-agent-acp → "bypassPermissions"
-            #   - codex-acp        → "full-access"
-            mode_id = self.acp_session_mode
-            if mode_id is None:
-                mode_id = _resolve_bypass_mode(agent_name)
-            logger.info("Setting ACP session mode: %s", mode_id)
-            await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+            # Resolve the permission mode.  Known providers each have their
+            # own mode ID (bypassPermissions, full-access, yolo …).
+            # Unknown/custom servers get None — skip the call rather than
+            # sending a provider-specific string they won't recognise.
+            provider = detect_acp_provider_by_agent_name(agent_name)
+            mode_id = self.acp_session_mode or (
+                provider.default_session_mode if provider else None
+            )
+            if mode_id is not None:
+                logger.info("Setting ACP session mode: %s", mode_id)
+                await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
             return conn, process, filtered_reader, session_id, agent_name, agent_version
 
@@ -1128,23 +1209,27 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
-    def _build_acp_prompt(self, event: MessageEvent) -> str | None:
-        """Build the prompt text for one ACP user turn."""
+    def _build_acp_prompt(
+        self, event: MessageEvent
+    ) -> list[TextContentBlock | ImageContentBlock] | None:
+        """Build the ACP content blocks for one user turn."""
         message = event.to_llm_message()
-        # Preserve all text blocks produced by the conversation layer, including
-        # any extended_content it already attached to the user turn.
-        text_parts = [
-            content.text
-            for content in message.content
-            if isinstance(content, TextContent) and content.text.strip()
-        ]
+        blocks: list[TextContentBlock | ImageContentBlock] = []
+        for content in message.content:
+            if isinstance(content, TextContent) and content.text.strip():
+                blocks.append(text_block(content.text))
+            elif isinstance(content, ImageContent):
+                for url in content.image_urls:
+                    acp_block = _image_url_to_acp_block(url)
+                    if acp_block is not None:
+                        blocks.append(acp_block)
         if self.agent_context:
             acp_prompt_context = self.agent_context.to_acp_prompt_context()
             if acp_prompt_context:
-                text_parts.append(acp_prompt_context)
-        if not text_parts:
+                blocks.append(text_block(acp_prompt_context))
+        if not blocks:
             return None
-        return "\n\n".join(text_parts)
+        return blocks
 
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
@@ -1159,14 +1244,14 @@ class ACPAgent(AgentBase):
         # Find the latest user message. Conversation implementations already
         # attach per-turn AgentContext extensions to MessageEvent.extended_content;
         # MessageEvent.to_llm_message() merges those extensions with the user text.
-        user_message = None
+        prompt_blocks = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                user_message = self._build_acp_prompt(event)
-                if user_message:
+                prompt_blocks = self._build_acp_prompt(event)
+                if prompt_blocks:
                     break
 
-        if user_message is None:
+        if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
@@ -1179,7 +1264,7 @@ class ACPAgent(AgentBase):
             async def _prompt() -> PromptResponse:
                 usage_sync = self._client.prepare_usage_sync(self._session_id or "")
                 response = await self._conn.prompt(
-                    [text_block(user_message)],
+                    prompt_blocks,
                     self._session_id,
                 )
                 if self._client.get_turn_usage_update(self._session_id or "") is None:
@@ -1199,9 +1284,9 @@ class ACPAgent(AgentBase):
             # Transient connection failures (network blips, server restarts) are
             # retried to preserve session state and avoid losing progress.
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, msg=%d chars)",
+                "Sending ACP prompt (timeout=%.0fs, blocks=%d)",
                 self.acp_prompt_timeout,
-                len(user_message),
+                len(prompt_blocks),
             )
 
             response: PromptResponse | None = None

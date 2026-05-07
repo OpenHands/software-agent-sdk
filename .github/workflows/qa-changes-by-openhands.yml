@@ -1,14 +1,11 @@
 ---
-# EXPERIMENTAL: Automated QA validation of PR changes using OpenHands.
+# Automated QA validation of PR changes using OpenHands.
 #
 # Unlike pr-review (which reads diffs and posts code-review comments),
 # this workflow actually runs the code — setting up the environment,
 # executing tests, exercising changed behavior, and posting a structured
 # QA report as a PR comment.
-#
-# This is an early experiment; expect rough edges.  The plugin source is
-# pinned to the extensions feature branch while we iterate.
-name: QA Changes by OpenHands [experimental]
+name: QA Changes by OpenHands
 
 on:
     pull_request:
@@ -39,16 +36,13 @@ jobs:
         timeout-minutes: 30
         steps:
             - name: Run QA Changes
-              # EXPERIMENTAL: pointing at feature branch while iterating
-              uses: OpenHands/extensions/plugins/qa-changes@feat/qa-changes-plugin
+              uses: OpenHands/extensions/plugins/qa-changes@main
               with:
                   llm-model: litellm_proxy/claude-sonnet-4-5-20250929
                   llm-base-url: https://llm-proxy.app.all-hands.dev
                   max-budget: '10.0'
                   timeout-minutes: '30'
                   max-iterations: '500'
-                  # EXPERIMENTAL: use the feature branch of extensions
-                  extensions-version: feat/qa-changes-plugin
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   lmnr-api-key: ${{ secrets.LMNR_SKILLS_API_KEY }}

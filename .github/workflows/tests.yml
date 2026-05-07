@@ -44,6 +44,16 @@ jobs:
                     [ -f "$f" ] && violations="$violations  $f\n"
                   done
 
+                  # Detect test files hiding inside source packages instead of tests/
+                  # Excludes */testing/* dirs (testing utilities, not runnable tests)
+                  stray=$(find openhands-sdk openhands-tools openhands-workspace openhands-agent-server \
+                    \( -name 'test_*.py' -o -name '*_test.py' \) \
+                    -not -path '*/testing/*' \
+                    2>/dev/null || true)
+                  for f in $stray; do
+                    violations="$violations  $f (stray test outside tests/)\n"
+                  done
+
                   if [ -n "$violations" ]; then
                     echo "ERROR: Found test paths outside the allowed directories."
                     echo "The following will NOT be run by any CI job:"

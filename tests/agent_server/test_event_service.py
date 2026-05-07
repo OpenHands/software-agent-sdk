@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import threading
 import time
 from datetime import UTC, datetime
@@ -22,11 +23,17 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import Event
+from openhands.sdk.event import AgentErrorEvent, Event
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.terminal import TerminalAction, TerminalObservation
 
 
 @pytest.fixture
@@ -1401,6 +1408,163 @@ class TestEventServiceStartWithRunningStatus:
             ]
             assert len(error_event_calls) == 0
 
+    @pytest.mark.asyncio
+    async def test_start_skips_error_event_when_observation_already_exists(
+        self, event_service, tmp_path
+    ):
+        """Don't synthesize AgentErrorEvent if the loaded state already carries an
+        ObservationBaseEvent for the unmatched action's tool_call_id.
+
+        Reproduces the gap get_unmatched_actions misses: an ObservationEvent that
+        matches by tool_call_id but not by action_id (e.g. action_id rewritten on
+        replay) — without this guard we'd emit a duplicate observation-like event.
+        """
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            unmatched_action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="run ls")],
+                action=TerminalAction(command="ls"),
+                tool_name="terminal",
+                tool_call_id="call_1",
+                tool_call=MessageToolCall(
+                    id="call_1",
+                    name="terminal",
+                    arguments='{"command": "ls"}',
+                    origin="completion",
+                ),
+                llm_response_id="response_1",
+            )
+            # Observation matches by tool_call_id but with a different action_id,
+            # so get_unmatched_actions still reports the action as unmatched.
+            stale_observation = ObservationEvent(
+                observation=TerminalObservation.from_text(
+                    "done", command="ls", exit_code=0
+                ),
+                action_id="some_other_action_id",
+                tool_name="terminal",
+                tool_call_id="call_1",
+            )
+
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [unmatched_action, stale_observation]
+            mock_state.stats = MagicMock()
+
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            await event_service.start()
+
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0
+
+    @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
+    @pytest.mark.asyncio
+    async def test_start_initializes_workspace_as_git_repo(
+        self, event_service, tmp_path
+    ):
+        """A fresh workspace dir should be `git init`-ed during start().
+
+        Without this, /api/git/changes 500s on non-repo workspaces and
+        agent-created files never appear in the Changes tab.
+        """
+        # Arrange
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = tmp_path / "fresh_workspace"
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(workspace_dir))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Act
+            await event_service.start()
+
+        # Assert
+        assert (workspace_dir / ".git").exists()
+
+    @pytest.mark.skipif(not shutil.which("git"), reason="git executable not found")
+    @pytest.mark.asyncio
+    async def test_start_is_idempotent_for_already_initialized_repo(
+        self, event_service, tmp_path
+    ):
+        """Resuming a conversation on an existing repo must not re-init it.
+
+        Guards against accidental double-init that could clobber refs/HEAD
+        on a workspace the user already has commits in.
+        """
+        # Arrange — pre-initialize the workspace dir as a git repo and
+        # capture the .git directory's identity so we can detect re-init.
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        workspace_dir = tmp_path / "existing_repo"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        from openhands.sdk.git.utils import run_git_command
+
+        run_git_command(["git", "init"], workspace_dir)
+        marker = workspace_dir / ".git" / "_idempotency_marker"
+        marker.write_text("preexisting")
+
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(workspace_dir))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+            mock_agent.get_all_llms.return_value = []
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Act
+            await event_service.start()
+
+        # Assert — repo still present and our marker survived (no re-init).
+        assert (workspace_dir / ".git").exists()
+        assert marker.exists()
+        assert marker.read_text() == "preexisting"
+
 
 class TestEventServiceConcurrentSubscriptions:
     """Test cases for concurrent subscription handling without deadlocks.
@@ -1770,4 +1934,89 @@ class TestEventServiceClose:
         await event_service.close()
         await event_service.close()  # second call — _conversation is already None
 
+        conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_pauses_before_closing_conversation(self, event_service):
+        """close() must pause an in-flight run before calling conversation.close().
+        If close() ran first, the still-active run loop would race with executor
+        teardown — closing MCP clients while a tool call is in flight."""
+        conversation = MagicMock(spec=Conversation)
+        call_order: list[str] = []
+
+        def record_pause():
+            call_order.append("pause")
+
+        def record_close():
+            call_order.append("close")
+
+        conversation.pause = record_pause
+        conversation.close = record_close
+        event_service._conversation = conversation
+
+        # Task is in-flight when close() inspects it, finishes during the await.
+        async def fake_run():
+            await asyncio.sleep(0.05)
+
+        event_service._run_task = asyncio.create_task(fake_run())
+
+        await event_service.close()
+
+        assert call_order == ["pause", "close"], (
+            f"Expected pause before close, got {call_order}"
+        )
+        assert event_service._run_task is None
+
+    @pytest.mark.asyncio
+    async def test_close_skips_pause_when_no_run_task(self, event_service):
+        """close() must not call pause() when no run task is in flight."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.pause = MagicMock()
+        conversation.close = MagicMock()
+        event_service._conversation = conversation
+        event_service._run_task = None
+
+        await event_service.close()
+
+        conversation.pause.assert_not_called()
+        conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_proceeds_on_run_task_timeout(self, event_service, caplog):
+        """If the run task does not finish within the timeout, close() logs
+        and still proceeds. Server shutdown must not block on a hanging
+        agent.step(): cancel-on-timeout only cancels the asyncio wrapper, not
+        the underlying worker thread, so we accept that case as best-effort.
+        Pause must still be attempted so the common case (step finishes
+        promptly) stays clean."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.pause = MagicMock()
+        conversation.close = MagicMock()
+        event_service._conversation = conversation
+
+        async def hanging_run():
+            await asyncio.sleep(60)
+
+        hanging_task = asyncio.create_task(hanging_run())
+        event_service._run_task = hanging_task
+
+        try:
+            with (
+                caplog.at_level("WARNING"),
+                patch(
+                    "openhands.agent_server.event_service.asyncio.wait_for",
+                    AsyncMock(side_effect=asyncio.TimeoutError),
+                ),
+            ):
+                await event_service.close()
+        finally:
+            hanging_task.cancel()
+            try:
+                await hanging_task
+            except (asyncio.CancelledError, BaseException):
+                pass
+
+        conversation.pause.assert_called_once()
+        assert "did not exit cleanly" in caplog.text
+        assert event_service._run_task is None
         conversation.close.assert_called_once()

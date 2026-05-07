@@ -12,7 +12,9 @@ from openhands.sdk import (
     LLM,
     ACPAgentSettings,
     Agent,
+    AgentContext,
     AgentSettings,
+    AgentSettingsBase,
     ConversationSettings,
     OpenHandsAgentSettings,
     SettingProminence,
@@ -27,7 +29,11 @@ from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.settings import CondenserSettings, VerificationSettings
+from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    CondenserSettings,
+    VerificationSettings,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -330,7 +336,7 @@ def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
     settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 1
+    assert settings.schema_version == 2
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
@@ -346,13 +352,31 @@ def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    assert settings.schema_version == 1
+    # v1 → v2 is a no-op for ACP payloads, but the schema_version is bumped.
+    assert settings.schema_version == 2
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
+def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
+    """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
+    the canonical ``'openhands'`` discriminator on read."""
+    settings = AgentSettings.from_persisted(
+        {
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {"model": "legacy-model"},
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == 2
+    assert settings.agent_kind == "openhands"
+    assert settings.llm.model == "legacy-model"
+
+
 def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 1"):
-        AgentSettings.from_persisted({"schema_version": 2, "llm": {"model": "m"}})
+    with pytest.raises(ValueError, match="newer than supported version 2"):
+        AgentSettings.from_persisted({"schema_version": 3, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
@@ -543,6 +567,60 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
 
 
+def test_acp_resolve_provider_env_from_llm_credentials() -> None:
+    settings = ACPAgentSettings(
+        acp_server="gemini-cli",
+        llm=LLM(
+            model="gemini-2.5-pro",
+            api_key=SecretStr("sk-test-gemini"),
+            base_url="https://gemini-proxy.example.com",
+        ),
+    )
+
+    assert settings.resolve_provider_env() == {
+        "GEMINI_API_KEY": "sk-test-gemini",
+        "GEMINI_BASE_URL": "https://gemini-proxy.example.com",
+    }
+
+
+def test_acp_resolve_provider_env_custom_server_empty() -> None:
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["custom-acp"],
+        llm=LLM(
+            model="custom-model",
+            api_key=SecretStr("sk-test"),
+            base_url="https://proxy.example.com",
+        ),
+    )
+
+    assert settings.resolve_provider_env() == {}
+
+
+def test_acp_resolve_acp_env_explicit_entries_override_provider_env() -> None:
+    settings = ACPAgentSettings(
+        acp_server="claude-code",
+        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
+        acp_env={"ANTHROPIC_API_KEY": "sk-explicit-override"},
+    )
+
+    assert settings.resolve_acp_env() == {"ANTHROPIC_API_KEY": "sk-explicit-override"}
+
+
+def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        llm=LLM(model="gpt-5.4", api_key=SecretStr("sk-openai")),
+        agent_context=context,
+    )
+
+    agent = settings.create_agent()
+
+    assert agent.acp_env == {"OPENAI_API_KEY": "sk-openai"}
+    assert agent.agent_context == context
+
+
 # ---------------------------------------------------------------------------
 # Legacy ``AgentSettings`` compatibility
 # ---------------------------------------------------------------------------
@@ -674,3 +752,182 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
         agent_settings=ACPAgentSettings(acp_command=["x"]),
     )
     assert isinstance(acp_conv.agent_settings, ACPAgentSettings)
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction in settings serialization
+# ---------------------------------------------------------------------------
+
+
+def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+
+    assert settings.acp_env["OPENAI_API_KEY"] == "sk-real-secret"
+    assert "sk-real-secret" not in settings.model_dump_json()
+    assert settings.model_dump(mode="json")["acp_env"] == {
+        "OPENAI_API_KEY": "**********"
+    }
+
+    exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
+
+
+def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+
+    blob = settings.model_dump_json()
+    assert "sk-mcp-secret" not in blob
+    assert "tok-mcp-secret" not in blob
+
+    exposed = settings.model_dump(context={"expose_secrets": True})
+    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
+    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
+    # create_agent must hand the runtime real env/headers (the field serializer
+    # redacts mcp_config for transit only).
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                }
+            }
+        }
+    )
+    agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
+
+    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+
+
+# ---------------------------------------------------------------------------
+# AgentSettingsBase — shared interface
+# ---------------------------------------------------------------------------
+
+
+def test_agent_settings_base_is_parent_of_both_variants() -> None:
+    assert issubclass(OpenHandsAgentSettings, AgentSettingsBase)
+    assert issubclass(ACPAgentSettings, AgentSettingsBase)
+
+
+def test_agent_settings_base_schema_version_inherited() -> None:
+    openhands = OpenHandsAgentSettings()
+    acp = ACPAgentSettings(acp_command=["x"])
+    assert openhands.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert acp.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+
+
+def test_agent_settings_base_export_schema_works_on_both_variants() -> None:
+    openhands_schema = OpenHandsAgentSettings.export_schema()
+    acp_schema = ACPAgentSettings.export_schema()
+    assert openhands_schema.model_name == "OpenHandsAgentSettings"
+    assert acp_schema.model_name == "ACPAgentSettings"
+
+
+def test_agent_settings_base_create_agent_is_callable_via_interface() -> None:
+    """Both variants expose create_agent() through the shared base type."""
+    settings: AgentSettingsBase = OpenHandsAgentSettings(llm=LLM(model="test-model"))
+    agent = settings.create_agent()
+    assert isinstance(agent, Agent)
+
+    acp_settings: AgentSettingsBase = ACPAgentSettings(acp_command=["x"])
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    acp_agent = acp_settings.create_agent()
+    assert isinstance(acp_agent, ACPAgent)
+
+
+# ---------------------------------------------------------------------------
+# ACPAgentSettings — provider registry integration
+# ---------------------------------------------------------------------------
+
+
+def test_acp_settings_provider_info_returns_registry_entry() -> None:
+    settings = ACPAgentSettings(acp_server="claude-code")
+    info = settings.provider_info
+    assert info is not None
+    assert info.key == "claude-code"
+    assert info.display_name == "Claude Code"
+
+
+def test_acp_settings_provider_info_returns_none_for_custom() -> None:
+    settings = ACPAgentSettings(acp_server="custom", acp_command=["x"])
+    assert settings.provider_info is None
+
+
+def test_acp_settings_api_key_env_var_from_registry() -> None:
+    assert (
+        ACPAgentSettings(acp_server="claude-code").api_key_env_var
+        == "ANTHROPIC_API_KEY"
+    )
+    assert ACPAgentSettings(acp_server="codex").api_key_env_var == "OPENAI_API_KEY"
+    assert ACPAgentSettings(acp_server="gemini-cli").api_key_env_var == "GEMINI_API_KEY"
+    assert (
+        ACPAgentSettings(acp_server="custom", acp_command=["x"]).api_key_env_var is None
+    )
+
+
+def test_acp_settings_base_url_env_var_from_registry() -> None:
+    assert (
+        ACPAgentSettings(acp_server="claude-code").base_url_env_var
+        == "ANTHROPIC_BASE_URL"
+    )
+    assert ACPAgentSettings(acp_server="codex").base_url_env_var == "OPENAI_BASE_URL"
+    assert (
+        ACPAgentSettings(acp_server="gemini-cli").base_url_env_var == "GEMINI_BASE_URL"
+    )
+    assert (
+        ACPAgentSettings(acp_server="custom", acp_command=["x"]).base_url_env_var
+        is None
+    )
+
+
+def test_acp_resolve_command_uses_registry_defaults() -> None:
+    from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+
+    for server_key in ("claude-code", "codex", "gemini-cli"):
+        settings = ACPAgentSettings(acp_server=server_key)
+        expected = list(ACP_PROVIDERS[server_key].default_command)
+        assert settings.resolve_acp_command() == expected
+
+
+# ---------------------------------------------------------------------------
+# Agent capability helpers
+# ---------------------------------------------------------------------------
+
+
+def test_regular_agent_supports_all_capabilities() -> None:
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
+    assert agent.supports_openhands_tools is True
+    assert agent.supports_openhands_mcp is True
+    assert agent.supports_condenser is True
+    assert agent.agent_kind == "openhands"
+
+
+def test_acp_agent_reports_no_openhands_capabilities() -> None:
+    from openhands.sdk.agent.acp_agent import ACPAgent
+
+    agent = ACPAgent(acp_command=["x"])
+    assert agent.supports_openhands_tools is False
+    assert agent.supports_openhands_mcp is False
+    assert agent.supports_condenser is False
+    assert agent.agent_kind == "acp"

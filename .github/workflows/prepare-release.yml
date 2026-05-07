@@ -82,22 +82,13 @@ jobs:
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
                   - [ ] Example tests pass (tagged with `test-examples`)
-                  - [ ] Draft release created at https://github.com/OpenHands/software-agent-sdk/releases/new
-                    - [ ] Select tag: `v${{ inputs.version }}`
-                    - [ ] Select branch: `${{ env.BRANCH_NAME }}`
-                    - [ ] Auto-generate release notes
-                    - [ ] Publish release (PyPI will auto-publish)
                   - [ ] Evaluation on OpenHands Index
 
-                  ### Next Steps
-                  1. Review the version changes
-                  2. Address any deprecation deadlines
-                  3. Ensure integration tests pass
-                  4. Ensure behavior tests pass
-                  5. Ensure example tests pass
-                  6. Create and publish the release
-
-                  Once the release is published on GitHub, the PyPI packages will be automatically published via the `pypi-release.yml` workflow.
+                  ### What happens on merge
+                  When this PR is merged, the `create-release.yml` workflow will automatically:
+                  1. Create a GitHub release with tag `v${{ inputs.version }}` and auto-generated notes
+                  2. Trigger `pypi-release.yml` to publish all packages to PyPI
+                  3. Trigger `version-bump-prs.yml` to create downstream version bump PRs
                   EOF
 
                   gh pr create \
@@ -128,5 +119,4 @@ jobs:
                   echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
                   echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
                   echo "2. Wait for integration, behavior, and example tests to pass" >> $GITHUB_STEP_SUMMARY
-                  echo "3. Create and publish the release on GitHub" >> $GITHUB_STEP_SUMMARY
-                  echo "4. PyPI will automatically publish when the release is created" >> $GITHUB_STEP_SUMMARY
+                  echo "3. Merge the PR — a GitHub release and PyPI publish will happen automatically" >> $GITHUB_STEP_SUMMARY

@@ -240,6 +240,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     )
 
     @classmethod
+    def is_usable(cls) -> bool:
+        """Return whether the tool can be used in the current environment."""
+        return True
+
+    @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:
         """Create a sequence of Tool instances.

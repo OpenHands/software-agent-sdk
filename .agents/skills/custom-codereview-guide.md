@@ -16,13 +16,23 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 ### Review decision policy (eval / benchmark risk)
 
 Do **NOT** submit an **APPROVE** review when the PR changes agent behavior or anything
-that could plausibly affect benchmark/evaluation performance.
+that could plausibly affect benchmark/evaluation performance — **unless** eval evidence
+is already provided (see exception below).
 
 Examples include: prompt templates, tool calling/execution, planning/loop logic,
 memory/condenser behavior, terminal/stdin/stdout handling, or evaluation harness code.
 
 If a PR is in this category (or you are uncertain), leave a **COMMENT** review and
 explicitly flag it for a human maintainer to decide after running lightweight evals.
+
+#### Exception – eval evidence provided
+
+If the PR description **or** PR comments contain a link to the eval monitor
+(`openhands-eval-monitor.vercel.app`) showing a completed benchmark run **and**
+a human maintainer has commented confirming the results (e.g., "Human review done",
+"eval looks good", or similar), treat the eval-risk requirement as satisfied and
+follow the normal approval policy. The eval monitor link is authoritative proof of
+benchmark validation for this repository.
 
 ### Default approval policy
 
@@ -119,6 +129,7 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
 - **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
 - **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
+- **Secret Serialization**: Fields that carry secrets must use `serialize_secret()` from `openhands.sdk.utils.pydantic_secrets`. For `dict[str, str]` secret fields, wrap each value in `SecretStr` and call `serialize_secret` per value. Do not hand-roll redaction logic (e.g. custom sentinels or inline `expose_secrets` checks) in field serializers
 
 ## Event Type Deprecation - Critical Review Checkpoint
 

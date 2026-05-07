@@ -3,8 +3,16 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.llm import Message, TextContent
@@ -18,6 +26,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.utils.pydantic_secrets import serialize_secret
 
 
 logger = get_logger(__name__)
@@ -108,6 +117,21 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+
+    @field_serializer("secrets", when_used="always")
+    def _serialize_secrets(
+        self, value: Mapping[str, SecretValue] | None, info
+    ) -> dict[str, Any] | None:
+        """Mask raw-string ``secrets`` values via :func:`serialize_secret`."""
+        if value is None:
+            return None
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if isinstance(v, SecretSource):
+                out[k] = v.model_dump(mode=info.mode, context=info.context)
+            else:
+                out[k] = serialize_secret(SecretStr(v), info)
+        return out
 
     @field_validator("skills")
     @classmethod
