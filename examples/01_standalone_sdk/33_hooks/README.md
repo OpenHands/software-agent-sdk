@@ -52,5 +52,5 @@ hook contract):
   logged, but the operation still proceeds.
 
 > **Note:** Only exit code `2` blocks. Exit code `1` (the conventional Unix
-> failure code) is treated as a non-blocking error, just like in Claude Code.
-> A hook that is meant to enforce a policy must exit with `2`.
+> failure code) is treated as a non-blocking error. A hook that is meant to
+> enforce a policy must exit with `2`.
