@@ -1,7 +1,8 @@
+import contextlib
 import functools
 import inspect
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from openhands.sdk.logger import get_logger
@@ -168,11 +169,13 @@ def observe[**P, R](
             async def async_wrapper(*args: P.args, **fkwargs: P.kwargs) -> Any:
                 nonlocal wrapped
                 if wrapped is not None:
-                    return await wrapped(*args, **fkwargs)
+                    with _maybe_use_root_span(args):
+                        return await wrapped(*args, **fkwargs)
                 if not should_enable_observability():
                     return await func(*args, **fkwargs)
                 wrapped = _build_wrapped(func)
-                return await wrapped(*args, **fkwargs)
+                with _maybe_use_root_span(args):
+                    return await wrapped(*args, **fkwargs)
 
             return async_wrapper  # type: ignore[return-value]
 
@@ -180,11 +183,13 @@ def observe[**P, R](
         def sync_wrapper(*args: P.args, **fkwargs: P.kwargs) -> R:
             nonlocal wrapped
             if wrapped is not None:
-                return wrapped(*args, **fkwargs)
+                with _maybe_use_root_span(args):
+                    return wrapped(*args, **fkwargs)
             if not should_enable_observability():
                 return func(*args, **fkwargs)
             wrapped = _build_wrapped(func)
-            return wrapped(*args, **fkwargs)
+            with _maybe_use_root_span(args):
+                return wrapped(*args, **fkwargs)
 
         return sync_wrapper
 
@@ -220,34 +225,136 @@ def _is_otel_backend_laminar():
     return key is not None and key != ""
 
 
-class SpanManager:
-    """Manages a stack of active spans and their associated tokens."""
+_ROOT_SPAN_ATTR: Final[str] = "_observability_root_span"
 
-    def __init__(self):
-        self._stack: list[trace.Span] = []
 
-    def start_active_span(self, name: str, session_id: str | None = None) -> None:
-        """Start a new active span and push it to the stack."""
+class RootSpan:
+    """A long-lived Laminar span owned by a single object (e.g. a Conversation).
+
+    The span is created via ``Laminar.start_span`` (which does NOT attach the
+    span to the current OpenTelemetry context). To make the span the parent of
+    nested ``@observe``-decorated calls, the ``observe`` wrapper in this module
+    re-attaches the span via ``Laminar.use_span`` at every entry point. This
+    allows the root span to span across asyncio tasks, threads, and processes
+    where naive ``contextvars`` propagation breaks down.
+
+    The ``Laminar.start_active_span`` API was previously used for this purpose
+    but its docstring explicitly warns:
+
+        "ending the started span in a different async context yields
+         unexpected results. … Use Laminar.start_span + Laminar.use_span
+         where possible."
+
+    Empirically, ``start_active_span`` produced trace-context loss for ~60% of
+    conversations (orphan ``conversation.send_message`` / ``conversation.run``
+    traces with no ``session_id``), so we switched to the recommended pattern.
+    """
+
+    def __init__(self, name: str, session_id: str | None = None) -> None:
         from lmnr import Laminar
 
-        span = Laminar.start_active_span(name)
+        # ``start_span`` returns a span without attaching it as the current
+        # OTel context; we'll restore it on every entry point via ``use_span``.
+        self.span = Laminar.start_span(name)
         if session_id:
-            Laminar.set_trace_session_id(session_id)
-        self._stack.append(span)
+            # ``set_trace_session_id`` requires an active span; briefly enter
+            # the span context to apply the session id to the trace metadata.
+            with contextlib.suppress(Exception):
+                with Laminar.use_span(self.span):
+                    Laminar.set_trace_session_id(session_id)
+        self._ended = False
+
+    def end(self) -> None:
+        if self._ended:
+            return
+        self._ended = True
+        try:
+            if self.span and self.span.is_recording():
+                self.span.end()
+        except Exception:
+            logger.debug("Error ending observability root span", exc_info=True)
+
+
+def start_root_span(name: str, session_id: str | None = None) -> RootSpan | None:
+    """Create a long-lived root span for an owning object.
+
+    Returns ``None`` if observability is not enabled.
+    """
+    if not should_enable_observability():
+        return None
+    try:
+        return RootSpan(name, session_id=session_id)
+    except Exception:
+        logger.debug("Failed to create observability root span", exc_info=True)
+        return None
+
+
+def end_root_span(root: RootSpan | None) -> None:
+    """End a previously-started root span. Safe to call with ``None``."""
+    if root is None:
+        return
+    root.end()
+
+
+@contextlib.contextmanager
+def _maybe_use_root_span(args: tuple[Any, ...]) -> Iterator[None]:
+    """If the first positional arg owns a ``RootSpan``, re-attach it.
+
+    This is what ties ``@observe``-decorated methods (called from arbitrary
+    asyncio tasks or threads) back to the conversation's long-lived root span.
+    """
+    root = _root_span_from_args(args)
+    if root is None or root.span is None:
+        yield
+        return
+    try:
+        from lmnr import Laminar
+    except Exception:
+        yield
+        return
+    try:
+        with Laminar.use_span(root.span):
+            yield
+    except Exception:
+        # Never let an observability error break the wrapped function.
+        logger.debug("use_span failed; calling without parent", exc_info=True)
+        yield
+
+
+def _root_span_from_args(args: tuple[Any, ...]) -> RootSpan | None:
+    if not args:
+        return None
+    candidate = getattr(args[0], _ROOT_SPAN_ATTR, None)
+    if isinstance(candidate, RootSpan):
+        return candidate
+    return None
+
+
+# Backwards-compatible shims. New code should use ``start_root_span`` /
+# ``end_root_span`` (or ``BaseConversation._start_observability_span`` /
+# ``_end_observability_span``) instead.
+class SpanManager:
+    """Deprecated single-stack span manager.
+
+    Retained for any external code that may have imported it. Internally the
+    SDK no longer relies on a global stack: each ``BaseConversation`` owns its
+    own ``RootSpan``, which avoids cross-conversation collisions when
+    multiple conversations are alive concurrently.
+    """
+
+    def __init__(self) -> None:
+        self._stack: list[RootSpan] = []
+
+    def start_active_span(self, name: str, session_id: str | None = None) -> None:
+        root = start_root_span(name, session_id=session_id)
+        if root is not None:
+            self._stack.append(root)
 
     def end_active_span(self) -> None:
-        """End the most recent active span by popping it from the stack."""
         if not self._stack:
             logger.warning("Attempted to end active span, but stack is empty")
             return
-
-        try:
-            span = self._stack.pop()
-            if span and span.is_recording():
-                span.end()
-        except IndexError:
-            logger.warning("Attempted to end active span, but stack is empty")
-            return
+        end_root_span(self._stack.pop())
 
 
 _span_manager: SpanManager | None = None
@@ -261,12 +368,12 @@ def _get_span_manager() -> SpanManager:
 
 
 def start_active_span(name: str, session_id: str | None = None) -> None:
-    """Start a new active span using the global span manager."""
+    """Deprecated: use ``start_root_span`` with a per-conversation owner."""
     _get_span_manager().start_active_span(name, session_id)
 
 
 def end_active_span() -> None:
-    """End the most recent active span using the global span manager."""
+    """Deprecated: paired with the deprecated ``start_active_span``."""
     try:
         _get_span_manager().end_active_span()
     except Exception:
