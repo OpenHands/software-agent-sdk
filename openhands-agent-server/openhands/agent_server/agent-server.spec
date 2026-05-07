@@ -16,11 +16,11 @@ from PyInstaller.utils.hooks import (
 # Optional Vertex AI bundle. google-cloud-aiplatform is an opt-in extra
 # (`openhands-sdk[vertex]`) and is NOT bundled in the default agent-server
 # build. To produce a binary that supports `vertex_ai/*` partner models
-# (MiniMax, Qwen, Kimi MaaS endpoints), install the extra before running
-# pyinstaller, e.g.:
+# (MiniMax, Qwen, Kimi MaaS endpoints):
 #
-#     uv sync --frozen --dev --no-editable --extra boto3 --extra vertex
-#     uv run pyinstaller .../agent-server.spec
+#   - Docker:    docker build --build-arg ENABLE_VERTEX=1 ...
+#   - From src:  uv sync --frozen --dev --no-editable --extra boto3 --extra vertex
+#                uv run pyinstaller .../agent-server.spec
 #
 # When `vertexai` is importable we use collect_all(...) for the Vertex SDK
 # and its google.cloud.* namespace siblings: the imports happen inside
