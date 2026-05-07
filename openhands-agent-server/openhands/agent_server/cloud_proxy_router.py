@@ -14,6 +14,7 @@ override via the ``OH_CLOUD_PROXY_ALLOWED_HOSTS`` environment variable
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Any
 from urllib.parse import urlparse
@@ -64,6 +65,28 @@ def _allowed_hosts() -> tuple[str, ...]:
     return parsed or _DEFAULT_ALLOWED_HOSTS
 
 
+def _is_blocked_ip_literal(hostname: str) -> bool:
+    """Return True iff hostname is an IP literal in a non-routable range.
+
+    Defense in depth: even if an operator widens the allowlist, raw IP
+    literals pointing at loopback, RFC 1918 private space, link-local
+    (169.254.0.0/16, includes the AWS metadata service), or other
+    reserved blocks must never be reached through the proxy.
+    """
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def _is_host_allowed(host_url: str) -> bool:
     parsed = urlparse(host_url)
     if parsed.scheme not in ("http", "https"):
@@ -74,6 +97,8 @@ def _is_host_allowed(host_url: str) -> bool:
     if hostname in _DENYLISTED_HOSTNAMES:
         # Block loopback to prevent the proxy from being used to reach
         # other local services on the operator's machine.
+        return False
+    if _is_blocked_ip_literal(hostname):
         return False
     for entry in _allowed_hosts():
         entry_lower = entry.lower()

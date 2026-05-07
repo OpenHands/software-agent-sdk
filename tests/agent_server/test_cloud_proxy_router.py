@@ -36,6 +36,26 @@ class TestHostAllowlist:
         assert not _is_host_allowed("http://localhost:8000")
         assert not _is_host_allowed("http://127.0.0.1")
 
+    def test_rejects_private_ipv4_addresses(self):
+        assert not _is_host_allowed("http://10.0.0.1")
+        assert not _is_host_allowed("http://172.16.0.1")
+        assert not _is_host_allowed("http://192.168.1.1")
+
+    def test_rejects_link_local_addresses(self):
+        # 169.254.169.254 is the AWS / GCP / Azure instance metadata service.
+        assert not _is_host_allowed("http://169.254.169.254")
+
+    def test_rejects_private_ipv6_addresses(self):
+        assert not _is_host_allowed("http://[fc00::1]")
+        assert not _is_host_allowed("http://[fe80::1]")
+        assert not _is_host_allowed("http://[::1]")
+
+    def test_rejects_private_ip_even_when_allowlisted(self, monkeypatch):
+        # If an operator misconfigures the allowlist to include a private
+        # IP, the IP-literal denylist must still block it.
+        monkeypatch.setenv("OH_CLOUD_PROXY_ALLOWED_HOSTS", "10.0.0.1")
+        assert not _is_host_allowed("http://10.0.0.1")
+
     def test_rejects_unrelated_host(self):
         assert not _is_host_allowed("https://evil.example.com")
 
