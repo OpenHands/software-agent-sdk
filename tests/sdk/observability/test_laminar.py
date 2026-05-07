@@ -269,9 +269,9 @@ def test_observe_calls_use_span_with_owner_root_span_on_sync():
     """Sync ``@observe``'d methods must re-attach the owner's root span."""
     os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
     try:
-        from openhands.sdk.observability import laminar as lam
-
         from lmnr import Laminar  # noqa: F401  ensure module is importable
+
+        from openhands.sdk.observability import laminar as lam
 
         sentinel_span = MagicMock(name="root-span")
         used_with: list = []
@@ -306,9 +306,9 @@ def test_observe_calls_use_span_with_owner_root_span_on_async():
     """Async ``@observe``'d methods must re-attach the owner's root span."""
     os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
     try:
-        from openhands.sdk.observability import laminar as lam
-
         from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
 
         sentinel_span = MagicMock(name="root-span")
         used_with: list = []
@@ -369,12 +369,14 @@ def test_two_concurrent_conversations_do_not_collide():
     # force observability on so the shortcut early-return doesn't fire.
     from openhands.sdk.conversation import base as base_mod
 
-    with patch.object(base_mod, "should_enable_observability", return_value=True), \
-         patch.object(
-             base_mod,
-             "start_root_span",
-             side_effect=lambda *a, **k: MagicMock(spec_set=["end"]),
-         ) as mock_start:
+    with (
+        patch.object(base_mod, "should_enable_observability", return_value=True),
+        patch.object(
+            base_mod,
+            "start_root_span",
+            side_effect=lambda *a, **k: MagicMock(spec_set=["end"]),
+        ) as mock_start,
+    ):
         BaseConversation._start_observability_span(c1, "session-1")  # type: ignore[arg-type]
         BaseConversation._start_observability_span(c2, "session-2")  # type: ignore[arg-type]
 

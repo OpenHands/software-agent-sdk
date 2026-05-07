@@ -10,7 +10,7 @@ from openhands.sdk.observability.utils import get_env
 
 
 if TYPE_CHECKING:
-    from opentelemetry import trace
+    pass
 
 
 logger = get_logger(__name__)
