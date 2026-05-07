@@ -37,17 +37,6 @@ from tests.agent_server.stress.budgets import LONG_RUNNING_COMMAND
 pytestmark = pytest.mark.stress
 
 
-async def _hammer_health(client, *, samples: int) -> list[float]:
-    """Hit /health ``samples`` times back-to-back, return per-call latencies."""
-    latencies: list[float] = []
-    for _ in range(samples):
-        t0 = time.monotonic()
-        resp = await client.get("/health")
-        latencies.append(time.monotonic() - t0)
-        assert resp.status_code == 200, resp.text
-    return latencies
-
-
 def _descendants_of(pid: int) -> list[psutil.Process]:
     """All recursive descendants of ``pid``. Empty if pid is gone."""
     try:
@@ -78,15 +67,20 @@ async def test_long_running_bash_does_not_block_event_loop(
     assert resp.status_code == 200, resp.text
     cmd_id = UUID(resp.json()["id"])
 
-    # Hammer /health while the command runs in the background. The total
-    # work should fit inside ``duration``.
-    health_lats = await _hammer_health(
-        client, samples=LONG_RUNNING_COMMAND.duration_s.__floor__() * 20
-    )
-
-    # Wait for the command to finish.
+    # Sample /health continuously while the bash command is running. A
+    # pre-loop burst of N requests would finish in ~100 ms (in-process ASGI),
+    # so blocking that happens later in the 5 s window would go unobserved.
+    # Interleaving with the completion-poll spreads samples across the full
+    # bash lifetime.
+    health_lats: list[float] = []
     deadline = time.monotonic() + duration + 10
     while time.monotonic() < deadline:
+        for _ in range(5):
+            t0 = time.monotonic()
+            h_resp = await client.get("/health")
+            health_lats.append(time.monotonic() - t0)
+            assert h_resp.status_code == 200
+
         events = await client.get(
             "/api/bash/bash_events/search",
             params={"command_id__eq": str(cmd_id)},

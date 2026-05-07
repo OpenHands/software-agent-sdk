@@ -94,10 +94,10 @@ testpaths = [
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short --ignore=tests/agent_server/stress"
+addopts = "-v --tb=short -m 'not stress'"
 asyncio_mode = "auto"
 markers = [
-    "stress: stress / scale tests, excluded from default collection. Run with `pytest tests/agent_server/stress/`.",
+    "stress: stress / scale tests, excluded from default collection by `-m 'not stress'`. Run with `pytest -m stress` or `pytest tests/agent_server/stress/`.",
 ]
 
 # Pyright configuration for PEP 420 namespace packages

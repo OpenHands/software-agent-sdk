@@ -1260,8 +1260,13 @@ class TestWebhookSubscriberTimerBehavior:
 @pytest.mark.xfail(
     strict=True,
     reason=(
-        "conversation_service.py:862 uses asyncio.gather() without await; "
-        "errors during webhook subscribe are silently swallowed."
+        "Subscribe-time errors from a subscriber's initial __call__ never "
+        "reach the start_conversation caller. Two swallow sites in series: "
+        "event_service.py:411-416 wraps the initial state sync in "
+        "try/except + logger.error (no re-raise), and "
+        "conversation_service.py:862 fires asyncio.gather() on the webhook "
+        "subscribes without awaiting. Both must be fixed for init errors "
+        "to surface."
     ),
 )
 @pytest.mark.timeout(30)
@@ -1271,9 +1276,10 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
     workspace = str(tmp_path / "ws")
     (tmp_path / "ws").mkdir()
 
-    # Force WebhookSubscriber's first __call__ to raise. event_service.py:412
-    # invokes that __call__ during registration — which is what the unawaited
-    # gather schedules.
+    # Force WebhookSubscriber's first __call__ to raise once. Subsequent
+    # calls succeed so the test models "init error" rather than "every event
+    # raises". event_service.py:412 invokes __call__ during registration as
+    # an initial-state sync — that's where the raise lands.
     original_init = WebhookSubscriber.__init__
 
     def _broken_init(self, *args, **kwargs):
@@ -1282,27 +1288,29 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
 
     async def _broken_call(self, event):
         if getattr(self, "_broken", False):
+            self._broken = False
             raise RuntimeError("webhook subscriber init failed")
 
     monkeypatch.setattr(WebhookSubscriber, "__init__", _broken_init)
     monkeypatch.setattr(WebhookSubscriber, "__call__", _broken_call)
 
-    captured: list[dict] = []
-    loop = asyncio.get_running_loop()
-    loop.set_exception_handler(lambda _lp, ctx: captured.append(ctx))
-
-    try:
-        service = ConversationService(
-            conversations_dir=persist,
-            webhook_specs=[
-                WebhookSpec(
-                    base_url="http://unused.test",
-                    event_buffer_size=1,
-                    num_retries=0,
-                )
-            ],
-        )
-        async with service:
+    service = ConversationService(
+        conversations_dir=persist,
+        webhook_specs=[
+            WebhookSpec(
+                base_url="http://unused.test",
+                event_buffer_size=1,
+                num_retries=0,
+            )
+        ],
+    )
+    async with service:
+        # Contract: a subscriber's init error reaches the caller. Today both
+        # swallow sites are present, so this `pytest.raises` will not see
+        # anything and the test fails (→ XFAIL). When *both* are fixed,
+        # start_conversation propagates RuntimeError, pytest.raises catches
+        # it, the test passes (→ XPASS, strict=True flags it for cleanup).
+        with pytest.raises(RuntimeError, match="webhook subscriber init failed"):
             await start_conversation_with_test_llm(
                 service,
                 parent_llm=SlowTestLLM.from_messages(
@@ -1312,11 +1320,3 @@ async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
                 usage_id="webhook-error",
                 initial_text=None,
             )
-            await asyncio.sleep(0.2)
-
-        msgs = [str(ctx.get("exception") or ctx.get("message", "")) for ctx in captured]
-        assert any("webhook subscriber init failed" in m for m in msgs), (
-            "subscribe error was silently swallowed by the unawaited gather."
-        )
-    finally:
-        loop.set_exception_handler(None)

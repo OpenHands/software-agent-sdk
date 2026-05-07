@@ -91,6 +91,21 @@ async def _walk_pages(client, *, page_size: int, sort_order: str) -> list[UUID]:
     return seen
 
 
+async def _find_last_page_id(client, *, page_size: int, sort_order: str) -> str | None:
+    """Return the page_id cursor for the final page, or None if pagination
+    fits in a single page."""
+    page_id: str | None = None
+    while True:
+        params: dict[str, object] = {"limit": page_size, "sort_order": sort_order}
+        if page_id is not None:
+            params["page_id"] = page_id
+        resp = await client.get("/api/conversations/search", params=params)
+        next_id = resp.json().get("next_page_id")
+        if not next_id:
+            return page_id
+        page_id = next_id
+
+
 async def _time_first_page(client, *, page_size: int) -> float:
     t0 = time.monotonic()
     resp = await client.get(
@@ -161,24 +176,9 @@ async def test_pagination_is_correct_and_bounded(
 
     # 4. Deep-page latency degradation: should be graceful, not a cliff.
     if len(paged) >= page_size:
-        # Walk to the last page_id we saw before the end.
-        deep_page_id: str | None = None
-        page_id: str | None = None
-        while True:
-            params: dict[str, object] = {
-                "limit": page_size,
-                "sort_order": "CREATED_AT_DESC",
-            }
-            if page_id is not None:
-                params["page_id"] = page_id
-            resp = await client.get("/api/conversations/search", params=params)
-            body = resp.json()
-            next_id = body.get("next_page_id")
-            if not next_id:
-                deep_page_id = page_id  # last page we paged INTO
-                break
-            page_id = next_id
-
+        deep_page_id = await _find_last_page_id(
+            client, page_size=page_size, sort_order="CREATED_AT_DESC"
+        )
         if deep_page_id is not None:
             deep_samples = [
                 await _time_deep_page(client, page_size=page_size, page_id=deep_page_id)

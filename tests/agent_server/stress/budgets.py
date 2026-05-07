@@ -14,7 +14,8 @@ class ParallelSubagentBudget:
     # Wall time must be < single-agent wall × this. 1.5 leaves slack for
     # scheduling overhead while still failing on serialized execution.
     wall_time_factor: float = 1.5
-    # Peak RSS during the test must be < baseline × this.
+    # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
+    # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0
     max_fd_growth: int = 64
 
@@ -29,7 +30,11 @@ class ConversationListingBudget:
     # at N=10k, so the cache didn't actually buy anything.
     n_conversations: int = 2000
     page_size: int = 50
-    # First-page p95 latency must be < this many seconds.
+    # First-page p95 latency must be < this many seconds. Tuned for a
+    # developer laptop; the suite is opt-in (excluded from default CI
+    # collection in pyproject.toml), so shared CI runners that need looser
+    # numbers should override the budget at the call site rather than
+    # loosening it here for everyone.
     p95_first_page_s: float = 0.5
     # Deep-page p95 must be < first-page p95 × this (graceful degradation).
     deep_page_factor: float = 4.0
@@ -48,6 +53,8 @@ class ConcurrentConversationsBudget:
     per_call_latency_s: float = 0.1
     # Concurrent wall < single-conversation wall × this.
     wall_time_factor: float = 2.5
+    # RSS delta (peak - baseline) must be < baseline × this. With factor=2.0,
+    # peak is allowed up to 3× baseline.
     rss_growth_factor: float = 2.0
 
 

@@ -311,6 +311,12 @@ async def test_webhook_queue_bounded_under_sustained_downstream_failure(
     )
     es = await failing_webhook_service.get_event_service(info.id)
     assert es is not None
+    # White-box access: the bug is unbounded growth of WebhookSubscriber.queue
+    # under sustained downstream failure (conversation_service.py:1059 extends
+    # failed batches back without bound). There's no public API that exposes
+    # an individual subscriber's queue, and adding one just for a regression
+    # test would bake test concerns into production. Reach into _pub_sub
+    # directly here.
     webhook_sub = next(
         s for s in es._pub_sub._subscribers.values() if isinstance(s, WebhookSubscriber)
     )

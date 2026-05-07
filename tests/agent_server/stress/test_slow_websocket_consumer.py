@@ -152,8 +152,10 @@ async def test_stalled_subscriber_does_not_grow_unbounded(
         await asyncio.sleep(0.1)  # let create_task scheduling settle
 
         # Failure mode IS unbounded growth, so the budget is absolute.
-        # Compare peak-during-stall against the pre-stall baseline.
-        rss_peak_mb = proc.memory_info().rss / (1024 * 1024)
+        # Compare peak-during-stall against the pre-stall baseline. Same
+        # max-of-3 sampling as the baseline so allocator noise doesn't
+        # shrink the delta and mask real growth.
+        rss_peak_mb = max(proc.memory_info().rss / (1024 * 1024) for _ in range(3))
         rss_delta = rss_peak_mb - rss_baseline_mb
         assert rss_delta < SLOW_WEBSOCKET_CONSUMER.max_rss_delta_mb, (
             f"RSS grew {rss_delta:.1f} MB with one stalled subscriber and "

@@ -20,6 +20,7 @@ Loads NOT exercised here (covered by their own suites):
 import asyncio
 import statistics
 import time
+from uuid import UUID
 
 import pytest
 
@@ -70,18 +71,56 @@ async def test_health_responsive_under_long_bash(
     p95_baseline, p99_baseline = await _measure_health_p95_p99(client, samples=samples)
     _assert_within_budget("baseline", p95_baseline, p99_baseline)
 
-    # Start a 4s bash. Take samples while it runs.
+    bash_duration_s = 4
     resp = await client.post(
         "/api/bash/start_bash_command",
-        json={"command": "sleep 4; echo done", "timeout": 10},
+        json={"command": f"sleep {bash_duration_s}; echo done", "timeout": 10},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
+    cmd_id = UUID(resp.json()["id"])
 
-    # Sample for ~3s of the bash command's lifetime.
-    p95_under_bash, p99_under_bash = await _measure_health_p95_p99(
-        client, samples=samples
+    # Interleave /health sampling with bash-completion polling so:
+    #   (a) samples land throughout the bash lifetime (in-process ASGI makes a
+    #       single /health call sub-millisecond, so a tight burst would only
+    #       cover the first frame and miss the rest of the run);
+    #   (b) we verify the bash command actually ran to clean exit, otherwise
+    #       a silent crash/early-exit would pass the budget for the wrong
+    #       reason ("/health is fast under no load").
+    latencies: list[float] = []
+    deadline = time.monotonic() + bash_duration_s + 10
+    final = None
+    while time.monotonic() < deadline:
+        for _ in range(5):
+            t0 = time.monotonic()
+            h_resp = await client.get("/health")
+            latencies.append(time.monotonic() - t0)
+            assert h_resp.status_code == 200
+
+        events_resp = await client.get(
+            "/api/bash/bash_events/search",
+            params={"command_id__eq": str(cmd_id)},
+        )
+        final = next(
+            (
+                e
+                for e in events_resp.json()["items"]
+                if e["kind"] == "BashOutput" and e.get("exit_code") is not None
+            ),
+            None,
+        )
+        if final is not None:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail(f"bash command {cmd_id} never produced a final event")
+
+    assert final["exit_code"] == 0, (
+        f"background bash exited with {final['exit_code']}, expected 0; the "
+        f"health-budget assertion below would have measured under no real load."
     )
-    _assert_within_budget("long_bash", p95_under_bash, p99_under_bash)
+
+    quantiles = statistics.quantiles(latencies, n=100)
+    _assert_within_budget("long_bash", quantiles[94], quantiles[98])
 
 
 async def test_health_responsive_under_busy_listing(

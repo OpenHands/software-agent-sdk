@@ -8,9 +8,10 @@ real binary, no real network, no real LLM: everything runs against
 ``ConversationService`` + ``BashEventService`` instances backed by
 ``tmp_path``.
 
-The suite is excluded from the default pytest collection
-(``addopts = --ignore=tests/agent_server/stress`` in pyproject.toml) so it doesn't run
-on every ``make test``.
+The suite is excluded from default pytest runs via the ``stress`` marker
+(``addopts = -m 'not stress'`` in pyproject.toml) so it doesn't run on every
+``make test``. Files are still collected, so import-time breakage in a
+stress test surfaces immediately.
 
 Layout
 ------
@@ -36,9 +37,10 @@ Layout
 
 How to run
 ----------
-Default (quick) mode — runs the whole suite::
+Whole suite (either form works)::
 
     uv run pytest tests/agent_server/stress/
+    uv run pytest -m stress
 
 Single test, with logs visible::
 
