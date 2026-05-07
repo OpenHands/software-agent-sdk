@@ -348,9 +348,6 @@ def _root_span_from_args(args: tuple[Any, ...]) -> RootSpan | None:
 # protect any unaudited private/external consumer; they emit a
 # ``DeprecationWarning`` so any straggler is alerted before removal.
 
-_DEPRECATED_IN: Final[str] = "1.22.0"
-_REMOVED_IN: Final[str] = "1.27.0"
-
 
 class SpanManager:
     """Deprecated single-stack span manager.
@@ -368,12 +365,13 @@ class SpanManager:
         self._stack: list[RootSpan] = []
 
     def start_active_span(self, name: str, session_id: str | None = None) -> None:
+        # Literal version strings are required by .github/scripts/check_deprecations.py
         from openhands.sdk.utils.deprecation import warn_deprecated
 
         warn_deprecated(
             "SpanManager.start_active_span",
-            deprecated_in=_DEPRECATED_IN,
-            removed_in=_REMOVED_IN,
+            deprecated_in="1.22.0",
+            removed_in="1.27.0",
             details=(
                 "Use openhands.sdk.observability.laminar.start_root_span and "
                 "store the returned RootSpan on the owning object."
@@ -388,8 +386,8 @@ class SpanManager:
 
         warn_deprecated(
             "SpanManager.end_active_span",
-            deprecated_in=_DEPRECATED_IN,
-            removed_in=_REMOVED_IN,
+            deprecated_in="1.22.0",
+            removed_in="1.27.0",
             details="Use openhands.sdk.observability.laminar.end_root_span.",
         )
         if not self._stack:
@@ -424,8 +422,8 @@ def start_active_span(name: str, session_id: str | None = None) -> None:
 
     warn_deprecated(
         "openhands.sdk.observability.laminar.start_active_span",
-        deprecated_in=_DEPRECATED_IN,
-        removed_in=_REMOVED_IN,
+        deprecated_in="1.22.0",
+        removed_in="1.27.0",
         details=(
             "Use openhands.sdk.observability.laminar.start_root_span and "
             "store the returned RootSpan on the owning object (e.g. a "
@@ -452,8 +450,8 @@ def end_active_span() -> None:
 
     warn_deprecated(
         "openhands.sdk.observability.laminar.end_active_span",
-        deprecated_in=_DEPRECATED_IN,
-        removed_in=_REMOVED_IN,
+        deprecated_in="1.22.0",
+        removed_in="1.27.0",
         details="Use openhands.sdk.observability.laminar.end_root_span.",
     )
     try:
