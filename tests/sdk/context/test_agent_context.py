@@ -154,6 +154,61 @@ class TestAgentContext:
         assert "<REPO_CONTEXT>" in result
         assert "Legacy repo rules content" in result
 
+    def test_disable_model_invocation_hides_skill_but_preserves_triggers(self):
+        """Disabled skills should not be advertised for invoke_skill, but their
+        trigger-based activation still works."""
+        visible = Skill(
+            name="visible",
+            content="Visible full content",
+            description="Visible skill",
+            source="/path/to/visible/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+        )
+        hidden_triggered = Skill(
+            name="hidden-triggered",
+            content="Hidden triggered content",
+            description="Hidden triggered skill",
+            source="/path/to/hidden-triggered/SKILL.md",
+            trigger=KeywordTrigger(keywords=["hidden-keyword"]),
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        hidden_without_trigger = Skill(
+            name="hidden-without-trigger",
+            content="Hidden no-trigger content",
+            description="Hidden no-trigger skill",
+            source="/path/to/hidden-without-trigger/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        context = AgentContext(
+            skills=[visible, hidden_triggered, hidden_without_trigger]
+        )
+
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<name>visible</name>" in result
+        assert "<name>hidden-triggered</name>" not in result
+        assert "<name>hidden-without-trigger</name>" not in result
+        assert "Hidden triggered skill" not in result
+        assert "Hidden no-trigger content" not in result
+
+        trigger_result = context.get_user_message_suffix(
+            Message(
+                role="user",
+                content=[TextContent(text="please use hidden-keyword")],
+            ),
+            skip_skill_names=[],
+        )
+
+        assert trigger_result is not None
+        content, activated_skill_names = trigger_result
+        assert "Hidden triggered content" in content.text
+        assert activated_skill_names == ["hidden-triggered"]
+
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
         repo_agent1 = Skill(

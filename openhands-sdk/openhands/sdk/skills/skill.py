@@ -208,6 +208,13 @@ class Skill(BaseModel):
             "AgentSkills standard field (parsed from space-delimited string)."
         ),
     )
+    disable_model_invocation: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill can only be activated by trigger matching and "
+            "cannot be directly invoked via invoke_skill."
+        ),
+    )
     resources: SkillResources | None = Field(
         default=None,
         description=(
@@ -417,12 +424,17 @@ class Skill(BaseModel):
         allowed_tools_value = metadata_dict.get(
             "allowed-tools", metadata_dict.get("allowed_tools")
         )
+        disable_model_invocation_value = metadata_dict.get(
+            "disable-model-invocation",
+            metadata_dict.get("disable_model_invocation"),
+        )
         agentskills_fields = {
             "description": metadata_dict.get("description"),
             "license": metadata_dict.get("license"),
             "compatibility": metadata_dict.get("compatibility"),
             "metadata": metadata_dict.get("metadata"),
             "allowed_tools": allowed_tools_value,
+            "disable_model_invocation": disable_model_invocation_value,
         }
         # Remove None values to avoid passing unnecessary kwargs
         agentskills_fields = {
