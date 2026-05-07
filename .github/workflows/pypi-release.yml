@@ -18,7 +18,6 @@ jobs:
             !github.event.release.prerelease
         runs-on: ubuntu-24.04
         permissions:
-            actions: write
             contents: read
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
@@ -80,7 +79,7 @@ jobs:
 
             - name: Dispatch version bump workflow
               env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
                   VERSION: ${{ steps.extract_version.outputs.version }}
               run: |
                   gh workflow run version-bump-prs.yml \
