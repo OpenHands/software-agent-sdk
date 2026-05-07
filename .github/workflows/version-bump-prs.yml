@@ -73,7 +73,7 @@ jobs:
                     echo "Checking $PKG==$VERSION..."
                     ATTEMPT=1
                     while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-                      if uv pip compile --isolated --no-cache --python-version 3.12 - <<< "$PKG==$VERSION" > /dev/null 2>&1; then
+                      if uv pip compile --no-config --no-cache --python-version 3.12 - <<< "$PKG==$VERSION" > /dev/null 2>&1; then
                         echo "✅ $PKG==$VERSION is resolvable on PyPI"
                         break
                       fi
