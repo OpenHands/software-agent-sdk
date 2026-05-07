@@ -13,15 +13,20 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
-# Collect everything (submodules + datas + binaries + metadata) for the
-# Vertex AI SDK so LiteLLM's vertex_ai_partner_models handler can route to
-# Vertex AI Model Garden MaaS endpoints (MiniMax, Qwen, Kimi). The imports
-# happen inside function bodies AND traverse PEP-420 google.cloud namespace
-# packages, so collect_submodules alone misses everything below the namespace
-# root. collect_all walks the actual installed dirs.
+# Optional Vertex AI bundle. google-cloud-aiplatform is an opt-in extra
+# (`openhands-sdk[vertex]`) and is NOT bundled in the default agent-server
+# build. To produce a binary that supports `vertex_ai/*` partner models
+# (MiniMax, Qwen, Kimi MaaS endpoints), install the extra before running
+# pyinstaller, e.g.:
 #
-# google-cloud-aiplatform is an optional extra (`openhands-sdk[vertex]`); skip
-# the whole block if it's not installed so local builds without the extra work.
+#     uv sync --frozen --dev --no-editable --extra boto3 --extra vertex
+#     uv run pyinstaller .../agent-server.spec
+#
+# When `vertexai` is importable we use collect_all(...) for the Vertex SDK
+# and its google.cloud.* namespace siblings: the imports happen inside
+# function bodies AND traverse PEP-420 google.cloud namespace packages, so
+# collect_submodules alone misses everything below the namespace root.
+# collect_all walks the actual installed dirs.
 import importlib.util as _vertex_importlib_util
 
 _VERTEX_AVAILABLE = _vertex_importlib_util.find_spec("vertexai") is not None

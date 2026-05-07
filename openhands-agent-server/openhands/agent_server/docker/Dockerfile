@@ -50,7 +50,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-se
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv python install 3.13 && \
     uv venv --python-preference only-managed --python 3.13 .venv && \
-    uv sync --frozen --no-editable --managed-python --extra boto3 --extra vertex && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 && \
     readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
@@ -62,7 +62,7 @@ ARG USERNAME UID GID
 
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv sync --frozen --dev --no-editable --extra boto3 --extra vertex
+    uv sync --frozen --dev --no-editable --extra boto3
 
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
