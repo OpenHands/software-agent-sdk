@@ -14,6 +14,7 @@ from openhands.sdk.critic.base import (
     CriticResult,
     IterativeRefinementConfig,
 )
+from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -209,6 +210,44 @@ class TestCheckIterativeRefinement:
 
         assert should_continue is False
         assert followup is None
+
+    def test_high_probability_issue_continues_even_when_score_meets_threshold(self):
+        """High-probability agent issues should also trigger refinement."""
+        critic = APIBasedCritic(
+            api_key="test-key",
+            iterative_refinement=IterativeRefinementConfig(success_threshold=0.6),
+        )
+        mixin = MockCriticMixin(critic=critic)
+        conversation = create_mock_conversation()
+        event = create_finish_action_event(
+            CriticResult(
+                score=0.8,
+                message="High score but issue detected",
+                metadata={
+                    "categorized_features": {
+                        "agent_behavioral_issues": [
+                            {
+                                "name": "insufficient_testing",
+                                "display_name": "Insufficient Testing",
+                                "probability": 0.8,
+                            }
+                        ]
+                    }
+                },
+            )
+        )
+
+        should_continue, followup = mixin._check_iterative_refinement(
+            conversation, event
+        )
+
+        assert should_continue is True
+        assert critic.issue_threshold == 0.75
+        assert followup is not None
+        assert "Insufficient Testing (80%)" in followup
+        assert (
+            conversation.state.agent_state.get(ITERATIVE_REFINEMENT_ITERATION_KEY) == 1
+        )
 
     def test_score_below_threshold_continues(self):
         """Test that score below threshold triggers continuation."""

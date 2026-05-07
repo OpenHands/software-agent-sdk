@@ -673,3 +673,281 @@ def test_get_mcp_config_raises_on_undefined_host():
 
     with pytest.raises(RuntimeError, match="Workspace host is not set"):
         workspace.get_mcp_config()
+
+
+# ── Tests for Repository Cloning Methods ─────────────────────────────
+
+
+def test_get_secret_value_returns_secret():
+    """Test _get_secret_value fetches secret from agent server."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.text = "secret-token-value"
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    result = workspace._get_secret_value("github_token")
+
+    assert result == "secret-token-value"
+    mock_client.get.assert_called_once_with(
+        "/api/settings/secrets/github_token",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+
+
+def test_get_secret_value_returns_none_on_404():
+    """Test _get_secret_value returns None when secret not found."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_client.get.side_effect = httpx.HTTPStatusError(
+        "Not Found", request=Mock(), response=mock_response
+    )
+    workspace._client = mock_client
+
+    result = workspace._get_secret_value("nonexistent_secret")
+
+    assert result is None
+
+
+def test_get_secret_value_returns_none_when_host_undefined():
+    """Test _get_secret_value returns None when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    result = workspace._get_secret_value("github_token")
+
+    assert result is None
+
+
+def test_get_secret_value_validates_secret_name():
+    """Test _get_secret_value validates secret name to prevent path traversal."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    # Names with slashes should be rejected
+    assert workspace._get_secret_value("../etc/passwd") is None
+    assert workspace._get_secret_value("secrets/github") is None
+
+    # Empty name should be rejected
+    assert workspace._get_secret_value("") is None
+
+
+def test_clone_repos_calls_helper():
+    """Test clone_repos delegates to helper function."""
+    from openhands.sdk.workspace.repo import CloneResult, RepoMapping
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        expected_result = CloneResult(
+            success_count=1,
+            failed_repos=[],
+            repo_mappings={
+                "https://github.com/owner/repo": RepoMapping(
+                    url="https://github.com/owner/repo",
+                    dir_name="repo",
+                    local_path="/workspace/repo",
+                )
+            },
+        )
+        mock_clone.return_value = expected_result
+
+        result = workspace.clone_repos(["https://github.com/owner/repo"])
+
+        assert result == expected_result
+        mock_clone.assert_called_once()
+
+        # Verify token_fetcher is workspace's _get_secret_value
+        call_kwargs = mock_clone.call_args[1]
+        assert call_kwargs["token_fetcher"] == workspace._get_secret_value
+
+
+def test_clone_repos_normalizes_input_formats():
+    """Test clone_repos accepts strings, dicts, and RepoSource objects."""
+    from openhands.sdk.workspace.repo import CloneResult, RepoSource
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        mock_clone.return_value = CloneResult(0, [], {})
+
+        # Mix of input formats
+        workspace.clone_repos(
+            [
+                "https://github.com/owner/repo1",  # string
+                {"url": "https://gitlab.com/owner/repo2", "ref": "main"},  # dict
+                RepoSource(url="https://bitbucket.org/owner/repo3"),  # RepoSource
+            ]
+        )
+
+        # Verify all inputs were normalized to RepoSource
+        call_kwargs = mock_clone.call_args[1]
+        repos = call_kwargs["repos"]
+        assert len(repos) == 3
+        assert all(isinstance(r, RepoSource) for r in repos)
+
+
+def test_clone_repos_uses_custom_target_dir():
+    """Test clone_repos respects custom target directory."""
+    from openhands.sdk.workspace.repo import CloneResult
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        mock_clone.return_value = CloneResult(0, [], {})
+
+        workspace.clone_repos(
+            ["https://github.com/owner/repo"],
+            target_dir="/custom/path",
+        )
+
+        call_kwargs = mock_clone.call_args[1]
+        assert call_kwargs["target_dir"] == Path("/custom/path")
+
+
+def test_get_repos_context_delegates_to_helper():
+    """Test get_repos_context delegates to helper function."""
+    from openhands.sdk.workspace.repo import RepoMapping
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mappings = {
+        "https://github.com/owner/repo": RepoMapping(
+            url="https://github.com/owner/repo",
+            dir_name="repo",
+            local_path="/workspace/repo",
+            ref="main",
+        )
+    }
+
+    context = workspace.get_repos_context(mappings)
+
+    assert "## Cloned Repositories" in context
+    assert "https://github.com/owner/repo" in context
+    assert "/workspace/repo" in context
+
+
+def test_get_repos_context_empty_mappings():
+    """Test get_repos_context returns empty string for empty mappings."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    context = workspace.get_repos_context({})
+
+    assert context == ""
+
+
+# ── Tests for Skill Loading Methods ──────────────────────────────────
+
+
+def test_load_skills_from_agent_server_raises_when_not_initialized():
+    """Test load_skills_from_agent_server raises when host is not set."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/workspace")
+
+    with pytest.raises(RuntimeError, match="Workspace not initialized"):
+        workspace.load_skills_from_agent_server()
+
+
+def test_load_skills_from_agent_server_calls_api():
+    """Test load_skills_from_agent_server calls the agent server API."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [
+            {
+                "name": "test-skill",
+                "content": "Test content",
+                "description": "A test skill",
+                "triggers": ["test"],
+            }
+        ],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+
+        assert len(skills) == 1
+        assert skills[0].name == "test-skill"
+        assert skills[0].content == "Test content"
+        assert context.load_public_skills is False  # Skills were loaded
+
+
+def test_load_skills_from_agent_server_falls_back_when_no_skills():
+    """Test load_skills falls back to public skills when none loaded."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+
+        assert len(skills) == 0
+        assert context.load_public_skills is True  # Fall back to public
+
+
+def test_load_skills_from_agent_server_with_project_dirs():
+    """Test load_skills_from_agent_server loads skills from multiple directories."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    # Return different skills for different calls
+    call_count = 0
+
+    def side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        response = Mock()
+        if call_count == 1:
+            # Global skills call
+            response.json.return_value = {
+                "skills": [{"name": "global-skill", "content": "Global"}],
+                "sources": {},
+            }
+        else:
+            # Project-specific call
+            response.json.return_value = {
+                "skills": [
+                    {"name": f"project-skill-{call_count}", "content": "Project"}
+                ],
+                "sources": {},
+            }
+        response.raise_for_status = Mock()
+        return response
+
+    with patch.object(workspace.client, "post", side_effect=side_effect) as mock_post:
+        skills, context = workspace.load_skills_from_agent_server(
+            project_dirs=["/workspace/repo1", "/workspace/repo2"]
+        )
+
+        # Should have loaded global skills + 2 project dirs = 3 calls
+        assert mock_post.call_count == 3
+        assert len(skills) >= 1  # At least the global skill

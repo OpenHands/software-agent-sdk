@@ -4,6 +4,8 @@ import json
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from pydantic import Field
+
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
 from openhands.sdk.critic.impl.api.taxonomy import categorize_features
@@ -25,7 +27,34 @@ def _format_feature_list(features: list[dict[str, Any]]) -> str:
     return ", ".join(items)
 
 
+def _get_high_probability_agent_issues(
+    critic_result: CriticResult, issue_threshold: float
+) -> tuple[dict[str, Any], ...]:
+    if not critic_result.metadata:
+        return ()
+
+    categorized = critic_result.metadata.get("categorized_features", {})
+    if not isinstance(categorized, dict):
+        return ()
+
+    return tuple(
+        issue
+        for issue in categorized.get("agent_behavioral_issues", [])
+        if isinstance(issue, dict) and issue.get("probability", 0) >= issue_threshold
+    )
+
+
 class APIBasedCritic(CriticBase, CriticClient):
+    issue_threshold: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "APIBasedCritic-specific probability threshold for agent issue "
+            "labels that should trigger iterative refinement."
+        ),
+    )
+
     def evaluate(
         self,
         events: Sequence[LLMConvertibleEvent],
@@ -101,6 +130,17 @@ class APIBasedCritic(CriticBase, CriticClient):
                 "event_ids": event_ids,
                 "categorized_features": categorized,
             },
+        )
+
+    def should_refine(self, critic_result: CriticResult) -> bool:
+        """Use API critic taxonomy signals in addition to the score threshold."""
+        if super().should_refine(critic_result):
+            return True
+        if self.iterative_refinement is None:
+            return False
+
+        return bool(
+            _get_high_probability_agent_issues(critic_result, self.issue_threshold)
         )
 
     def get_followup_prompt(self, critic_result: CriticResult, iteration: int) -> str:

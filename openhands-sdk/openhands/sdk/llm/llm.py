@@ -1356,8 +1356,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         if not self.caching_prompt:
             return False
-        # We don't need to look-up model_info, because
-        # only Anthropic models need explicit caching breakpoints
+        # We don't need to look up model_info because explicit caching
+        # breakpoint support is tracked in the local feature table.
         return (
             self.caching_prompt
             and get_features(self._model_name_for_capabilities()).supports_prompt_cache
@@ -1397,7 +1397,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # Single block: mark it for caching
                 sys_content[0].cache_prompt = True
 
-        # NOTE: this is only needed for anthropic
+        # Anthropic and Gemini both use these cache_control markers. LiteLLM
+        # performs the provider-specific cache setup for Gemini downstream.
         for message in reversed(messages):
             if message.role in ("user", "tool"):
                 message.content[

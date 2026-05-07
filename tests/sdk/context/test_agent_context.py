@@ -1031,3 +1031,29 @@ templates.",
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
         assert "The current date and time is: 2024-03-15T14:30:00" in result
+
+
+def test_agent_context_secrets_raw_strings_redacted_by_default():
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_real_secret"})
+
+    # In-memory shape is preserved — runtime consumers read raw strings directly.
+    assert context.secrets is not None
+    assert context.secrets["GITHUB_TOKEN"] == "ghp_real_secret"
+
+    assert "ghp_real_secret" not in context.model_dump_json()
+    assert context.model_dump(mode="json")["secrets"] == {"GITHUB_TOKEN": "**********"}
+
+    exposed = context.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["secrets"] == {"GITHUB_TOKEN": "ghp_real_secret"}
+
+
+def test_agent_context_secrets_static_secret_still_masked():
+    from openhands.sdk.secret import StaticSecret
+
+    context = AgentContext(
+        secrets={"TOKEN": StaticSecret(value=SecretStr("static-secret"))},
+    )
+
+    assert "static-secret" not in context.model_dump_json()
+    exposed = context.model_dump(context={"expose_secrets": True})
+    assert exposed["secrets"]["TOKEN"]["value"] == "static-secret"

@@ -232,6 +232,11 @@ MODELS = {
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
     # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-pro": {
+        "id": "deepseek-v4-pro",
+        "display_name": "DeepSeek V4 Pro",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-pro"},
+    },
     "deepseek-v4-flash": {
         "id": "deepseek-v4-flash",
         "display_name": "DeepSeek V4 Flash",
