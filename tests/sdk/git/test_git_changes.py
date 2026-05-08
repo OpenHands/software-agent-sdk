@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
@@ -362,3 +363,61 @@ def test_git_changes_with_binary_files():
 
         for change in changes:
             assert change.status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_ref_head_shows_only_uncommitted():
+    """``ref='HEAD'`` should yield git status semantics: working tree vs HEAD."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Commit a baseline file so HEAD exists.
+        (Path(temp_dir) / "committed.txt").write_text("baseline")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'initial'", temp_dir)
+
+        # Add an extra commit. Without ref='HEAD' this would still appear in
+        # the changeset (origin auto-detection + empty-tree fallback compares
+        # against the empty tree). With ref='HEAD' it must NOT appear.
+        (Path(temp_dir) / "second.txt").write_text("second commit")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'second'", temp_dir)
+
+        # Now create one untracked + one modified file vs HEAD.
+        (Path(temp_dir) / "committed.txt").write_text("baseline modified")
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        paths = {str(c.path) for c in changes}
+        # Files committed at HEAD must not appear; only working-tree changes.
+        assert "second.txt" not in paths
+        assert "committed.txt" in paths
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_ref_raises():
+    """An explicit ref that does not resolve should raise ``GitCommandError``."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="definitely-not-a-real-ref")
+
+
+def test_get_git_changes_propagates_ref():
+    """``get_git_changes`` should pass the ref through to inner-repo lookups."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "a.txt").write_text("a")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        # Working-tree-only addition.
+        (Path(temp_dir) / "b.txt").write_text("b")
+
+        changes = get_git_changes(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert paths == {"b.txt"}

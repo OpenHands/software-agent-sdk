@@ -50,7 +50,7 @@ async def test_git_changes_query_param_success(client):
         assert response_data[2]["status"] == "DELETED"
         assert response_data[2]["path"] == "old_file.py"
 
-        mock_git_changes.assert_called_once_with(Path(test_path))
+        mock_git_changes.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_git_changes_query_param_absolute_path(client):
 
         assert response.status_code == 200
         assert len(response.json()) == 1
-        mock_git_changes.assert_called_once_with(Path(test_path))
+        mock_git_changes.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -170,7 +170,7 @@ async def test_git_diff_query_param_success(client):
 
         assert response_data["modified"] == expected_diff.modified
         assert response_data["original"] == expected_diff.original
-        mock_git_diff.assert_called_once_with(Path(test_path))
+        mock_git_diff.assert_called_once_with(Path(test_path), ref=None)
 
 
 @pytest.mark.asyncio
@@ -273,6 +273,51 @@ async def test_git_changes_with_complex_paths(client):
         assert response_data[0]["path"] == "src/deep/nested/file.py"
         assert response_data[1]["path"] == "file with spaces.txt"
         assert response_data[2]["path"] == "special-chars_file@123.py"
+
+
+@pytest.mark.asyncio
+async def test_git_changes_forwards_ref_query_param(client):
+    """The ``ref`` query param should be plumbed through to ``get_git_changes``."""
+    with patch("openhands.agent_server.git_router.get_git_changes") as mock_git_changes:
+        mock_git_changes.return_value = []
+
+        test_path = "src/test_repo"
+        response = client.get(
+            "/api/git/changes", params={"path": test_path, "ref": "HEAD"}
+        )
+
+        assert response.status_code == 200
+        mock_git_changes.assert_called_once_with(Path(test_path), ref="HEAD")
+
+
+@pytest.mark.asyncio
+async def test_git_diff_forwards_ref_query_param(client):
+    """The ``ref`` query param should be plumbed through to ``get_git_diff``."""
+    with patch("openhands.agent_server.git_router.get_git_diff") as mock_git_diff:
+        mock_git_diff.return_value = GitDiff(modified="m", original="o")
+
+        test_path = "src/test_file.py"
+        response = client.get(
+            "/api/git/diff",
+            params={"path": test_path, "ref": "abc1234"},
+        )
+
+        assert response.status_code == 200
+        mock_git_diff.assert_called_once_with(Path(test_path), ref="abc1234")
+
+
+def test_git_endpoints_expose_ref_query_param(client):
+    """OpenAPI schema should advertise the new optional ``ref`` query param."""
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+
+    paths = response.json()["paths"]
+    for endpoint in ("/api/git/changes", "/api/git/diff"):
+        params = paths[endpoint]["get"]["parameters"]
+        ref_param = next((p for p in params if p["name"] == "ref"), None)
+        assert ref_param is not None, f"ref param missing on {endpoint}"
+        assert ref_param["in"] == "query"
+        assert ref_param.get("required", False) is False
 
 
 def test_git_legacy_routes_are_removed_from_openapi(client):
