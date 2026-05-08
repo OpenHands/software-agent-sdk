@@ -1328,6 +1328,48 @@ def test_v1_11_5_cli_default_conversation_resumes_when_runtime_adds_delegate(
     )
 
 
+def test_context_manager_batches_saves() -> None:
+    """Multiple field mutations inside `with state:` produce a single save."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("k"), usage_id="test-llm")
+    agent = Agent(llm=llm)
+    workspace = LocalWorkspace(working_dir="/tmp/test")
+
+    state = ConversationState(
+        id=uuid.uuid4(),
+        workspace=workspace,
+        persistence_dir="/tmp/test/.state",
+        agent=agent,
+    )
+
+    from openhands.sdk.io import InMemoryFileStore
+
+    fs = InMemoryFileStore()
+    state._fs = fs
+    state._autosave_enabled = True
+
+    save_count = 0
+    _original = state._save_base_state
+
+    def _counting_save(f):
+        nonlocal save_count
+        save_count += 1
+        _original(f)
+
+    state._save_base_state = _counting_save  # type: ignore[method-assign]
+
+    # Three mutations inside one context-manager block → exactly 1 save
+    with state:
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.max_iterations = 999
+        state.stuck_detection = False
+
+    assert save_count == 1
+
+    # Mutation outside a context-manager block → immediate save
+    state.max_iterations = 42
+    assert save_count == 2
+
+
 def test_v1_17_0_conversation_with_mcp_config_restores(tmp_path: Path) -> None:
     """Test resuming a legacy conversation that persisted agent.mcp_config."""
     fixture_path = (
