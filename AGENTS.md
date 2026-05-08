@@ -312,6 +312,10 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
+# Stress Tests
+
+`tests/agent_server/stress/` contains an opt-in stress/scale suite for the agent-server, excluded from default collection via the `stress` pytest marker. Run with `uv run pytest -m stress`. For full details on running, infrastructure, and adding new stress tests, see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
+
 # Behavior Tests
 
 Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements.
@@ -345,6 +349,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
 - Run tests: `uv run pytest`
+- Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`
 - Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).
