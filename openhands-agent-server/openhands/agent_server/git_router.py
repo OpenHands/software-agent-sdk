@@ -65,8 +65,10 @@ async def git_changes_query(
     try:
         return await _get_git_changes(path, ref)
     except GitError as e:
-        # Other git failures (e.g., GitCommandError) surface as 400 so the
-        # client can show an actionable error instead of an opaque 500.
+        # GitRepositoryError is already handled in the helper (returns []).
+        # Any remaining GitError subclass (e.g. GitCommandError) surfaces as
+        # 400 so the client can show an actionable error instead of an
+        # opaque 500.
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -79,6 +81,8 @@ async def git_diff_query(
     try:
         return await _get_git_diff(path, ref)
     except GitError as e:
-        # Other git failures (e.g., GitCommandError) surface as 400 so the
-        # client can show an actionable error instead of an opaque 500.
+        # GitRepositoryError is already handled in the helper (returns an
+        # empty diff). Any remaining GitError subclass (e.g. GitCommandError,
+        # GitPathError) surfaces as 400 so the client can show an actionable
+        # error instead of an opaque 500.
         raise HTTPException(status_code=400, detail=str(e))
