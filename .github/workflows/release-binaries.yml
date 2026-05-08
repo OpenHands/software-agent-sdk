@@ -1,16 +1,19 @@
 ---
 name: Publish agent-server release artifacts
 
-# On release published:
+# On release published or push to main:
 #   1. Build the agent-server PyInstaller binary on Linux + macOS for both
-#      x86_64 and arm64 and attach them (plus a combined SHA256SUMS) to the
-#      GitHub release.
-#   2. Smoke-test the multi-arch Docker images pushed by `server.yml`,
+#      x86_64 and arm64, smoke-test it, and upload workflow artifacts.
+#   2. On release events/manual runs, attach those binaries plus a combined
+#      SHA256SUMS file to the GitHub release.
+#   3. Smoke-test the multi-arch Docker images pushed by `server.yml`,
 #      verifying that every published variant has a manifest covering both
 #      linux/amd64 and linux/arm64 and that the container actually boots
 #      and answers /health on each architecture.
 
 on:
+    push:
+        branches: [main]
     release:
         types: [published]
     workflow_dispatch:
@@ -26,11 +29,12 @@ permissions:
 
 jobs:
     resolve-tag:
-        name: Resolve release tag
+        name: Resolve artifact and image tag
         runs-on: ubuntu-24.04
         outputs:
             tag: ${{ steps.resolve.outputs.tag }}
             version: ${{ steps.resolve.outputs.version }}
+            image_tag: ${{ steps.resolve.outputs.image_tag }}
         steps:
             - id: resolve
               shell: bash
@@ -38,17 +42,27 @@ jobs:
                   set -euo pipefail
                   if [[ "${{ github.event_name }}" == "release" ]]; then
                       TAG="${{ github.event.release.tag_name }}"
-                  else
+                      VERSION="${TAG#v}"
+                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
                       TAG="${{ inputs.release_tag }}"
+                      VERSION="${TAG#v}"
+                  elif [[ "${{ github.event_name }}" == "push" ]]; then
+                      TAG=""
+                      VERSION="${GITHUB_SHA::7}"
+                  else
+                      echo "ERROR: unsupported event '${{ github.event_name }}'"
+                      exit 1
                   fi
-                  VERSION="${TAG#v}"
-                  if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$ ]]; then
+
+                  if [[ -n "$TAG" ]] && ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$ ]]; then
                       echo "ERROR: unexpected version '$VERSION' (from tag '$TAG')"
                       exit 1
                   fi
+
                   echo "tag=$TAG" >> "$GITHUB_OUTPUT"
                   echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-                  echo "📦 Tag: $TAG  Version: $VERSION"
+                  echo "image_tag=$VERSION" >> "$GITHUB_OUTPUT"
+                  echo "📦 Tag: ${TAG:-<push>}  Image tag: $VERSION"
 
     build-binary:
         name: Build (${{ matrix.os_label }}-${{ matrix.arch }})
@@ -150,6 +164,7 @@ jobs:
     publish-binaries:
         name: Publish binaries + SHA256SUMS
         needs: [resolve-tag, build-binary]
+        if: github.event_name != 'push'
         runs-on: ubuntu-24.04
         steps:
             - name: Download binary artifacts
@@ -210,7 +225,7 @@ jobs:
                       runner: ubuntu-24.04-arm
         env:
             IMAGE: ghcr.io/openhands/agent-server
-            VERSION: ${{ needs.resolve-tag.outputs.version }}
+            IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
         steps:
@@ -228,7 +243,7 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  TAG_FQN="${IMAGE}:${VERSION}-${VARIANT}"
+                  TAG_FQN="${IMAGE}:${IMAGE_TAG}-${VARIANT}"
                   DEADLINE=$(( $(date +%s) + 2700 ))  # 45 minutes
                   while ! docker buildx imagetools inspect "$TAG_FQN" >/dev/null 2>&1; do
                       if [ "$(date +%s)" -ge "$DEADLINE" ]; then
@@ -244,7 +259,7 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  TAG_FQN="${IMAGE}:${VERSION}-${VARIANT}"
+                  TAG_FQN="${IMAGE}:${IMAGE_TAG}-${VARIANT}"
                   PLATFORMS=$(docker buildx imagetools inspect "$TAG_FQN" --raw \
                       | jq -r '.manifests[]?.platform | "\(.os)/\(.architecture)"' \
                       | sort -u)
@@ -262,7 +277,7 @@ jobs:
               shell: bash
               run: |
                   set -euo pipefail
-                  TAG_FQN="${IMAGE}:${VERSION}-${VARIANT}"
+                  TAG_FQN="${IMAGE}:${IMAGE_TAG}-${VARIANT}"
                   CONTAINER="agent-server-smoke-${VARIANT}-${ARCH}"
 
                   echo "Pulling $TAG_FQN for linux/${ARCH} ..."
