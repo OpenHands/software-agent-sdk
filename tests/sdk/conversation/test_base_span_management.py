@@ -83,11 +83,13 @@ def test_base_conversation_span_management():
         patch(
             "openhands.sdk.conversation.base.should_enable_observability"
         ) as mock_should_enable,
-        patch("openhands.sdk.conversation.base.start_active_span") as mock_start_span,
-        patch("openhands.sdk.conversation.base.end_active_span") as mock_end_span,
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.end_root_span") as mock_end_span,
     ):
         # Test when observability is enabled
         mock_should_enable.return_value = True
+        fake_root = MagicMock(name="root-span")
+        mock_start_span.return_value = fake_root
 
         # Start span
         conversation._start_observability_span("test-session-id")
@@ -95,13 +97,20 @@ def test_base_conversation_span_management():
             "conversation", session_id="test-session-id"
         )
         assert conversation._span_ended is False
+        assert conversation._observability_root_span is fake_root
+
+        # Calling start again is idempotent (already-started conversations
+        # must not produce a second root span).
+        conversation._start_observability_span("test-session-id")
+        assert mock_start_span.call_count == 1
 
         # End span first time
         conversation._end_observability_span()
-        mock_end_span.assert_called_once()
+        mock_end_span.assert_called_once_with(fake_root)
         assert conversation._span_ended is True
+        assert conversation._observability_root_span is None
 
-        # Try to end span again - should not call end_active_span again
+        # Try to end span again - should not call end_root_span again
         conversation._end_observability_span()
         assert mock_end_span.call_count == 1  # Still only called once
         assert conversation._span_ended is True
@@ -117,21 +126,23 @@ def test_base_conversation_span_management_disabled():
         patch(
             "openhands.sdk.conversation.base.should_enable_observability"
         ) as mock_should_enable,
-        patch("openhands.sdk.conversation.base.start_active_span") as mock_start_span,
-        patch("openhands.sdk.conversation.base.end_active_span") as mock_end_span,
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.end_root_span") as mock_end_span,
     ):
         # Test when observability is disabled
         mock_should_enable.return_value = False
 
-        # Try to start span - should not call start_active_span
+        # Try to start span - should not call start_root_span
         conversation._start_observability_span("test-session-id")
         mock_start_span.assert_not_called()
         assert conversation._span_ended is False
+        assert conversation._observability_root_span is None
 
-        # Try to end span - should not call end_active_span
+        # End is always called (it's a no-op for None) and marks ended.
+        # The important property is that no observability call is made when
+        # observability is disabled.
         conversation._end_observability_span()
-        mock_end_span.assert_not_called()
-        assert conversation._span_ended is False
+        mock_end_span.assert_called_once_with(None)
 
 
 def test_base_conversation_no_span_warnings(caplog):
@@ -145,8 +156,8 @@ def test_base_conversation_no_span_warnings(caplog):
             "openhands.sdk.conversation.base.should_enable_observability",
             return_value=True,
         ),
-        patch("openhands.sdk.conversation.base.start_active_span"),
-        patch("openhands.sdk.conversation.base.end_active_span"),
+        patch("openhands.sdk.conversation.base.start_root_span"),
+        patch("openhands.sdk.conversation.base.end_root_span"),
     ):
         # Capture logs at WARNING level
         with caplog.at_level(logging.WARNING):
