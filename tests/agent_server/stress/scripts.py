@@ -8,6 +8,7 @@ without fixture indirection.
 
 import asyncio
 import time
+from collections.abc import Sequence
 from typing import Any, Final
 from uuid import UUID
 
@@ -16,11 +17,14 @@ import psutil
 from pydantic import PrivateAttr, SecretStr
 
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.models import StartConversationRequest
+from openhands.agent_server.models import ConversationInfo, StartConversationRequest
 from openhands.sdk import LLM, Agent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.llm_response import LLMResponse
+from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -39,10 +43,25 @@ class SlowTestLLM(TestLLM):
         super().__init__(**data)
         self._latency_s = latency_s
 
-    def completion(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+    def completion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
         if self._latency_s > 0:
             time.sleep(self._latency_s)
-        return super().completion(*args, **kwargs)
+        return super().completion(
+            messages,
+            tools,
+            _return_metrics,
+            add_security_risk_prediction,
+            on_token,
+            **kwargs,
+        )
 
 
 def placeholder_llm(usage_id: str) -> LLM:
@@ -79,7 +98,7 @@ async def start_conversation_with_test_llm(
     tools: list[Tool] | None = None,
     tool_concurrency_limit: int = 1,
     initial_text: str | None = "stress test",
-):
+) -> ConversationInfo:
     """Create a conversation, install ``parent_llm``, then optionally queue
     an initial user message (without auto-running).
 
@@ -145,8 +164,8 @@ async def wait_for_terminal(
     Polling rather than subscribing because websocket coverage is exercised
     by separate suites; we want this helper to work without WS infra.
     """
-    deadline = asyncio.get_event_loop().time() + timeout_s
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
         resp = await client.get(f"/api/conversations/{conversation_id.hex}")
         assert resp.status_code == 200, resp.text
         st = ConversationExecutionStatus(resp.json()["execution_status"])
