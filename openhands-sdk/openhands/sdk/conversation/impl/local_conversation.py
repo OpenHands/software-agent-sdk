@@ -541,6 +541,7 @@ class LocalConversation(BaseConversation):
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
+                llm=self.agent.llm,
             )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()

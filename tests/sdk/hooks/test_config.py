@@ -3,8 +3,103 @@
 import json
 import tempfile
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+import pytest
+
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher, HookType
 from openhands.sdk.hooks.types import HookEventType
+
+
+class TestHookDefinitionValidation:
+    """Tests for HookDefinition type-specific field validation."""
+
+    def test_command_hook_requires_command(self):
+        """COMMAND type must have a command field."""
+        with pytest.raises(Exception, match="'command' is required"):
+            HookDefinition(type="command")
+
+    def test_command_hook_valid(self):
+        """COMMAND type with command is valid."""
+        h = HookDefinition(command="echo hi")
+        assert h.type == HookType.COMMAND
+        assert h.command == "echo hi"
+
+    def test_agent_hook_valid_with_prompt(self):
+        """AGENT type with prompt (no command) is valid."""
+        h = HookDefinition(type="agent", prompt="Block writes to /etc")
+        assert h.type == HookType.AGENT
+        assert h.prompt == "Block writes to /etc"
+        assert h.command is None
+
+    def test_agent_hook_valid_without_prompt(self):
+        """AGENT type without prompt is valid (prompt is optional)."""
+        h = HookDefinition(type="agent")
+        assert h.type == HookType.AGENT
+        assert h.prompt is None
+
+    def test_display_command_uses_command_for_command_hooks(self):
+        h = HookDefinition(command="block.sh")
+        assert h.display_command == "block.sh"
+
+    def test_display_command_uses_name_when_set(self):
+        h = HookDefinition(type="agent", name="block-deletions", prompt="Block rm -rf")
+        assert h.display_command == "agent-hook:block-deletions"
+
+    def test_display_command_falls_back_to_prompt_prefix(self):
+        h = HookDefinition(type="agent", prompt="Block network calls to external IPs")
+        assert h.display_command == "agent-hook:Block network calls "
+
+    def test_display_command_truncates_long_prompt(self):
+        long_prompt = "A" * 100
+        h = HookDefinition(type="agent", prompt=long_prompt)
+        assert h.display_command == f"agent-hook:{'A' * 20}"
+
+    def test_display_command_fallback_when_no_name_no_prompt(self):
+        h = HookDefinition(type="agent")
+        assert h.display_command == "agent-hook:agent"
+
+    def test_three_hooks_are_distinguishable(self):
+        """Multiple agent hooks without names get unique labels via prompt prefix."""
+        hooks = [
+            HookDefinition(type="agent", name="block-deletions", prompt="Block rm -rf"),
+            HookDefinition(type="agent", prompt="Block network calls to external IPs"),
+            HookDefinition(type="agent", prompt="Verify all tasks are complete"),
+        ]
+        labels = [h.display_command for h in hooks]
+        assert len(set(labels)) == 3  # all distinct
+
+    def test_agent_hook_rejects_command_field(self):
+        """AGENT type must not have command set alongside it."""
+        with pytest.raises(
+            Exception, match="'command' must not be set when type is 'agent'"
+        ):
+            HookDefinition(type="agent", command="echo hi")
+
+    def test_agent_hook_rejects_async(self):
+        """AGENT type does not support async_=True."""
+        with pytest.raises(Exception, match="not supported for agent hooks"):
+            HookDefinition.model_validate({"type": "agent", "async": True})
+
+    def test_agent_hook_from_json(self):
+        """AGENT hook can be loaded from JSON config."""
+        data = {
+            "stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "agent",
+                            "prompt": "Verify all tasks are done",
+                            "timeout": 30,
+                        }
+                    ]
+                }
+            ]
+        }
+        config = HookConfig.from_dict(data)
+        hooks = config.get_hooks_for_event(HookEventType.STOP)
+        assert len(hooks) == 1
+        assert hooks[0].type == HookType.AGENT
+        assert hooks[0].prompt == "Verify all tasks are done"
+        assert hooks[0].timeout == 30
 
 
 class TestHookMatcher:

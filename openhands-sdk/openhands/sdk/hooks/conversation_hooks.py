@@ -20,6 +20,7 @@ from openhands.sdk.logger import get_logger
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.llm import LLM
 
 logger = get_logger(__name__)
 
@@ -149,7 +150,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.PRE_TOOL_USE,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
                 action_id=event.id,
@@ -224,7 +225,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.POST_TOOL_USE,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
                 action_id=action_event.id,
@@ -266,7 +267,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.USER_PROMPT_SUBMIT,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 message_id=event.id,
                 hook_input={"message": message},
@@ -328,7 +329,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.SESSION_START,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
             )
             if result.error:
@@ -342,7 +343,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.SESSION_END,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
             )
             if result.error:
@@ -360,7 +361,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.STOP,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 hook_input={"reason": reason} if reason else None,
             )
@@ -389,6 +390,7 @@ def create_hook_callback(
     session_id: str | None = None,
     original_callback: Any = None,
     emit_hook_events: bool = True,
+    llm: "LLM | None" = None,
 ) -> tuple[HookEventProcessor, Any]:
     """Create a hook-enabled event callback. Returns (processor, callback).
 
@@ -399,6 +401,7 @@ def create_hook_callback(
         original_callback: Callback to chain after hook processing.
         emit_hook_events: If True, emit HookExecutionEvent for each hook execution.
             Defaults to True for full observability.
+        llm: LLM instance inherited from the parent conversation, used by agent hooks.
 
     Returns:
         Tuple of (HookEventProcessor, callback function).
@@ -407,6 +410,7 @@ def create_hook_callback(
         config=hook_config,
         working_dir=working_dir,
         session_id=session_id,
+        llm=llm,
     )
 
     processor = HookEventProcessor(
