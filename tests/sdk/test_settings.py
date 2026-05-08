@@ -110,6 +110,10 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "finish_and_message",
         "all_actions",
     ]
+    assert (
+        v_fields["verification.enable_iterative_refinement"].prominence
+        is SettingProminence.CRITICAL
+    )
 
 
 def test_acp_agent_settings_export_schema_has_acp_section() -> None:

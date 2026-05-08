@@ -169,6 +169,7 @@ class VerificationSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable iterative refinement",
+                prominence=SettingProminence.CRITICAL,
                 depends_on=("critic_enabled",),
             ).model_dump()
         },

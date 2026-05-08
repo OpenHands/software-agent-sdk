@@ -91,6 +91,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
         coreutils util-linux procps findutils grep sed \
+        # Lightweight init for proper zombie reaping when running as PID 1
+        tini \
         # Docker dependencies
         apt-transport-https gnupg lsb-release; \
     \
@@ -285,12 +287,12 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 FROM base-image AS source
 ARG USERNAME
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
-ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
+ENTRYPOINT ["tini", "--", "/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
-ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
+ENTRYPOINT ["tini", "--", "/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 ############################
 # Target B: binary-runtime
@@ -304,7 +306,7 @@ COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/op
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # Fix library path to use system GCC libraries instead of bundled ones
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/openhands-agent-server"]
 
 FROM base-image-minimal AS binary-minimal
 ARG USERNAME
@@ -312,4 +314,4 @@ COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/op
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # Fix library path to use system GCC libraries instead of bundled ones
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/openhands-agent-server"]

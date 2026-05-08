@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -279,6 +280,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(settings_router)
+    api_router.include_router(cloud_proxy_router)
     app.include_router(api_router)
     app.include_router(sockets_router)
 

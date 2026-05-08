@@ -2,12 +2,8 @@
 name: Create Version Bump PRs
 
 on:
-    # Triggered by pypi-release workflow after successful publish
-    # Note: No branches filter - releases run on tags (e.g., v1.11.4), not branches
-    workflow_run:
-        workflows: [Publish all OpenHands packages (uv)]
-        types: [completed]
-    # Allow manual trigger with version input
+    # Dispatched by pypi-release.yml after a successful publish.
+    # Also supports manual reruns for a specific version.
     workflow_dispatch:
         inputs:
             version:
@@ -18,13 +14,9 @@ on:
 jobs:
     create-version-bump-prs:
         runs-on: ubuntu-24.04
-        # Only run on successful workflow_run or manual dispatch
-        if: >
-            github.event_name == 'workflow_dispatch' ||
-            (github.event.workflow_run.conclusion == 'success' &&
-             github.event.workflow_run.event == 'release')
         env:
             GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+            SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         steps:
             - name: Checkout
               uses: actions/checkout@v6
@@ -32,14 +24,7 @@ jobs:
             - name: Get version from release or input
               id: get_version
               run: |
-                  if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-                    VERSION="${{ github.event.inputs.version }}"
-                  else
-                    # Get version from the release that triggered the workflow_run
-                    # The workflow_run was triggered by a release event
-                    RELEASE_TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq '.tag_name')
-                    VERSION="${RELEASE_TAG#v}"  # Remove 'v' prefix
-                  fi
+                  VERSION="${{ github.event.inputs.version }}"
                   echo "version=$VERSION" >> $GITHUB_OUTPUT
                   echo "📦 Version: $VERSION"
 
@@ -58,6 +43,7 @@ jobs:
               with:
                   version: latest
                   python-version: '3.12'
+                  enable-cache: false
 
             - name: Wait for packages to be available on PyPI
               env:
@@ -81,11 +67,13 @@ jobs:
                   # via the Simple API (the same index uv add uses).
                   # The JSON API propagates faster than the Simple API, so a curl
                   # check alone is insufficient.
+                  # Keep this isolated from the SDK repo's exclude-newer guardrail:
+                  # this workflow intentionally consumes just-published packages.
                   for PKG in "${PACKAGES[@]}"; do
                     echo "Checking $PKG==$VERSION..."
                     ATTEMPT=1
                     while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
-                      if uv pip compile --no-cache --python-version 3.12 - <<< "$PKG==$VERSION" > /dev/null 2>&1; then
+                      if uv pip compile --no-config --no-cache --python-version 3.12 - <<< "$PKG==$VERSION" > /dev/null 2>&1; then
                         echo "✅ $PKG==$VERSION is resolvable on PyPI"
                         break
                       fi
@@ -341,10 +329,11 @@ jobs:
                   echo "- [OpenHands-CLI](https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
 
             - name: Notify Slack
+              if: env.SLACK_BOT_TOKEN != ''
               uses: slackapi/slack-github-action@v3.0.2
               with:
                   method: chat.postMessage
-                  token: ${{ secrets.SLACK_BOT_TOKEN }}
+                  token: ${{ env.SLACK_BOT_TOKEN }}
                   payload: |
                       channel: C08E1SYKEM9
                       text: "🚀 *SDK v${{ steps.get_version.outputs.version }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands>\n• <https://github.com/OpenHands/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ steps.get_version.outputs.version }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ steps.get_version.outputs.version }}|View Release>"
