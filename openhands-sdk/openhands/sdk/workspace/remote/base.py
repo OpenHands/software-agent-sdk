@@ -1,3 +1,4 @@
+import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -51,6 +52,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     OpenHands agent server. This is the recommended approach for production deployments
     as it provides better isolation and security.
 
+    Supports optional completion callbacks on exit via environment variables:
+      - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
+      - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
+      - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
+
     Example:
         >>> workspace = RemoteWorkspace(
         ...     host="https://agent-server.example.com",
@@ -62,6 +68,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
+    _conversation_id: str | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
@@ -247,14 +254,14 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         """Register a conversation ID with this workspace.
 
         Called by RemoteConversation after creation to associate the conversation
-        with the workspace. Subclasses can override to track conversation IDs
-        for callbacks or other purposes.
+        with the workspace. The conversation ID is included in the completion
+        callback sent to the automation service.
 
         Args:
             conversation_id: The conversation ID to register
         """
-        # Default implementation is a no-op
-        pass
+        self._conversation_id = conversation_id
+        logger.debug(f"Registered conversation: {conversation_id}")
 
     @property
     def conversation_id(self) -> str | None:
@@ -263,7 +270,67 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Returns:
             The conversation ID if one has been registered, None otherwise.
         """
-        return None
+        return self._conversation_id
+
+    def _send_completion_callback(
+        self, exc_type: type | None, exc_val: BaseException | None
+    ) -> None:
+        """POST completion status to the automation service (best-effort).
+
+        Call this from ``__exit__`` before ``cleanup()``. Does nothing when
+        ``AUTOMATION_CALLBACK_URL`` env var is not set.
+
+        Reads configuration from environment variables:
+          - ``AUTOMATION_CALLBACK_URL`` — URL to POST completion status to
+          - ``AUTOMATION_CALLBACK_API_KEY`` — Bearer token for callback auth (optional)
+          - ``AUTOMATION_RUN_ID`` — Run ID to include in callback payload (optional)
+
+        Includes ``conversation_id`` in the payload if one was registered via
+        ``register_conversation()``.
+
+        Args:
+            exc_type: Exception type if an exception was raised, None otherwise
+            exc_val: Exception value if an exception was raised, None otherwise
+        """
+        callback_url = os.environ.get("AUTOMATION_CALLBACK_URL")
+        if not callback_url:
+            return
+
+        callback_api_key = os.environ.get("AUTOMATION_CALLBACK_API_KEY")
+        run_id = os.environ.get("AUTOMATION_RUN_ID")
+
+        status = "COMPLETED" if exc_type is None else "FAILED"
+        payload: dict[str, Any] = {"status": status}
+        if run_id:
+            payload["run_id"] = run_id
+        if exc_val is not None:
+            payload["error"] = str(exc_val)
+
+        # Include conversation_id if one was registered
+        if self._conversation_id is not None:
+            payload["conversation_id"] = self._conversation_id
+
+        try:
+            headers: dict[str, str] = {}
+            if callback_api_key:
+                headers["Authorization"] = f"Bearer {callback_api_key}"
+            with httpx.Client(timeout=10.0) as cb_client:
+                resp = cb_client.post(callback_url, json=payload, headers=headers)
+                logger.info(f"Completion callback sent ({status}): {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Completion callback failed: {e}")
+
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
+        """Exit the workspace context, send completion callback, and cleanup.
+
+        Sends a completion callback (if configured via env vars) before calling
+        the parent cleanup. Subclasses that override ``__exit__`` should call
+        ``super().__exit__(...)`` to ensure the callback is sent.
+        """
+        self._send_completion_callback(exc_type, exc_val)
+        super().__exit__(exc_type, exc_val, exc_tb)
 
     # ── Settings Methods ──────────────────────────────────────────────────
     # These methods fetch configuration from the agent-server's persisted
