@@ -99,6 +99,7 @@ from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 
 
@@ -1116,11 +1117,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             assert isinstance(self.api_key, SecretStr)
             api_key_value = self.api_key.get_secret_value()
 
+        provider = self._infer_litellm_provider()
+
+        # vertex_ai partner models require the optional Vertex SDK extra; surface
+        # a friendly install hint before LiteLLM crashes with ModuleNotFoundError.
+        assert_vertex_sdk_available(provider)
+
         # LiteLLM treats api_key for Bedrock as an AWS bearer token.
         # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
         # to reject the request with an "Invalid API Key format" error.
         # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
-        if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
+        if api_key_value is not None and provider == "bedrock":
             return None
 
         return api_key_value
