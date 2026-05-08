@@ -1,9 +1,15 @@
 from functools import lru_cache
-from typing import Any, Literal, cast
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import ValidationError
 
+from openhands.agent_server._secrets_exposure import (
+    build_expose_context,
+    get_config,
+    parse_expose_secrets_header,
+    translate_missing_cipher,
+)
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
     PersistedSettings,
@@ -37,9 +43,6 @@ SECRETS_PATH = "/secrets"  # -> /api/settings/secrets
 SECRET_VALUE_PATH = "/secrets/{name}"  # -> /api/settings/secrets/{name}
 
 settings_router = APIRouter(prefix="/settings", tags=["Settings"])
-
-# Valid values for X-Expose-Secrets header
-ExposeSecretsMode = Literal["encrypted", "plaintext"]
 
 
 # ── Schema Endpoints ─────────────────────────────────────────────────────
@@ -75,18 +78,6 @@ async def get_conversation_settings_schema() -> SettingsSchema:
 # ── Settings CRUD Endpoints ──────────────────────────────────────────────
 
 
-def _get_config(request: Request):
-    """Get config from app state.
-
-    Raises:
-        HTTPException: 503 if config is not initialized.
-    """
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        raise HTTPException(status_code=503, detail="Server not fully initialized")
-    return config
-
-
 def _validate_secret_name(name: str) -> None:
     """Validate secret name format.
 
@@ -107,36 +98,6 @@ def _validate_secret_name(name: str) -> None:
                 "and be 1-64 characters long."
             ),
         )
-
-
-def _parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
-    """Parse X-Expose-Secrets header value.
-
-    Returns:
-        "encrypted", "plaintext", or None (if header not present or invalid).
-
-    Raises:
-        HTTPException: 400 if header has invalid value.
-    """
-    header_value = request.headers.get("X-Expose-Secrets", "").lower().strip()
-
-    if not header_value:
-        return None
-
-    # Legacy "true" value - treat as "encrypted" for safety
-    if header_value == "true":
-        return "encrypted"
-
-    if header_value in ("encrypted", "plaintext"):
-        return cast(ExposeSecretsMode, header_value)
-
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"Invalid X-Expose-Secrets header value: '{header_value}'. "
-            "Valid values are: 'encrypted', 'plaintext'."
-        ),
-    )
 
 
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
@@ -171,8 +132,8 @@ async def get_settings(request: Request) -> SettingsResponse:
         mode for round-tripping secrets, or omit the header to receive redacted
         values.
     """
-    expose_mode = _parse_expose_secrets_header(request)
-    config = _get_config(request)
+    expose_mode = parse_expose_secrets_header(request)
+    config = get_config(request)
     store = get_settings_store(config)
     settings = store.load() or PersistedSettings()
 
@@ -189,16 +150,8 @@ async def get_settings(request: Request) -> SettingsResponse:
     else:
         logger.info("Settings accessed", extra=log_extra)
 
-    # Build serialization context based on expose mode
-    if expose_mode:
-        context: dict[str, Any] = {
-            "expose_secrets": expose_mode,
-            "cipher": config.cipher,  # Needed for "encrypted" mode
-        }
-    else:
-        context = {}
-
-    try:
+    context = build_expose_context(expose_mode, config.cipher)
+    with translate_missing_cipher():
         return SettingsResponse(
             agent_settings=settings.agent_settings.model_dump(
                 mode="json", context=context
@@ -208,14 +161,6 @@ async def get_settings(request: Request) -> SettingsResponse:
             ),
             llm_api_key_is_set=settings.llm_api_key_is_set,
         )
-    except Exception as e:
-        # Handle ValueError from serialize_secret when cipher is missing
-        if "no cipher configured" in str(e):
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Encryption not available: OH_SECRET_KEY is not configured",
-            )
-        raise
 
 
 @settings_router.patch(SETTINGS_PATH, response_model=SettingsResponse)
@@ -232,7 +177,7 @@ async def update_settings(
     Raises:
         HTTPException: 400 if the update payload contains invalid values.
     """
-    config = _get_config(request)
+    config = get_config(request)
     store = get_settings_store(config)
 
     update_data = payload.model_dump(exclude_none=True)
@@ -305,7 +250,7 @@ async def update_settings(
 @settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
 async def list_secrets(request: Request) -> SecretsListResponse:
     """List all available secrets (names and descriptions only, no values)."""
-    config = _get_config(request)
+    config = get_config(request)
     store = get_secrets_store(config)
     secrets = store.load()
 
@@ -339,7 +284,7 @@ async def get_secret_value(request: Request, name: str) -> Response:
     """
     _validate_secret_name(name)
 
-    config = _get_config(request)
+    config = get_config(request)
     store = get_secrets_store(config)
     value = store.get_secret(name)
 
@@ -371,7 +316,7 @@ async def create_secret(
     """
     _validate_secret_name(secret.name)
 
-    config = _get_config(request)
+    config = get_config(request)
     store = get_secrets_store(config)
 
     try:
@@ -412,7 +357,7 @@ async def delete_secret(request: Request, name: str) -> dict[str, bool]:
     """
     _validate_secret_name(name)
 
-    config = _get_config(request)
+    config = get_config(request)
     store = get_secrets_store(config)
 
     client_host = request.client.host if request.client else "unknown"

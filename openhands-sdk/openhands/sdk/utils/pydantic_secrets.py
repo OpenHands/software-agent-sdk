@@ -14,6 +14,10 @@ ExposeSecretsMode = Literal["encrypted", "plaintext"] | bool
 _logger = logging.getLogger(__name__)
 
 
+class MissingCipherError(ValueError):
+    """Raised by ``serialize_secret`` when encryption is requested without a cipher."""
+
+
 def is_redacted_secret(v: str | SecretStr | None) -> bool:
     if v is None:
         return False
@@ -52,7 +56,7 @@ def serialize_secret(v: SecretStr | None, info):
     if expose_mode == "encrypted" or cipher:
         if not cipher:
             # Encrypted mode explicitly requested but no cipher available
-            raise ValueError(
+            raise MissingCipherError(
                 "Cannot encrypt secret: no cipher configured. "
                 "Set OH_SECRET_KEY environment variable."
             )

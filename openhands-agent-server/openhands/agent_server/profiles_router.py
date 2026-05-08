@@ -2,12 +2,19 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, SecretStr
 
+from openhands.agent_server._secrets_exposure import (
+    build_expose_context,
+    get_cipher,
+    parse_expose_secrets_header,
+    translate_missing_cipher,
+)
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
     LLMProfileStore,
@@ -27,9 +34,6 @@ ProfileName = Annotated[
     str,
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
-
-# Valid values for X-Expose-Secrets header
-ExposeSecretsMode = Literal["encrypted", "plaintext"]
 
 
 class ProfileInfo(BaseModel):
@@ -96,42 +100,32 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
-def _get_cipher(request: Request) -> Cipher | None:
-    """Get cipher from app state config, if configured."""
-    config = getattr(request.app.state, "config", None)
-    if config is None:
-        return None
-    return getattr(config, "cipher", None)
+# Fernet tokens always begin with the URL-safe base64 of version byte 0x80,
+# i.e. "gAAAAA". We gate decrypt attempts on this prefix so genuine plaintext
+# secrets pass through untouched (and we don't spam the cipher's failure log).
+_FERNET_TOKEN_PREFIX = "gAAAAA"
 
 
-def _parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
-    """Parse X-Expose-Secrets header value.
+def _decrypt_incoming_secrets(llm: LLM, cipher: Cipher) -> LLM:
+    """Decrypt any pre-encrypted secret fields posted back by the client.
 
-    Returns:
-        "encrypted", "plaintext", or None (if header not present).
-
-    Raises:
-        HTTPException: 400 if header has invalid value.
+    FastAPI parses the request body without a cipher in the validation context,
+    so an encrypted blob arrives as ``SecretStr("gAAAAA...")``. Without this
+    pass, ``store.save`` would re-encrypt the blob, producing a double-encrypted
+    value on disk that no longer round-trips. Plaintext input is left untouched.
     """
-    header_value = request.headers.get("X-Expose-Secrets", "").lower().strip()
-
-    if not header_value:
-        return None
-
-    # Legacy "true" value - treat as "encrypted" for safety
-    if header_value == "true":
-        return "encrypted"
-
-    if header_value in ("encrypted", "plaintext"):
-        return cast(ExposeSecretsMode, header_value)
-
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=(
-            f"Invalid X-Expose-Secrets header value: '{header_value}'. "
-            "Valid values are: 'encrypted', 'plaintext'."
-        ),
-    )
+    updates: dict[str, SecretStr] = {}
+    for field in LLM_SECRET_FIELDS:
+        val = getattr(llm, field, None)
+        if not isinstance(val, SecretStr):
+            continue
+        raw = val.get_secret_value()
+        if not raw.startswith(_FERNET_TOKEN_PREFIX):
+            continue
+        decrypted = cipher.decrypt(raw)
+        if decrypted is not None:
+            updates[field] = decrypted
+    return llm.model_copy(update=updates) if updates else llm
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
@@ -152,8 +146,8 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     - ``plaintext``: Returns raw secret values (backend clients only!)
     - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
     """
-    expose_mode = _parse_expose_secrets_header(request)
-    cipher = _get_cipher(request)
+    expose_mode = parse_expose_secrets_header(request)
+    cipher = get_cipher(request)
 
     store = LLMProfileStore()
     try:
@@ -165,29 +159,11 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
             detail=f"Profile '{name}' not found",
         )
 
-    # Build serialization context based on expose mode
     if expose_mode:
-        context: dict[str, Any] = {
-            "expose_secrets": expose_mode,
-            "cipher": cipher,
-        }
-        try:
-            config = llm.model_dump(mode="json", context=context)
-        except Exception as e:
-            # Handle ValueError from serialize_secret when cipher is missing
-            # Pydantic wraps it in PydanticSerializationError, so check the chain
-            error_str = str(e)
-            if "no cipher configured" in error_str:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=(
-                        "Encryption not available: OH_SECRET_KEY is not configured. "
-                        "Cannot return encrypted secrets."
-                    ),
-                )
-            raise
+        context = build_expose_context(expose_mode, cipher)
+        with translate_missing_cipher():
+            config: dict[str, Any] = llm.model_dump(mode="json", context=context)
     else:
-        # Default behavior: null out api_key
         config = llm.model_dump(mode="json")
         config["api_key"] = None
 
@@ -215,13 +191,14 @@ async def save_profile(
     Clients can submit cipher-encrypted secrets which will be decrypted
     server-side before re-encrypting with the storage cipher.
     """
-    cipher = _get_cipher(request)
+    cipher = get_cipher(request)
+    llm = _decrypt_incoming_secrets(body.llm, cipher) if cipher else body.llm
     store = LLMProfileStore()
     try:
         with _store_errors():
             store.save(
                 name,
-                body.llm,
+                llm,
                 include_secrets=body.include_secrets,
                 cipher=cipher,
                 max_profiles=MAX_PROFILES,

@@ -742,18 +742,15 @@ def test_save_profile_with_cipher_encrypts_at_rest(
 
 def test_encrypted_roundtrip_workflow(client_with_cipher, store, cipher):
     """Client can GET encrypted, modify, and re-submit encrypted secrets."""
-    # 1. Save profile with secret
     llm = LLM(model="gpt-4o", api_key="sk-original-secret")
     store.save("roundtrip", llm, include_secrets=True, cipher=cipher)
 
-    # 2. GET with encrypted mode
     get_response = client_with_cipher.get(
         "/api/profiles/roundtrip", headers={"X-Expose-Secrets": "encrypted"}
     )
     assert get_response.status_code == 200
     encrypted_api_key = get_response.json()["config"]["api_key"]
 
-    # 3. Re-submit with the encrypted api_key (should work)
     update_response = client_with_cipher.post(
         "/api/profiles/roundtrip",
         json={
@@ -763,13 +760,36 @@ def test_encrypted_roundtrip_workflow(client_with_cipher, store, cipher):
     )
     assert update_response.status_code == 201
 
-    # 4. Verify the secret was re-encrypted correctly
     get_final = client_with_cipher.get(
         "/api/profiles/roundtrip", headers={"X-Expose-Secrets": "plaintext"}
     )
-    # Note: The encrypted value is re-encrypted, so it decrypts to the original
-    # (This tests that encrypted blobs can be submitted and round-tripped)
     assert get_final.status_code == 200
+    body = get_final.json()
+    assert body["config"]["api_key"] == "sk-original-secret"
+    assert body["config"]["model"] == "gpt-4o-mini"
+
+
+def test_save_plaintext_secret_with_cipher_encrypts_at_rest(
+    client_with_cipher, temp_profiles_dir, cipher
+):
+    """First-save path: plaintext input + cipher configured → encrypted on disk."""
+    import json
+
+    response = client_with_cipher.post(
+        "/api/profiles/first-save",
+        json={
+            "llm": {"model": "gpt-4o", "api_key": "sk-plaintext-input"},
+            "include_secrets": True,
+        },
+    )
+    assert response.status_code == 201
+
+    profile_path = temp_profiles_dir / "first-save.json"
+    data = json.loads(profile_path.read_text())
+    assert data["api_key"] != "sk-plaintext-input"
+    decrypted = cipher.decrypt(data["api_key"])
+    assert decrypted is not None
+    assert decrypted.get_secret_value() == "sk-plaintext-input"
 
 
 def test_get_profile_encrypted_without_cipher_returns_503(client, store):

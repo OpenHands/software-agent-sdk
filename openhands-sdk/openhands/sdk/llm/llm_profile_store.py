@@ -147,20 +147,13 @@ class LLMProfileStore:
                     f"[Profile Store] Profile `{name}` already exists. Overwriting."
                 )
 
-            # Build serialization context:
-            # - When cipher is provided, encrypt secrets at rest
-            # - When include_secrets is True (but no cipher), store plaintext
-            # - When include_secrets is False, secrets are redacted
             context: dict[str, Any] = {}
             if include_secrets:
                 if cipher:
-                    # Encrypt secrets at rest
                     context["cipher"] = cipher
                     context["expose_secrets"] = "encrypted"
                 else:
-                    # Store plaintext (backward compatible)
                     context["expose_secrets"] = True
-            # else: expose_secrets not set = redaction (Pydantic default)
 
             profile_json = llm.model_dump_json(
                 exclude_none=True,
@@ -209,10 +202,7 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                # Build validation context for cipher decryption
-                context: dict[str, Any] | None = None
-                if cipher:
-                    context = {"cipher": cipher}
+                context: dict[str, Any] | None = {"cipher": cipher} if cipher else None
 
                 llm_instance = LLM.load_from_json(str(profile_path), context=context)
             except Exception as e:

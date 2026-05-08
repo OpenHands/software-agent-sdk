@@ -131,6 +131,16 @@ ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 # 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
 DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
+# Secret-bearing fields on LLM. Kept as a single source of truth so callers that
+# need to walk secrets (e.g. cipher-aware decryption on the save path) stay in
+# sync with the serializer below.
+LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
+    "api_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+)
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
@@ -580,13 +590,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Serializers
     # =========================================================================
-    @field_serializer(
-        "api_key",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "aws_session_token",
-        when_used="always",
-    )
+    @field_serializer(*LLM_SECRET_FIELDS, when_used="always")
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
 
