@@ -21,6 +21,10 @@ class Subscriber[T](ABC):
         """Clean up this subscriber"""
 
 
+class MaxSubscribersError(Exception):
+    """Raised when a PubSub instance has reached its subscriber limit."""
+
+
 @dataclass
 class PubSub[T]:
     """A subscription service that extends ConversationCallbackType functionality.
@@ -30,6 +34,7 @@ class PubSub[T]:
     """
 
     _subscribers: dict[UUID, Subscriber[T]] = field(default_factory=dict)
+    max_subscribers: int | None = None
 
     def subscribe(self, subscriber: Subscriber[T]) -> UUID:
         """Subscribe a subscriber and return its UUID for later unsubscription.
@@ -37,7 +42,16 @@ class PubSub[T]:
             subscriber: The callback function to register
         Returns:
             UUID: UUID that can be used to unsubscribe this callback
+        Raises:
+            MaxSubscribersError: If the subscriber limit has been reached.
         """
+        if (
+            self.max_subscribers is not None
+            and len(self._subscribers) >= self.max_subscribers
+        ):
+            raise MaxSubscribersError(
+                f"Subscriber limit reached ({self.max_subscribers})"
+            )
         subscriber_id = uuid4()
         self._subscribers[subscriber_id] = subscriber
         logger.debug(f"Subscribed subscriber with ID: {subscriber_id}")

@@ -30,7 +30,8 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     _pub_sub: PubSub[BashEventBase] = field(
-        default_factory=lambda: PubSub[BashEventBase](), init=False
+        default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
+        init=False,
     )
 
     def _ensure_bash_events_dir(self) -> None:

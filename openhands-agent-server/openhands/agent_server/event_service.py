@@ -59,7 +59,9 @@ class EventService:
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     _conversation: LocalConversation | None = field(default=None, init=False)
-    _pub_sub: PubSub[Event] = field(default_factory=lambda: PubSub[Event](), init=False)
+    _pub_sub: PubSub[Event] = field(
+        default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
+    )
     _run_task: asyncio.Task | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)

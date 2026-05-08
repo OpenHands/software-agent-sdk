@@ -810,3 +810,53 @@ class TestPubSubIntegration:
             assert subscriber.close_called is True
 
         assert len(pubsub._subscribers) == 0
+
+
+class TestPubSubMaxSubscribers:
+    """Tests for the max_subscribers limit using the real PubSub class."""
+
+    async def test_subscribe_rejected_at_limit(self):
+        from openhands.agent_server.pub_sub import (
+            MaxSubscribersError,
+            PubSub,
+            Subscriber,
+        )
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=2)
+        pubsub.subscribe(_Sub())
+        pubsub.subscribe(_Sub())
+
+        with pytest.raises(MaxSubscribersError):
+            pubsub.subscribe(_Sub())
+
+    async def test_subscribe_allowed_after_unsubscribe(self):
+        from openhands.agent_server.pub_sub import PubSub, Subscriber
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=2)
+        id_a = pubsub.subscribe(_Sub())
+        pubsub.subscribe(_Sub())
+        pubsub.unsubscribe(id_a)
+
+        # Slot freed — should succeed
+        pubsub.subscribe(_Sub())
+        assert len(pubsub._subscribers) == 2
+
+    async def test_no_limit_when_none(self):
+        from openhands.agent_server.pub_sub import PubSub, Subscriber
+
+        class _Sub(Subscriber[str]):
+            async def __call__(self, event: str) -> None:
+                pass
+
+        pubsub: PubSub[str] = PubSub(max_subscribers=None)
+        for _ in range(100):
+            pubsub.subscribe(_Sub())
+        assert len(pubsub._subscribers) == 100
