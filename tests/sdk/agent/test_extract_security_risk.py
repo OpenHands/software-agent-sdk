@@ -73,13 +73,12 @@ def agent_without_analyzer(mock_llm):
         ("agent_without_analyzer", "MEDIUM", SecurityRisk.UNKNOWN, False),
         ("agent_without_analyzer", "HIGH", SecurityRisk.UNKNOWN, False),
         ("agent_without_analyzer", "UNKNOWN", SecurityRisk.UNKNOWN, False),
-        # Case 4: LLM analyzer set, security risk not passed, ValueError raised
-        ("agent_with_llm_analyzer", None, None, True),
-        # Case 5: analyzer is not set, security risk is not passed, UNKNOWN returned
+        # Case 4: security risk not passed -> defaults to UNKNOWN regardless of analyzer
+        ("agent_with_llm_analyzer", None, SecurityRisk.UNKNOWN, False),
         ("agent_with_non_llm_analyzer", None, SecurityRisk.UNKNOWN, False),
         ("agent_without_analyzer", None, SecurityRisk.UNKNOWN, False),
-        # Case 6: invalid security risk value passed
-        # - With LLM analyzer: ValueError raised for validation
+        # Case 5: invalid security risk value passed
+        # - With LLM analyzer: ValueError raised for invalid enum
         # - With non-LLM analyzer: ValueError raised for invalid enum
         # - Without analyzer: ignored, returns UNKNOWN (no validation attempted)
         ("agent_with_llm_analyzer", "INVALID", None, True),
@@ -99,15 +98,11 @@ def test_extract_security_risk(
     if security_risk_value is not None:
         arguments["security_risk"] = security_risk_value
 
-    tool_name = "test_tool"
-
     if should_raise:
         with pytest.raises(ValueError):
-            agent._extract_security_risk(arguments, tool_name, False, security_analyzer)
+            agent._extract_security_risk(arguments, False, security_analyzer)
     else:
-        result = agent._extract_security_risk(
-            arguments, tool_name, False, security_analyzer
-        )
+        result = agent._extract_security_risk(arguments, False, security_analyzer)
         assert result == expected_result
 
         # Verify that security_risk was popped from arguments
@@ -131,7 +126,7 @@ def test_extract_security_risk_arguments_mutation():
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
     original_args = arguments.copy()
 
-    result = agent._extract_security_risk(arguments, "test_tool", False, None)
+    result = agent._extract_security_risk(arguments, False, None)
 
     # Verify result is UNKNOWN when no analyzer is set (security_risk is ignored)
     assert result == SecurityRisk.UNKNOWN
@@ -157,7 +152,7 @@ def test_extract_security_risk_with_empty_arguments():
     )
 
     arguments = {}
-    result = agent._extract_security_risk(arguments, "test_tool", False, None)
+    result = agent._extract_security_risk(arguments, False, None)
 
     # Should return UNKNOWN when no analyzer and no security_risk
     assert result == SecurityRisk.UNKNOWN
@@ -177,9 +172,7 @@ def test_extract_security_risk_with_read_only_tool():
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
     arguments = {"param1": "value1", "security_risk": "HIGH"}
-    result = agent._extract_security_risk(
-        arguments, "test_tool", True, LLMSecurityAnalyzer()
-    )
+    result = agent._extract_security_risk(arguments, True, LLMSecurityAnalyzer())
 
     # Should return UNKNOWN when read_only_tool is True
     assert result == SecurityRisk.UNKNOWN

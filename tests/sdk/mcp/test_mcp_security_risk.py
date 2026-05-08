@@ -87,10 +87,11 @@ def test_mcp_tool_to_openai_with_security_risk():
         f"Unexpected 'data' field in properties. Properties: {props_list}"
     )
 
-    # Both fields should be required
+    # Tool's own parameters remain required; security_risk is optional and defaults
+    # to UNKNOWN when not provided by the LLM.
     assert "url" in required, f"Expected 'url' in required, but got: {required}"
-    assert "security_risk" in required, (
-        f"Expected 'security_risk' in required, but got: {required}"
+    assert "security_risk" not in required, (
+        f"Expected 'security_risk' NOT in required, but got: {required}"
     )
 
 
