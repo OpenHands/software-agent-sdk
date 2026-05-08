@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -161,10 +162,12 @@ class ConversationService:
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
+    max_concurrent_runs: int = 10
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -743,6 +746,10 @@ class ConversationService:
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
+        self._run_executor = ThreadPoolExecutor(
+            max_workers=self.max_concurrent_runs,
+            thread_name_prefix="conversation-run",
+        )
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
             stored: StoredConversation | None = None
@@ -830,6 +837,9 @@ class ConversationService:
                 for event_service in event_services.values()
             ]
         )
+        if self._run_executor is not None:
+            self._run_executor.shutdown(wait=False)
+            self._run_executor = None
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -840,6 +850,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            max_concurrent_runs=config.max_concurrent_runs,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -853,6 +864,7 @@ class ConversationService:
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
         )
+        event_service._run_executor = self._run_executor
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
         if stored.autotitle and stored.title is None:

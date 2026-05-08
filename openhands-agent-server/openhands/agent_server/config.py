@@ -163,6 +163,15 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
+    max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Maximum number of conversations that can execute agent steps "
+            "concurrently.  Controls the size of the dedicated thread pool "
+            "used for conversation.run() calls."
+        ),
+    )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
         description=(
