@@ -96,7 +96,12 @@ async def test_long_running_bash_does_not_block_event_loop(
 
     # 1. /health stayed responsive throughout. p95 budget catches event-loop
     #    starvation; failures here typically indicate sync subprocess.* in
-    #    the async path.
+    #    the async path. Require ≥ 10 samples so the n=20 quantile is a
+    #    real p95 instead of collapsing toward max(...).
+    assert len(health_lats) >= 10, (
+        f"only {len(health_lats)} /health samples collected during the "
+        f"bash run; not enough for a representative p95."
+    )
     p95 = statistics.quantiles(health_lats, n=20)[-1]
     assert p95 < LONG_RUNNING_COMMAND.health_p95_s, (
         f"/health p95 {p95 * 1000:.1f} ms during running bash exceeded "

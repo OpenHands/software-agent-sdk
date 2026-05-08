@@ -104,6 +104,7 @@ async def _find_last_page_id(client, *, page_size: int, sort_order: str) -> str 
         if page_id is not None:
             params["page_id"] = page_id
         resp = await client.get("/api/conversations/search", params=params)
+        assert resp.status_code == 200, resp.text
         next_id = resp.json().get("next_page_id")
         if not next_id:
             return page_id
@@ -176,6 +177,25 @@ async def test_pagination_is_correct_and_bounded(
         f"CREATED_AT_DESC did not return items in descending order. "
         f"First disagreement at index {first_break}: "
         f"{timestamps[first_break]} < {timestamps[first_break + 1]}."
+    )
+
+    # 1c. Sort order: CREATED_AT (ASC) must actually be ascending. Together
+    # with 1b above, this catches a regression that ignores sort_order and
+    # always returns one fixed direction (which 1b alone wouldn't notice).
+    paged_asc = await _walk_pages(client, page_size=page_size, sort_order="CREATED_AT")
+    timestamps_asc = [t for _, t in paged_asc]
+    first_break_asc = next(
+        (
+            i
+            for i in range(len(timestamps_asc) - 1)
+            if timestamps_asc[i] > timestamps_asc[i + 1]
+        ),
+        -1,
+    )
+    assert first_break_asc == -1, (
+        f"CREATED_AT did not return items in ascending order. "
+        f"First disagreement at index {first_break_asc}: "
+        f"{timestamps_asc[first_break_asc]} > {timestamps_asc[first_break_asc + 1]}."
     )
 
     # 2. Count endpoint matches.

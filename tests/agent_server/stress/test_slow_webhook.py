@@ -344,7 +344,25 @@ async def test_webhook_queue_bounded_under_sustained_downstream_failure(
                 key="execution_status", value=f"idle-{i}", source="environment"
             )
         )
-    await asyncio.sleep(0.5)
+
+    # Poll until the queue stabilises (two consecutive identical readings)
+    # rather than sleeping a fixed wall-time. The webhook spec uses
+    # `flush_delay=0.5`, so a single 0.5 s sleep can race with the flush
+    # cycle and read mid-flight values; polling lets the test settle
+    # regardless of where in the flush cycle it lands.
+    stable_deadline = time.monotonic() + 5.0
+    last_size = -1
+    stable_count = 0
+    while time.monotonic() < stable_deadline:
+        size = len(webhook_sub.queue)
+        if size == last_size:
+            stable_count += 1
+            if stable_count >= 2:
+                break
+        else:
+            stable_count = 0
+        last_size = size
+        await asyncio.sleep(0.1)
 
     assert len(webhook_sub.queue) < n_events // 2, (
         f"queue grew to {len(webhook_sub.queue)} after {n_events} events; "

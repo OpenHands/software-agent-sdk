@@ -153,10 +153,14 @@ async def test_health_responsive_under_busy_listing(
 
     async def _listing_loop():
         while not stop.is_set():
-            await client.get(
+            resp = await client.get(
                 "/api/conversations/search",
                 params={"limit": 50, "sort_order": "CREATED_AT_DESC"},
             )
+            # Without this guard, a 500 from listing would silently turn
+            # the test into "/health under no load" — passing for the
+            # wrong reason.
+            assert resp.status_code == 200, resp.text
 
     bg_task = asyncio.create_task(_listing_loop())
     try:

@@ -14,6 +14,7 @@ How the lease works (ConversationLease):
 """
 
 import asyncio
+import contextlib
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -72,8 +73,17 @@ async def test_concurrent_start_of_same_conversation_yields_one_winner(
 
     # Bring each service up. __aenter__ scans the persist dir; with no
     # pre-existing conversations, this is just initialization.
-    for s in services:
-        await s.__aenter__()
+    started: list[ConversationService] = []
+    try:
+        for s in services:
+            await s.__aenter__()
+            started.append(s)
+    except Exception:
+        # If a later service fails to enter, tear down the ones already up.
+        for s in reversed(started):
+            with contextlib.suppress(Exception):
+                await s.__aexit__(None, None, None)
+        raise
     try:
         target = uuid4()
         try:
