@@ -2,14 +2,11 @@ from functools import lru_cache
 from typing import Any, Literal, cast
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from openhands.agent_server.persistence import (
     SECRET_NAME_PATTERN,
-    CustomSecretCreate,
-    CustomSecretResponse,
     PersistedSettings,
-    SecretsResponse,
     get_secrets_store,
     get_settings_store,
 )
@@ -17,7 +14,12 @@ from openhands.agent_server.persistence.models import SettingsUpdatePayload
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import (
     ConversationSettings,
+    SecretCreateRequest,
+    SecretItemResponse,
+    SecretsListResponse,
+    SettingsResponse,
     SettingsSchema,
+    SettingsUpdateRequest,
     export_agent_settings_schema,
 )
 
@@ -135,21 +137,6 @@ def _parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
             "Valid values are: 'encrypted', 'plaintext'."
         ),
     )
-
-
-class SettingsResponse(BaseModel):
-    """Response model for settings."""
-
-    agent_settings: dict[str, Any]
-    conversation_settings: dict[str, Any]
-    llm_api_key_is_set: bool
-
-
-class SettingsUpdateRequest(BaseModel):
-    """Request model for updating settings."""
-
-    agent_settings_diff: dict[str, Any] | None = None
-    conversation_settings_diff: dict[str, Any] | None = None
 
 
 @settings_router.get(SETTINGS_PATH, response_model=SettingsResponse)
@@ -315,8 +302,8 @@ async def update_settings(
 # ── Secrets CRUD Endpoints ───────────────────────────────────────────────
 
 
-@settings_router.get(SECRETS_PATH, response_model=SecretsResponse)
-async def list_secrets(request: Request) -> SecretsResponse:
+@settings_router.get(SECRETS_PATH, response_model=SecretsListResponse)
+async def list_secrets(request: Request) -> SecretsListResponse:
     """List all available secrets (names and descriptions only, no values)."""
     config = _get_config(request)
     store = get_secrets_store(config)
@@ -330,11 +317,11 @@ async def list_secrets(request: Request) -> SecretsResponse:
     )
 
     if secrets is None:
-        return SecretsResponse(secrets=[])
+        return SecretsListResponse(secrets=[])
 
-    return SecretsResponse(
+    return SecretsListResponse(
         secrets=[
-            CustomSecretResponse(name=name, description=secret.description)
+            SecretItemResponse(name=name, description=secret.description)
             for name, secret in secrets.custom_secrets.items()
         ]
     )
@@ -373,10 +360,10 @@ async def get_secret_value(request: Request, name: str) -> Response:
     return Response(content=value, media_type="text/plain")
 
 
-@settings_router.put(SECRETS_PATH, response_model=CustomSecretResponse)
+@settings_router.put(SECRETS_PATH, response_model=SecretItemResponse)
 async def create_secret(
-    request: Request, secret: CustomSecretCreate
-) -> CustomSecretResponse:
+    request: Request, secret: SecretCreateRequest
+) -> SecretItemResponse:
     """Create or update a custom secret (upsert).
 
     Raises:
@@ -412,7 +399,7 @@ async def create_secret(
             "client_host": request.client.host if request.client else "unknown",
         },
     )
-    return CustomSecretResponse(name=secret.name, description=secret.description)
+    return SecretItemResponse(name=secret.name, description=secret.description)
 
 
 @settings_router.delete(SECRET_VALUE_PATH)

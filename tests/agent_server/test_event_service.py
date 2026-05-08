@@ -1935,3 +1935,88 @@ class TestEventServiceClose:
         await event_service.close()  # second call — _conversation is already None
 
         conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_pauses_before_closing_conversation(self, event_service):
+        """close() must pause an in-flight run before calling conversation.close().
+        If close() ran first, the still-active run loop would race with executor
+        teardown — closing MCP clients while a tool call is in flight."""
+        conversation = MagicMock(spec=Conversation)
+        call_order: list[str] = []
+
+        def record_pause():
+            call_order.append("pause")
+
+        def record_close():
+            call_order.append("close")
+
+        conversation.pause = record_pause
+        conversation.close = record_close
+        event_service._conversation = conversation
+
+        # Task is in-flight when close() inspects it, finishes during the await.
+        async def fake_run():
+            await asyncio.sleep(0.05)
+
+        event_service._run_task = asyncio.create_task(fake_run())
+
+        await event_service.close()
+
+        assert call_order == ["pause", "close"], (
+            f"Expected pause before close, got {call_order}"
+        )
+        assert event_service._run_task is None
+
+    @pytest.mark.asyncio
+    async def test_close_skips_pause_when_no_run_task(self, event_service):
+        """close() must not call pause() when no run task is in flight."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.pause = MagicMock()
+        conversation.close = MagicMock()
+        event_service._conversation = conversation
+        event_service._run_task = None
+
+        await event_service.close()
+
+        conversation.pause.assert_not_called()
+        conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_close_proceeds_on_run_task_timeout(self, event_service, caplog):
+        """If the run task does not finish within the timeout, close() logs
+        and still proceeds. Server shutdown must not block on a hanging
+        agent.step(): cancel-on-timeout only cancels the asyncio wrapper, not
+        the underlying worker thread, so we accept that case as best-effort.
+        Pause must still be attempted so the common case (step finishes
+        promptly) stays clean."""
+        conversation = MagicMock(spec=Conversation)
+        conversation.pause = MagicMock()
+        conversation.close = MagicMock()
+        event_service._conversation = conversation
+
+        async def hanging_run():
+            await asyncio.sleep(60)
+
+        hanging_task = asyncio.create_task(hanging_run())
+        event_service._run_task = hanging_task
+
+        try:
+            with (
+                caplog.at_level("WARNING"),
+                patch(
+                    "openhands.agent_server.event_service.asyncio.wait_for",
+                    AsyncMock(side_effect=asyncio.TimeoutError),
+                ),
+            ):
+                await event_service.close()
+        finally:
+            hanging_task.cancel()
+            try:
+                await hanging_task
+            except (asyncio.CancelledError, BaseException):
+                pass
+
+        conversation.pause.assert_called_once()
+        assert "did not exit cleanly" in caplog.text
+        assert event_service._run_task is None
+        conversation.close.assert_called_once()

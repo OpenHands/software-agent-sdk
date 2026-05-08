@@ -344,31 +344,11 @@ class Secrets(BaseModel):
         return data
 
 
-# ── Response Models for API ──────────────────────────────────────────────
-
-
-class CustomSecretCreate(BaseModel):
-    """Request model for creating a custom secret."""
-
-    name: str
-    value: SecretStr
-    description: str | None = None
-
-
-class CustomSecretResponse(BaseModel):
-    """Response model for a custom secret (without value)."""
-
-    name: str
-    description: str | None = None
-
-
-class SecretsResponse(BaseModel):
-    """Response model listing available secrets."""
-
-    secrets: list[CustomSecretResponse]
-
-
 # ── Helper Functions ─────────────────────────────────────────────────────
+#
+# Note: API request/response models have been moved to the SDK to enable
+# sharing between SDK clients and the agent-server. See:
+#   openhands.sdk.settings.api_models (SecretCreateRequest, SecretItemResponse, etc.)
 
 
 def _coerce_dict_secrets(d: dict[str, Any]) -> dict[str, Any]:

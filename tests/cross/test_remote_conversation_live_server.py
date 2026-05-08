@@ -162,6 +162,14 @@ def live_server_env(
             shutil.rmtree(cwd_conversations)
 
 
+def test_health_endpoints_return_ok_json(server_env):
+    with httpx.Client() as client:
+        for endpoint in ("/alive", "/health"):
+            response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+
+
 @pytest.fixture
 def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
     with live_server_env(tmp_path, monkeypatch) as env:

@@ -1,13 +1,16 @@
-"""Persistence module for settings and secrets storage."""
+"""Persistence module for settings and secrets storage.
+
+Note: API request/response models (SecretCreateRequest, SecretItemResponse,
+SecretsListResponse, SettingsResponse, SettingsUpdateRequest) are defined
+in the SDK to enable sharing between SDK clients and agent-server.
+See: openhands.sdk.settings.api_models
+"""
 
 from openhands.agent_server.persistence.models import (
     SECRET_NAME_PATTERN,
     CustomSecret,
-    CustomSecretCreate,
-    CustomSecretResponse,
     PersistedSettings,
     Secrets,
-    SecretsResponse,
     SettingsUpdatePayload,
 )
 from openhands.agent_server.persistence.store import (
@@ -26,11 +29,8 @@ __all__ = [
     "SECRET_NAME_PATTERN",
     # Models
     "CustomSecret",
-    "CustomSecretCreate",
-    "CustomSecretResponse",
     "PersistedSettings",
     "Secrets",
-    "SecretsResponse",
     "SettingsUpdatePayload",
     # Stores
     "FileSecretsStore",

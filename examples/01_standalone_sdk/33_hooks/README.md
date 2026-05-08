@@ -37,3 +37,20 @@ python 33_hooks.py
 | Stop | When agent tries to finish | Yes (exit 2) |
 | SessionStart | When conversation starts | No |
 | SessionEnd | When conversation ends | No |
+
+## Exit Codes
+
+Hook scripts signal their result via the exit code (matching the Claude Code
+hook contract):
+
+- **`0` — success.** The operation proceeds. `stdout` is parsed as JSON for
+  structured output (`decision`, `reason`, `additionalContext`).
+- **`2` — block.** The operation is denied. For `Stop` hooks, this prevents
+  the agent from finishing and the agent continues running. `stderr` /
+  `reason` is surfaced as feedback.
+- **Any other non-zero exit code — non-blocking error.** The error is
+  logged, but the operation still proceeds.
+
+> **Note:** Only exit code `2` blocks. Exit code `1` (the conventional Unix
+> failure code) is treated as a non-blocking error. A hook that is meant to
+> enforce a policy must exit with `2`.

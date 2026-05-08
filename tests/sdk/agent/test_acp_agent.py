@@ -13,13 +13,11 @@ from acp.exceptions import RequestError as ACPRequestError
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
-    _build_session_meta,
     _estimate_cost_from_tokens,
     _extract_token_usage,
     _image_url_to_acp_block,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
-    _resolve_bypass_mode,
     _select_auth_method,
     _serialize_tool_content,
 )
@@ -2530,34 +2528,6 @@ class TestClientForkTextRouting:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_bypass_mode
-# ---------------------------------------------------------------------------
-
-
-class TestResolveBypassMode:
-    def test_claude_agent(self):
-        assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
-
-    def test_claude_agent_with_scope(self):
-        assert (
-            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
-            == "bypassPermissions"
-        )
-
-    def test_codex_acp(self):
-        assert _resolve_bypass_mode("codex-acp") == "full-access"
-
-    def test_codex_acp_with_version(self):
-        assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
-
-    def test_unknown_server_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("some-other-agent") == "full-access"
-
-    def test_empty_name_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("") == "full-access"
-
-
-# ---------------------------------------------------------------------------
 # acp_session_mode field
 # ---------------------------------------------------------------------------
 
@@ -2649,19 +2619,6 @@ class TestSelectAuthMethod:
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
-
-
-class TestBuildSessionMeta:
-    def test_claude_agent_adds_model_override(self):
-        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
-            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
-        }
-
-    def test_codex_agent_does_not_use_session_meta(self):
-        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
-
-    def test_missing_model_does_not_add_session_meta(self):
-        assert _build_session_meta("claude-agent-acp", None) == {}
 
 
 class TestMaybeSetSessionModel:
@@ -2970,14 +2927,6 @@ class TestACPPromptRetry:
 # ---------------------------------------------------------------------------
 # Gemini-specific tests
 # ---------------------------------------------------------------------------
-
-
-class TestGeminiBypassMode:
-    def test_gemini_cli_uses_yolo(self):
-        assert _resolve_bypass_mode("gemini-cli") == "yolo"
-
-    def test_gemini_cli_with_version(self):
-        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
 
 
 class TestGeminiSessionModel:
@@ -3604,3 +3553,157 @@ class TestACPSecretsEnvInjection:
         )
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
+
+
+class TestACPEnvConflictSuppression:
+    """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
+
+    When CLAUDE_CONFIG_DIR is present in the subprocess environment the agent
+    uses a credential file for OAuth.  If ANTHROPIC_API_KEY or
+    ANTHROPIC_BASE_URL are also present they redirect requests to a proxy that
+    does not support OAuth bearer tokens, breaking auth silently.
+
+    _start_acp_server must strip the conflicting vars regardless of where they
+    came from: acp_env, os.environ, or agent_context.secrets.
+    """
+
+    @staticmethod
+    def _make_conn():
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-conflict"
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path, *, extra_os_env=None) -> dict:
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPEnvConflictSuppression._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        state = _make_state(tmp_path)
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            if extra_os_env:
+                stack.enter_context(patch.dict("os.environ", extra_os_env, clear=False))
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_claude_config_dir_suppresses_api_key_from_acp_env(self, tmp_path):
+        """ANTHROPIC_API_KEY from acp_env is stripped when CLAUDE_CONFIG_DIR present."""
+        agent = _make_agent(
+            acp_env={
+                "CLAUDE_CONFIG_DIR": "/tmp/claude-creds",
+                "ANTHROPIC_API_KEY": "sk-conflict",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            }
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-creds"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_claude_config_dir_suppresses_api_key_from_os_environ(self, tmp_path):
+        """ANTHROPIC_API_KEY leaking in from os.environ is stripped too."""
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={
+                "ANTHROPIC_API_KEY": "sk-leaked",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
+        """ANTHROPIC_API_KEY injected via agent_context.secrets is stripped too."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+            agent_context=AgentContext(
+                secrets={
+                    "ANTHROPIC_API_KEY": StaticSecret(
+                        value=SecretStr("sk-from-secret")
+                    ),
+                    "ANTHROPIC_BASE_URL": StaticSecret(
+                        value=SecretStr("https://proxy.example.com")
+                    ),
+                }
+            ),
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_no_suppression_without_claude_config_dir(self, tmp_path):
+        """Without CLAUDE_CONFIG_DIR, ANTHROPIC_API_KEY passes through unchanged."""
+        agent = _make_agent(
+            acp_env={"ANTHROPIC_API_KEY": "sk-valid"},
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
+        assert "CLAUDE_CONFIG_DIR" not in env

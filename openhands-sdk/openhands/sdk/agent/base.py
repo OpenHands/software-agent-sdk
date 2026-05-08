@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -708,6 +708,43 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools
+
+    # -- Capability helpers -----------------------------------------------
+    # Downstream code should branch on these properties rather than doing
+    # ``isinstance(agent, ACPAgent)`` checks.  That keeps the regular/ACP
+    # code paths decoupled from the concrete class hierarchy.
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``True`` if OpenHands can inject tools into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own toolset.
+        """
+        return True
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``True`` if OpenHands can inject MCP servers into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — MCP
+        configuration is owned by the ACP subprocess.
+        """
+        return True
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``True`` if OpenHands context condensing is supported for this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own context window.
+        """
+        return True
+
+    @property
+    def agent_kind(self) -> Literal["openhands", "acp"]:
+        """Agent kind, matching the ``agent_kind`` settings discriminator."""
+        return "openhands"
 
     def ask_agent(self, question: str) -> str | None:  # noqa: ARG002
         """Optional override for stateless question answering.

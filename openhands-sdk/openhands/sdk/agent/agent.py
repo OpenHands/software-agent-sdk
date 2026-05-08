@@ -67,7 +67,6 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -648,11 +647,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     def _extract_security_risk(
         self,
         arguments: dict,
-        tool_name: str,
         read_only_tool: bool,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
     ) -> risk.SecurityRisk:
-        requires_sr = isinstance(security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
         # Default risk value for action event
@@ -660,23 +657,14 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         if read_only_tool:
             return risk.SecurityRisk.UNKNOWN
 
-        # Raises exception if failed to pass risk field when expected
-        # Exception will be sent back to agent as error event
-        # Strong models like GPT-5 can correct itself by retrying
-        if requires_sr and raw is None:
-            raise ValueError(
-                f"Failed to provide security_risk field in tool '{tool_name}'"
-            )
-
         # When no security analyzer is configured, ignore any security_risk field
         # from LLM and return UNKNOWN. This ensures that security_risk is only
         # evaluated when a security analyzer is explicitly set.
         if security_analyzer is None:
             return risk.SecurityRisk.UNKNOWN
 
-        # When using non-LLM security analyzer without security risk field
-        # safely ignore missing security risk fields
-        if not requires_sr and raw is None:
+        # security_risk is optional: if the LLM omits it, default to UNKNOWN.
+        if raw is None:
             return risk.SecurityRisk.UNKNOWN
 
         # Raises exception if invalid risk enum passed by LLM
@@ -827,7 +815,6 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             )
             security_risk = self._extract_security_risk(
                 arguments,
-                tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,
                 security_analyzer,
             )

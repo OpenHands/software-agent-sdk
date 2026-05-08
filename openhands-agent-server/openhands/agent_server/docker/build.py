@@ -4,7 +4,7 @@ Single-entry build helper for agent-server images.
 
 - Targets: binary | binary-minimal | source | source-minimal
 - Multi-tagging via CUSTOM_TAGS (comma-separated)
-- Versioned tags for custom tags: {SDK_VERSION}-{CUSTOM_TAG}
+- Git tag- and semver-derived tags for custom tags
 - Branch-scoped cache keys
 - CI (push) vs local (load) behavior
 - sdist-based builds: Uses `uv build` to create clean build contexts
@@ -49,6 +49,9 @@ _BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
 _BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
 _BUILDKIT_INLINE_DONE_RE = re.compile(
     r"^(?P<description>.+?)\s+(?P<seconds>\d+(?:\.\d+)?)s done$"
+)
+_SEMVER_RELEASE_RE = re.compile(
+    r"^(?P<prefix>v)?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
 
 
@@ -218,6 +221,32 @@ def _sanitize_branch(ref: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
+def _sanitize_ref_tag(ref_name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", ref_name.strip())
+    sanitized = sanitized.strip(".-")
+    return sanitized or "unknown"
+
+
+def _release_tag_aliases(version: str) -> list[str]:
+    version = version.strip()
+    if not version:
+        return []
+
+    match = _SEMVER_RELEASE_RE.fullmatch(version)
+    if not match:
+        return [_sanitize_ref_tag(version)]
+
+    prefix = match.group("prefix") or ""
+    major = match.group("major")
+    minor = match.group("minor")
+    patch = match.group("patch")
+    return [
+        f"{prefix}{major}",
+        f"{prefix}{major}.{minor}",
+        f"{prefix}{major}.{minor}.{patch}",
+    ]
+
+
 def _truncate_ident(repo: str, tag: str, budget: int) -> str:
     """
     Truncate repo+tag to fit budget, prioritizing tag preservation.
@@ -323,7 +352,7 @@ def _git_info() -> tuple[str, str]:
 def _package_version() -> str:
     """
     Get the semantic version from the openhands-sdk package.
-    This is used for versioned tags during releases.
+    This is used as a fallback when git-tag-derived release tags are unavailable.
     """
     try:
         from importlib.metadata import version
@@ -373,8 +402,9 @@ class BuildOptions(BaseModel):
     include_versioned_tag: bool = Field(
         default=False,
         description=(
-            "Whether to include the versioned tag (e.g., v1.0.0_...) in all_tags "
-            "output. Should only be True for release builds."
+            "Whether to include git tag-derived release tags (including semver "
+            "aliases like v1 and v1.2) in all_tags output. Should only be True "
+            "for release builds."
         ),
     )
     git_sha: str = Field(
@@ -408,6 +438,10 @@ class BuildOptions(BaseModel):
     def short_sha(self) -> str:
         return self.git_sha[:7] if self.git_sha != "unknown" else "unknown"
 
+    @property
+    def long_sha(self) -> str:
+        return self.git_sha if self.git_sha != "unknown" else "unknown"
+
     @field_validator("target")
     @classmethod
     def _valid_target(cls, v: str) -> str:
@@ -424,12 +458,36 @@ class BuildOptions(BaseModel):
         return _base_slug(self.base_image)
 
     @property
+    def branch_tag(self) -> str | None:
+        if not self.git_ref or self.git_ref == "unknown":
+            return None
+        if self.git_ref.startswith("refs/tags/"):
+            return None
+        branch_ref = self.git_ref
+        if branch_ref.startswith("refs/heads/"):
+            branch_ref = branch_ref.removeprefix("refs/heads/")
+        elif branch_ref.startswith("refs/"):
+            return None
+        return _sanitize_branch(branch_ref)
+
+    @property
+    def release_tag_source(self) -> str | None:
+        if self.git_ref.startswith("refs/tags/"):
+            return self.git_ref.removeprefix("refs/tags/")
+        if self.sdk_version and self.sdk_version != "unknown":
+            return self.sdk_version
+        return None
+
+    @property
     def versioned_tags(self) -> list[str]:
-        """
-        Generate simple version tags for each custom tag variant.
-        Returns tags like: 1.2.0-python, 1.2.0-java, 1.2.0-golang
-        """
-        return [f"{self.sdk_version}-{t}" for t in self.custom_tag_list]
+        """Generate git tag-derived tags for each custom tag variant."""
+        if not self.release_tag_source:
+            return []
+        return [
+            f"{release_tag}-{custom_tag}"
+            for custom_tag in self.custom_tag_list
+            for release_tag in _release_tag_aliases(self.release_tag_source)
+        ]
 
     @property
     def base_tag(self) -> str:
@@ -450,13 +508,15 @@ class BuildOptions(BaseModel):
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
-        # Use git commit SHA for commit-based tags
-        for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
-
-        if self.git_ref in ("main", "refs/heads/main"):
-            for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+        for custom_tag in self.custom_tag_list:
+            tags.extend(
+                [
+                    f"{self.image}:{self.short_sha}-{custom_tag}{arch_suffix}",
+                    f"{self.image}:{self.long_sha}-{custom_tag}{arch_suffix}",
+                ]
+            )
+            if self.branch_tag:
+                tags.append(f"{self.image}:{self.branch_tag}-{custom_tag}{arch_suffix}")
 
         if self.include_base_tag:
             tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
@@ -467,7 +527,7 @@ class BuildOptions(BaseModel):
         # Append target suffix for clarity (binary is default, no suffix needed)
         if self.target != "binary":
             tags = [f"{t}-{self.target}" for t in tags]
-        return tags
+        return list(dict.fromkeys(tags))
 
 
 class BuildTelemetry(BaseModel):
@@ -978,8 +1038,8 @@ def main(argv: list[str]) -> int:
         "--versioned-tag",
         action="store_true",
         help=(
-            "Include versioned tag (e.g., v1.0.0_...) in output. "
-            "Should only be used for release builds."
+            "Include git tag-derived release tags (including semver aliases such "
+            "as v1 and v1.2) in output. Should only be used for release builds."
         ),
     )
 
