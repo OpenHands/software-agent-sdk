@@ -188,7 +188,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                 summary = first_content.text
 
         return Condensation(
-            forgotten_event_ids=[event.id for event in forgotten_events],
+            forgotten_event_ids={event.id for event in forgotten_events},
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
