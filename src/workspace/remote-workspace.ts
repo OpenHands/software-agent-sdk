@@ -14,7 +14,7 @@ import {
   GitChange,
   GitDiff,
 } from '../models/workspace';
-import { IWorkspace, BaseWorkspaceOptions } from './base';
+import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 
 /**
  * Options for creating a RemoteWorkspace instance.
@@ -160,10 +160,14 @@ export class RemoteWorkspace implements IWorkspace {
     };
   }
 
-  async gitChanges(path: string): Promise<GitChange[]> {
+  async gitChanges(path: string, options: GitQueryOptions = {}): Promise<GitChange[]> {
+    const params: Record<string, string> = { path };
+    if (options.ref !== undefined) {
+      params.ref = options.ref;
+    }
     try {
       const response = await this.client.get<GitChange[]>('/api/git/changes', {
-        params: { path },
+        params,
       });
       return response.data;
     } catch (error) {
@@ -174,10 +178,14 @@ export class RemoteWorkspace implements IWorkspace {
     }
   }
 
-  async gitDiff(path: string): Promise<GitDiff> {
+  async gitDiff(path: string, options: GitQueryOptions = {}): Promise<GitDiff> {
+    const params: Record<string, string> = { path };
+    if (options.ref !== undefined) {
+      params.ref = options.ref;
+    }
     try {
       const response = await this.client.get<GitDiff>('/api/git/diff', {
-        params: { path },
+        params,
       });
       return response.data;
     } catch (error) {

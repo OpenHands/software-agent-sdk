@@ -185,7 +185,12 @@ export type {
 } from './models/workspace';
 
 // Workspace base types and interface
-export type { IWorkspace, BaseWorkspaceOptions, WorkspaceType } from './workspace/base';
+export type {
+  IWorkspace,
+  BaseWorkspaceOptions,
+  GitQueryOptions,
+  WorkspaceType,
+} from './workspace/base';
 
 // Conversation base types and interface
 export type {

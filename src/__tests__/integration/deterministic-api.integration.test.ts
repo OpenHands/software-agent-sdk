@@ -201,6 +201,14 @@ describe('Deterministic API Integration Tests', () => {
 
         expect(changes.some((change) => String(change.path).includes('tracked.txt'))).toBe(true);
         expect(diff.modified || diff.diff).toContain('line2');
+
+        const headChanges = await workspace.gitChanges(repoDir, { ref: 'HEAD' });
+        expect(headChanges.some((change) => String(change.path).includes('tracked.txt'))).toBe(
+          true
+        );
+
+        const headDiff = await workspace.gitDiff(trackedFile, { ref: 'HEAD' });
+        expect(headDiff.modified || headDiff.diff).toContain('line2');
       } finally {
         deleteWorkspaceFile(fileName);
         await workspace.executeCommand(`rm -rf ${repoDir}`);

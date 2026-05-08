@@ -21,6 +21,19 @@ export interface BaseWorkspaceOptions {
 }
 
 /**
+ * Optional settings for git queries (`gitChanges` / `gitDiff`).
+ */
+export interface GitQueryOptions {
+  /**
+   * Git ref to diff against. Pass `'HEAD'` for `git status`-style results
+   * (working tree + index vs the latest commit), or a commit hash to diff
+   * against a specific revision. When omitted, the server auto-detects the
+   * upstream/default branch (the historical default behaviour).
+   */
+  ref?: string;
+}
+
+/**
  * Abstract interface for workspace implementations.
  *
  * Workspaces provide a sandboxed environment where agents can execute commands,
@@ -69,17 +82,25 @@ export interface IWorkspace {
    * Get git changes for a repository at the given path.
    *
    * @param path - Path to the git repository
+   * @param options - Optional settings.
+   * @param options.ref - Optional git ref to diff against (e.g. `'HEAD'`
+   *   for `git status`-style changes, or a commit hash). When omitted, the
+   *   server auto-detects the upstream/default branch.
    * @returns Array of GitChange objects
    */
-  gitChanges(path: string): Promise<GitChange[]>;
+  gitChanges(path: string, options?: GitQueryOptions): Promise<GitChange[]>;
 
   /**
    * Get git diff for a repository at the given path.
    *
    * @param path - Path to the git repository
+   * @param options - Optional settings.
+   * @param options.ref - Optional git ref to diff against (e.g. `'HEAD'`
+   *   for `git status`-style diffs, or a commit hash). When omitted, the
+   *   server auto-detects the upstream/default branch.
    * @returns GitDiff object containing the diff content
    */
-  gitDiff(path: string): Promise<GitDiff>;
+  gitDiff(path: string, options?: GitQueryOptions): Promise<GitDiff>;
 
   /**
    * Convenience method to upload text content as a file.

@@ -14,7 +14,7 @@ import {
   GitChange,
   GitDiff,
 } from '../models/workspace';
-import { IWorkspace, BaseWorkspaceOptions } from './base';
+import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 
 /**
  * Options for creating a LocalWorkspace instance.
@@ -88,7 +88,7 @@ export class LocalWorkspace implements IWorkspace {
    *
    * @throws LocalWorkspaceNotSupportedError - Always throws — not implemented
    */
-  async gitChanges(_repoPath: string): Promise<GitChange[]> {
+  async gitChanges(_repoPath: string, _options?: GitQueryOptions): Promise<GitChange[]> {
     throw new LocalWorkspaceNotSupportedError('gitChanges');
   }
 
@@ -97,7 +97,7 @@ export class LocalWorkspace implements IWorkspace {
    *
    * @throws LocalWorkspaceNotSupportedError - Always throws — not implemented
    */
-  async gitDiff(_repoPath: string): Promise<GitDiff> {
+  async gitDiff(_repoPath: string, _options?: GitQueryOptions): Promise<GitDiff> {
     throw new LocalWorkspaceNotSupportedError('gitDiff');
   }
 
