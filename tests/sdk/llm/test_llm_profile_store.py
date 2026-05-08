@@ -445,6 +445,12 @@ def test_rename_same_name_is_noop(
     assert profile_store.list() == ["same.json"]
 
 
+def test_rename_same_name_missing_raises(profile_store: LLMProfileStore) -> None:
+    """Same-name rename still verifies the profile exists."""
+    with pytest.raises(FileNotFoundError, match="ghost"):
+        profile_store.rename("ghost", "ghost")
+
+
 def test_rename_invalid_name_raises(
     profile_store: LLMProfileStore, sample_llm: LLM
 ) -> None:
@@ -559,6 +565,38 @@ def test_save_with_max_profiles_allows_under_limit(
     profile_store.save("a", sample_llm, max_profiles=5)
     profile_store.save("b", sample_llm, max_profiles=5)
     assert len(profile_store.list()) == 2
+
+
+def test_save_cleans_up_tmp_on_replace_failure(
+    profile_store: LLMProfileStore,
+    sample_llm: LLM,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If Path.replace fails, no .tmp file should be left behind."""
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "replace", boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        profile_store.save("doomed", sample_llm)
+
+    leftovers = list(profile_store.base_dir.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_save_with_max_profiles_ignores_invalid_filenames(
+    profile_store: LLMProfileStore, sample_llm: LLM
+) -> None:
+    """Stray .json files with invalid names must not consume limit slots."""
+    profile_store.save("real", sample_llm)
+    (profile_store.base_dir / ".hidden.json").write_text('{"model": "x"}')
+    (profile_store.base_dir / "bad@name.json").write_text('{"model": "x"}')
+
+    # Only 'real' counts, so saving up to the limit of 2 should succeed.
+    profile_store.save("another", sample_llm, max_profiles=2)
+    assert "another.json" in profile_store.list()
 
 
 def test_list_summaries_does_not_mutate_env(

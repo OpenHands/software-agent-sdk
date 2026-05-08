@@ -153,6 +153,7 @@ async def save_profile(
             ),
         )
 
+    logger.info(f"Saved profile '{name}' (include_secrets={body.include_secrets})")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' saved")
 
 
@@ -162,6 +163,7 @@ async def delete_profile(name: ProfileName) -> ProfileMutationResponse:
     store = LLMProfileStore()
     with _store_errors():
         store.delete(name)
+    logger.info(f"Deleted profile '{name}'")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
 
@@ -173,14 +175,8 @@ async def rename_profile(
     """Rename a saved profile atomically.
 
     Returns 404 if the source does not exist, or 409 if ``new_name`` already
-    exists.
+    exists. A same-name rename is a verified no-op (still 404s if missing).
     """
-    if name == body.new_name:
-        return ProfileMutationResponse(
-            name=name,
-            message=f"Profile '{name}' unchanged (same name)",
-        )
-
     store = LLMProfileStore()
     try:
         with _store_errors():
@@ -196,7 +192,9 @@ async def rename_profile(
             detail=f"Profile '{body.new_name}' already exists",
         )
 
-    return ProfileMutationResponse(
-        name=body.new_name,
-        message=f"Profile '{name}' renamed to '{body.new_name}'",
-    )
+    if name == body.new_name:
+        message = f"Profile '{name}' unchanged (same name)"
+    else:
+        message = f"Profile '{name}' renamed to '{body.new_name}'"
+    logger.info(message)
+    return ProfileMutationResponse(name=body.new_name, message=message)

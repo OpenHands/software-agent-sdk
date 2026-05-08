@@ -126,7 +126,13 @@ class LLMProfileStore:
 
         with self._acquire_lock():
             if max_profiles is not None and not profile_path.exists():
-                count = sum(1 for _ in self.base_dir.glob("*.json"))
+                # Only count files visible via list_summaries (valid names),
+                # so stray invalid files don't consume slots.
+                count = sum(
+                    1
+                    for p in self.base_dir.glob("*.json")
+                    if PROFILE_NAME_REGEX.match(p.stem)
+                )
                 if count >= max_profiles:
                     raise ProfileLimitExceeded(
                         f"Profile limit reached ({max_profiles})."
@@ -148,7 +154,11 @@ class LLMProfileStore:
                 tmp.write(profile_json)
                 tmp_path = Path(tmp.name)
 
-            Path.replace(tmp_path, profile_path)
+            try:
+                Path.replace(tmp_path, profile_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
             logger.info(f"[Profile Store] Saved profile `{name}` at {profile_path}")
 
     def load(self, name: str) -> LLM:
@@ -211,17 +221,17 @@ class LLMProfileStore:
         """Atomically rename a profile.
 
         Raises FileNotFoundError if ``old_name`` is missing, FileExistsError
-        if ``new_name`` is taken.
+        if ``new_name`` is taken. When the names resolve to the same path,
+        the call is a no-op but still verifies the profile exists.
         """
         old_path = self._get_profile_path(old_name)
         new_path = self._get_profile_path(new_name)
 
-        if old_path == new_path:
-            return
-
         with self._acquire_lock():
             if not old_path.exists():
                 raise FileNotFoundError(f"Profile `{old_name}` not found")
+            if old_path == new_path:
+                return
             if new_path.exists():
                 raise FileExistsError(f"Profile `{new_name}` already exists")
             old_path.rename(new_path)

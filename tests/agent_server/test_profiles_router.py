@@ -304,6 +304,15 @@ def test_rename_profile_same_name(client, store):
     assert "unchanged" in response.json()["message"].lower()
 
 
+def test_rename_profile_same_name_missing_returns_404(client):
+    """Same-name rename of a missing profile must return 404, not 200."""
+    response = client.post(
+        "/api/profiles/ghost/rename",
+        json={"new_name": "ghost"},
+    )
+    assert response.status_code == 404
+
+
 def test_rename_profile_invalid_new_name(client, store):
     """POST /api/profiles/{name}/rename returns 422 for invalid new_name."""
     llm = LLM(model="gpt-4o")
@@ -546,6 +555,38 @@ def test_delete_profile_timeout_returns_503(client, store, monkeypatch):
 
     response = client.delete("/api/profiles/present")
     assert response.status_code == 503
+
+
+def test_whitespace_api_key_reports_not_set(client, store):
+    """A profile with a whitespace-only api_key reports api_key_set=False."""
+    # Save with a real key, then poke whitespace into the on-disk file.
+    store.save("ws", LLM(model="gpt-4o", api_key="placeholder"), include_secrets=True)
+    profile_path = store.base_dir / "ws.json"
+    profile_path.write_text('{"model": "gpt-4o", "api_key": "   "}')
+
+    response = client.get("/api/profiles")
+    profile = next(p for p in response.json()["profiles"] if p["name"] == "ws")
+    assert profile["api_key_set"] is False
+
+    detail = client.get("/api/profiles/ws").json()
+    assert detail["api_key_set"] is False
+
+
+def test_save_at_limit_does_not_write_partial_state(client, store, monkeypatch):
+    """When the limit is hit, no profile file (or .tmp leftover) should appear."""
+    monkeypatch.setattr(profiles_router_module, "MAX_PROFILES", 1)
+
+    store.save("first", LLM(model="gpt-4o"))
+    files_before = sorted(p.name for p in store.base_dir.iterdir())
+
+    response = client.post(
+        "/api/profiles/second",
+        json={"llm": {"model": "gpt-4o"}},
+    )
+    assert response.status_code == 409
+
+    files_after = sorted(p.name for p in store.base_dir.iterdir())
+    assert files_after == files_before  # no new file, no .tmp leftover
 
 
 def test_get_profile_does_not_expose_api_key(client, store):
