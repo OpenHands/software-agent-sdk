@@ -101,10 +101,15 @@ def _repo_has_commits(repo_dir: str | Path) -> bool:
         return False
 
 
-def get_valid_ref(repo_dir: str | Path) -> str | None:
+def get_valid_ref(repo_dir: str | Path, override: str | None = None) -> str | None:
     """Get a valid git reference to compare against.
 
-    Tries multiple strategies to find a valid reference:
+    If ``override`` is provided, it is resolved via ``git rev-parse --verify``
+    and returned (raising ``GitCommandError`` if it does not resolve). This
+    lets callers request, for example, ``HEAD`` to get ``git status``-style
+    diffs against the latest commit instead of against the remote branch.
+
+    Otherwise, tries multiple strategies to find a valid reference:
     1. Current branch's origin (e.g., origin/main)
     2. Default branch (e.g., origin/main, origin/master)
     3. Merge base with default branch
@@ -112,10 +117,23 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
 
     Args:
         repo_dir: Path to the git repository
+        override: Optional explicit ref (e.g. ``"HEAD"`` or a commit hash) to
+            use instead of the auto-detected comparison ref.
 
     Returns:
         Valid git reference hash, or None if no valid reference found
+
+    Raises:
+        GitCommandError: If ``override`` is provided and does not resolve.
     """
+    if override is not None:
+        # Resolve explicit override and surface failure to the caller so the
+        # difference between "ref not found" and "no changes" stays visible.
+        return run_git_command(
+            ["git", "--no-pager", "rev-parse", "--verify", f"{override}^{{commit}}"],
+            repo_dir,
+        )
+
     refs_to_try = []
 
     # Check if repo has any commits first. Empty repos (created with git init)

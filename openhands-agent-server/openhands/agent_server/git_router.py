@@ -1,6 +1,7 @@
 """Git router for OpenHands SDK."""
 
 import asyncio
+import functools
 import logging
 from pathlib import Path
 
@@ -17,12 +18,21 @@ git_router = APIRouter(prefix="/git", tags=["Git"])
 logger = logging.getLogger(__name__)
 
 
-async def _get_git_changes(path: str) -> list[GitChange]:
+_REF_QUERY_DESCRIPTION = (
+    "Optional git ref to diff against (e.g. 'HEAD' for git status-style "
+    "changes, or a commit hash). When omitted, the upstream/default branch "
+    "is auto-detected."
+)
+
+
+async def _get_git_changes(path: str, ref: str | None) -> list[GitChange]:
     """Internal helper to get git changes for a given path."""
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(None, get_git_changes, Path(path))
+        return await loop.run_in_executor(
+            None, functools.partial(get_git_changes, Path(path), ref=ref)
+        )
     except GitRepositoryError:
         # A non-repo workspace has no git changes to report; respond with an
         # empty list so the Changes tab can render normally instead of 500ing.
@@ -30,12 +40,14 @@ async def _get_git_changes(path: str) -> list[GitChange]:
         return []
 
 
-async def _get_git_diff(path: str) -> GitDiff:
+async def _get_git_diff(path: str, ref: str | None) -> GitDiff:
     """Internal helper to get git diff for a given path."""
     update_last_execution_time()
     loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(None, get_git_diff, Path(path))
+        return await loop.run_in_executor(
+            None, functools.partial(get_git_diff, Path(path), ref=ref)
+        )
     except GitRepositoryError:
         # Only collapse the not-a-repo case to an empty diff; file-level
         # GitPathError (missing/oversize/outside-repo) stays a 500 so
@@ -47,10 +59,11 @@ async def _get_git_diff(path: str) -> GitDiff:
 @git_router.get("/changes")
 async def git_changes_query(
     path: str = Query(..., description="The git repository path"),
+    ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
 ) -> list[GitChange]:
     """Get git changes using query parameter (preferred method)."""
     try:
-        return await _get_git_changes(path)
+        return await _get_git_changes(path, ref)
     except GitError as e:
         # Other git failures (e.g., GitCommandError) surface as 400 so the
         # client can show an actionable error instead of an opaque 500.
@@ -60,10 +73,11 @@ async def git_changes_query(
 @git_router.get("/diff")
 async def git_diff_query(
     path: str = Query(..., description="The file path to get diff for"),
+    ref: str | None = Query(None, description=_REF_QUERY_DESCRIPTION),
 ) -> GitDiff:
     """Get git diff using query parameter (preferred method)."""
     try:
-        return await _get_git_diff(path)
+        return await _get_git_diff(path, ref)
     except GitError as e:
         # Other git failures (e.g., GitCommandError) surface as 400 so the
         # client can show an actionable error instead of an opaque 500.
