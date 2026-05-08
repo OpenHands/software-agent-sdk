@@ -72,6 +72,9 @@ def _register_subagents(n: int, latency_s: float) -> list[SlowTestLLM]:
         sub_llms.append(sub_llm)
         register_agent(
             name=f"stress_subagent_{i}",
+            # `_bound=sub_llm` captures the current sub_llm at definition
+            # time; without it, all factories close over the loop variable
+            # and end up returning the last `sub_llm` only.
             factory_func=lambda llm, _bound=sub_llm: Agent(llm=_bound, tools=[]),
             description=f"stress test sub-agent {i}",
         )

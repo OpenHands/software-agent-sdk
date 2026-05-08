@@ -92,7 +92,12 @@ class SlowWebhookBudget:
 class SlowWebsocketConsumerBudget:
     n_events: int = 200
     # Server RSS delta with one stalled subscriber must be < this MB.
-    # Failure mode IS unbounded growth so the budget is absolute.
+    # Failure mode IS unbounded growth so the budget is absolute. Each
+    # ConversationStateUpdateEvent is ~1 KB on the wire, so 200 queued
+    # events is ~200 KB of "real" growth; the rest of the budget is
+    # headroom for allocator noise and Python interpreter overhead. A
+    # genuine unbounded-buffer regression would push this into hundreds of
+    # MB or GB long before brushing 150.
     max_rss_delta_mb: float = 150.0
 
 

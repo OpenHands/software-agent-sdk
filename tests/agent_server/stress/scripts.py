@@ -164,8 +164,8 @@ async def wait_for_terminal(
     Polling rather than subscribing because websocket coverage is exercised
     by separate suites; we want this helper to work without WS infra.
     """
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
         resp = await client.get(f"/api/conversations/{conversation_id.hex}")
         assert resp.status_code == 200, resp.text
         st = ConversationExecutionStatus(resp.json()["execution_status"])

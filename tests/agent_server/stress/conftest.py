@@ -63,8 +63,8 @@ async def bash_service(
     bash_dir = tmp_path / "bash_events"
     bash_dir.mkdir(parents=True, exist_ok=True)
     service = BashEventService(bash_events_dir=bash_dir)
+    monkeypatch.setattr(bash_router_module, "bash_event_service", service)
     async with service:
-        monkeypatch.setattr(bash_router_module, "bash_event_service", service)
         yield service
 
 

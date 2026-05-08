@@ -151,6 +151,16 @@ async def test_stalled_subscriber_does_not_grow_unbounded(
         ]
         await asyncio.sleep(0.1)  # let create_task scheduling settle
 
+        # Precondition check: the stalled subscriber must actually have
+        # been invoked, otherwise the test passes for the wrong reason
+        # (a regression that silently skips slow subscribers would let
+        # everything drain instantly and the RSS / fast-subscriber
+        # assertions below would all pass on a non-stalled chain).
+        assert stalled.seen_calls > 0, (
+            "stalled subscriber was never invoked; the publish chain isn't "
+            "blocked on it. Did pub_sub start skipping subscribers?"
+        )
+
         # Failure mode IS unbounded growth, so the budget is absolute.
         # Compare peak-during-stall against the pre-stall baseline. Same
         # max-of-3 sampling as the baseline so allocator noise doesn't

@@ -8,6 +8,7 @@ warm-up, not absolute CI-runner constants.
 import asyncio
 import contextlib
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Self
 
@@ -35,7 +36,7 @@ class ResourceProbe:
     async def __aenter__(self) -> Self:
         # Prime cpu_percent — first call returns 0.0.
         self._proc.cpu_percent(interval=None)
-        self._start_t = asyncio.get_running_loop().time()
+        self._start_t = time.monotonic()
         self._baseline = self._take()
         self._samples.append(self._baseline)
         self._task = asyncio.create_task(self._loop())
@@ -64,7 +65,7 @@ class ResourceProbe:
             # check it explicitly so FD assertions become no-ops there.
             num_fds = -1
         return Sample(
-            t=asyncio.get_running_loop().time() - self._start_t,
+            t=time.monotonic() - self._start_t,
             rss_mb=self._proc.memory_info().rss / (1024 * 1024),
             num_fds=num_fds,
             num_threads=self._proc.num_threads(),

@@ -225,6 +225,12 @@ async def test_slow_webhook_does_not_unbound_growth(
     #    webhook does add latency. The budget allows for that — if the
     #    agent-server later moves webhooks to async background tasks, this
     #    will pass with much more headroom and the budget can be tightened.
+    #
+    # `× 4` slack: a typical TestLLM conversation publishes ~4 events
+    # through pub_sub (state→running, message, state→finished, +1 spare),
+    # and the slow webhook is awaited synchronously per-event, so each
+    # event costs ~webhook_delay_s. Allow 4 of those alongside the
+    # baseline-relative factor.
     budget = baseline_wall * SLOW_WEBHOOK.wall_time_factor + (
         SLOW_WEBHOOK.webhook_delay_s * 4
     )
