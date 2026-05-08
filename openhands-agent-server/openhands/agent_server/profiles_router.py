@@ -2,9 +2,9 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, HTTPException, Path, status
+from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.llm import LLM
@@ -14,6 +14,7 @@ from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.cipher import Cipher
 
 
 logger = get_logger(__name__)
@@ -26,6 +27,9 @@ ProfileName = Annotated[
     str,
     Path(min_length=1, max_length=64, pattern=PROFILE_NAME_PATTERN),
 ]
+
+# Valid values for X-Expose-Secrets header
+ExposeSecretsMode = Literal["encrypted", "plaintext"]
 
 
 class ProfileInfo(BaseModel):
@@ -92,6 +96,44 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
+def _get_cipher(request: Request) -> Cipher | None:
+    """Get cipher from app state config, if configured."""
+    config = getattr(request.app.state, "config", None)
+    if config is None:
+        return None
+    return getattr(config, "cipher", None)
+
+
+def _parse_expose_secrets_header(request: Request) -> ExposeSecretsMode | None:
+    """Parse X-Expose-Secrets header value.
+
+    Returns:
+        "encrypted", "plaintext", or None (if header not present).
+
+    Raises:
+        HTTPException: 400 if header has invalid value.
+    """
+    header_value = request.headers.get("X-Expose-Secrets", "").lower().strip()
+
+    if not header_value:
+        return None
+
+    # Legacy "true" value - treat as "encrypted" for safety
+    if header_value == "true":
+        return "encrypted"
+
+    if header_value in ("encrypted", "plaintext"):
+        return cast(ExposeSecretsMode, header_value)
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Invalid X-Expose-Secrets header value: '{header_value}'. "
+            "Valid values are: 'encrypted', 'plaintext'."
+        ),
+    )
+
+
 @profiles_router.get("", response_model=ProfileListResponse)
 async def list_profiles() -> ProfileListResponse:
     """List all saved LLM profiles."""
@@ -102,20 +144,53 @@ async def list_profiles() -> ProfileListResponse:
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
-async def get_profile(name: ProfileName) -> ProfileDetailResponse:
-    """Get a profile's configuration with ``api_key`` nulled out."""
+async def get_profile(request: Request, name: ProfileName) -> ProfileDetailResponse:
+    """Get a profile's configuration.
+
+    Use the ``X-Expose-Secrets`` header to control secret exposure:
+    - ``encrypted``: Returns cipher-encrypted values (safe for frontend clients)
+    - ``plaintext``: Returns raw secret values (backend clients only!)
+    - (absent): Returns nulled ``api_key`` with ``api_key_set`` indicator
+    """
+    expose_mode = _parse_expose_secrets_header(request)
+    cipher = _get_cipher(request)
+
     store = LLMProfileStore()
     try:
         with _store_errors():
-            llm = store.load(name)
+            llm = store.load(name, cipher=cipher)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile '{name}' not found",
         )
 
-    config = llm.model_dump(mode="json")
-    config["api_key"] = None
+    # Build serialization context based on expose mode
+    if expose_mode:
+        context: dict[str, Any] = {
+            "expose_secrets": expose_mode,
+            "cipher": cipher,
+        }
+        try:
+            config = llm.model_dump(mode="json", context=context)
+        except Exception as e:
+            # Handle ValueError from serialize_secret when cipher is missing
+            # Pydantic wraps it in PydanticSerializationError, so check the chain
+            error_str = str(e)
+            if "no cipher configured" in error_str:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Encryption not available: OH_SECRET_KEY is not configured. "
+                        "Cannot return encrypted secrets."
+                    ),
+                )
+            raise
+    else:
+        # Default behavior: null out api_key
+        config = llm.model_dump(mode="json")
+        config["api_key"] = None
+
     return ProfileDetailResponse(
         name=name, config=config, api_key_set=_has_api_key(llm)
     )
@@ -127,6 +202,7 @@ async def get_profile(name: ProfileName) -> ProfileDetailResponse:
     status_code=status.HTTP_201_CREATED,
 )
 async def save_profile(
+    request: Request,
     name: ProfileName,
     body: SaveProfileRequest,
 ) -> ProfileMutationResponse:
@@ -134,7 +210,12 @@ async def save_profile(
 
     Overwrites an existing profile of the same name. Returns 409 if creating
     a new profile would exceed ``MAX_PROFILES``.
+
+    When ``OH_SECRET_KEY`` is configured, secrets are encrypted at rest.
+    Clients can submit cipher-encrypted secrets which will be decrypted
+    server-side before re-encrypting with the storage cipher.
     """
+    cipher = _get_cipher(request)
     store = LLMProfileStore()
     try:
         with _store_errors():
@@ -142,6 +223,7 @@ async def save_profile(
                 name,
                 body.llm,
                 include_secrets=body.include_secrets,
+                cipher=cipher,
                 max_profiles=MAX_PROFILES,
             )
     except ProfileLimitExceeded:

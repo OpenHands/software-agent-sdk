@@ -18,6 +18,7 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.utils.cipher import Cipher
 
 _DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -103,6 +104,7 @@ class LLMProfileStore:
         llm: LLM,
         include_secrets: bool = False,
         *,
+        cipher: Cipher | None = None,
         max_profiles: int | None = None,
     ) -> None:
         """Save a profile to the profile directory.
@@ -116,6 +118,8 @@ class LLMProfileStore:
             name: Name of the profile to save.
             llm: LLM instance to save
             include_secrets: Whether to include the profile secrets. Defaults to False.
+            cipher: Optional cipher for at-rest encryption of secrets.
+                When provided, secrets are encrypted before writing to disk.
             max_profiles: Optional cap on the number of profiles.
 
         Raises:
@@ -143,10 +147,25 @@ class LLMProfileStore:
                     f"[Profile Store] Profile `{name}` already exists. Overwriting."
                 )
 
+            # Build serialization context:
+            # - When cipher is provided, encrypt secrets at rest
+            # - When include_secrets is True (but no cipher), store plaintext
+            # - When include_secrets is False, secrets are redacted
+            context: dict[str, Any] = {}
+            if include_secrets:
+                if cipher:
+                    # Encrypt secrets at rest
+                    context["cipher"] = cipher
+                    context["expose_secrets"] = "encrypted"
+                else:
+                    # Store plaintext (backward compatible)
+                    context["expose_secrets"] = True
+            # else: expose_secrets not set = redaction (Pydantic default)
+
             profile_json = llm.model_dump_json(
                 exclude_none=True,
                 indent=2,
-                context={"expose_secrets": include_secrets},
+                context=context,
             )
             with tempfile.NamedTemporaryFile(
                 mode="w", dir=self.base_dir, suffix=".tmp", delete=False
@@ -161,11 +180,13 @@ class LLMProfileStore:
                 raise
             logger.info(f"[Profile Store] Saved profile `{name}` at {profile_path}")
 
-    def load(self, name: str) -> LLM:
+    def load(self, name: str, *, cipher: Cipher | None = None) -> LLM:
         """Load an LLM instance from the given profile name.
 
         Args:
             name: Name of the profile to load.
+            cipher: Optional cipher for decrypting secrets stored at rest.
+                When provided, encrypted secrets are decrypted during load.
 
         Returns:
             An LLM instance constructed from the profile configuration.
@@ -188,7 +209,12 @@ class LLMProfileStore:
             try:
                 from openhands.sdk.llm.llm import LLM
 
-                llm_instance = LLM.load_from_json(str(profile_path))
+                # Build validation context for cipher decryption
+                context: dict[str, Any] | None = None
+                if cipher:
+                    context = {"cipher": cipher}
+
+                llm_instance = LLM.load_from_json(str(profile_path), context=context)
             except Exception as e:
                 # Re-raise as ValueError for clearer error handling
                 raise ValueError(f"Failed to load profile `{name}`: {e}") from e

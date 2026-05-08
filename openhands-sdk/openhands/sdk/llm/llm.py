@@ -1521,10 +1521,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Serialization helpers
     # =========================================================================
     @classmethod
-    def load_from_json(cls, json_path: str) -> LLM:
+    def load_from_json(
+        cls, json_path: str, *, context: dict[str, Any] | None = None
+    ) -> LLM:
+        """Load an LLM instance from a JSON file.
+
+        Args:
+            json_path: Path to the JSON file containing LLM configuration.
+            context: Optional validation context (e.g., ``{"cipher": cipher}``
+                for decrypting secrets stored at rest).
+
+        Returns:
+            An LLM instance constructed from the JSON configuration.
+        """
         with open(json_path) as f:
             data = json.load(f)
-        return cls(**data)
+        return cls.model_validate(data, context=context)
 
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:
