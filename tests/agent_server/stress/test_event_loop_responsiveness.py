@@ -100,6 +100,7 @@ async def test_health_responsive_under_long_bash(
             "/api/bash/bash_events/search",
             params={"command_id__eq": str(cmd_id)},
         )
+        assert events_resp.status_code == 200, events_resp.text
         final = next(
             (
                 e

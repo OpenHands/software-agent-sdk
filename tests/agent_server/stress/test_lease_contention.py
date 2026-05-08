@@ -143,6 +143,9 @@ async def test_concurrent_start_of_same_conversation_yields_one_winner(
         )
     finally:
         # Tear down all services. Order doesn't matter — losers had no
-        # event_services attached.
+        # event_services attached. Suppress per-service exceptions so a
+        # bad teardown doesn't mask the test's primary failure or skip
+        # the rest of the cleanup.
         for s in services:
-            await s.__aexit__(None, None, None)
+            with contextlib.suppress(Exception):
+                await s.__aexit__(None, None, None)

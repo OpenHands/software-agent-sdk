@@ -82,10 +82,11 @@ def text_message(text: str) -> Message:
 
 
 def descendants_of(pid: int) -> list[psutil.Process]:
-    """All recursive descendants of ``pid``. Empty if pid is gone."""
+    """All recursive descendants of ``pid``. Empty if the process is gone
+    or psutil can't read it (Windows / sandboxed runners)."""
     try:
         return psutil.Process(pid).children(recursive=True)
-    except psutil.NoSuchProcess:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         return []
 
 
@@ -166,7 +167,12 @@ async def wait_for_terminal(
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        resp = await client.get(f"/api/conversations/{conversation_id.hex}")
+        # Cap each request at the remaining wall-time (with a 0.1 s floor)
+        # so a hung GET can't bypass the overall poll deadline.
+        remaining = max(0.1, deadline - time.monotonic())
+        resp = await client.get(
+            f"/api/conversations/{conversation_id.hex}", timeout=remaining
+        )
         assert resp.status_code == 200, resp.text
         st = ConversationExecutionStatus(resp.json()["execution_status"])
         if st in _TERMINAL_STATES:

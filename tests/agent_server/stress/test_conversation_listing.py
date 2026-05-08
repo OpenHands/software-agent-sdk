@@ -65,6 +65,9 @@ async def _seed_conversations(
     return set(ids)
 
 
+_MAX_PAGINATION_ITERATIONS = 10_000
+
+
 async def _walk_pages(
     client, *, page_size: int, sort_order: str
 ) -> list[tuple[UUID, str]]:
@@ -77,7 +80,10 @@ async def _walk_pages(
     """
     seen: list[tuple[UUID, str]] = []
     page_id: str | None = None
-    while True:
+    # No `pytest.mark.timeout` on this file, so a circular `next_page_id`
+    # would otherwise hang indefinitely. At N=2000 / limit=50 we expect
+    # ~40 iterations; 10k is a 250× safety margin.
+    for _ in range(_MAX_PAGINATION_ITERATIONS):
         params: dict[str, object] = {
             "limit": page_size,
             "sort_order": sort_order,
@@ -91,15 +97,18 @@ async def _walk_pages(
             seen.append((UUID(item["id"]), item["created_at"]))
         page_id = body.get("next_page_id")
         if not page_id:
-            break
-    return seen
+            return seen
+    raise AssertionError(
+        f"pagination did not terminate in {_MAX_PAGINATION_ITERATIONS} "
+        f"iterations — possible circular next_page_id."
+    )
 
 
 async def _find_last_page_id(client, *, page_size: int, sort_order: str) -> str | None:
     """Return the page_id cursor for the final page, or None if pagination
     fits in a single page."""
     page_id: str | None = None
-    while True:
+    for _ in range(_MAX_PAGINATION_ITERATIONS):
         params: dict[str, object] = {"limit": page_size, "sort_order": sort_order}
         if page_id is not None:
             params["page_id"] = page_id
@@ -109,6 +118,10 @@ async def _find_last_page_id(client, *, page_size: int, sort_order: str) -> str 
         if not next_id:
             return page_id
         page_id = next_id
+    raise AssertionError(
+        f"pagination did not terminate in {_MAX_PAGINATION_ITERATIONS} "
+        f"iterations — possible circular next_page_id."
+    )
 
 
 async def _time_first_page(client, *, page_size: int) -> float:
@@ -248,6 +261,7 @@ async def test_pagination_is_correct_and_bounded(
     # returns the all-time peak, which would include the seeding spike from
     # earlier in the test and inflate the delta artificially.
     pre_loop_idx = len(probe.samples)
+    assert pre_loop_idx > 0, "ResourceProbe yielded no samples — fixture not entered?"
     pre_loop_rss = probe.samples[-1].rss_mb
     for _k in range(50):
         await _time_first_page(client, page_size=page_size)
