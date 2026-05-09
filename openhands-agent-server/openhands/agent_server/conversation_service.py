@@ -118,8 +118,9 @@ def _create_conversation_worktree(
         return None
 
     relative_workspace = source_workspace.relative_to(repo_root)
-    worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
-    worktree_root.parent.mkdir(parents=True, exist_ok=True)
+    conversation_worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
+    worktree_root = conversation_worktree_root / repo_root.name
+    conversation_worktree_root.mkdir(parents=True, exist_ok=True)
     branch = f"openhands/{conversation_id}"
 
     if worktree_root.exists():

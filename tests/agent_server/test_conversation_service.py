@@ -923,7 +923,7 @@ class TestConversationServiceStartConversation:
             result, _ = await conversation_service.start_conversation(request)
 
         stored = captured["stored"]
-        expected_worktree = worktree_root / str(conversation_id)
+        expected_worktree = worktree_root / str(conversation_id) / repo_dir.name
         expected_branch = f"openhands/{conversation_id}"
 
         assert stored.worktree is True
@@ -944,6 +944,62 @@ class TestConversationServiceStartConversation:
         assert str(expected_worktree) in suffix
         assert expected_branch in suffix
         assert "Do all file and git work inside this worktree" in suffix
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_worktree_preserves_relative_workspace(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        workspace_dir = repo_dir / "src" / "pkg"
+        workspace_dir.mkdir(parents=True)
+        conversation_id = uuid4()
+        worktree_root = tmp_path / "conversation-worktrees"
+
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=workspace_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+
+        captured: dict[str, StoredConversation] = {}
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            captured["stored"] = stored
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
+                worktree_root,
+            ),
+            patch(
+                "openhands.agent_server.conversation_service.EventService",
+                side_effect=_event_service_factory,
+            ),
+        ):
+            result, _ = await conversation_service.start_conversation(request)
+
+        stored = captured["stored"]
+        expected_worktree = worktree_root / str(conversation_id) / repo_dir.name
+        expected_workspace = expected_worktree / "src" / "pkg"
+
+        assert stored.worktree is True
+        assert stored.workspace.working_dir == str(expected_workspace)
+        assert result.workspace.working_dir == str(expected_workspace)
+        assert (expected_worktree / ".git").exists()
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_ignores_non_git_workspace(

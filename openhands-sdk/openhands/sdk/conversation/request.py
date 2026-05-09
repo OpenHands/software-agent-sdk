@@ -72,7 +72,7 @@ class _StartConversationRequestBase(BaseModel):
         description=(
             "If true and the workspace is already inside a git repository, create "
             "a dedicated git worktree for this conversation under "
-            "`/tmp/conversation-worktrees/<conversation_id>`."
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
         ),
     )
     conversation_id: UUID | None = Field(
