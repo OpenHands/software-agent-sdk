@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import tempfile
 import threading
 import time
@@ -217,6 +218,50 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_path):
+    """Reproduces the crash-recovery bug: after a non-graceful shutdown the lease
+    file is left on disk pointing at a still-future expires_at. A fresh server
+    started before the TTL elapses must still pick up the conversation rather
+    than skipping it for up to the full TTL window.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        conversation_id = conversation_info.id
+
+    # Simulate a non-graceful shutdown: forge a lease pointing at a PID
+    # that is guaranteed not to be running, with a far-future expires_at.
+    # A clean exit would have removed the lease via release(); a crash
+    # leaves it behind, which is what we are reproducing here.
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    forged_payload = {
+        "owner_instance_id": "ghost-instance-from-crashed-server",
+        "generation": 1,
+        "expires_at": time.time() + 3600.0,
+        "owner_host": socket.gethostname(),
+        "owner_pid": 2**31 - 1,
+    }
+    lease_path.write_text(json.dumps(forged_payload))
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services is not None
+        # The conversation must be present in the restarted service.
+        assert conversation_id in restarted._event_services, (
+            "Restart failed to pick up an existing conversation whose lease "
+            "was left orphaned by a non-graceful shutdown."
+        )
 
 
 class TestConversationServiceSearchConversations:
