@@ -396,14 +396,6 @@ def test_get_home_returns_user_home(client):
     assert response.json()["home"] == str(Path.home())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "file_router.py:62-66 uses sync open()/f.write() inside an async "
-        "handler. On slow storage every chunk write blocks the event loop. "
-        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3119."
-    ),
-)
 @pytest.mark.timeout(20)
 async def test_upload_does_not_block_event_loop_on_slow_storage(tmp_path, monkeypatch):
     # Drive _upload_file directly, not via ASGI: in-process ASGI interleaves
