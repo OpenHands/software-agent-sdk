@@ -1,16 +1,26 @@
 """Integration tests for hooks blocking in Agent and Conversation."""
 
-import pytest
+from unittest.mock import patch
 
-from openhands.sdk.conversation.state import ConversationState
+import pytest
+from pydantic import SecretStr
+
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation import LocalConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, HookExecutionEvent, MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
     create_hook_callback,
 )
 from openhands.sdk.hooks.manager import HookManager
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.message import MessageToolCall
 from tests.command_utils import python_command
 
 
@@ -913,16 +923,6 @@ class TestStopHookConversationIntegration:
         assert len(feedback_messages) == 1, "Feedback message should be injected once"
 
     def test_consecutive_stop_hook_denials_abort_with_error(self, tmp_path):
-        from unittest.mock import patch
-
-        from pydantic import SecretStr
-
-        from openhands.sdk.agent import Agent
-        from openhands.sdk.conversation import LocalConversation
-        from openhands.sdk.conversation.state import ConversationExecutionStatus
-        from openhands.sdk.event.conversation_error import ConversationErrorEvent
-        from openhands.sdk.llm import LLM
-
         command = _json_command({"decision": "deny", "reason": "always denying"}, 2)
         hook_config = HookConfig.from_dict(
             {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
@@ -968,17 +968,6 @@ class TestStopHookConversationIntegration:
         assert len(deny_events) == max_denials + 1
 
     def test_stop_hook_deny_streak_resets_on_action_progress(self, tmp_path):
-        from unittest.mock import patch
-
-        from pydantic import SecretStr
-
-        from openhands.sdk.agent import Agent
-        from openhands.sdk.conversation import LocalConversation
-        from openhands.sdk.conversation.state import ConversationExecutionStatus
-        from openhands.sdk.event.conversation_error import ConversationErrorEvent
-        from openhands.sdk.llm import LLM
-        from openhands.sdk.llm.message import MessageToolCall
-
         # Streak limit 2; hook denies 4 times then allows. An ActionEvent
         # between denials 2 and 3 must reset the streak so we don't abort.
         stop_count_file = tmp_path / "stop_count"
