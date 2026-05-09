@@ -364,7 +364,6 @@ for ($i = $toStop.Count - 1; $i -ge 0; $i--) {{
 if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
 """
         startupinfo = None
-        creationflags = 0
         startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
         if startupinfo_cls is not None:
             startupinfo = startupinfo_cls()
