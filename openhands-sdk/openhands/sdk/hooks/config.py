@@ -50,8 +50,10 @@ class HookDefinition(BaseModel):
     type: HookType = HookType.COMMAND
     name: str | None = None
     command: str | None = None
-    prompt: str | None = None
+    system_prompt: str | None = None
+    tools: list[str] = Field(default_factory=list)
     timeout: int = 60
+    max_iterations: int = 10
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {
@@ -66,7 +68,7 @@ class HookDefinition(BaseModel):
             raise ValueError("'prompt' is required when type is 'prompt'")
         if self.type == HookType.AGENT and self.command is not None:
             raise ValueError(
-                "'command' must not be set when type is 'agent'; use 'prompt' instead"
+                "'command' must not be set when type is 'agent'; use 'system_prompt' instead"
             )
         if self.type == HookType.AGENT and self.async_:
             raise ValueError("'async' is not supported for agent hooks")
@@ -79,8 +81,8 @@ class HookDefinition(BaseModel):
             return self.command
         if self.name is not None:
             return f"agent-hook:{self.name}"
-        if self.prompt:
-            return f"agent-hook:{self.prompt[:20]}"
+        if self.system_prompt:
+            return f"agent-hook:{self.system_prompt[:20]}"
         return "agent-hook:agent"
 
 class HookMatcher(BaseModel):

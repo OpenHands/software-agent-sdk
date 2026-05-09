@@ -3,6 +3,7 @@
 import logging
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.types import HookEvent, HookEventType
@@ -24,9 +25,16 @@ class HookManager:
         working_dir: str | None = None,
         session_id: str | None = None,
         llm: "LLM | None" = None,
+        persistence_dir: str | None = None,
+        visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
     ):
         self.config = config or HookConfig.load(working_dir=working_dir)
-        self.executor = HookExecutor(working_dir=working_dir, llm=llm)
+        self.executor = HookExecutor(
+            working_dir=working_dir,
+            llm=llm,
+            persistence_dir=persistence_dir,
+            visualizer=visualizer,
+        )
         self.session_id = session_id
         self.working_dir = working_dir
 

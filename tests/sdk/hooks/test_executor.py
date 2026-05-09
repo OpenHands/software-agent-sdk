@@ -459,7 +459,7 @@ class TestAgentHookExecution:
         """execute() routes AGENT type to _execute_agent_hook, not subprocess."""
         from openhands.sdk.hooks.executor import HookResult
 
-        hook = HookDefinition(type="agent", prompt="Verify task completion")
+        hook = HookDefinition(type="agent", system_prompt="Verify task completion")
 
         with patch.object(
             executor,
@@ -476,7 +476,7 @@ class TestAgentHookExecution:
 
     def test_no_llm_defaults_to_allow(self, executor_no_llm, sample_event):
         """Agent hook with no LLM configured defaults to allow without error."""
-        hook = HookDefinition(type="agent", prompt="Check something")
+        hook = HookDefinition(type="agent", system_prompt="Check something")
         result = executor_no_llm.execute(hook, sample_event)
 
         assert result.success
@@ -493,7 +493,7 @@ class TestAgentHookExecution:
             patch(self._RESPONSE_PATH, return_value=deny_json),
         ):
             mock_conv_cls.return_value = MagicMock()
-            hook = HookDefinition(type="agent", prompt="Check tasks")
+            hook = HookDefinition(type="agent", system_prompt="Check tasks")
             result = executor._execute_agent_hook(hook, sample_event)
 
         assert result.blocked
