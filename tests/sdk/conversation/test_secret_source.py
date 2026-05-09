@@ -171,6 +171,85 @@ def test_lookup_secret_redacts_token_and_cookie_headers():
     assert serialized["headers"]["Content-Type"] == "application/json"
 
 
+def test_lookup_secret_validate_with_cipher_preserves_plaintext_headers():
+    """Plaintext auth headers must survive validation when a cipher is in
+    the context.
+
+    Regression test: agent-canvas (and any other client that round-trips
+    encrypted agent secrets via ``secrets_encrypted=True``) sends a
+    ``LookupSecret`` whose ``headers`` carry a plaintext ``X-Session-API-Key``
+    used to authenticate the lazy lookup. The validator used to feed that
+    plaintext header through ``cipher.decrypt`` (because the header name
+    matches a secret pattern), which fails and used to drop the header
+    silently. The runtime ``httpx.get`` then made an unauthenticated request
+    to the agent-server and got a 401, so the secret value was never
+    available to the conversation.
+    """
+    cipher = Cipher(secret_key="some secret key")
+    plaintext_session_key = "plaintext-session-api-key-value"
+
+    serialized = {
+        "kind": "LookupSecret",
+        "url": "http://localhost:8000/api/settings/secrets/MY_TOKEN",
+        "headers": {
+            "X-Session-API-Key": plaintext_session_key,
+            "Content-Type": "application/json",
+        },
+    }
+
+    validated = LookupSecret.model_validate(serialized, context={"cipher": cipher})
+
+    # Plaintext auth header survives despite cipher being in context.
+    assert validated.headers["X-Session-API-Key"] == plaintext_session_key
+    # Non-secret headers are still pass-through.
+    assert validated.headers["Content-Type"] == "application/json"
+
+
+def test_lookup_secret_validate_with_cipher_decrypts_encrypted_headers():
+    """Round-trip encrypted headers with cipher should still decrypt.
+
+    Companion to the plaintext test above: when a header was actually
+    encrypted with the same cipher (e.g. loaded from at-rest storage),
+    validation must still decrypt it back to plaintext rather than treating
+    it as opaque ciphertext.
+    """
+    cipher = Cipher(secret_key="some secret key")
+    secret = LookupSecret(
+        url="https://my-oauth-service.com",
+        headers={"Authorization": "Bearer real-token"},
+    )
+
+    dumped = secret.model_dump(mode="json", context={"cipher": cipher})
+    # Sanity check: the header is encrypted on the wire.
+    assert dumped["headers"]["Authorization"] != "Bearer real-token"
+
+    validated = LookupSecret.model_validate(dumped, context={"cipher": cipher})
+    assert validated.headers["Authorization"] == "Bearer real-token"
+
+
+def test_lookup_secret_validate_with_cipher_drops_redacted_headers():
+    """Redacted headers must still be dropped, even when a cipher is set.
+
+    Confirms the plaintext-fallback fix doesn't accidentally resurrect
+    masked values like ``"**********"`` as if they were real auth material.
+    """
+    cipher = Cipher(secret_key="some secret key")
+    serialized = {
+        "kind": "LookupSecret",
+        "url": "https://my-oauth-service.com",
+        "headers": {
+            "Authorization": "**********",
+            "X-Access-Token": "",
+            "Content-Type": "application/json",
+        },
+    }
+
+    validated = LookupSecret.model_validate(serialized, context={"cipher": cipher})
+    assert "Authorization" not in validated.headers
+    assert "X-Access-Token" not in validated.headers
+    assert validated.headers["Content-Type"] == "application/json"
+
+
 def test_lookup_secret_author_header_not_redacted():
     """Test that legitimate 'Author' headers are NOT falsely redacted.
 

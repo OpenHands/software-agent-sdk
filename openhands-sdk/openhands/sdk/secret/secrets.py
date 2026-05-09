@@ -9,7 +9,11 @@ from pydantic import Field, SecretStr, field_serializer, field_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    is_redacted_secret,
+    serialize_secret,
+    validate_secret,
+)
 from openhands.sdk.utils.redact import is_secret_key
 
 
@@ -82,17 +86,33 @@ class LookupSecret(SecretSource):
     def _validate_secrets(cls, headers: dict[str, str], info):
         result = {}
         for key, value in headers.items():
-            if is_secret_key(key):
-                secret_value = validate_secret(SecretStr(value), info)
-                # Skip headers with redacted/empty secret values
-                if secret_value is None:
-                    logger.debug(
-                        f"Skipping redacted header '{key}' during deserialization"
-                    )
-                    continue
-                result[key] = secret_value.get_secret_value()
-            else:
+            if not is_secret_key(key):
                 result[key] = value
+                continue
+
+            # Drop empty / redacted header values up-front; they carry no
+            # usable auth material regardless of cipher state.
+            if not value or not value.strip() or is_redacted_secret(value):
+                logger.debug(f"Skipping redacted header '{key}' during deserialization")
+                continue
+
+            secret_value = validate_secret(SecretStr(value), info)
+            if secret_value is None:
+                # validate_secret only returns None for a non-empty input when
+                # a cipher was supplied in the validation context but
+                # decryption failed. That happens when callers (e.g. a frontend
+                # building a LookupSecret) send a plaintext auth header but
+                # the request is otherwise tagged as containing encrypted
+                # secrets. Preserve the original value rather than silently
+                # dropping the header — the caller's intent for headers is
+                # always plaintext authentication metadata.
+                logger.debug(
+                    f"Header '{key}' could not be decrypted; "
+                    "treating value as plaintext"
+                )
+                result[key] = value
+            else:
+                result[key] = secret_value.get_secret_value()
         return result
 
     @field_serializer("headers", when_used="always")
