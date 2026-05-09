@@ -192,18 +192,24 @@ async def test_git_changes_query_param_ref_head_on_orphan_branch_returns_200(
     short-circuit doesn't catch this case (commits exist on main), so the
     fix has to come from the ``rev-parse`` failure handler instead.
     """
+
     # Arrange: repo with one commit on main, then switch to an orphan branch.
-    run = lambda *args: subprocess.run(  # noqa: E731
-        ["git", *args], cwd=tmp_path, check=True, capture_output=True
-    )
-    run("init")
-    run("config", "user.email", "test@example.com")
-    run("config", "user.name", "Test")
+    def run_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    run_git("init")
+    run_git("config", "user.email", "test@example.com")
+    run_git("config", "user.name", "Test")
     (tmp_path / "committed.txt").write_text("on main")
-    run("add", ".")
-    run("commit", "-m", "on main")
-    run("checkout", "--orphan", "orphan")
-    run("rm", "-rf", "--cached", ".")
+    run_git("add", ".")
+    run_git("commit", "-m", "on main")
+    run_git("checkout", "--orphan", "orphan")
+    run_git("rm", "-rf", "--cached", ".")
     (tmp_path / "untracked.txt").write_text("new")
 
     # Act
