@@ -11,8 +11,13 @@ from openhands.agent_server._secrets_exposure import (
     build_expose_context,
     decrypt_incoming_llm_secrets,
     get_cipher,
+    get_config,
     parse_expose_secrets_header,
     translate_missing_cipher,
+)
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_settings_store,
 )
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
@@ -44,6 +49,7 @@ class ProfileInfo(BaseModel):
 
 class ProfileListResponse(BaseModel):
     profiles: list[ProfileInfo]
+    active_profile: str | None = None
 
 
 class ProfileDetailResponse(BaseModel):
@@ -100,12 +106,27 @@ def _has_api_key(llm: LLM) -> bool:
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
-async def list_profiles() -> ProfileListResponse:
-    """List all saved LLM profiles."""
+async def list_profiles(request: Request) -> ProfileListResponse:
+    """List all saved LLM profiles.
+
+    Returns the list of profiles along with the currently active profile name,
+    if one has been activated. The active_profile tracks which LLM profile
+    configuration is currently in use.
+    """
     store = LLMProfileStore()
     with _store_errors():
         summaries = store.list_summaries()
-    return ProfileListResponse(profiles=[ProfileInfo(**s) for s in summaries])
+
+    # Get the active profile from persisted settings
+    config = get_config(request)
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    active_profile = settings.active_profile
+
+    return ProfileListResponse(
+        profiles=[ProfileInfo(**s) for s in summaries],
+        active_profile=active_profile,
+    )
 
 
 @profiles_router.get("/{name}", response_model=ProfileDetailResponse)
@@ -228,3 +249,71 @@ async def rename_profile(
         message = f"Profile '{name}' renamed to '{body.new_name}'"
     logger.info(message)
     return ProfileMutationResponse(name=body.new_name, message=message)
+
+
+class ActivateProfileResponse(BaseModel):
+    """Response model for profile activation."""
+
+    name: str
+    message: str
+    llm_applied: bool = True
+
+
+@profiles_router.post("/{name}/activate", response_model=ActivateProfileResponse)
+async def activate_profile(request: Request, name: ProfileName) -> ActivateProfileResponse:
+    """Activate a saved LLM profile.
+
+    This endpoint:
+    1. Loads the named profile's LLM configuration
+    2. Applies it to the current agent settings (updates ``agent_settings.llm``)
+    3. Records the profile name as the active profile for frontend tracking
+
+    Returns 404 if the profile does not exist.
+
+    Use ``GET /api/profiles`` to see which profile is currently active via
+    the ``active_profile`` field.
+    """
+    cipher = get_cipher(request)
+    config = get_config(request)
+
+    # Load the profile
+    profile_store = LLMProfileStore()
+    try:
+        with _store_errors():
+            llm = profile_store.load(name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Profile '{name}' not found",
+        )
+
+    # Apply the LLM config to settings and record active profile
+    settings_store = get_settings_store(config)
+
+    def apply_profile(settings: PersistedSettings) -> PersistedSettings:
+        # Update the LLM configuration
+        llm_dict = llm.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+        settings.update({
+            "agent_settings_diff": {"llm": llm_dict},
+            "active_profile": name,
+        })
+        return settings
+
+    try:
+        settings_store.update(apply_profile)
+    except (OSError, PermissionError):
+        logger.error("Failed to activate profile - file I/O error")
+        raise HTTPException(status_code=500, detail="Failed to activate profile")
+    except RuntimeError as e:
+        logger.error(f"Failed to activate profile: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settings file is corrupted or encrypted with a different key",
+        )
+
+    logger.info(f"Activated profile '{name}'")
+    return ActivateProfileResponse(
+        name=name,
+        message=f"Profile '{name}' activated and applied to current settings",
+        llm_applied=True,
+    )

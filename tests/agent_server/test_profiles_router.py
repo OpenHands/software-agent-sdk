@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
+from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 
@@ -24,8 +25,23 @@ def temp_profiles_dir():
 
 
 @pytest.fixture
-def client(temp_profiles_dir):
-    """Create test client with isolated profiles directory and NO cipher."""
+def temp_settings_dir():
+    """Create a temporary directory for settings."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        settings_dir = Path(tmpdir) / "settings"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        yield settings_dir
+
+
+@pytest.fixture
+def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
+    """Create test client with isolated profiles and settings directories and NO cipher."""
+    # Reset store singletons to ensure clean state
+    reset_stores()
+
+    # Set environment variable for persistence directory
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+
     # Explicitly disable cipher by setting secret_key to None
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
@@ -36,6 +52,9 @@ def client(temp_profiles_dir):
         lambda: LLMProfileStore(base_dir=temp_profiles_dir),
     ):
         yield TestClient(app)
+
+    # Reset stores after test
+    reset_stores()
 
 
 @pytest.fixture
@@ -616,9 +635,15 @@ def secret_key():
 
 
 @pytest.fixture
-def client_with_cipher(temp_profiles_dir, secret_key):
+def client_with_cipher(temp_profiles_dir, temp_settings_dir, secret_key, monkeypatch):
     """Create test client with cipher configured."""
     from pydantic import SecretStr
+
+    # Reset store singletons to ensure clean state
+    reset_stores()
+
+    # Set environment variable for persistence directory
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
 
     config = Config(
         static_files_path=None,
@@ -632,6 +657,9 @@ def client_with_cipher(temp_profiles_dir, secret_key):
         lambda: LLMProfileStore(base_dir=temp_profiles_dir),
     ):
         yield TestClient(app)
+
+    # Reset stores after test
+    reset_stores()
 
 
 @pytest.fixture
@@ -826,3 +854,116 @@ def test_save_without_cipher_stores_plaintext_for_backward_compat(client, store)
     profile_path = store.base_dir / "plaintext-profile.json"
     data = json.loads(profile_path.read_text())
     assert data["api_key"] == "sk-plain-secret"
+
+
+# ── Active Profile Tests ───────────────────────────────────────────────────
+
+
+def test_list_profiles_includes_active_profile_null_by_default(client):
+    """GET /api/profiles returns active_profile as null when none is active."""
+    response = client.get("/api/profiles")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "active_profile" in body
+    assert body["active_profile"] is None
+
+
+def test_activate_profile_success(client, store):
+    """POST /api/profiles/{name}/activate activates a profile."""
+    llm = LLM(model="gpt-4o", api_key="sk-test-key")
+    store.save("my-profile", llm, include_secrets=True)
+
+    response = client.post("/api/profiles/my-profile/activate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "my-profile"
+    assert "activated" in body["message"].lower()
+    assert body["llm_applied"] is True
+
+
+def test_activate_profile_updates_active_profile(client, store):
+    """POST /api/profiles/{name}/activate updates the active_profile field."""
+    llm = LLM(model="gpt-4o")
+    store.save("first-profile", llm)
+    store.save("second-profile", llm)
+
+    # Activate first profile
+    client.post("/api/profiles/first-profile/activate")
+    list_response = client.get("/api/profiles")
+    assert list_response.json()["active_profile"] == "first-profile"
+
+    # Activate second profile
+    client.post("/api/profiles/second-profile/activate")
+    list_response = client.get("/api/profiles")
+    assert list_response.json()["active_profile"] == "second-profile"
+
+
+def test_activate_profile_applies_llm_config(client, store):
+    """POST /api/profiles/{name}/activate applies the profile's LLM config."""
+    llm = LLM(model="claude-3-opus", temperature=0.8)
+    store.save("claude-profile", llm)
+
+    client.post("/api/profiles/claude-profile/activate")
+
+    # Verify the settings were updated
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    agent_settings = settings_response.json()["agent_settings"]
+    assert agent_settings["llm"]["model"] == "claude-3-opus"
+    assert agent_settings["llm"]["temperature"] == 0.8
+
+
+def test_activate_profile_not_found(client):
+    """POST /api/profiles/{name}/activate returns 404 for non-existent profile."""
+    response = client.post("/api/profiles/nonexistent/activate")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_activate_profile_with_api_key(client, store):
+    """POST /api/profiles/{name}/activate applies profile with api_key."""
+    llm = LLM(model="gpt-4o", api_key="sk-profile-secret")
+    store.save("with-key", llm, include_secrets=True)
+
+    client.post("/api/profiles/with-key/activate")
+
+    # Verify the API key was applied (check llm_api_key_is_set)
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["llm_api_key_is_set"] is True
+
+
+def test_list_profiles_shows_active_after_activation(client, store):
+    """GET /api/profiles shows the correct active_profile after activation."""
+    llm = LLM(model="gpt-4o")
+    store.save("profile-a", llm)
+    store.save("profile-b", llm)
+
+    # Initially no active profile
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] is None
+
+    # Activate profile-a
+    client.post("/api/profiles/profile-a/activate")
+    response = client.get("/api/profiles")
+    body = response.json()
+    assert body["active_profile"] == "profile-a"
+
+    # Verify profile-a is in the list
+    names = {p["name"] for p in body["profiles"]}
+    assert "profile-a" in names
+    assert "profile-b" in names
+
+
+def test_activate_profile_invalid_name(client):
+    """POST /api/profiles/{name}/activate rejects invalid profile names."""
+    # Path traversal attempt
+    response = client.post("/api/profiles/..%2Fetc%2Fpasswd/activate")
+    assert response.status_code in (404, 422)
+
+    # Hidden file attempt
+    response = client.post("/api/profiles/.hidden/activate")
+    assert response.status_code in (400, 404, 422)
