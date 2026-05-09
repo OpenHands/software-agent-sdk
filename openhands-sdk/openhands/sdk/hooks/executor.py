@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import opentelemetry.context as otel_context
 from pydantic import BaseModel
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.hooks.config import HookDefinition, HookType
 from openhands.sdk.hooks.types import HookDecision, HookEvent
 from openhands.sdk.observability.laminar import observe
@@ -144,10 +145,14 @@ class HookExecutor:
         working_dir: str | None = None,
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
+        persistence_dir: str | None = None,
+        visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
     ):
         self.working_dir = working_dir or os.getcwd()
         self.async_process_manager = async_process_manager or AsyncProcessManager()
         self.llm = llm
+        self.persistence_dir = persistence_dir
+        self.visualizer = visualizer
 
     @observe(
         name="hook.execute.agent",
@@ -161,8 +166,8 @@ class HookExecutor:
     ) -> HookResult:
         """Execute an agent-based hook by spawning a short-lived sub-conversation.
 
-        The sub-conversation inherits the parent LLM, runs with read-only tools
-        and no hooks (preventing recursion), and must return a JSON decision.
+        The sub-conversation inherits the parent LLM, runs with user-configured
+        tools and no hooks (preventing recursion), and must return a JSON decision.
         """
         # Lazy imports to avoid circular dependency:
         # executor <- manager <- conversation_hooks <- local_conversation -> executor
@@ -188,22 +193,6 @@ class HookExecutor:
                 reason="No LLM configured for agent hook",
             )
 
-        no_policy = "No additional policy specified. Use your best judgment."
-        system_prompt = (
-            "You are a security policy evaluator for an AI coding agent. "
-            "Your only job is to decide whether an agent operation"
-            " should be allowed or denied.\n\n"
-            f"## Hook Event\n```json\n{event.model_dump_json(indent=2)}\n```\n\n"
-            "## Instructions\n"
-            "Use the available tools to investigate if needed (e.g. read files"
-            " in the working directory). Then call `finish` with a JSON string"
-            " as the message:\n"
-            '  {"decision": "allow" | "deny", "reason": "<brief explanation>"}\n\n'
-            "When in doubt, prefer `allow`. Only deny when the operation clearly"
-            " violates the policy below.\n\n"
-            f"## Policy\n{hook.prompt or no_policy}"
-        )
-
         # Isolated LLM copy — hook metrics not attributed to the parent conversation.
         hook_llm = self.llm.model_copy(update={"usage_id": "hook-agent-evaluator"})
         hook_llm.reset_metrics()
@@ -216,12 +205,9 @@ class HookExecutor:
         try:
             agent = Agent(
                 llm=hook_llm,
-                tools=[
-                    Tool(name="GrepTool"),
-                    Tool(name="GlobTool"),
-                ],
+                tools=[Tool(name=t) for t in hook.tools],
                 include_default_tools=["FinishTool"],
-                system_prompt=system_prompt,
+                system_prompt=hook.system_prompt,
             )
             # hook_config=None disables all hooks in the sub-conversation (no recursion)
             conversation = LocalConversation(
@@ -229,12 +215,14 @@ class HookExecutor:
                 workspace=self.working_dir,
                 plugins=None,
                 hook_config=None,
-                persistence_dir=None,
-                visualizer=None,
-                max_iteration_per_run=10,
+                persistence_dir=self.persistence_dir,
+                visualizer=self.visualizer,
+                max_iteration_per_run=hook.max_iterations,
             )
+            # Event payload is always injected — the agent needs it to evaluate.
             conversation.send_message(
-                f"Evaluate this {event_type} hook event and make your decision."
+                f"Evaluate this {event_type} hook event and make your decision.\n\n"
+                f"## Hook Event\n```json\n{event.model_dump_json(indent=2)}\n```"
             )
 
             def _run_with_context() -> None:
@@ -254,6 +242,7 @@ class HookExecutor:
                         f"Agent hook timed out after {hook.timeout}s"
                         f" for event '{event_type}' — defaulting to allow"
                     )
+                    conversation.pause()
                     return HookResult(
                         success=False,
                         decision=HookDecision.ALLOW,
@@ -263,8 +252,6 @@ class HookExecutor:
                         ),
                     )
             finally:
-                # Don't block waiting for the thread — the conversation may still be
-                # running but we've already returned or moved on.
                 pool.shutdown(wait=False)
             raw = get_agent_final_response(conversation.state.events)
         except Exception as e:

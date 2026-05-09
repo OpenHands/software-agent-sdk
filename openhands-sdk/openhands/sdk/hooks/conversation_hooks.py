@@ -18,6 +18,8 @@ from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
+
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.llm import LLM
@@ -391,6 +393,8 @@ def create_hook_callback(
     original_callback: Any = None,
     emit_hook_events: bool = True,
     llm: "LLM | None" = None,
+    persistence_dir: str | None = None,
+    visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
 ) -> tuple[HookEventProcessor, Any]:
     """Create a hook-enabled event callback. Returns (processor, callback).
 
@@ -402,6 +406,8 @@ def create_hook_callback(
         emit_hook_events: If True, emit HookExecutionEvent for each hook execution.
             Defaults to True for full observability.
         llm: LLM instance inherited from the parent conversation, used by agent hooks.
+        persistence_dir: Directory used to persist agent hook sub-conversation events.
+        visualizer: Visualizer instance passed to agent hook sub-conversations.
 
     Returns:
         Tuple of (HookEventProcessor, callback function).
@@ -411,6 +417,8 @@ def create_hook_callback(
         working_dir=working_dir,
         session_id=session_id,
         llm=llm,
+        persistence_dir=persistence_dir,
+        visualizer=visualizer,
     )
 
     processor = HookEventProcessor(
