@@ -63,8 +63,9 @@ def _build_worktree_guidance(
         f"- Worktree root: {worktree_root}\n"
         f"- Active workspace: {workspace_dir}\n"
         f"- Branch: {branch}\n"
-        "Do all file and git work inside this worktree, keep your changes on "
-        "this branch, and do not switch back to the original workspace."
+        "Do all file and git work inside this worktree. Do your work on a new, "
+        "appropriately-named branch, based off the main/master branch, "
+        "and do not switch back to the original workspace."
     )
 
 
