@@ -293,6 +293,7 @@ async def delete_profile(name: ProfileName) -> ProfileMutationResponse:
 
 @profiles_router.post("/{name}/rename", response_model=ProfileMutationResponse)
 async def rename_profile(
+    request: Request,
     name: ProfileName,
     body: RenameProfileRequest,
 ) -> ProfileMutationResponse:
@@ -300,6 +301,9 @@ async def rename_profile(
 
     Returns 404 if the source does not exist, or 409 if ``new_name`` already
     exists. A same-name rename is a verified no-op (still 404s if missing).
+
+    If the renamed profile is the currently active profile, the active_profile
+    setting is updated to the new name.
     """
     store = LLMProfileStore()
     try:
@@ -315,6 +319,22 @@ async def rename_profile(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Profile '{body.new_name}' already exists",
         )
+
+    # Update active_profile if the renamed profile was the active one
+    if name != body.new_name:
+        config = get_config(request)
+        settings_store = get_settings_store(config)
+        settings = settings_store.load() or PersistedSettings()
+
+        if settings.active_profile == name:
+            new_name = body.new_name
+
+            def update_active(s: PersistedSettings) -> PersistedSettings:
+                s.active_profile = new_name
+                return s
+
+            settings_store.update(update_active)
+            logger.info(f"Updated active_profile from '{name}' to '{new_name}'")
 
     if name == body.new_name:
         message = f"Profile '{name}' unchanged (same name)"

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server import profiles_router as profiles_router_module
 from openhands.agent_server.api import create_app
@@ -967,6 +968,59 @@ def test_activate_profile_invalid_name(client):
     # Hidden file attempt
     response = client.post("/api/profiles/.hidden/activate")
     assert response.status_code in (400, 404, 422)
+
+
+# ── Rename Active Profile Tests ───────────────────────────────────────────
+
+
+def test_rename_active_profile_updates_active_profile(client, store):
+    """Renaming the active profile should update active_profile in settings."""
+    # Create and activate a profile
+    llm = LLM(model="gpt-4o", api_key=SecretStr("sk-test"))
+    store.save("my-profile", llm)
+    client.post("/api/profiles/my-profile/activate")
+
+    # Verify it's active
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] == "my-profile"
+
+    # Rename the active profile
+    response = client.post(
+        "/api/profiles/my-profile/rename",
+        json={"new_name": "renamed-profile"},
+    )
+    assert response.status_code == 200
+
+    # Verify active_profile was updated to the new name
+    response = client.get("/api/profiles")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active_profile"] == "renamed-profile"
+    assert len(body["profiles"]) == 1
+    assert body["profiles"][0]["name"] == "renamed-profile"
+
+
+def test_rename_inactive_profile_preserves_active_profile(client, store):
+    """Renaming a non-active profile should not change active_profile."""
+    # Create two profiles
+    llm1 = LLM(model="gpt-4o", api_key=SecretStr("sk-test1"))
+    llm2 = LLM(model="claude-3-opus", api_key=SecretStr("sk-test2"))
+    store.save("profile-a", llm1)
+    store.save("profile-b", llm2)
+
+    # Activate profile-a
+    client.post("/api/profiles/profile-a/activate")
+
+    # Rename profile-b (not the active one)
+    response = client.post(
+        "/api/profiles/profile-b/rename",
+        json={"new_name": "profile-b-renamed"},
+    )
+    assert response.status_code == 200
+
+    # Verify active_profile is still profile-a
+    response = client.get("/api/profiles")
+    assert response.json()["active_profile"] == "profile-a"
 
 
 # ── Auto-Create Profile Tests ─────────────────────────────────────────────
