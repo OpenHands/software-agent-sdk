@@ -5,6 +5,7 @@
 import { HttpClient } from '../client/http-client';
 import { DesktopClient } from '../client/desktop-client';
 import { LLMMetadataClient } from '../client/llm-client';
+import { ProfilesClient } from '../client/profiles-client';
 import { ServerClient } from '../client/server-client';
 import { SettingsClient } from '../client/settings-client';
 import { SkillsClient } from '../client/skills-client';
@@ -73,6 +74,7 @@ export class ConversationManager {
   public readonly apiKey?: string;
   public readonly server: ServerClient;
   public readonly llm: LLMMetadataClient;
+  public readonly profiles: ProfilesClient;
   public readonly settings: SettingsClient;
   public readonly skills: SkillsClient;
   public readonly tools: ToolClient;
@@ -97,6 +99,7 @@ export class ConversationManager {
 
     this.server = new ServerClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
+    this.profiles = new ProfilesClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.skills = new SkillsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
@@ -359,6 +362,7 @@ export class ConversationManager {
   close(): void {
     this.server.close();
     this.llm.close();
+    this.profiles.close();
     this.settings.close();
     this.skills.close();
     this.tools.close();

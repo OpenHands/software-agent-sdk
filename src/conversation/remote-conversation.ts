@@ -293,6 +293,15 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
+   * Swap the conversation's LLM to a caller-supplied object. For app-servers
+   * that own the LLM directly and don't push profiles to the agent-server's
+   * filesystem.
+   */
+  async switchLlm(llm: LLM): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_llm`, { llm });
+  }
+
+  /**
    * Fork the current conversation and return a new RemoteConversation instance.
    */
   async fork(request: ForkConversationRequest = {}): Promise<RemoteConversation> {

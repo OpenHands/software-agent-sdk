@@ -2,6 +2,8 @@
  * Models for auxiliary Agent Server APIs.
  */
 
+import { LLM } from '../types/base';
+
 export interface AliveStatus {
   status: string;
 }
@@ -89,3 +91,43 @@ export interface VSCodeStatusResponse {
   enabled: boolean;
   message?: string;
 }
+
+export interface ProfileInfo {
+  name: string;
+  model: string | null;
+  base_url: string | null;
+  api_key_set: boolean;
+}
+
+export interface ProfileListResponse {
+  profiles: ProfileInfo[];
+  active_profile: string | null;
+}
+
+export interface ProfileDetailResponse {
+  name: string;
+  config: Record<string, unknown>;
+  api_key_set: boolean;
+}
+
+export interface ProfileMutationResponse {
+  name: string;
+  message: string;
+}
+
+export interface ActivateProfileResponse {
+  name: string;
+  message: string;
+  llm_applied: boolean;
+}
+
+export interface SaveProfileRequest {
+  llm: LLM;
+  include_secrets?: boolean;
+}
+
+export interface RenameProfileRequest {
+  new_name: string;
+}
+
+export type ExposeSecretsMode = 'encrypted' | 'plaintext';
