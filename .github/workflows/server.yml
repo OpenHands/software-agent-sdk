@@ -286,6 +286,8 @@ jobs:
                   cache-to: type=gha,mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
+                      OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
+                      OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
 
             - name: Cleanup build context
               if: always()
