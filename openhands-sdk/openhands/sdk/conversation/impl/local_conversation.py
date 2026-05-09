@@ -98,7 +98,6 @@ class LocalConversation(BaseConversation):
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
-        max_consecutive_stop_denials: int = 5,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -110,6 +109,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        max_consecutive_stop_denials: int = 5,
         **_: object,
     ):
         """Initialize the conversation.
@@ -800,19 +800,20 @@ class LocalConversation(BaseConversation):
                             )
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
-                                if consecutive_stop_denials > 0 and any(
-                                    isinstance(self._state.events[i], ActionEvent)
-                                    for i in range(
-                                        events_count_at_last_deny,
-                                        len(self._state.events),
-                                    )
-                                ):
-                                    consecutive_stop_denials = 0
+                                if consecutive_stop_denials > 0:
+                                    recent_events = self._state.events[
+                                        events_count_at_last_deny:
+                                    ]
+                                    if any(
+                                        isinstance(e, ActionEvent)
+                                        for e in recent_events
+                                    ):
+                                        consecutive_stop_denials = 0
                                 consecutive_stop_denials += 1
 
                                 if (
                                     consecutive_stop_denials
-                                    > self.max_consecutive_stop_denials
+                                    >= self.max_consecutive_stop_denials
                                 ):
                                     error_msg = (
                                         f"Stop hook denied {consecutive_stop_denials}"

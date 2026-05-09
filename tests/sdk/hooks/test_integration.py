@@ -965,10 +965,10 @@ class TestStopHookConversationIntegration:
             and e.hook_event_type == "Stop"
             and e.blocked
         ]
-        assert len(deny_events) == max_denials + 1
+        assert len(deny_events) == max_denials
 
     def test_stop_hook_deny_streak_resets_on_action_progress(self, tmp_path):
-        # Streak limit 2; hook denies 4 times then allows. An ActionEvent
+        # Streak limit 3; hook denies 4 times then allows. An ActionEvent
         # between denials 2 and 3 must reset the streak so we don't abort.
         stop_count_file = tmp_path / "stop_count"
         stop_count_file.write_text("0")
@@ -1022,7 +1022,7 @@ class TestStopHookConversationIntegration:
                 callbacks=[events_captured.append],
                 visualizer=None,
                 max_iteration_per_run=100,
-                max_consecutive_stop_denials=2,
+                max_consecutive_stop_denials=3,
             )
             conversation.send_message("Hello")
             conversation.run()
