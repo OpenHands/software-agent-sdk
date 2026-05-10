@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
@@ -26,7 +27,10 @@ from openhands.agent_server.conversation_router_acp import conversation_router_a
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
-from openhands.agent_server.dependencies import create_session_api_key_dependency
+from openhands.agent_server.dependencies import (
+    create_session_api_key_dependency,
+    create_workspace_session_dependency,
+)
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
@@ -264,6 +268,9 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     """
     app.include_router(server_details_router)
 
+    # Header-only auth: applied to every /api/* route EXCEPT the workspace
+    # static-file routes (handled separately below). Cookies are NOT honored
+    # here so that we don't expand the CSRF surface across the whole API.
     dependencies = []
     if config.session_api_keys:
         dependencies.append(Depends(create_session_api_key_dependency(config)))
@@ -272,7 +279,6 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
     api_router.include_router(conversation_router_acp)
-    api_router.include_router(workspace_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
@@ -285,7 +291,25 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(settings_router)
     api_router.include_router(profiles_router)
     api_router.include_router(cloud_proxy_router)
+    # /api/auth/* mints workspace cookies and requires the header to bootstrap,
+    # so it lives under the header-only auth group.
+    api_router.include_router(auth_router)
     app.include_router(api_router)
+
+    # Workspace static-file routes get their own auth group that accepts
+    # EITHER the X-Session-API-Key header OR the workspace session cookie.
+    # The cookie is required so that <iframe src> / <img src> embeds of
+    # workspace artifacts work — browsers cannot attach custom headers to
+    # those requests.
+    workspace_dependencies = []
+    if config.session_api_keys:
+        workspace_dependencies.append(
+            Depends(create_workspace_session_dependency(config))
+        )
+    workspace_api_router = APIRouter(prefix="/api", dependencies=workspace_dependencies)
+    workspace_api_router.include_router(workspace_router)
+    app.include_router(workspace_api_router)
+
     app.include_router(sockets_router)
 
 
