@@ -160,3 +160,70 @@ def test_unknown_conversation_returns_404(client_factory, tmp_path):
 
     resp = client.get(f"/api/conversations/{other}/workspace/anything.txt")
     assert resp.status_code == 404
+
+
+def test_symlink_pointing_outside_workspace_is_rejected(client_factory, tmp_path):
+    """A symlink whose target sits outside the workspace must not be served."""
+    cid = uuid4()
+    outside = tmp_path.parent / "secret.txt"
+    outside.write_text("secret data")
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    symlink = workspace / "link"
+    symlink.symlink_to(outside)
+
+    client = client_factory(conversation_id=cid, workspace_dir=workspace)
+
+    resp = client.get(f"/api/conversations/{cid}/workspace/link")
+
+    # ``resolve()`` follows the symlink, so the resolved path lands outside
+    # the workspace root and the handler rejects it.
+    assert resp.status_code == 400
+    assert "secret data" not in resp.text
+
+
+def test_symlink_pointing_inside_workspace_is_served(client_factory, tmp_path):
+    """A symlink whose target stays inside the workspace is still served."""
+    cid = uuid4()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = workspace / "real.txt"
+    target.write_text("hello via symlink")
+    link = workspace / "alias.txt"
+    link.symlink_to(target)
+
+    client = client_factory(conversation_id=cid, workspace_dir=workspace)
+
+    resp = client.get(f"/api/conversations/{cid}/workspace/alias.txt")
+    assert resp.status_code == 200
+    assert resp.text == "hello via symlink"
+
+
+def test_non_local_workspace_returns_404(tmp_path):
+    """A conversation backed by a non-local workspace cannot be served."""
+    from openhands.sdk.workspace.remote.base import RemoteWorkspace
+
+    cid = uuid4()
+    app = FastAPI()
+    app.include_router(workspace_router, prefix="/api")
+
+    event_service = AsyncMock(spec=EventService)
+    event_service.stored = SimpleNamespace(
+        workspace=RemoteWorkspace(
+            host="https://example.invalid", working_dir="/workspace"
+        )
+    )
+    conversation_service = AsyncMock(spec=ConversationService)
+
+    async def _get_event_service(found_cid: UUID):
+        return event_service if found_cid == cid else None
+
+    conversation_service.get_event_service.side_effect = _get_event_service
+    app.dependency_overrides[get_conversation_service] = lambda: conversation_service
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.get(f"/api/conversations/{cid}/workspace/anything.txt")
+
+    assert resp.status_code == 404
+    assert "not local" in resp.json()["detail"].lower()
