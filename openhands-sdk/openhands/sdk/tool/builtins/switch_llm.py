@@ -83,6 +83,15 @@ _DESCRIPTION_TEMPLATE = (
 )
 
 
+def get_llm_profile_names() -> list[str]:
+    """Return saved LLM profile names that can be shown to the agent."""
+    return [summary["name"] for summary in LLMProfileStore().list_summaries()]
+
+
+def has_llm_profiles() -> bool:
+    return bool(get_llm_profile_names())
+
+
 def _format_profiles(profile_names: Sequence[str]) -> str:
     if not profile_names:
         return "- No saved LLM profiles are currently available."
@@ -155,9 +164,7 @@ class SwitchLLMTool(ToolDefinition[SwitchLLMAction, SwitchLLMObservation]):
         if params:
             raise ValueError("SwitchLLMTool doesn't accept parameters")
 
-        profile_names = [
-            name.removesuffix(".json") for name in LLMProfileStore().list()
-        ]
+        profile_names = get_llm_profile_names()
         return [
             cls(
                 description=_DESCRIPTION_TEMPLATE.format(

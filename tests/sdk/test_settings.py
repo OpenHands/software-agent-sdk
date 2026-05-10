@@ -66,6 +66,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "agent",
         "tools",
         "enable_sub_agents",
+        "enable_switch_llm_tool",
         "mcp_config",
     }
     assert general_fields["agent"].default == "CodeActAgent"
@@ -76,6 +77,11 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["enable_sub_agents"].value_type == "boolean"
     assert general_fields["enable_sub_agents"].default is False
     assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
+    assert general_fields["enable_switch_llm_tool"].value_type == "boolean"
+    assert general_fields["enable_switch_llm_tool"].default is True
+    assert (
+        general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
+    )
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -255,7 +261,13 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
-    assert general_keys == {"agent", "tools", "enable_sub_agents", "mcp_config"}
+    assert general_keys == {
+        "agent",
+        "tools",
+        "enable_sub_agents",
+        "enable_switch_llm_tool",
+        "mcp_config",
+    }
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys

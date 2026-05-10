@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk import LLM, LocalConversation
+from openhands.sdk import LLM, LocalConversation, OpenHandsAgentSettings
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
@@ -19,15 +19,20 @@ def _make_llm(model: str, usage_id: str) -> LLM:
 
 
 @pytest.fixture()
-def profile_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> LLMProfileStore:
+def empty_profile_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> LLMProfileStore:
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
     monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+    return LLMProfileStore(base_dir=profile_dir)
 
-    store = LLMProfileStore(base_dir=profile_dir)
-    store.save("fast", _make_llm("fast-model", "fast"))
-    store.save("slow", _make_llm("slow-model", "slow"))
-    return store
+
+@pytest.fixture()
+def profile_store(empty_profile_store: LLMProfileStore) -> LLMProfileStore:
+    empty_profile_store.save("fast", _make_llm("fast-model", "fast"))
+    empty_profile_store.save("slow", _make_llm("slow-model", "slow"))
+    return empty_profile_store
 
 
 def _make_conversation() -> LocalConversation:
@@ -47,6 +52,43 @@ def test_switch_llm_tool_description_lists_available_profiles(profile_store):
     assert "Available LLM profiles:" in tool.description
     assert "- fast" in tool.description
     assert "- slow" in tool.description
+
+
+def test_agent_settings_includes_switch_llm_tool_when_profiles_exist(profile_store):
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default")
+    ).create_agent()
+
+    assert "SwitchLLMTool" in agent.include_default_tools
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    conversation._ensure_agent_ready()
+    assert "switch_llm" in agent.tools_map
+
+
+def test_agent_settings_omits_switch_llm_tool_when_disabled(profile_store):
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default"),
+        enable_switch_llm_tool=False,
+    ).create_agent()
+
+    assert "SwitchLLMTool" not in agent.include_default_tools
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    conversation._ensure_agent_ready()
+    assert "switch_llm" not in agent.tools_map
+
+
+def test_agent_settings_omits_switch_llm_tool_without_profiles(empty_profile_store):
+    agent = OpenHandsAgentSettings(
+        llm=_make_llm("default-model", "default")
+    ).create_agent()
+
+    assert "SwitchLLMTool" not in agent.include_default_tools
+
+    conversation = LocalConversation(agent=agent, workspace=Path.cwd())
+    conversation._ensure_agent_ready()
+    assert "switch_llm" not in agent.tools_map
 
 
 def test_switch_llm_tool_switches_conversation_profile(profile_store):
