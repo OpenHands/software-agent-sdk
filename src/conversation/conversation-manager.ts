@@ -336,6 +336,15 @@ export class ConversationManager {
   }
 
   /**
+   * Switch a conversation to a named LLM profile.
+   */
+  async switchProfile(conversationId: ConversationID, profileName: string): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${conversationId}/switch_profile`, {
+      profile_name: profileName,
+    });
+  }
+
+  /**
    * Delete a conversation
    */
   async deleteConversation(conversationId: ConversationID): Promise<void> {

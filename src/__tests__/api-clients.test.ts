@@ -7,7 +7,14 @@ import {
   RemoteWorkspace,
   Workspace,
 } from '../index';
-import { BashClient, ProfilesClient, ServerClient, SkillsClient } from '../clients';
+import {
+  BashClient,
+  ConversationClient,
+  ProfilesClient,
+  ServerClient,
+  SettingsClient,
+  SkillsClient,
+} from '../clients';
 
 const originalFetch = global.fetch;
 
@@ -392,5 +399,112 @@ describe('Auxiliary API clients', () => {
 
     expect(response.data).toBeInstanceOf(Blob);
     expect(await response.data.text()).toBe('zip-data');
+  });
+  it('SettingsClient manages LLM profiles', async () => {
+    const responses = [
+      { profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }] },
+      { name: 'fast', config: { model: 'openai/gpt-4o', api_key: 'encrypted' }, api_key_set: true },
+      { name: 'fast', message: "Profile 'fast' saved" },
+      { name: 'slow', message: "Profile 'fast' renamed to 'slow'" },
+      { name: 'slow', message: "Profile 'slow' deleted" },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+
+    await expect(client.listProfiles()).resolves.toEqual({
+      profiles: [{ name: 'fast', model: 'openai/gpt-4o', base_url: null, api_key_set: true }],
+    });
+    await expect(client.getProfile('fast', { exposeSecrets: 'encrypted' })).resolves.toEqual({
+      name: 'fast',
+      config: { model: 'openai/gpt-4o', api_key: 'encrypted' },
+      api_key_set: true,
+    });
+    await client.saveProfile('fast', { llm: { model: 'openai/gpt-4o' } });
+    await client.renameProfile('fast', 'slow');
+    await client.deleteProfile('slow');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/profiles',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/profiles/fast',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ 'X-Expose-Secrets': 'encrypted' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/profiles/fast',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ llm: { model: 'openai/gpt-4o' } }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/profiles/fast/rename',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ new_name: 'slow' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/profiles/slow',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('ConversationClient.switchProfile posts the profile name', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.switchProfile('conversation-1', 'fast');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_profile',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ profile_name: 'fast' }),
+      })
+    );
+  });
+
+  it('ConversationManager.switchProfile posts the profile name', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const manager = new ConversationManager({ host: 'http://example.com' });
+    await manager.switchProfile('conversation-1', 'fast');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/switch_profile',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ profile_name: 'fast' }),
+      })
+    );
   });
 });

@@ -1,11 +1,26 @@
 import { HttpClient } from './http-client';
-import { SettingsSchema } from '../models/api';
+import type {
+  ExposeSecretsMode as ApiExposeSecretsMode,
+  ProfileDetailResponse,
+  ProfileInfo,
+  ProfileListResponse,
+  ProfileMutationResponse,
+  SaveProfileRequest,
+  SettingsSchema,
+} from '../models/api';
 
 export interface SettingsClientOptions {
   host: string;
   apiKey?: string;
   timeout?: number;
 }
+
+export type ExposeSecretsMode = ApiExposeSecretsMode;
+export type LLMProfileSummary = ProfileInfo;
+export type LLMProfileListResponse = ProfileListResponse;
+export type LLMProfileDetailResponse = ProfileDetailResponse;
+export type SaveLLMProfileRequest = SaveProfileRequest;
+export type LLMProfileMutationResponse = ProfileMutationResponse;
 
 export class SettingsClient {
   public readonly host: string;
@@ -29,6 +44,50 @@ export class SettingsClient {
 
   async getConversationSchema(): Promise<SettingsSchema> {
     const response = await this.client.get<SettingsSchema>('/api/settings/conversation-schema');
+    return response.data;
+  }
+
+  async listProfiles(): Promise<LLMProfileListResponse> {
+    const response = await this.client.get<LLMProfileListResponse>('/api/profiles');
+    return response.data;
+  }
+
+  async getProfile(
+    name: string,
+    options: { exposeSecrets?: ExposeSecretsMode } = {}
+  ): Promise<LLMProfileDetailResponse> {
+    const response = await this.client.get<LLMProfileDetailResponse>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      {
+        headers: options.exposeSecrets ? { 'X-Expose-Secrets': options.exposeSecrets } : undefined,
+      }
+    );
+    return response.data;
+  }
+
+  async saveProfile(
+    name: string,
+    request: SaveLLMProfileRequest
+  ): Promise<LLMProfileMutationResponse> {
+    const response = await this.client.post<LLMProfileMutationResponse>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      request
+    );
+    return response.data;
+  }
+
+  async deleteProfile(name: string): Promise<LLMProfileMutationResponse> {
+    const response = await this.client.delete<LLMProfileMutationResponse>(
+      `/api/profiles/${encodeURIComponent(name)}`
+    );
+    return response.data;
+  }
+
+  async renameProfile(name: string, newName: string): Promise<LLMProfileMutationResponse> {
+    const response = await this.client.post<LLMProfileMutationResponse>(
+      `/api/profiles/${encodeURIComponent(name)}/rename`,
+      { new_name: newName }
+    );
     return response.data;
   }
 
