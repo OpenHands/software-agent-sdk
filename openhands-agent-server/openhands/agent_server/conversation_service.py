@@ -69,33 +69,6 @@ def _build_worktree_guidance(
     )
 
 
-def _build_workspace_static_server_guidance(conversation_id: UUID) -> str:
-    # Imported lazily to avoid a circular import: workspace_router imports
-    # ConversationService from this module.
-    from openhands.agent_server.workspace_router import (
-        conversation_workspace_url_path,
-    )
-
-    url = conversation_workspace_url_path(conversation_id)
-    return (
-        "The contents of this conversation's workspace are exposed by the "
-        "agent server as a static website. To preview a file you have written "
-        "(for example to share a generated HTML report with the user), use "
-        f"the relative URL `{url}<path-relative-to-workspace>`. "
-        f"Requesting `{url}` (or a directory beneath it) serves that "
-        "directory's `index.html` if one exists."
-    )
-
-
-def _append_system_message_suffix(agent: AgentBase, guidance: str) -> AgentBase:
-    """Append ``guidance`` to ``agent.agent_context.system_message_suffix``."""
-    context = agent.agent_context or AgentContext()
-    existing_suffix = (context.system_message_suffix or "").strip()
-    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
-    updated_context = context.model_copy(update={"system_message_suffix": suffix})
-    return agent.model_copy(update={"agent_context": updated_context})
-
-
 def _append_worktree_guidance(
     agent: AgentBase,
     *,
@@ -104,20 +77,17 @@ def _append_worktree_guidance(
     workspace_dir: Path,
     branch: str,
 ) -> AgentBase:
+    context = agent.agent_context or AgentContext()
     guidance = _build_worktree_guidance(
         source_workspace=source_workspace,
         worktree_root=worktree_root,
         workspace_dir=workspace_dir,
         branch=branch,
     )
-    return _append_system_message_suffix(agent, guidance)
-
-
-def _append_workspace_static_server_guidance(
-    agent: AgentBase, conversation_id: UUID
-) -> AgentBase:
-    guidance = _build_workspace_static_server_guidance(conversation_id)
-    return _append_system_message_suffix(agent, guidance)
+    existing_suffix = (context.system_message_suffix or "").strip()
+    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
 
 
 def _get_worktree_start_point(repo_root: Path) -> str:
@@ -194,28 +164,22 @@ def _prepare_request_workspace(
     request: StartConversationRequest | StartACPConversationRequest,
     conversation_id: UUID,
 ) -> StartConversationRequest | StartACPConversationRequest:
-    workspace = request.workspace
-    agent = request.agent
+    if not request.worktree:
+        return request
 
-    if request.worktree:
-        worktree = _create_conversation_worktree(request.workspace, conversation_id)
-        if worktree is not None:
-            new_workspace, source_workspace, worktree_root, branch = worktree
-            agent = _append_worktree_guidance(
-                agent,
-                source_workspace=source_workspace,
-                worktree_root=worktree_root,
-                workspace_dir=Path(new_workspace.working_dir),
-                branch=branch,
-            )
-            workspace = new_workspace
+    worktree = _create_conversation_worktree(request.workspace, conversation_id)
+    if worktree is None:
+        return request
 
-    # Always inform the agent about the workspace static webserver. The agent
-    # may use it to share generated artefacts (HTML reports, plots, etc.) by
-    # writing files into the workspace and pointing the user at the URL.
-    agent = _append_workspace_static_server_guidance(agent, conversation_id)
-
-    return request.model_copy(update={"workspace": workspace, "agent": agent})
+    new_workspace, source_workspace, worktree_root, branch = worktree
+    agent = _append_worktree_guidance(
+        request.agent,
+        source_workspace=source_workspace,
+        worktree_root=worktree_root,
+        workspace_dir=Path(new_workspace.working_dir),
+        branch=branch,
+    )
+    return request.model_copy(update={"workspace": new_workspace, "agent": agent})
 
 
 logger = logging.getLogger(__name__)

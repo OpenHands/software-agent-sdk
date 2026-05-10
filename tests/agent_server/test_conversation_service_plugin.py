@@ -211,14 +211,8 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
             assert stored.plugins is not None
             assert len(stored.plugins) == 1
             assert stored.plugins[0].source == str(plugin_dir)
-            # Plugin-derived skills are NOT populated yet (lazy loading in
-            # LocalConversation). The workspace static-server guidance, which
-            # the agent server always appends to the system prompt, is the
-            # only thing that should be set on agent_context at this point.
-            assert stored.agent.agent_context is not None
-            assert stored.agent.agent_context.skills == []
-            suffix = stored.agent.agent_context.system_message_suffix or ""
-            assert f"/api/conversations/{stored.id}/workspace/" in suffix
+            # Agent context NOT populated yet (lazy loading in LocalConversation)
+            assert stored.agent.agent_context is None
 
 
 @pytest.mark.asyncio
