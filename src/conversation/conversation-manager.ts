@@ -3,11 +3,16 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { ApiKeysClient } from '../client/api-keys-client';
 import { DesktopClient } from '../client/desktop-client';
+import { FileClient } from '../client/file-client';
 import { LLMMetadataClient } from '../client/llm-client';
 import { ProfilesClient } from '../client/profiles-client';
 import { ServerClient } from '../client/server-client';
+import { SecurityClient } from '../client/security-client';
+import { SessionClient } from '../client/session-client';
 import { SettingsClient } from '../client/settings-client';
+import { SharedClient } from '../client/shared-client';
 import { SkillsClient } from '../client/skills-client';
 import { ToolClient } from '../client/tool-client';
 import { VSCodeClient } from '../client/vscode-client';
@@ -80,6 +85,11 @@ export class ConversationManager {
   public readonly tools: ToolClient;
   public readonly vscode: VSCodeClient;
   public readonly desktop: DesktopClient;
+  public readonly files: FileClient;
+  public readonly security: SecurityClient;
+  public readonly apiKeys: ApiKeysClient;
+  public readonly session: SessionClient;
+  public readonly shared: SharedClient;
   public readonly acp: ACPConversationNamespace;
 
   constructor(options: ConversationManagerOptions) {
@@ -105,6 +115,11 @@ export class ConversationManager {
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
     this.desktop = new DesktopClient(clientOptions);
+    this.files = new FileClient(clientOptions);
+    this.security = new SecurityClient(clientOptions);
+    this.apiKeys = new ApiKeysClient(clientOptions);
+    this.session = new SessionClient(clientOptions);
+    this.shared = new SharedClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
   }
 
@@ -377,6 +392,11 @@ export class ConversationManager {
     this.tools.close();
     this.vscode.close();
     this.desktop.close();
+    this.files.close();
+    this.security.close();
+    this.apiKeys.close();
+    this.session.close();
+    this.shared.close();
     this.client.close();
   }
 }

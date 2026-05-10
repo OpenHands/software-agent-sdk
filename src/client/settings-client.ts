@@ -6,7 +6,13 @@ import type {
   ProfileListResponse,
   ProfileMutationResponse,
   SaveProfileRequest,
+  SettingsApiResponse,
   SettingsSchema,
+  SettingsUpdateRequest,
+  SecretsListResponse,
+  UpsertSecretRequest,
+  UpsertSecretResponse,
+  DeleteSecretResponse,
 } from '../models/api';
 
 export interface SettingsClientOptions {
@@ -39,6 +45,37 @@ export class SettingsClient {
 
   async getAgentSchema(): Promise<SettingsSchema> {
     const response = await this.client.get<SettingsSchema>('/api/settings/agent-schema');
+    return response.data;
+  }
+
+  async getSettings(
+    options: { exposeSecrets?: ExposeSecretsMode } = {}
+  ): Promise<SettingsApiResponse> {
+    const response = await this.client.get<SettingsApiResponse>('/api/settings', {
+      headers: options.exposeSecrets ? { 'X-Expose-Secrets': options.exposeSecrets } : undefined,
+    });
+    return response.data;
+  }
+
+  async updateSettings(request: SettingsUpdateRequest): Promise<SettingsApiResponse> {
+    const response = await this.client.patch<SettingsApiResponse>('/api/settings', request);
+    return response.data;
+  }
+
+  async listSecrets(): Promise<SecretsListResponse> {
+    const response = await this.client.get<SecretsListResponse>('/api/settings/secrets');
+    return response.data;
+  }
+
+  async upsertSecret(request: UpsertSecretRequest): Promise<UpsertSecretResponse> {
+    const response = await this.client.put<UpsertSecretResponse>('/api/settings/secrets', request);
+    return response.data;
+  }
+
+  async deleteSecret(name: string): Promise<DeleteSecretResponse> {
+    const response = await this.client.delete<DeleteSecretResponse>(
+      `/api/settings/secrets/${encodeURIComponent(name)}`
+    );
     return response.data;
   }
 

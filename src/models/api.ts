@@ -131,3 +131,110 @@ export interface RenameProfileRequest {
 }
 
 export type ExposeSecretsMode = 'encrypted' | 'plaintext';
+
+export type SettingsValue = unknown;
+
+export interface SettingsApiResponse {
+  agent_settings: Record<string, SettingsValue>;
+  conversation_settings: Record<string, SettingsValue>;
+  llm_api_key_is_set: boolean;
+  [key: string]: unknown;
+}
+
+export interface SettingsUpdateRequest {
+  agent_settings_diff?: Record<string, SettingsValue>;
+  conversation_settings_diff?: Record<string, SettingsValue>;
+  [key: string]: unknown;
+}
+
+export interface SecretInfo {
+  name: string;
+  description?: string;
+}
+
+export interface SecretsListResponse {
+  secrets: SecretInfo[];
+}
+
+export interface UpsertSecretRequest {
+  name: string;
+  value: string;
+  description?: string;
+}
+
+export interface UpsertSecretResponse {
+  name: string;
+  description?: string;
+}
+
+export interface DeleteSecretResponse {
+  deleted: boolean;
+}
+
+export interface FileSubdirectoryEntry {
+  name: string;
+  path: string;
+}
+
+export interface FileSubdirectoryPage {
+  items: FileSubdirectoryEntry[];
+  next_page_id: string | null;
+}
+
+export interface FileHomeResponse {
+  home: string;
+}
+
+export interface FileSearchSubdirsOptions {
+  pageId?: string | null;
+  limit?: number;
+}
+
+export interface SecuritySettings {
+  RISK_SEVERITY: number;
+  [key: string]: unknown;
+}
+
+export type SecurityTraceResponse = unknown;
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface CreateApiKeyResponse {
+  id: string;
+  name: string;
+  key: string;
+  prefix: string;
+  created_at: string;
+}
+
+export interface AcceptTosResponse {
+  redirect_url?: string;
+}
+
+export interface SharedConversation {
+  id: string;
+  created_by_user_id: string | null;
+  selected_repository: string | null;
+  selected_branch: string | null;
+  git_provider: string | null;
+  title: string | null;
+  pr_number: number[];
+  llm_model: string | null;
+  metrics: unknown | null;
+  parent_conversation_id: string | null;
+  sub_conversation_ids: string[];
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface EventPage<TEvent = unknown> {
+  items: TEvent[];
+  next_page_id: string | null;
+}

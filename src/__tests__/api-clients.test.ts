@@ -8,11 +8,16 @@ import {
   Workspace,
 } from '../index';
 import {
+  ApiKeysClient,
   BashClient,
   ConversationClient,
+  FileClient,
   ProfilesClient,
+  SecurityClient,
   ServerClient,
+  SessionClient,
   SettingsClient,
+  SharedClient,
   SkillsClient,
 } from '../clients';
 
@@ -34,6 +39,11 @@ describe('Auxiliary API clients', () => {
     expect(manager.server.apiKey).toBe('secret');
     expect(manager.profiles.host).toBe('http://example.com');
     expect(manager.profiles.apiKey).toBe('secret');
+    expect(manager.files).toBeInstanceOf(FileClient);
+    expect(manager.security).toBeInstanceOf(SecurityClient);
+    expect(manager.apiKeys).toBeInstanceOf(ApiKeysClient);
+    expect(manager.session).toBeInstanceOf(SessionClient);
+    expect(manager.shared).toBeInstanceOf(SharedClient);
   });
 
   it('Workspace exposes bash namespace', () => {
@@ -505,6 +515,201 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: JSON.stringify({ profile_name: 'fast' }),
       })
+    );
+  });
+
+  it('SettingsClient fetches and updates settings and secrets', async () => {
+    const responses = [
+      { agent_settings: { llm_model: 'gpt-4o' }, conversation_settings: {} },
+      { agent_settings: {}, conversation_settings: { max_iterations: 50 } },
+      { secrets: [{ name: 'TOKEN', description: 'token' }] },
+      { name: 'TOKEN', description: 'token' },
+      { deleted: true },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new SettingsClient({ host: 'http://example.com' });
+    await client.getSettings({ exposeSecrets: 'encrypted' });
+    await client.updateSettings({ conversation_settings_diff: { max_iterations: 50 } });
+    await client.listSecrets();
+    await client.upsertSecret({ name: 'TOKEN', value: 'secret', description: 'token' });
+    await client.deleteSecret('TOKEN/with slash');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/settings',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({ 'X-Expose-Secrets': 'encrypted' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/settings',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ conversation_settings_diff: { max_iterations: 50 } }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/settings/secrets',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/settings/secrets',
+      expect.objectContaining({ method: 'PUT' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/settings/secrets/TOKEN%2Fwith%20slash',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('FileClient wraps file browsing and download endpoints', async () => {
+    const binary = new TextEncoder().encode('hello').buffer;
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ home: '/workspace' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ items: [{ name: 'src', path: '/workspace/src' }], next_page_id: null }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      )
+      .mockResolvedValueOnce(new Response(binary, { status: 200 }))
+      .mockResolvedValueOnce(new Response(new Blob(['trajectory']), { status: 200 }));
+
+    const client = new FileClient({ host: 'http://example.com' });
+    await expect(client.getHome()).resolves.toEqual({ home: '/workspace' });
+    await client.searchSubdirectories('/workspace', { limit: 10, pageId: 'p1' });
+    await expect(client.downloadTextFile('/workspace/README.md')).resolves.toBe('hello');
+    await expect(client.downloadTrajectory('conv 1')).resolves.toBeInstanceOf(Blob);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/file/search_subdirs?path=%2Fworkspace&page_id=p1&limit=10',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/file/download-trajectory/conv%201',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('ConversationClient wraps agent-canvas conversation endpoints', async () => {
+    global.fetch = jest.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ success: true, response: 'ok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.sendEvent('c1', { role: 'user', content: [] }, { run: true });
+    await client.pauseConversation('c1');
+    await client.runConversation('c1');
+    await client.askAgent('c1', 'status?');
+    await client.respondToConfirmation('c1', { accept: true });
+    await client.deleteConversation('c1');
+    await client.updateConversation('c1', { title: 'New title' });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/c1/events',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ role: 'user', content: [], run: true }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/conversations/c1/ask_agent',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ question: 'status?' }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/conversations/c1/events/respond_to_confirmation',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ accept: true }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      7,
+      'http://example.com/api/conversations/c1',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
+    );
+  });
+
+  it('Security ApiKeys Session and Shared clients wrap app endpoints', async () => {
+    const responses = [
+      { policy: 'default' },
+      { RISK_SEVERITY: 2 },
+      [{ id: 'key-1', name: 'Key', prefix: 'oh', created_at: 'now', last_used_at: null }],
+      { id: 'key-2', name: 'New', key: 'full', prefix: 'oh', created_at: 'now' },
+      { redirect_url: '/home' },
+      [{ id: 'shared-1', created_by_user_id: null, selected_repository: null }],
+      { items: [], next_page_id: null },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift() ?? { success: true };
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const options = { host: 'http://example.com' };
+    await new SecurityClient(options).getPolicy();
+    await new SecurityClient(options).getRiskSeverity();
+    await new ApiKeysClient(options).listApiKeys();
+    await new ApiKeysClient(options).createApiKey('New');
+    await new ApiKeysClient(options).deleteApiKey('key/2');
+    await new SessionClient(options).acceptTos('/home');
+    await new SessionClient(options).unsetProviderTokens();
+    await new SharedClient(options).getSharedConversation('shared-1');
+    await new SharedClient(options).searchSharedEvents({ conversationId: 'shared-1', limit: 50 });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/keys/key%2F2',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
+      'http://example.com/api/accept_tos',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ redirect_url: '/home' }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      9,
+      'http://example.com/api/shared-events/search?conversation_id=shared-1&limit=50',
+      expect.objectContaining({ method: 'GET' })
     );
   });
 });
