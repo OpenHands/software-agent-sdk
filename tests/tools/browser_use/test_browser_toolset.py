@@ -188,7 +188,9 @@ def test_browser_toolset_shared_executor_reset():
         tools1 = BrowserToolSet.create(conv_state=conv_state)
         executor1 = tools1[0].executor
 
-        # Reset the singleton
+        # Reset the singleton without leaving the discarded executor for GC.
+        assert isinstance(executor1, BrowserToolExecutor)
+        executor1.close()
         BrowserToolSet._shared_executor = None
 
         tools2 = BrowserToolSet.create(conv_state=conv_state)
