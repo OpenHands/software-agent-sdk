@@ -61,6 +61,7 @@ def test_switch_llm_tool_switches_conversation_profile(profile_store):
     assert not observation.is_error
     assert observation.profile_name == "fast"
     assert observation.active_model == "fast-model"
+    assert "active model 'fast-model'" in observation.text
     assert conversation.agent.llm.model == "fast-model"
     assert conversation.state.agent.llm.model == "fast-model"
 

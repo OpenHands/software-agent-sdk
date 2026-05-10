@@ -113,8 +113,9 @@ class SwitchLLMExecutor(ToolExecutor):
         active_model = conversation.agent.llm.model
         return SwitchLLMObservation.from_text(
             text=(
-                f"Switched LLM profile to '{action.profile_name}'. "
-                "Future agent steps will use this profile."
+                f"Switched LLM profile to '{action.profile_name}' "
+                f"with active model '{active_model}'. Future agent steps will "
+                "use this profile."
             ),
             profile_name=action.profile_name,
             active_model=active_model,
