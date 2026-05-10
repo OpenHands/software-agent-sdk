@@ -123,6 +123,10 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
         ("anthropic.claude-3-opus-20240229", True),
+        # Gemini explicit context caching through LiteLLM.
+        ("gemini-2.5-pro", True),
+        ("gemini-3.1-pro-preview", True),
+        ("litellm_proxy/gemini-3.1-pro-preview", True),
         ("gpt-4o", False),  # OpenAI doesn't support explicit prompt caching
         ("gemini-1.5-pro", False),
         ("unknown-model", False),
@@ -362,6 +366,9 @@ def test_prompt_cache_retention_support(model, expected_retention):
         # DeepSeek reasoner model
         ("deepseek/deepseek-reasoner", True),
         ("DeepSeek/deepseek-reasoner", True),
+        # DeepSeek V4 Pro (dual-mode thinking)
+        ("deepseek/deepseek-v4-pro", True),
+        ("litellm_proxy/deepseek/deepseek-v4-pro", True),
         # DeepSeek V4 Flash (dual-mode thinking)
         ("deepseek/deepseek-v4-flash", True),
         ("litellm_proxy/deepseek/deepseek-v4-flash", True),

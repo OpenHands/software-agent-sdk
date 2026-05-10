@@ -90,10 +90,6 @@ VERIFIED_QWEN_MODELS = [
     "qwen3-coder-480b",
 ]
 
-VERIFIED_TRINITY_MODELS = [
-    "trinity-large-thinking",
-]
-
 VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
@@ -145,5 +141,4 @@ VERIFIED_MODELS = {
     "glm": VERIFIED_GLM_MODELS,
     "nvidia": VERIFIED_NVIDIA_MODELS,
     "qwen": VERIFIED_QWEN_MODELS,
-    "trinity": VERIFIED_TRINITY_MODELS,
 }

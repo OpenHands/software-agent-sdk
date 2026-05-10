@@ -16,7 +16,10 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import WebhookSpec
-from openhands.agent_server.conversation_service import WebhookSubscriber
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    WebhookSubscriber,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.utils import utc_now
@@ -24,6 +27,11 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    start_conversation_with_test_llm,
+    text_message,
+)
 
 
 @pytest.fixture
@@ -1247,3 +1255,69 @@ class TestWebhookSubscriberTimerBehavior:
 
         # _post_events should have been called immediately
         subscriber._post_events.assert_called_once()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Subscribe-time errors from a subscriber's initial __call__ never "
+        "reach the start_conversation caller. Two swallow sites in series: "
+        "event_service.py:411-416 wraps the initial state sync in "
+        "try/except + logger.error (no re-raise), and "
+        "conversation_service.py:862 fires asyncio.gather() on the webhook "
+        "subscribes without awaiting. Both must be fixed for init errors "
+        "to surface. "
+        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3121."
+    ),
+)
+@pytest.mark.timeout(30)
+async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    workspace = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir()
+
+    # Force WebhookSubscriber's first __call__ to raise once. Subsequent
+    # calls succeed so the test models "init error" rather than "every event
+    # raises". event_service.py:412 invokes __call__ during registration as
+    # an initial-state sync — that's where the raise lands.
+    original_init = WebhookSubscriber.__init__
+
+    def _broken_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._broken = True
+
+    async def _broken_call(self, event):
+        if getattr(self, "_broken", False):
+            self._broken = False
+            raise RuntimeError("webhook subscriber init failed")
+
+    monkeypatch.setattr(WebhookSubscriber, "__init__", _broken_init)
+    monkeypatch.setattr(WebhookSubscriber, "__call__", _broken_call)
+
+    service = ConversationService(
+        conversations_dir=persist,
+        webhook_specs=[
+            WebhookSpec(
+                base_url="http://unused.test",
+                event_buffer_size=1,
+                num_retries=0,
+            )
+        ],
+    )
+    async with service:
+        # Contract: a subscriber's init error reaches the caller. Today both
+        # swallow sites are present, so this `pytest.raises` will not see
+        # anything and the test fails (→ XFAIL). When *both* are fixed,
+        # start_conversation propagates RuntimeError, pytest.raises catches
+        # it, the test passes (→ XPASS, strict=True flags it for cleanup).
+        with pytest.raises(RuntimeError, match="webhook subscriber init failed"):
+            await start_conversation_with_test_llm(
+                service,
+                parent_llm=SlowTestLLM.from_messages(
+                    [text_message("done")], latency_s=0.0
+                ),
+                workspace_dir=workspace,
+                usage_id="webhook-error",
+                initial_text=None,
+            )

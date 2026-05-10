@@ -65,7 +65,15 @@ class _StartConversationRequestBase(BaseModel):
 
     workspace: LocalWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description="Working directory for agent operations and tool execution.",
+    )
+    worktree: bool = Field(
+        default=False,
+        description=(
+            "If true and the workspace is already inside a git repository, create "
+            "a dedicated git worktree for this conversation under "
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
+        ),
     )
     conversation_id: UUID | None = Field(
         default=None,
@@ -100,6 +108,19 @@ class _StartConversationRequestBase(BaseModel):
     secrets: dict[str, SecretSource] = Field(
         default_factory=dict,
         description="Secrets available in the conversation",
+    )
+    secrets_encrypted: bool = Field(
+        default=False,
+        description=(
+            "If true, indicates that secret values in the agent configuration "
+            "are cipher-encrypted and should be decrypted by the server before "
+            "use. This enables secure round-tripping of settings through "
+            "untrusted clients (e.g., frontend) that received encrypted values "
+            "via the X-Expose-Secrets header. "
+            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
+            "to receive cipher-encrypted secrets, then passes them in the agent "
+            "config with secrets_encrypted=True so the server can decrypt them."
+        ),
     )
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,

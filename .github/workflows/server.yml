@@ -210,9 +210,10 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            # Use SDK_SHA for PR head SHA - GITHUB_SHA is a built-in that gets overwritten by checkout
-            # build.py checks SDK_SHA before GITHUB_SHA (see _git_info priority order)
+            # Use SDK_SHA/SDK_REF so build.py tags PR images with the head commit and branch.
+            # GITHUB_SHA/GITHUB_REF point at the synthetic merge ref on pull_request events.
             SDK_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+            SDK_REF: ${{ github.head_ref != '' && format('refs/heads/{0}', github.head_ref) || github.ref }}
             GITHUB_REF: ${{ github.ref }}
             CI: 'true'
 
@@ -285,6 +286,8 @@ jobs:
                   cache-to: type=gha,mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
+                      OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
+                      OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
 
             - name: Cleanup build context
               if: always()
@@ -372,58 +375,54 @@ jobs:
               run: |
                   SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
                   VARIANT=${{ matrix.variant }}
-                  MANIFEST_TAG="${SHORT_SHA}-${VARIANT}"
+                  AMD64_TAGS_CSV=$(jq -r '.tags' build-info/${VARIANT}-amd64.json)
+                  declare -A SEEN_MANIFEST_TAGS=()
+                  MANIFEST_TAGS=()
 
-                  # Create multi-arch manifest combining amd64 and arm64 using buildx imagetools
-                  # This properly handles manifest lists from Docker builds
-                  echo "Creating multi-arch manifest: ${IMAGE}:${MANIFEST_TAG}"
-                  docker buildx imagetools create -t ${IMAGE}:${MANIFEST_TAG} \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-arm64
+                  create_manifest() {
+                      local manifest_tag=$1
+                      local source_tag=${2:-$1}
 
-                  # Verify the multi-arch manifest
-                  echo "Inspecting multi-arch manifest:"
-                  docker buildx imagetools inspect ${IMAGE}:${MANIFEST_TAG}
+                      echo "Creating multi-arch manifest: ${IMAGE}:${manifest_tag}"
+                      docker buildx imagetools create -t ${IMAGE}:${manifest_tag} \
+                        ${IMAGE}:${source_tag}-amd64 \
+                        ${IMAGE}:${source_tag}-arm64
 
-                  echo "✓ Multi-arch manifest created: ${IMAGE}:${MANIFEST_TAG}"
+                      echo "Inspecting multi-arch manifest:"
+                      docker buildx imagetools inspect ${IMAGE}:${manifest_tag}
+                      echo "✓ Multi-arch manifest created: ${IMAGE}:${manifest_tag}"
+                  }
 
-                  # Create latest manifest if on main branch
+                  IFS=',' read -ra AMD64_TAGS <<< "$AMD64_TAGS_CSV"
+                  for AMD64_IMAGE_TAG in "${AMD64_TAGS[@]}"; do
+                      if [ -z "$AMD64_IMAGE_TAG" ]; then
+                          continue
+                      fi
+
+                      TAG_NAME=${AMD64_IMAGE_TAG#${IMAGE}:}
+                      if [ "$TAG_NAME" = "$AMD64_IMAGE_TAG" ] || [[ ! "$TAG_NAME" == *-amd64 ]]; then
+                          echo "Skipping unexpected architecture tag: $AMD64_IMAGE_TAG"
+                          continue
+                      fi
+
+                      MANIFEST_TAG=${TAG_NAME%-amd64}
+                      if [ -n "${SEEN_MANIFEST_TAGS[$MANIFEST_TAG]+x}" ]; then
+                          continue
+                      fi
+
+                      SEEN_MANIFEST_TAGS[$MANIFEST_TAG]=1
+                      MANIFEST_TAGS+=("$MANIFEST_TAG")
+                      create_manifest "$MANIFEST_TAG"
+                  done
+
+                  # Preserve the latest-<variant> alias used by the workspace defaults.
                   if [ "${{ github.ref }}" == "refs/heads/main" ]; then
                       LATEST_TAG="latest-${VARIANT}"
-                      echo "Creating latest multi-arch manifest: ${IMAGE}:${LATEST_TAG}"
-                      docker buildx imagetools create -t ${IMAGE}:${LATEST_TAG} \
-                        ${IMAGE}:main-${VARIANT}-amd64 \
-                        ${IMAGE}:main-${VARIANT}-arm64
-                      
-                      echo "Inspecting latest multi-arch manifest:"
-                      docker buildx imagetools inspect ${IMAGE}:${LATEST_TAG}
-                      echo "✓ Latest multi-arch manifest created: ${IMAGE}:${LATEST_TAG}"
-                      
-                      MANIFEST_TAG="${MANIFEST_TAG},${LATEST_TAG}"
+                      create_manifest "$LATEST_TAG" "main-${VARIANT}"
+                      MANIFEST_TAGS+=("$LATEST_TAG")
                   fi
 
-                  # Create versioned manifests if triggered by a git tag
-                  # Extract versioned tags from build info (format: "1.2.0-python,1.2.0-java")
-                  VERSIONED_TAGS_CSV=$(jq -r '.versioned_tags_csv' build-info/${VARIANT}-amd64.json)
-                  if [ -n "$VERSIONED_TAGS_CSV" ] && [ "$VERSIONED_TAGS_CSV" != "null" ] && [ "$VERSIONED_TAGS_CSV" != "" ]; then
-                      echo "Found versioned tags: $VERSIONED_TAGS_CSV"
-                      # Split CSV and create manifest for each versioned tag
-                      IFS=',' read -ra VERSIONED_TAGS <<< "$VERSIONED_TAGS_CSV"
-                      for VERSIONED_TAG in "${VERSIONED_TAGS[@]}"; do
-                          if [ -n "$VERSIONED_TAG" ]; then
-                              echo "Creating versioned multi-arch manifest: ${IMAGE}:${VERSIONED_TAG}"
-                              docker buildx imagetools create -t ${IMAGE}:${VERSIONED_TAG} \
-                                ${IMAGE}:${VERSIONED_TAG}-amd64 \
-                                ${IMAGE}:${VERSIONED_TAG}-arm64
-                              
-                              echo "Inspecting versioned multi-arch manifest:"
-                              docker buildx imagetools inspect ${IMAGE}:${VERSIONED_TAG}
-                              echo "✓ Versioned multi-arch manifest created: ${IMAGE}:${VERSIONED_TAG}"
-                              
-                              MANIFEST_TAG="${MANIFEST_TAG},${VERSIONED_TAG}"
-                          fi
-                      done
-                  fi
+                  MANIFEST_TAG_CSV=$(IFS=,; echo "${MANIFEST_TAGS[*]}")
 
                   # Save manifest info for consolidation
                   mkdir -p manifest-info
@@ -432,7 +431,7 @@ jobs:
                     "variant": "${VARIANT}",
                     "image": "${IMAGE}",
                     "short_sha": "${SHORT_SHA}",
-                    "manifest_tag": "${MANIFEST_TAG}"
+                    "manifest_tag": "${MANIFEST_TAG_CSV}"
                   }
                   EOF
 

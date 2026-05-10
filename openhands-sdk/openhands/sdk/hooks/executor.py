@@ -17,7 +17,16 @@ from openhands.sdk.utils import sanitized_env
 class HookResult(BaseModel):
     """Result from executing a hook.
 
-    Exit code 0 = success, exit code 2 = block operation.
+    Exit-code semantics (matching Claude Code's hook contract):
+
+    - **Exit 0**: success. ``stdout`` is parsed as JSON for structured output
+      (``decision``, ``reason``, ``additionalContext``, ``continue``).
+    - **Exit 2**: blocking error. The operation is denied / the agent is
+      prevented from stopping. ``stderr`` should explain why.
+    - **Any other non-zero exit code**: non-blocking error. ``success`` is set
+      to ``False`` and the error is logged, but the operation still proceeds.
+      In particular, exit code ``1`` does **not** block — only ``2`` does.
+      Hooks intended to enforce a policy must exit with ``2``.
     """
 
     success: bool = True

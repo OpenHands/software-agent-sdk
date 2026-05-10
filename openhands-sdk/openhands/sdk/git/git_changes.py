@@ -9,7 +9,7 @@ import logging
 import os
 from pathlib import Path
 
-from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.exceptions import GitCommandError, GitError
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 from openhands.sdk.git.utils import (
     get_valid_ref,
@@ -34,26 +34,33 @@ def _map_git_status_to_enum(status: str) -> GitChangeStatus:
     return status_mapping[status]
 
 
-def get_changes_in_repo(repo_dir: str | Path) -> list[GitChange]:
-    """Get git changes in a repository relative to the origin default branch.
+def get_changes_in_repo(
+    repo_dir: str | Path, ref: str | None = None
+) -> list[GitChange]:
+    """Get git changes in a repository relative to a reference.
 
-    This is different from `git status` as it compares against the remote branch
-    rather than the staging area.
+    By default, compares against the auto-detected remote branch. Pass
+    ``ref="HEAD"`` to get ``git status``-style diffs (working tree + index
+    vs the latest commit) instead.
 
     Args:
         repo_dir: Path to the git repository
+        ref: Optional explicit ref to compare against (e.g. ``"HEAD"`` or a
+            commit hash). When ``None``, behaves as before and compares
+            against the upstream/default branch.
 
     Returns:
         List of GitChange objects representing the changes
 
     Raises:
         GitRepositoryError: If the directory is not a valid git repository
-        GitCommandError: If git commands fail
+        GitCommandError: If git commands fail (including when ``ref`` is
+            provided but does not resolve in the repository).
     """
     # Validate the repository first
     validated_repo = validate_git_repository(repo_dir)
 
-    ref = get_valid_ref(validated_repo)
+    ref = get_valid_ref(validated_repo, override=ref)
     if not ref:
         logger.warning(f"No valid git reference found for {validated_repo}")
         return []
@@ -195,14 +202,14 @@ def get_changes_in_repo(repo_dir: str | Path) -> list[GitChange]:
     return changes
 
 
-def get_git_changes(cwd: str | Path) -> list[GitChange]:
+def get_git_changes(cwd: str | Path, ref: str | None = None) -> list[GitChange]:
     git_dirs = {
         os.path.dirname(f)[2:]
         for f in glob.glob("./*/.git", root_dir=cwd, recursive=True)
     }
 
     # First try the workspace directory
-    changes = get_changes_in_repo(cwd)
+    changes = get_changes_in_repo(cwd, ref=ref)
 
     # Filter out any changes which are in one of the git directories
     changes = [
@@ -219,7 +226,13 @@ def get_git_changes(cwd: str | Path) -> list[GitChange]:
 
     # Add changes from git directories
     for git_dir in git_dirs:
-        git_dir_changes = get_changes_in_repo(str(Path(cwd, git_dir)))
+        try:
+            git_dir_changes = get_changes_in_repo(str(Path(cwd, git_dir)), ref=ref)
+        except GitError:
+            logger.warning(
+                f"Skipping nested git directory {git_dir}: not a valid repository"
+            )
+            continue
         for change in git_dir_changes:
             # Create a new GitChange with the updated path
             updated_change = GitChange(

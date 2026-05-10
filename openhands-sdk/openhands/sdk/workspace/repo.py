@@ -1,7 +1,8 @@
-"""Repository cloning and management utilities for OpenHands Cloud workspace.
+"""Repository cloning and management utilities for RemoteWorkspace.
 
-This module provides utilities for cloning git repositories and loading
-skills from them when running inside an OpenHands Cloud sandbox.
+This module provides utilities for cloning git repositories and generating
+context strings for cloned repositories when using RemoteWorkspace or its
+subclasses.
 """
 
 from __future__ import annotations

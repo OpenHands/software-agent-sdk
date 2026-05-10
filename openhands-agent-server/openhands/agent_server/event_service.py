@@ -789,6 +789,23 @@ class EventService:
                 await self._lease_task
             self._lease_task = None
 
+        # Drain in-flight run before teardown so MCP close doesn't race
+        # with a tool call mid-step.
+        if self._run_task is not None and not self._run_task.done():
+            if self._conversation is not None:
+                loop = asyncio.get_running_loop()
+                try:
+                    await loop.run_in_executor(None, self._conversation.pause)
+                except Exception:
+                    logger.warning(
+                        "Failed to pause conversation during close", exc_info=True
+                    )
+            try:
+                await asyncio.wait_for(self._run_task, timeout=10.0)
+            except Exception as exc:
+                logger.warning("Run task did not exit cleanly during close: %s", exc)
+            self._run_task = None
+
         await self._pub_sub.close()
         if self._conversation:
             loop = asyncio.get_running_loop()

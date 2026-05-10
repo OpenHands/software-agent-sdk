@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.workspace.cloud.repo import (
+# Import from SDK repo module (cloud workspace re-exports these)
+from openhands.sdk.workspace.repo import (
     CloneResult,
     GitProvider,
     RepoMapping,
@@ -431,7 +432,7 @@ class TestCloneRepos:
 class TestCloudWorkspaceRepoMethods:
     """Tests for OpenHandsCloudWorkspace repo methods."""
 
-    @patch("openhands.workspace.cloud.workspace.clone_repos")
+    @patch("openhands.sdk.workspace.remote.base._clone_repos_helper")
     @patch.object(
         __import__(
             "openhands.workspace.cloud.workspace", fromlist=["OpenHandsCloudWorkspace"]
@@ -471,7 +472,7 @@ class TestCloudWorkspaceRepoMethods:
             assert len(repos) == 2
             assert all(isinstance(r, RepoSource) for r in repos)
 
-    @patch("openhands.workspace.cloud.workspace.clone_repos")
+    @patch("openhands.sdk.workspace.remote.base._clone_repos_helper")
     @patch.object(
         __import__(
             "openhands.workspace.cloud.workspace", fromlist=["OpenHandsCloudWorkspace"]

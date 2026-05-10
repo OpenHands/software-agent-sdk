@@ -238,6 +238,13 @@ class TestMCPToolExecutor:
         assert "timed out" in observation.text
         assert f"{self.executor.timeout} seconds" in observation.text
 
+    def test_close_calls_client_sync_close(self):
+        """close() must invoke MCPClient.sync_close() to tear down the
+        stdio subprocess. Without this, MCP clients survive conversation
+        deletion and accumulate over a long-running server."""
+        self.executor.close()
+        self.mock_client.sync_close.assert_called_once()
+
 
 class TestMCPTool:
     """Test MCPTool functionality."""
