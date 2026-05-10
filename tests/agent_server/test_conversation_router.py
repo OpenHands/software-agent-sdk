@@ -1,6 +1,6 @@
 """Tests for conversation_router.py endpoints."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -1729,5 +1729,103 @@ def test_fork_conversation_duplicate_id_returns_409(
         )
 
         assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def _seatbelt_request_payload() -> dict:
+    return {
+        "agent": {
+            "kind": "Agent",
+            "llm": {
+                "model": "gpt-4o",
+                "api_key": "test-key",
+                "usage_id": "test-llm",
+            },
+            "tools": [{"name": "TerminalTool"}],
+        },
+        "workspace": {"working_dir": "/tmp/test"},
+        "seatbelt": True,
+    }
+
+
+def test_start_conversation_seatbelt_unsupported_returns_400(
+    client, mock_conversation_service
+):
+    """The router rejects seatbelt=true when sandbox-exec is unavailable."""
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        with patch(
+            "openhands.agent_server.conversation_router.is_seatbelt_supported",
+            return_value=False,
+        ):
+            response = client.post(
+                "/api/conversations", json=_seatbelt_request_payload()
+            )
+
+        assert response.status_code == 400
+        assert "seatbelt" in response.json()["detail"].lower()
+        # The conversation service must not be hit when the precondition fails.
+        mock_conversation_service.start_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_seatbelt_supported_passes_through(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """When seatbelt is available the request reaches the service unchanged."""
+
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        with patch(
+            "openhands.agent_server.conversation_router.is_seatbelt_supported",
+            return_value=True,
+        ):
+            response = client.post(
+                "/api/conversations", json=_seatbelt_request_payload()
+            )
+
+        assert response.status_code == 201
+        called_request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert called_request.seatbelt is True
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_seatbelt_false_skips_check(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """seatbelt=false (the default) must not require sandbox-exec."""
+
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        with patch(
+            "openhands.agent_server.conversation_router.is_seatbelt_supported"
+        ) as supported:
+            payload = _seatbelt_request_payload()
+            payload["seatbelt"] = False
+            response = client.post("/api/conversations", json=payload)
+            supported.assert_not_called()
+
+        assert response.status_code == 201
     finally:
         client.app.dependency_overrides.clear()

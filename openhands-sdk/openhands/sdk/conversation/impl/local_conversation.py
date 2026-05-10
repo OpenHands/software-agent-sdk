@@ -108,6 +108,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        seatbelt: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -186,6 +187,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            seatbelt=seatbelt,
             cipher=cipher,
             tags=tags,
         )

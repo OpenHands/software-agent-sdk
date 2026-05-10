@@ -25,7 +25,10 @@ from openhands.tools.terminal.constants import (
     TMUX_SESSION_WIDTH,
     TMUX_SOCKET_NAME,
 )
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import (
+    TmuxTerminal,
+    _seatbelt_wrap_shell,
+)
 
 
 logger = get_logger(__name__)
@@ -81,6 +84,7 @@ class TmuxPanePool:
     work_dir: str
     username: str | None = None
     max_panes: int = DEFAULT_MAX_PANES
+    seatbelt: bool = False
 
     # tmux handles
     _server: libtmux.Server | None = field(default=None, init=False, repr=False)
@@ -165,6 +169,10 @@ class TmuxPanePool:
         shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             shell_command = f"su {self.username} -"
+
+        shell_command = _seatbelt_wrap_shell(
+            shell_command, self.work_dir, self.seatbelt
+        )
 
         window = self._session.new_window(
             window_name=f"pane-{len(self._all_panes)}",

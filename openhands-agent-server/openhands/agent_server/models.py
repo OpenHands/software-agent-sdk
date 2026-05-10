@@ -181,6 +181,13 @@ class _ConversationInfoBase(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    seatbelt: bool = Field(
+        default=False,
+        description=(
+            "If true, the conversation's shell tools run inside macOS' "
+            "Seatbelt (`sandbox-exec`) sandbox."
+        ),
+    )
 
 
 class ConversationInfo(_ConversationInfoBase):

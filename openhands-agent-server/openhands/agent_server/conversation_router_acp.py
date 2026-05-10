@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import SecretStr
 
+from openhands.agent_server.conversation_router import _ensure_seatbelt_available
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
@@ -118,7 +119,12 @@ async def batch_get_acp_conversations(
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post(
+    "",
+    responses={
+        400: {"description": "Seatbelt requested but not available on this host"},
+    },
+)
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
@@ -128,6 +134,7 @@ async def start_acp_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
     """Start a conversation using the ACP-capable contract."""
+    _ensure_seatbelt_available(request)
     info, is_new = await conversation_service.start_acp_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info

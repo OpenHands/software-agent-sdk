@@ -113,6 +113,14 @@ class ConversationState(OpenHandsModel):
         default=True,
         description="Whether to enable stuck detection for the agent.",
     )
+    seatbelt: bool = Field(
+        default=False,
+        description=(
+            "If true, shell tools spawned by this conversation are wrapped "
+            "with macOS' Seatbelt sandbox (`sandbox-exec`). Tools opt in by "
+            "consulting this flag on the conversation state."
+        ),
+    )
 
     # Enum-based state management
     execution_status: ConversationExecutionStatus = Field(
@@ -280,6 +288,7 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        seatbelt: bool = False,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
     ) -> "ConversationState":
@@ -361,6 +370,7 @@ class ConversationState(OpenHandsModel):
             state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
+            state.seatbelt = seatbelt
 
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
@@ -385,6 +395,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            seatbelt=seatbelt,
             tags=tags or {},
         )
         state._fs = file_store

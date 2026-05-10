@@ -273,6 +273,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 terminal_type=terminal_type,
                 shell_path=shell_path,
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
+                seatbelt=getattr(conv_state, "seatbelt", False),
             )
 
         tool_description = (
