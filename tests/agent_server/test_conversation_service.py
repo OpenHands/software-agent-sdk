@@ -915,6 +915,16 @@ class TestConversationServiceStartConversation:
                 # Verify that secrets is an empty dict (default)
                 assert stored_conversation.secrets == {}
 
+                # The workspace static-server guidance is always added to the
+                # agent's system prompt and references the conversation id.
+                assert stored_conversation.agent.agent_context is not None
+                suffix = (
+                    stored_conversation.agent.agent_context.system_message_suffix or ""
+                )
+                assert (
+                    f"/api/conversations/{stored_conversation.id}/workspace/" in suffix
+                )
+
                 # Verify the conversation was started
                 mock_event_service.start.assert_called_once()
 
@@ -989,6 +999,8 @@ class TestConversationServiceStartConversation:
         assert str(expected_worktree) in suffix
         assert expected_branch in suffix
         assert "Do all file and git work inside this worktree" in suffix
+        # The static workspace server guidance is also appended.
+        assert f"/api/conversations/{conversation_id}/workspace/" in suffix
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_worktree_preserves_relative_workspace(
@@ -1096,7 +1108,12 @@ class TestConversationServiceStartConversation:
         assert stored.worktree is True
         assert stored.workspace.working_dir == str(workspace_dir)
         assert result.workspace.working_dir == str(workspace_dir)
-        assert stored.agent.agent_context is None
+        # No worktree was created, but the workspace static-server guidance
+        # is always appended to the agent's system prompt.
+        assert stored.agent.agent_context is not None
+        suffix = stored.agent.agent_context.system_message_suffix or ""
+        assert f"/api/conversations/{conversation_id}/workspace/" in suffix
+        assert "Do all file and git work inside this worktree" not in suffix
         assert not (worktree_root / str(conversation_id)).exists()
 
     @pytest.mark.asyncio
