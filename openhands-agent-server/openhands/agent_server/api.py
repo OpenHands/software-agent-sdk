@@ -465,7 +465,15 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 request.url.path,
                 exc.detail,
             )
-        # Log 5xx errors at error level with full traceback (server errors)
+        # Log 5xx errors at error level. HTTPException is intentionally
+        # raised flow control — the route picked this status and detail
+        # on purpose — so a stack trace adds no information beyond
+        # `exc.detail` and makes routine upstream blips (e.g. a 502 from
+        # /api/cloud-proxy when the cloud is unreachable) look
+        # indistinguishable from a process crash. Unhandled exceptions
+        # still get a full traceback via _unhandled_exception_handler
+        # above. Include the traceback only when DEBUG is on, as an
+        # opt-in debugging aid.
         elif exc.status_code >= 500:
             logger.error(
                 "HTTPException %d on %s %s: %s",
@@ -473,7 +481,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 request.method,
                 request.url.path,
                 exc.detail,
-                exc_info=(type(exc), exc, exc.__traceback__),
+                exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
             )
             content = {
                 "detail": "Internal Server Error",

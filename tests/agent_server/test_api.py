@@ -540,3 +540,112 @@ def test_get_root_path_parametrized(web_url, expected_root_path):
     """Parametrized test for _get_root_path with various URL patterns."""
     config = Config(web_url=web_url)
     assert _get_root_path(config) == expected_root_path
+
+
+class TestHttpExceptionLogging:
+    """5xx HTTPExceptions are intentionally-raised flow control.
+
+    They should be logged as a single ERROR line without a full stack
+    trace; only genuinely unhandled exceptions should get a traceback.
+    Otherwise routine upstream blips (e.g. a 502 from /api/cloud-proxy
+    when the cloud is unreachable) look indistinguishable from a process
+    crash in the logs.
+    """
+
+    def _build_app_with_failing_route(self, status_code: int):
+        from fastapi import HTTPException as FastAPIHTTPException
+
+        config = Config(static_files_path=None)
+        app = create_app(config)
+
+        @app.get(f"/__test__/raise_{status_code}")
+        def _raise():
+            raise FastAPIHTTPException(
+                status_code=status_code, detail="boom from upstream"
+            )
+
+        return app
+
+    def test_5xx_http_exception_logged_without_traceback_by_default(self, caplog):
+        import logging
+
+        app = self._build_app_with_failing_route(502)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.ERROR, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_502")
+
+        assert response.status_code == 502
+        # Client still sees the same sanitized 5xx envelope.
+        assert response.json()["detail"] == "Internal Server Error"
+
+        api_error_records = [
+            r
+            for r in caplog.records
+            if r.name == "openhands.agent_server.api" and r.levelno == logging.ERROR
+        ]
+        assert len(api_error_records) == 1, (
+            "Expected exactly one ERROR log line for a 5xx HTTPException, "
+            f"got: {[r.getMessage() for r in api_error_records]}"
+        )
+        record = api_error_records[0]
+        # The whole point of the fix: no stack trace attached for an
+        # intentionally-raised HTTPException.
+        assert record.exc_info is None, (
+            "5xx HTTPException should not log a traceback by default; "
+            f"got exc_info={record.exc_info!r}"
+        )
+        # Message must still carry status, method, path, and detail so
+        # the log is useful for monitoring.
+        message = record.getMessage()
+        assert "502" in message
+        assert "GET" in message
+        assert "/__test__/raise_502" in message
+        assert "boom from upstream" in message
+
+    def test_5xx_http_exception_includes_traceback_when_debug_enabled(
+        self, caplog, monkeypatch
+    ):
+        import logging
+
+        # DEBUG is read at module import time in api.py, so monkeypatch
+        # the bound name on the module rather than mutating the env.
+        monkeypatch.setattr("openhands.agent_server.api.DEBUG", True)
+
+        app = self._build_app_with_failing_route(503)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.ERROR, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_503")
+
+        assert response.status_code == 503
+        api_error_records = [
+            r
+            for r in caplog.records
+            if r.name == "openhands.agent_server.api" and r.levelno == logging.ERROR
+        ]
+        assert len(api_error_records) == 1
+        # In DEBUG mode the traceback is preserved as an opt-in debugging aid.
+        assert api_error_records[0].exc_info is not None
+
+    def test_4xx_http_exception_logged_at_info_without_traceback(self, caplog):
+        import logging
+
+        app = self._build_app_with_failing_route(404)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.INFO, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_404")
+
+        assert response.status_code == 404
+        # 4xx path returns the raw detail (not the sanitized 5xx envelope).
+        assert response.json() == {"detail": "boom from upstream"}
+
+        api_records = [
+            r for r in caplog.records if r.name == "openhands.agent_server.api"
+        ]
+        # No ERROR-level noise for a routine 4xx.
+        assert not any(r.levelno >= logging.ERROR for r in api_records)
+        info_records = [r for r in api_records if r.levelno == logging.INFO]
+        assert info_records, "Expected an INFO log line for a 4xx HTTPException"
+        assert all(r.exc_info is None for r in info_records)
