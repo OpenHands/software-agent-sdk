@@ -883,6 +883,7 @@ def test_load_skills_from_agent_server_calls_api():
                 "triggers": ["test"],
                 "is_agentskills_format": True,
                 "disable_model_invocation": True,
+                "allowed_tools": ["Bash", "Read"],
             }
         ],
         "sources": {"public": 1},
@@ -897,6 +898,7 @@ def test_load_skills_from_agent_server_calls_api():
         assert skills[0].content == "Test content"
         assert skills[0].is_agentskills_format is True
         assert skills[0].disable_model_invocation is True
+        assert skills[0].allowed_tools == ["Bash", "Read"]
         assert context.load_public_skills is False  # Skills were loaded
 
 

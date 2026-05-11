@@ -179,10 +179,12 @@ class TestSkillToSkillInfo:
             trigger=KeywordTrigger(keywords=["trigger-only"]),
             is_agentskills_format=True,
             disable_model_invocation=True,
+            allowed_tools=["Bash", "Read"],
         )
         info = skill.to_skill_info()
 
         assert info.disable_model_invocation is True
+        assert info.allowed_tools == ["Bash", "Read"]
 
     def test_task_skill_to_info(self):
         """Test conversion of task skill to SkillInfo."""
