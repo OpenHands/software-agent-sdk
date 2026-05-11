@@ -473,7 +473,11 @@ class BuildOptions(BaseModel):
     @property
     def release_tag_source(self) -> str | None:
         if self.git_ref.startswith("refs/tags/"):
-            return self.git_ref.removeprefix("refs/tags/")
+            tag = self.git_ref.removeprefix("refs/tags/")
+            # Strip the conventional "v" prefix so versioned Docker tags use
+            # bare semver (e.g. 1.21.0-python), matching the sdk_version
+            # fallback and the format that downstream consumers expect.
+            return tag.removeprefix("v")
         if self.sdk_version and self.sdk_version != "unknown":
             return self.sdk_version
         return None

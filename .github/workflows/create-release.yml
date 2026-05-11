@@ -94,6 +94,34 @@ jobs:
 
                   echo "🚀 Dispatched pypi-release.yml for v${VERSION}"
 
+            # Events created by GITHUB_TOKEN don't trigger other workflows,
+            # so the tag push above won't trigger server.yml or
+            # release-binaries.yml automatically. Dispatch them explicitly.
+            - name: Dispatch Agent Server Docker build
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  gh workflow run server.yml \
+                    --repo "${{ github.repository }}" \
+                    --ref "v${VERSION}"
+
+                  echo "🐳 Dispatched server.yml for v${VERSION}"
+
+            - name: Dispatch release binaries workflow
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  gh workflow run release-binaries.yml \
+                    --repo "${{ github.repository }}" \
+                    --ref "v${VERSION}" \
+                    -f release_tag="v${VERSION}"
+
+                  echo "📦 Dispatched release-binaries.yml for v${VERSION}"
+
             - name: Summary
               env:
                   VERSION: ${{ steps.version.outputs.version }}
@@ -103,4 +131,7 @@ jobs:
                   echo "- **Tag**: v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
                   echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
                   echo "" >> "$GITHUB_STEP_SUMMARY"
-                  echo "The \`pypi-release.yml\` workflow was dispatched to publish packages to PyPI." >> "$GITHUB_STEP_SUMMARY"
+                  echo "Dispatched workflows:" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- \`pypi-release.yml\` — publish packages to PyPI" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- \`server.yml\` — build and push Docker images" >> "$GITHUB_STEP_SUMMARY"
+                  echo "- \`release-binaries.yml\` — build and attach release binaries" >> "$GITHUB_STEP_SUMMARY"
