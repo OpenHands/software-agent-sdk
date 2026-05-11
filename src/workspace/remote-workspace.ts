@@ -14,6 +14,7 @@ import {
   GitChange,
   GitDiff,
 } from '../models/workspace';
+import { ConversationID } from '../types/base';
 import { IWorkspace, BaseWorkspaceOptions, GitQueryOptions } from './base';
 
 /**
@@ -55,6 +56,41 @@ export class RemoteWorkspace implements IWorkspace {
       host: this.host,
       ...(this.apiKey ? { apiKey: this.apiKey } : {}),
     });
+  }
+
+  /**
+   * Start a workspace static-asset session for a conversation and return the
+   * base URL its workspace files are served from.
+   *
+   * Calls `POST /api/auth/workspace-session` to exchange the workspace's
+   * configured `X-Session-API-Key` for an HttpOnly cookie
+   * (`oh_workspace_session_key`) scoped to `/api/conversations`. With the
+   * cookie set, browsers can embed workspace artifacts directly as
+   * `<iframe src>`, `<img src>` or top-level navigations without having to
+   * attach the custom `X-Session-API-Key` header — which they cannot do on
+   * those request types.
+   *
+   * The fetch is made with `credentials: 'include'` so the browser persists
+   * the `Set-Cookie` response even when the agent server lives on a different
+   * origin from the embedding page (e.g. canvas + `agent-{id}.example.com`).
+   *
+   * This is intentionally a workspace-level method rather than a
+   * conversation-level one: the static asset server lives on the agent host
+   * and consumers (e.g. agent-canvas) often want to embed workspace files
+   * before they have a full `RemoteConversation` constructed — they just need
+   * a conversation ID.
+   *
+   * @param conversationId The conversation whose workspace files should be
+   *                       served from the returned URL.
+   * @returns The base URL for the workspace static file server, including a
+   *          trailing slash (e.g. `https://host/api/conversations/{id}/workspace/`),
+   *          suitable for joining a relative path onto.
+   */
+  async startWorkspaceSession(conversationId: ConversationID): Promise<string> {
+    await this.client.post('/api/auth/workspace-session', undefined, {
+      credentials: 'include',
+    });
+    return `${this.host}/api/conversations/${conversationId}/workspace/`;
   }
 
   async executeCommand(

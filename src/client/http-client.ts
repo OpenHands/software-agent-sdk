@@ -19,6 +19,13 @@ export interface RequestOptions {
   timeout?: number;
   acceptableStatusCodes?: Set<number>;
   responseType?: ResponseType;
+  /**
+   * Credentials mode for `fetch`. Use `'include'` for endpoints that issue or
+   * consume cookies (e.g. the workspace-session cookie minted by
+   * `POST /api/auth/workspace-session`) so the browser persists them across
+   * origins.
+   */
+  credentials?: RequestCredentials;
 }
 
 export interface HttpResponse<T = unknown> {
@@ -81,6 +88,10 @@ export class HttpClient {
       headers,
       signal: AbortSignal.timeout(options.timeout || this.timeout),
     };
+
+    if (options.credentials) {
+      requestInit.credentials = options.credentials;
+    }
 
     if (options.data && options.method !== 'GET') {
       if (options.data instanceof FormData) {
