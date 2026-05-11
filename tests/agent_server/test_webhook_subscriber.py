@@ -504,6 +504,53 @@ class TestWebhookSubscriberPostEvents:
         assert subscriber.queue == original_events
 
     @pytest.mark.asyncio
+    async def test_post_events_drops_oldest_when_requeue_exceeds_max_queue_size(
+        self, mock_event_service, sample_conversation_id
+    ):
+        """Failed re-queue trims oldest events past max_queue_size."""
+        # Tight bound so we can construct overflow easily.
+        spec = WebhookSpec(
+            base_url="https://example.com",
+            event_buffer_size=1,
+            flush_delay=0.1,
+            num_retries=0,
+            retry_delay=0,
+            max_queue_size=3,
+        )
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+
+        # Build 5 distinct, identifiable events.
+        events = []
+        for i in range(5):
+            ev = MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=f"e{i}")]),
+            )
+            events.append(ev)
+
+        # Pre-load queue beyond bound so re-extend after failure must trim.
+        subscriber.queue = events.copy()
+
+        async def mock_request(*args, **kwargs):
+            raise httpx.HTTPStatusError(
+                "Server Error", request=MagicMock(), response=MagicMock()
+            )
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request = mock_request
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            await subscriber._post_events()
+
+        # Bound is honored, and the *oldest* events are the ones dropped.
+        assert len(subscriber.queue) == spec.max_queue_size
+        assert subscriber.queue == events[-spec.max_queue_size :]
+
+    @pytest.mark.asyncio
     @patch("httpx.AsyncClient")
     async def test_post_events_handles_events_without_model_dump(
         self,
