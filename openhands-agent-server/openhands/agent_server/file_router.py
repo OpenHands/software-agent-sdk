@@ -33,8 +33,15 @@ class SubdirectoryPage(BaseModel):
     next_page_id: str | None = None
 
 
+class FileBrowserEntry(BaseModel):
+    label: str
+    path: str
+
+
 class HomeResponse(BaseModel):
     home: str
+    favorites: list[FileBrowserEntry] = []
+    locations: list[FileBrowserEntry] = []
 
 
 logger = get_logger(__name__)
@@ -141,13 +148,66 @@ async def download_file_query(
     return await _download_file(path)
 
 
+def _list_home_favorites(home: Path, limit: int = 50) -> list[FileBrowserEntry]:
+    """Top-level visible directories inside the user's home, alphabetised.
+
+    Hidden entries (names starting with '.') and symlinks are skipped so the
+    list matches what ``search_subdirs`` returns for the same path.
+    """
+    entries: list[FileBrowserEntry] = []
+    try:
+        with os.scandir(home) as scanner:
+            for entry in scanner:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                entries.append(
+                    FileBrowserEntry(label=entry.name, path=str(home / entry.name))
+                )
+    except (PermissionError, FileNotFoundError):
+        return []
+    entries.sort(key=lambda e: e.label.lower())
+    return entries[:limit]
+
+
+def _list_root_locations() -> list[FileBrowserEntry]:
+    """Filesystem roots: present drives on Windows, '/' on POSIX."""
+    if os.name == "nt":
+        from string import ascii_uppercase
+
+        roots: list[FileBrowserEntry] = []
+        for letter in ascii_uppercase:
+            candidate = Path(f"{letter}:\\")
+            try:
+                if candidate.exists():
+                    roots.append(
+                        FileBrowserEntry(label=f"{letter}:", path=str(candidate))
+                    )
+            except OSError:
+                continue
+        return roots
+    return [FileBrowserEntry(label="/", path="/")]
+
+
 @file_router.get("/home")
 async def get_home_directory() -> HomeResponse:
-    """Return the agent-server user's home directory.
+    """Return the agent-server user's home directory and dynamic sidebar lists.
 
-    Used by the GUI to start a folder-browser at a sensible default location.
+    ``favorites`` is the set of visible top-level directories actually present
+    in the user's home (so it reflects the real environment instead of a
+    hardcoded list of names that may not exist). ``locations`` is the set of
+    filesystem roots — '/' on POSIX or available drive letters on Windows.
     """
-    return HomeResponse(home=str(Path.home()))
+    home = Path.home()
+    return HomeResponse(
+        home=str(home),
+        favorites=_list_home_favorites(home),
+        locations=_list_root_locations(),
+    )
 
 
 @file_router.get("/search_subdirs")

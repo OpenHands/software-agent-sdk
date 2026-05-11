@@ -396,6 +396,32 @@ def test_get_home_returns_user_home(client):
     assert response.json()["home"] == str(Path.home())
 
 
+def test_get_home_returns_dynamic_favorites_and_locations(
+    client, tmp_path, monkeypatch
+):
+    # Arrange: pretend the user's home is tmp_path, populated with a mix of
+    # visible dirs, a hidden dir, and a file. Favorites should include only
+    # the visible dirs, alphabetised. Locations should report the POSIX root.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "projects").mkdir()
+    (tmp_path / "Documents").mkdir()
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / "readme.txt").write_text("ignored")
+
+    # Act
+    response = client.get("/api/file/home")
+
+    # Assert
+    assert response.status_code == 200
+    body = response.json()
+    assert body["home"] == str(tmp_path)
+    assert body["favorites"] == [
+        {"label": "Documents", "path": str(tmp_path / "Documents")},
+        {"label": "projects", "path": str(tmp_path / "projects")},
+    ]
+    assert body["locations"] == [{"label": "/", "path": "/"}]
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
