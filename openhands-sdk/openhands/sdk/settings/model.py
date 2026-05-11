@@ -1228,7 +1228,7 @@ class AgentSettings(LLMAgentSettings):
     * Use :func:`validate_agent_settings` to validate raw payloads
       into the correct variant.
 
-    Scheduled for removal in v1.24.0.
+    Scheduled for removal in v1.23.0.
     """
 
     @classmethod
@@ -1250,7 +1250,7 @@ class AgentSettings(LLMAgentSettings):
         warn_deprecated(
             "AgentSettings",
             deprecated_in="1.17.0",
-            removed_in="1.24.0",
+            removed_in="1.23.0",
             details=(
                 "Use ``OpenHandsAgentSettings`` (for an LLM agent) or "
                 "``ACPAgentSettings`` (for an ACP agent) directly; use "
