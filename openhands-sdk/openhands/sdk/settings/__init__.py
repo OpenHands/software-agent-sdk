@@ -123,7 +123,7 @@ def __getattr__(name: str) -> Any:
         warn_deprecated(
             f"Importing {name!r} from openhands.sdk.settings",
             deprecated_in="1.19.0",
-            removed_in="1.23.0",
+            removed_in="1.24.0",
             details=(
                 "Use ``OpenHandsAgentSettings`` directly. "
                 "``LLMAgentSettings`` was renamed in v1.19.0."

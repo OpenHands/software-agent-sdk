@@ -121,7 +121,7 @@ _print_banner(__version__)
 _DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
     "LLMAgentSettings": {
         "deprecated_in": "1.19.0",
-        "removed_in": "1.23.0",
+        "removed_in": "1.24.0",
         "details": (
             "Use ``OpenHandsAgentSettings`` directly. "
             "``LLMAgentSettings`` was renamed in v1.19.0."
