@@ -5,6 +5,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
