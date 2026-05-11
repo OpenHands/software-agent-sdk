@@ -88,6 +88,17 @@ class WebhookSpec(BaseModel):
     )
     retry_delay: int = Field(default=5, ge=0, description="The delay between retries")
 
+    # Backpressure parameters
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on the number of events buffered for delivery. When the "
+            "downstream is failing and events are re-queued for retry, the oldest "
+            "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+
 
 class Config(BaseModel):
     """

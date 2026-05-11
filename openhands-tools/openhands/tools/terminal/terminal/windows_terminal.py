@@ -32,6 +32,7 @@ _SCREEN_CLEAR_DELAY_SECONDS = 0.2
 _SETUP_DELAY_SECONDS = 0.5
 _SETUP_POLL_INTERVAL_SECONDS = 0.05
 _MAX_SETUP_WAIT_SECONDS = 2.0
+_INTERRUPT_GRACE_SECONDS = 0.5
 
 _WINDOWS_SPECIALS: dict[str, str] = {
     "ENTER": "\n",
@@ -172,6 +173,7 @@ class WindowsTerminal(TerminalInterface):
             return
 
         self._stop_reader.set()
+        self._terminate_child_processes()
 
         if self.process is not None:
             try:
@@ -327,6 +329,62 @@ class WindowsTerminal(TerminalInterface):
         time.sleep(_SCREEN_CLEAR_DELAY_SECONDS)
         self._command_running_event.clear()
 
+    def _terminate_child_processes(self) -> bool:
+        """Terminate descendants of the persistent PowerShell process."""
+        if (
+            platform.system() != "Windows"
+            or self.process is None
+            or self.process.poll() is not None
+        ):
+            return False
+
+        script = f"""
+$root = {self.process.pid}
+$childrenByParent = @{{}}
+Get-CimInstance Win32_Process | ForEach-Object {{
+    $parentId = [int]$_.ParentProcessId
+    if (-not $childrenByParent.ContainsKey($parentId)) {{
+        $childrenByParent[$parentId] = New-Object System.Collections.Generic.List[int]
+    }}
+    $childrenByParent[$parentId].Add([int]$_.ProcessId)
+}}
+$toStop = New-Object System.Collections.Generic.List[int]
+function Add-Descendants([int]$processId) {{
+    if (-not $childrenByParent.ContainsKey($processId)) {{ return }}
+    foreach ($childId in $childrenByParent[$processId]) {{
+        if ($childId -eq $PID) {{ continue }}
+        $toStop.Add($childId)
+        Add-Descendants $childId
+    }}
+}}
+Add-Descendants $root
+for ($i = $toStop.Count - 1; $i -ge 0; $i--) {{
+    Stop-Process -Id $toStop[$i] -Force -ErrorAction SilentlyContinue
+}}
+if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
+"""
+        startupinfo = None
+        startupinfo_cls = getattr(subprocess, "STARTUPINFO", None)
+        if startupinfo_cls is not None:
+            startupinfo = startupinfo_cls()
+            startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        try:
+            result = subprocess.run(
+                [self.shell_path, "-NoLogo", "-NoProfile", "-Command", script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5.0,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.debug("Failed to terminate PowerShell child processes: %s", exc)
+            return False
+
     def interrupt(self) -> bool:
         """Interrupt the active command if the process is still alive."""
         if self.process is None or self.process.poll() is not None:
@@ -341,15 +399,21 @@ class WindowsTerminal(TerminalInterface):
             except Exception as exc:
                 logger.debug("Failed to send CTRL_BREAK_EVENT: %s", exc)
 
-        if not sent_ctrl_break:
+        if sent_ctrl_break:
+            time.sleep(_INTERRUPT_GRACE_SECONDS)
+
+        terminated_children = self._terminate_child_processes()
+        sent_ctrl_c_input = False
+        if not sent_ctrl_break and not terminated_children:
             try:
                 self._write_to_stdin(_WINDOWS_SPECIALS["C-C"])
+                sent_ctrl_c_input = True
             except RuntimeError as exc:
                 logger.debug("Failed to write Ctrl+C to PowerShell stdin: %s", exc)
                 return False
 
         self._command_running_event.clear()
-        return True
+        return sent_ctrl_break or terminated_children or sent_ctrl_c_input
 
     def is_running(self) -> bool:
         """Return whether a command is still running in the PowerShell session."""

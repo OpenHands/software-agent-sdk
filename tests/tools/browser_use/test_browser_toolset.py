@@ -31,7 +31,8 @@ def _mock_browser_executor_init():
     def fake_init(self, **_kwargs):
         self.full_output_save_dir = None
         self._initialized = False
-        self._cleanup_initiated = False
+        # Toolset tests never allocate browser resources; keep close() a no-op.
+        self._cleanup_initiated = True
         self._action_timeout_seconds = 30.0
         self._async_executor = MagicMock()
         self._async_executor.close = MagicMock()

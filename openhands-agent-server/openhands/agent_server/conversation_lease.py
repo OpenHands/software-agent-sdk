@@ -1,10 +1,12 @@
 import json
+import os
+import socket
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from filelock import FileLock
 
@@ -28,6 +30,42 @@ class LeasePayload(TypedDict):
     owner_instance_id: str
     generation: int
     expires_at: float
+    # Optional fields added for crash-recovery. They are absent in lease
+    # files written by older versions of the agent server, so consumers
+    # must treat them as optional.
+    owner_host: NotRequired[str]
+    owner_pid: NotRequired[int]
+
+
+def _current_host() -> str:
+    try:
+        return socket.gethostname()
+    except Exception:
+        return ""
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Best-effort check for whether ``pid`` is a live process on this host.
+
+    Uses ``os.kill(pid, 0)`` which is portable across POSIX platforms and
+    available on Windows since Python 3.2. When liveness cannot be
+    determined (permission errors, unsupported platforms, etc.) we
+    conservatively report the process as alive so we never steal a lease
+    that might still be in use.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but is owned by another user.
+        return True
+    except OSError:
+        # Unknown error - be conservative and assume the process is alive.
+        return True
+    return True
 
 
 class ConversationLeaseHeldError(RuntimeError):
@@ -91,17 +129,31 @@ class ConversationLease:
                 current_owner = payload["owner_instance_id"]
                 current_generation = payload["generation"]
                 expires_at = payload["expires_at"]
-                if current_owner != self._owner_instance_id and expires_at > now:
+                same_owner = current_owner == self._owner_instance_id
+                if (
+                    not same_owner
+                    and expires_at > now
+                    and not self._owner_is_dead(payload)
+                ):
                     raise ConversationLeaseHeldError(
                         conversation_dir=self._conversation_dir,
                         owner_instance_id=current_owner,
                         expires_at=expires_at,
                     )
-                same_owner = current_owner == self._owner_instance_id
                 generation = (
                     current_generation if same_owner else current_generation + 1
                 )
                 takeover = not same_owner
+                if takeover and expires_at > now:
+                    logger.info(
+                        "Taking over conversation lease in %s from dead owner "
+                        "%s (pid=%s host=%s); lease nominally valid until %s",
+                        self._conversation_dir,
+                        current_owner,
+                        payload.get("owner_pid"),
+                        payload.get("owner_host"),
+                        expires_at,
+                    )
             else:
                 generation = 1
                 takeover = False
@@ -110,6 +162,27 @@ class ConversationLease:
                 expires_at=now + self._ttl_seconds,
             )
             return LeaseClaim(generation=generation, takeover=takeover)
+
+    def _owner_is_dead(self, payload: LeasePayload) -> bool:
+        """Return True if the lease's recorded owner process is gone.
+
+        Only considered when the recorded ``owner_host`` matches this
+        host: liveness checks for PIDs on other hosts are meaningless.
+        Lease files written by older agent-server versions don't include
+        host/pid, so this returns False (preserving the legacy
+        TTL-only behavior) for them.
+        """
+        owner_host = payload.get("owner_host")
+        owner_pid = payload.get("owner_pid")
+        if not owner_host or not isinstance(owner_pid, int):
+            return False
+        if owner_host != _current_host():
+            return False
+        # Don't mistakenly consider ourselves dead if the lease points at
+        # this very process (e.g. a same-process re-claim).
+        if owner_pid == os.getpid():
+            return False
+        return not _is_pid_alive(owner_pid)
 
     def renew(self, generation: int) -> None:
         """Extend the current lease while keeping the same generation."""
@@ -176,11 +249,18 @@ class ConversationLease:
             if not isinstance(expires_at, int | float):
                 raise ValueError("lease expires_at must be numeric")
 
-            return LeasePayload(
+            payload: LeasePayload = LeasePayload(
                 owner_instance_id=owner_instance_id,
                 generation=generation,
                 expires_at=float(expires_at),
             )
+            owner_host = raw_payload.get("owner_host")
+            if isinstance(owner_host, str) and owner_host:
+                payload["owner_host"] = owner_host
+            owner_pid = raw_payload.get("owner_pid")
+            if isinstance(owner_pid, int):
+                payload["owner_pid"] = owner_pid
+            return payload
         except Exception:
             logger.warning(
                 "Failed to parse conversation lease file; treating as stale: %s",
@@ -193,6 +273,8 @@ class ConversationLease:
             "owner_instance_id": self._owner_instance_id,
             "generation": generation,
             "expires_at": expires_at,
+            "owner_host": _current_host(),
+            "owner_pid": os.getpid(),
         }
         tmp_path = self._lease_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload))

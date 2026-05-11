@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import shutil
 import threading
 import time
@@ -8,7 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
+from pydantic import PrivateAttr
 
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -34,6 +38,11 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    start_conversation_with_test_llm,
+    text_message,
+)
 
 
 @pytest.fixture
@@ -2011,12 +2020,127 @@ class TestEventServiceClose:
                 await event_service.close()
         finally:
             hanging_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
                 await hanging_task
-            except (asyncio.CancelledError, BaseException):
-                pass
 
         conversation.pause.assert_called_once()
         assert "did not exit cleanly" in caplog.text
         assert event_service._run_task is None
         conversation.close.assert_called_once()
+
+
+@pytest_asyncio.fixture
+async def real_conversation_service(tmp_path):
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    service = ConversationService(conversations_dir=persist)
+    async with service:
+        yield service
+
+
+class _WedgedSubscriber:
+    """Models a WS client whose TCP send buffer is full."""
+
+    def __init__(self) -> None:
+        self.unblock = asyncio.Event()
+
+    async def __call__(self, event):
+        await self.unblock.wait()
+
+    async def close(self) -> None:
+        self.unblock.set()  # let PubSub.close() finish
+
+
+@pytest.mark.timeout(15)
+async def test_subscribe_to_events_does_not_deadlock_on_wedged_subscriber(
+    real_conversation_service, tmp_path
+):
+    (tmp_path / "ws").mkdir()
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=SlowTestLLM.from_messages([text_message("ok")], latency_s=0.0),
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="wedged-sub",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+
+    wedged = _WedgedSubscriber()
+    try:
+        await asyncio.wait_for(es.subscribe_to_events(wedged), timeout=1.0)
+    except TimeoutError:
+        pytest.fail("subscribe_to_events blocked > 1 s on a wedged subscriber.")
+    finally:
+        wedged.unblock.set()
+
+
+@pytest.mark.timeout(45)
+async def test_close_blocks_until_executor_thread_finishes(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    # close() relies on multiple safety nets to wait for the executor: the
+    # FIFOLock-blocked pause() and conversation.close(), and the cancelled
+    # run task's finally-block await on wait_for_pending(30.0). We force
+    # the lock-based nets to fail and check the wait_for_pending net still
+    # keeps close() blocking until the LLM call really ends. If a future
+    # refactor removes wait_for_pending, this test will fail and surface
+    # the executor-still-alive-past-close race.
+    class TimedSlowTestLLM(SlowTestLLM):
+        _ended_at: float = PrivateAttr(default=0.0)
+
+        def completion(self, *args, **kwargs):
+            result = super().completion(*args, **kwargs)
+            object.__setattr__(self, "_ended_at", time.monotonic())
+            return result
+
+        @property
+        def ended_at(self) -> float:
+            return self._ended_at
+
+    (tmp_path / "ws").mkdir()
+    parent_llm = TimedSlowTestLLM.from_messages(
+        [text_message("done")],
+        latency_s=12.0,  # > the 10 s wait_for in close()
+    )
+    # from_messages is typed as returning TestLLM; narrow so .ended_at resolves.
+    assert isinstance(parent_llm, TimedSlowTestLLM)
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="close-race",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="long step")]),
+        run=False,
+    )
+    await es.run()
+    await asyncio.sleep(0.5)
+
+    def _broken():
+        raise RuntimeError("pause/close unavailable")
+
+    conv = es.get_conversation()
+    monkeypatch.setattr(conv, "pause", _broken)
+    monkeypatch.setattr(conv, "close", _broken)
+
+    close_start = time.monotonic()
+    with contextlib.suppress(Exception):
+        await es.close()
+    close_returned = time.monotonic()
+
+    assert parent_llm.ended_at > 0, (
+        f"close() returned at t={close_returned - close_start:.1f}s but the "
+        f"executor thread is still in time.sleep(). Safety net removed."
+    )
+    assert parent_llm.ended_at <= close_returned + 0.05, (
+        f"executor finished {parent_llm.ended_at - close_returned:.2f}s after "
+        f"close() returned — race reproduces."
+    )
+
+    monkeypatch.undo()

@@ -82,6 +82,10 @@ a = Analysis(
         *collect_data_files("openhands.tools.browser_use", includes=["js/*.js"]),
 
         # Package metadata for importlib.metadata
+        *copy_metadata("openhands-agent-server"),
+        *copy_metadata("openhands-sdk"),
+        *copy_metadata("openhands-tools"),
+        *copy_metadata("openhands-workspace"),
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
     ],

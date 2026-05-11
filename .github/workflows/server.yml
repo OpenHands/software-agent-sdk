@@ -286,6 +286,8 @@ jobs:
                   cache-to: type=gha,mode=max
                   build-args: |
                       BASE_IMAGE=${{ env.BASE_IMAGE }}
+                      OPENHANDS_BUILD_GIT_SHA=${{ env.SDK_SHA }}
+                      OPENHANDS_BUILD_GIT_REF=${{ env.SDK_REF }}
 
             - name: Cleanup build context
               if: always()
@@ -333,6 +335,7 @@ jobs:
         needs: build-and-push-image
         if: >
             github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request' &&
              !github.event.pull_request.head.repo.fork)
         runs-on: ubuntu-24.04

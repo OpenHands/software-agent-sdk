@@ -26,6 +26,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from starlette.websockets import WebSocketState
 
 from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.config import Config, get_default_config
@@ -413,9 +414,17 @@ async def bash_events_socket(
 
 
 async def _send_event(event: Event, websocket: WebSocket):
+    if not _is_websocket_connected(websocket):
+        # Client already disconnected; the pub/sub callback was racing with
+        # cleanup. Avoid noisy tracebacks from starlette refusing to send.
+        logger.debug("skip_sending_event_socket_disconnected: %r", event)
+        return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
+    except (RuntimeError, WebSocketDisconnect) as e:
+        # Expected race: client disconnected between our state check and send.
+        logger.debug("error_sending_event_disconnected: %r (%s)", event, e)
     except Exception:
         logger.exception("error_sending_event: %r", event, stack_info=True)
 
@@ -432,6 +441,26 @@ async def _safe_close_websocket(
         logger.debug("WebSocket close failed (may already be closed)")
 
 
+def _is_websocket_connected(websocket: WebSocket) -> bool:
+    """Best-effort check that the websocket is still in the CONNECTED state.
+
+    Starlette raises ``RuntimeError('Cannot call "send" once a close message
+    has been sent.')`` if we try to send on a socket whose ``application_state``
+    is ``DISCONNECTED``. Pre-checking avoids noisy tracebacks when a pub/sub
+    callback fires after the peer has gone away.
+
+    Returns ``True`` when the state is unknown (e.g. tests using ``MagicMock``)
+    so callers still attempt the send and get the original behaviour.
+    """
+    app_state = getattr(websocket, "application_state", None)
+    client_state = getattr(websocket, "client_state", None)
+    if app_state is WebSocketState.DISCONNECTED:
+        return False
+    if client_state is WebSocketState.DISCONNECTED:
+        return False
+    return True
+
+
 @dataclass
 class _WebSocketSubscriber(Subscriber):
     """WebSocket subscriber for conversation events."""
@@ -443,9 +472,14 @@ class _WebSocketSubscriber(Subscriber):
 
 
 async def _send_bash_event(event: BashEventBase, websocket: WebSocket):
+    if not _is_websocket_connected(websocket):
+        logger.debug("skip_sending_bash_event_socket_disconnected: %r", event)
+        return
     try:
         dumped = event.model_dump(mode="json")
         await websocket.send_json(dumped)
+    except (RuntimeError, WebSocketDisconnect) as e:
+        logger.debug("error_sending_bash_event_disconnected: %r (%s)", event, e)
     except Exception:
         logger.exception("error_sending_bash_event: %r", event, stack_info=True)
 

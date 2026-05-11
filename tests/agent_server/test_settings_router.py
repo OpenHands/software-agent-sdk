@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 from base64 import urlsafe_b64encode
@@ -239,6 +240,64 @@ def test_patch_settings_updates_llm_config(client_with_settings):
     # Response should NOT expose secrets (no header)
     assert body["agent_settings"]["llm"]["api_key"] == "**********"
     assert body["llm_api_key_is_set"] is True
+
+
+def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
+    client_with_settings, temp_persistence_dir
+):
+    """PATCH /api/settings must encrypt MCP ``env`` / ``headers`` values at
+    rest with the configured cipher — the same way other secret fields are
+    persisted — and never write them as ``"<redacted>"`` or plaintext.
+
+    Reading them back via ``X-Expose-Secrets: plaintext`` must round-trip
+    to the original values (decrypted on load).
+    """
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "mcp_config": {
+                    "mcpServers": {
+                        "github": {
+                            "command": "uvx",
+                            "args": ["mcp-server-github"],
+                            "env": {"GITHUB_TOKEN": "ghp-router-secret"},
+                        },
+                        "remote": {
+                            "url": "https://example.com/mcp",
+                            "headers": {"Authorization": "Bearer tok-router-secret"},
+                        },
+                    }
+                }
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    # Inspect the on-disk settings.json: plaintext must NOT appear, the
+    # values must be Fernet ciphertext.
+    on_disk_path = temp_persistence_dir / "settings.json"
+    on_disk_text = on_disk_path.read_text()
+    assert "<redacted>" not in on_disk_text
+    assert "ghp-router-secret" not in on_disk_text
+    assert "tok-router-secret" not in on_disk_text
+
+    on_disk = json.loads(on_disk_text)
+    servers_on_disk = on_disk["agent_settings"]["mcp_config"]["mcpServers"]
+    assert servers_on_disk["github"]["env"]["GITHUB_TOKEN"].startswith("gAAAA")
+    assert servers_on_disk["remote"]["headers"]["Authorization"].startswith("gAAAA")
+    # Non-secret structure must remain readable.
+    assert servers_on_disk["github"]["command"] == "uvx"
+    assert servers_on_disk["remote"]["url"] == "https://example.com/mcp"
+
+    # GET with plaintext decrypts and returns the original round-tripped values.
+    response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert response.status_code == 200
+    servers = response.json()["agent_settings"]["mcp_config"]["mcpServers"]
+    assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-router-secret"
+    assert servers["remote"]["headers"]["Authorization"] == "Bearer tok-router-secret"
 
 
 def test_patch_settings_empty_payload_returns_400(client_with_settings):
