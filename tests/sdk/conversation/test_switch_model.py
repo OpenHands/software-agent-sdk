@@ -1,12 +1,14 @@
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
+from openhands.sdk.utils.cipher import Cipher
 
 
 def _make_llm(model: str, usage_id: str) -> LLM:
@@ -191,6 +193,44 @@ def test_switch_llm_does_not_consult_store(empty_profile_store, monkeypatch):
     conv.switch_llm(_make_llm("inline-model", "x"))
 
     assert calls == [], f"profile store was consulted: {calls}"
+
+
+def test_switch_profile_decrypts_with_cipher(tmp_path, monkeypatch):
+    """A profile saved with cipher-encrypted secrets must decrypt on switch
+    so the agent's LLM ends up with the plaintext API key, not a Fernet
+    token (regression for #3164).
+    """
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+
+    cipher = Cipher("test-key-for-switch-profile")
+    store = LLMProfileStore(base_dir=profile_dir)
+    store.save(
+        "encrypted",
+        LLM(
+            model="gpt-4o",
+            usage_id="encrypted",
+            api_key=SecretStr("plaintext-secret"),
+        ),
+        include_secrets=True,
+        cipher=cipher,
+    )
+
+    conv = LocalConversation(
+        agent=Agent(
+            llm=_make_llm("default-model", "test-llm"),
+            tools=[],
+        ),
+        workspace=Path.cwd(),
+        cipher=cipher,
+    )
+
+    conv.switch_profile("encrypted")
+
+    api_key = conv.agent.llm.api_key
+    assert isinstance(api_key, SecretStr)
+    assert api_key.get_secret_value() == "plaintext-secret"
 
 
 def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):

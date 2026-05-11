@@ -42,7 +42,7 @@ and served via CDN at `https://results.eval.all-hands.dev/`.
 {benchmark}/{model_slug}/{github_run_id}/
 ```
 
-- **benchmark**: `swebench`, `gaia`, `swtbench`, `commit0`, `swebenchmultimodal`, `terminalbench`
+- **benchmark**: `swebench`, `swebenchpro`, `gaia`, `swtbench`, `commit0`, `swebenchmultimodal`, `terminalbench`
 - **model_slug**: Model name with `/:@.` replaced by `-`
   - Example: `litellm_proxy/claude-sonnet-4-5-20250929` → `litellm_proxy-claude-sonnet-4-5-20250929`
 - **github_run_id**: The GitHub Actions run ID from the `OpenHands/evaluation` repo

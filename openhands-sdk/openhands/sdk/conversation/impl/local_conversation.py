@@ -265,6 +265,7 @@ class LocalConversation(BaseConversation):
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore()
+        self._cipher = cipher
 
         # Initialize secrets if provided
         if secrets:
@@ -671,7 +672,7 @@ class LocalConversation(BaseConversation):
         try:
             cached = self.llm_registry.get(usage_id)
         except KeyError:
-            loaded = self._profile_store.load(profile_name)
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 

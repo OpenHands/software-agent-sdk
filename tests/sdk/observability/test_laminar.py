@@ -302,6 +302,39 @@ def test_observe_calls_use_span_with_owner_root_span_on_sync():
         os.environ.pop("LMNR_PROJECT_API_KEY", None)
 
 
+def test_observe_with_owner_root_span_preserves_wrapped_exceptions():
+    """Exceptions from wrapped functions must not be treated as use_span errors."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            lam._observability_enabled = True
+            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+
+                @lam.observe(name="conversation.run")
+                def run(self) -> None:
+                    raise ValueError("boom")
+
+                owner = _DummyOwner(sentinel_span)
+                with pytest.raises(ValueError, match="boom"):
+                    run(owner)
+
+        assert used_with == [sentinel_span]
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
 def test_observe_calls_use_span_with_owner_root_span_on_async():
     """Async ``@observe``'d methods must re-attach the owner's root span."""
     os.environ["LMNR_PROJECT_API_KEY"] = "test-key"

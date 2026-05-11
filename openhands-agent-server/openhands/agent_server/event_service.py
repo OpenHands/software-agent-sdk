@@ -42,6 +42,9 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 LEASE_RENEW_INTERVAL_SECONDS = 15.0
+# Bounds initial-state push so subscribe_to_events does not stall on a
+# subscriber whose __call__ blocks (e.g. WS with a full TCP send buffer).
+INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
@@ -411,11 +414,19 @@ class EventService:
             state_update_event = await self._create_state_update_event()
 
             try:
-                await subscriber(state_update_event)
-            except Exception as e:
-                logger.error(
-                    f"Error sending initial state to subscriber {subscriber_id}: {e}"
+                await asyncio.wait_for(
+                    subscriber(state_update_event),
+                    timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
                 )
+            except TimeoutError:
+                # Subscriber stays registered; only the initial-state push is
+                # dropped. Subsequent publishes go through pub_sub and may
+                # still block there if the subscriber remains wedged.
+                logger.warning(
+                    f"Initial state push to subscriber {subscriber_id} timed "
+                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                )
+            # Non-timeout errors propagate to caller (e.g. webhook failures).
 
         return subscriber_id
 
@@ -570,7 +581,7 @@ class EventService:
         # the wiring lets us log the decision so operators can tell from a
         # log line whether deltas will flow.
         streaming_enabled = any(llm.stream for llm in agent.get_all_llms())
-        logger.info(
+        logger.debug(
             "Token streaming: %s",
             "enabled" if streaming_enabled else "disabled (no LLM has stream=True)",
         )

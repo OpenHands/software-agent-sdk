@@ -5,9 +5,12 @@ from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from fastapi import HTTPException, Request, status
+from pydantic import SecretStr
 from pydantic_core import PydanticSerializationError
 
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
 
@@ -76,6 +79,30 @@ def _has_missing_cipher_cause(exc: BaseException) -> bool:
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
     return False
+
+
+def decrypt_incoming_llm_secrets(llm: LLM, cipher: Cipher) -> LLM:
+    """Decrypt any pre-encrypted LLM secret fields posted back by the client.
+
+    FastAPI parses the request body without a cipher in the validation context,
+    so an encrypted blob arrives as ``SecretStr("gAAAAA...")``. Without this
+    pass, downstream code (e.g. profile save, ``conversation.switch_llm``) sees
+    the encrypted ciphertext as the API key and would either re-encrypt it or
+    forward it to the model provider verbatim. Plaintext input is left
+    untouched.
+    """
+    updates: dict[str, SecretStr] = {}
+    for field in LLM_SECRET_FIELDS:
+        val = getattr(llm, field, None)
+        if not isinstance(val, SecretStr):
+            continue
+        raw = val.get_secret_value()
+        if not raw.startswith(FERNET_TOKEN_PREFIX):
+            continue
+        decrypted = cipher.decrypt(raw)
+        if decrypted is not None:
+            updates[field] = decrypted
+    return llm.model_copy(update=updates) if updates else llm
 
 
 @contextmanager

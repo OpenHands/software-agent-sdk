@@ -16,7 +16,10 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.config import WebhookSpec
-from openhands.agent_server.conversation_service import WebhookSubscriber
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    WebhookSubscriber,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.utils import utc_now
@@ -24,6 +27,11 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    start_conversation_with_test_llm,
+    text_message,
+)
 
 
 @pytest.fixture
@@ -494,6 +502,53 @@ class TestWebhookSubscriberPostEvents:
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
         assert subscriber.queue == original_events
+
+    @pytest.mark.asyncio
+    async def test_post_events_drops_oldest_when_requeue_exceeds_max_queue_size(
+        self, mock_event_service, sample_conversation_id
+    ):
+        """Failed re-queue trims oldest events past max_queue_size."""
+        # Tight bound so we can construct overflow easily.
+        spec = WebhookSpec(
+            base_url="https://example.com",
+            event_buffer_size=1,
+            flush_delay=0.1,
+            num_retries=0,
+            retry_delay=0,
+            max_queue_size=3,
+        )
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+
+        # Build 5 distinct, identifiable events.
+        events = []
+        for i in range(5):
+            ev = MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=f"e{i}")]),
+            )
+            events.append(ev)
+
+        # Pre-load queue beyond bound so re-extend after failure must trim.
+        subscriber.queue = events.copy()
+
+        async def mock_request(*args, **kwargs):
+            raise httpx.HTTPStatusError(
+                "Server Error", request=MagicMock(), response=MagicMock()
+            )
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request = mock_request
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            await subscriber._post_events()
+
+        # Bound is honored, and the *oldest* events are the ones dropped.
+        assert len(subscriber.queue) == spec.max_queue_size
+        assert subscriber.queue == events[-spec.max_queue_size :]
 
     @pytest.mark.asyncio
     @patch("httpx.AsyncClient")
@@ -1247,3 +1302,56 @@ class TestWebhookSubscriberTimerBehavior:
 
         # _post_events should have been called immediately
         subscriber._post_events.assert_called_once()
+
+
+@pytest.mark.timeout(30)
+async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    workspace = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir()
+
+    # Force WebhookSubscriber's first __call__ to raise once. Subsequent
+    # calls succeed so the test models "init error" rather than "every event
+    # raises". event_service.py:412 invokes __call__ during registration as
+    # an initial-state sync — that's where the raise lands.
+    original_init = WebhookSubscriber.__init__
+
+    def _broken_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._broken = True
+
+    async def _broken_call(self, event):
+        if getattr(self, "_broken", False):
+            self._broken = False
+            raise RuntimeError("webhook subscriber init failed")
+
+    monkeypatch.setattr(WebhookSubscriber, "__init__", _broken_init)
+    monkeypatch.setattr(WebhookSubscriber, "__call__", _broken_call)
+
+    service = ConversationService(
+        conversations_dir=persist,
+        webhook_specs=[
+            WebhookSpec(
+                base_url="http://unused.test",
+                event_buffer_size=1,
+                num_retries=0,
+            )
+        ],
+    )
+    async with service:
+        # Contract: a subscriber's init error reaches the caller. Today both
+        # swallow sites are present, so this `pytest.raises` will not see
+        # anything and the test fails (→ XFAIL). When *both* are fixed,
+        # start_conversation propagates RuntimeError, pytest.raises catches
+        # it, the test passes (→ XPASS, strict=True flags it for cleanup).
+        with pytest.raises(RuntimeError, match="webhook subscriber init failed"):
+            await start_conversation_with_test_llm(
+                service,
+                parent_llm=SlowTestLLM.from_messages(
+                    [text_message("done")], latency_s=0.0
+                ),
+                workspace_dir=workspace,
+                usage_id="webhook-error",
+                initial_text=None,
+            )

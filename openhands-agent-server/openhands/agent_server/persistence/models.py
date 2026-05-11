@@ -41,6 +41,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
 
     agent_settings_diff: dict[str, Any]
     conversation_settings_diff: dict[str, Any]
+    active_profile: str | None
 
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -63,11 +64,18 @@ class PersistedSettings(BaseModel):
     Agent settings (LLM config, MCP config, condenser) live in ``agent_settings``.
     Conversation settings (max_iterations, confirmation_mode) live in
     ``conversation_settings``.
+
+    The ``active_profile`` field tracks which LLM profile was last activated,
+    allowing frontends to display which profile is currently in use.
     """
 
     agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
+    )
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active LLM profile.",
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -86,9 +94,10 @@ class PersistedSettings(BaseModel):
     def update(self, payload: SettingsUpdatePayload) -> None:
         """Apply a batch of changes from a nested dict.
 
-        Accepts ``agent_settings_diff`` and ``conversation_settings_diff``
-        for partial updates. Uses ``from_persisted()`` to apply any schema
-        migrations if the incoming diff contains an older schema version.
+        Accepts ``agent_settings_diff``, ``conversation_settings_diff``, and
+        ``active_profile`` for partial updates. Uses ``from_persisted()`` to
+        apply any schema migrations if the incoming diff contains an older
+        schema version.
 
         Thread Safety:
             This method is NOT thread-safe for concurrent in-memory updates.
@@ -153,6 +162,10 @@ class PersistedSettings(BaseModel):
                 self.agent_settings = new_agent
             if new_conv is not None:
                 self.conversation_settings = new_conv
+
+            # Update active_profile if explicitly provided (including None to clear)
+            if "active_profile" in payload:
+                self.active_profile = payload["active_profile"]
         finally:
             # Clear merged dicts to minimize plaintext exposure window
             if agent_merged is not None:

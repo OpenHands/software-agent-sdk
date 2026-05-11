@@ -881,6 +881,8 @@ def test_load_skills_from_agent_server_calls_api():
                 "content": "Test content",
                 "description": "A test skill",
                 "triggers": ["test"],
+                "is_agentskills_format": True,
+                "disable_model_invocation": True,
             }
         ],
         "sources": {"public": 1},
@@ -893,6 +895,8 @@ def test_load_skills_from_agent_server_calls_api():
         assert len(skills) == 1
         assert skills[0].name == "test-skill"
         assert skills[0].content == "Test content"
+        assert skills[0].is_agentskills_format is True
+        assert skills[0].disable_model_invocation is True
         assert context.load_public_skills is False  # Skills were loaded
 
 

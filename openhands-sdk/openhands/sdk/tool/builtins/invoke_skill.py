@@ -97,9 +97,22 @@ class InvokeSkillExecutor(ToolExecutor):
 
         match = next((s for s in skills if s.name == name), None)
         if match is None:
-            available = ", ".join(sorted(s.name for s in skills)) or "<none>"
+            available = (
+                ", ".join(
+                    sorted(s.name for s in skills if not s.disable_model_invocation)
+                )
+                or "<none>"
+            )
             return self._error(
                 name, f"Unknown skill '{name}'. Available skills: {available}."
+            )
+        if match.disable_model_invocation:
+            return self._error(
+                name,
+                (
+                    f"Skill '{name}' cannot be invoked directly. "
+                    "It can only be activated by trigger matching."
+                ),
             )
 
         rendered = render_content_with_commands(match.content, working_dir=working_dir)

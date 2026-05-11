@@ -17,6 +17,12 @@ from openhands.sdk.tool.builtins.invoke_skill import (
     InvokeSkillObservation,
     InvokeSkillTool,
 )
+from openhands.sdk.tool.builtins.switch_llm import (
+    SwitchLLMAction,
+    SwitchLLMExecutor,
+    SwitchLLMObservation,
+    SwitchLLMTool,
+)
 from openhands.sdk.tool.builtins.think import (
     ThinkAction,
     ThinkExecutor,
@@ -30,12 +36,13 @@ from openhands.sdk.tool.builtins.think import (
 # AgentSkills-format skill is loaded (see BUILT_IN_TOOL_CLASSES below).
 BUILT_IN_TOOLS = [FinishTool, ThinkTool]
 
-# Map of built-in tool class names to their classes. Includes
-# `InvokeSkillTool` so it can be resolved by name from `include_default_tools`
-# and the conditional wiring in `Agent._initialize`.
+# Map of built-in tool class names to their classes. Includes optional built-ins
+# so they can be resolved by name from `include_default_tools` and the
+# conditional wiring in `Agent._initialize`.
 BUILT_IN_TOOL_CLASSES = {
     **{tool.__name__: tool for tool in BUILT_IN_TOOLS},
     InvokeSkillTool.__name__: InvokeSkillTool,
+    SwitchLLMTool.__name__: SwitchLLMTool,
 }
 
 __all__ = [
@@ -49,6 +56,10 @@ __all__ = [
     "InvokeSkillAction",
     "InvokeSkillObservation",
     "InvokeSkillExecutor",
+    "SwitchLLMTool",
+    "SwitchLLMAction",
+    "SwitchLLMObservation",
+    "SwitchLLMExecutor",
     "ThinkTool",
     "ThinkAction",
     "ThinkObservation",

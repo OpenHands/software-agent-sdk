@@ -313,12 +313,23 @@ def _maybe_use_root_span(args: tuple[Any, ...]) -> Iterator[None]:
         yield
         return
     try:
-        with Laminar.use_span(root.span):
-            yield
+        span_context = Laminar.use_span(root.span)
+        span_context.__enter__()
     except Exception:
         # Never let an observability error break the wrapped function.
         logger.debug("use_span failed; calling without parent", exc_info=True)
         yield
+        return
+
+    exc_info = (None, None, None)
+    try:
+        yield
+    except BaseException:
+        exc_info = sys.exc_info()
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            span_context.__exit__(*exc_info)
 
 
 def _root_span_from_args(args: tuple[Any, ...]) -> RootSpan | None:

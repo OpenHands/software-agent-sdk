@@ -81,6 +81,55 @@ async def test_websocket_subscriber_call_exception(mock_websocket):
 
 
 @pytest.mark.asyncio
+async def test_websocket_subscriber_skips_send_when_disconnected(mock_websocket):
+    """Regression: pub/sub callbacks must not attempt send() on a closed socket.
+
+    Starlette raises ``RuntimeError: Cannot call "send" once a close message
+    has been sent.`` if we send after disconnect. The subscriber should detect
+    the DISCONNECTED state and skip silently.
+    """
+    from starlette.websockets import WebSocketState
+
+    mock_websocket.application_state = WebSocketState.DISCONNECTED
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+    event = MessageEvent(
+        id="test_event",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="test")]),
+    )
+
+    await subscriber(event)
+
+    mock_websocket.send_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscriber_send_runtime_error_not_logged_as_exception(
+    mock_websocket,
+):
+    """Regression: a RuntimeError from send (race between disconnect and send)
+    should be logged at debug level, not as a full traceback via
+    ``logger.exception``.
+    """
+    mock_websocket.send_json.side_effect = RuntimeError(
+        'Cannot call "send" once a close message has been sent.'
+    )
+    subscriber = _WebSocketSubscriber(websocket=mock_websocket)
+    event = MessageEvent(
+        id="test_event",
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="test")]),
+    )
+
+    with patch("openhands.agent_server.sockets.logger") as mock_logger:
+        await subscriber(event)
+
+    mock_websocket.send_json.assert_called_once()
+    mock_logger.exception.assert_not_called()
+    mock_logger.debug.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_websocket_disconnect_breaks_loop(
     mock_websocket, mock_event_service, sample_conversation_id
 ):
