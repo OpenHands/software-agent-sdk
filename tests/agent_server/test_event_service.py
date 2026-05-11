@@ -2051,15 +2051,6 @@ class _WedgedSubscriber:
         self.unblock.set()  # let PubSub.close() finish
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "event_service.py:412 awaits subscriber(state_update_event) "
-        "synchronously; a wedged WS client deadlocks the WS handler "
-        "(reachable from sockets.py:250). "
-        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3118."
-    ),
-)
 @pytest.mark.timeout(15)
 async def test_subscribe_to_events_does_not_deadlock_on_wedged_subscriber(
     real_conversation_service, tmp_path

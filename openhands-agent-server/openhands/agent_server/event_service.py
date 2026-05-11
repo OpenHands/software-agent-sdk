@@ -42,6 +42,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 LEASE_RENEW_INTERVAL_SECONDS = 15.0
+INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 
 
 logger = get_logger(__name__)
@@ -409,7 +410,15 @@ class EventService:
             state_update_event = await self._create_state_update_event()
 
             try:
-                await subscriber(state_update_event)
+                await asyncio.wait_for(
+                    subscriber(state_update_event),
+                    timeout=INITIAL_STATE_PUSH_TIMEOUT_SECONDS,
+                )
+            except TimeoutError:
+                logger.warning(
+                    f"Initial state push to subscriber {subscriber_id} timed "
+                    f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
+                )
             except Exception as e:
                 logger.error(
                     f"Error sending initial state to subscriber {subscriber_id}: {e}"
