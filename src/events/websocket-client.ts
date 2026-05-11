@@ -4,7 +4,15 @@
 
 import { Event, ConversationCallbackType } from '../types/base';
 
-// Use native WebSocket in browser, ws library in Node.js
+// Use native WebSocket in browser, ws library in Node.js.
+//
+// IMPORTANT: this block must never throw. It runs whenever this file is
+// imported, and this file is transitively imported by the package barrel
+// (via RemoteConversation), so any throw here crashes consumers that
+// merely `import { RemoteWorkspace } from "@openhands/typescript-client"`
+// even when they have no intent to open a WebSocket. The "no implementation
+// available" condition is deferred to connect() time, where it is surfaced
+// through the existing onError callback channel.
 let WebSocketImpl: any;
 
 if (typeof window !== 'undefined' && window.WebSocket) {
@@ -17,9 +25,8 @@ if (typeof window !== 'undefined' && window.WebSocket) {
     const ws = require('ws');
     WebSocketImpl = ws;
   } catch {
-    throw new Error(
-      'WebSocket implementation not available. Install ws package for Node.js environments.'
-    );
+    // Leave WebSocketImpl undefined; connect() reports the error via onError.
+    WebSocketImpl = undefined;
   }
 }
 
@@ -84,6 +91,12 @@ export class WebSocketCallbackClient {
 
   private connect(): void {
     try {
+      if (!WebSocketImpl) {
+        throw new Error(
+          'WebSocket implementation not available. Install the `ws` package, ' +
+            'or run in an environment with a global WebSocket constructor.'
+        );
+      }
       // Convert HTTP URL to WebSocket URL
       const url = new URL(this.host);
       const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';

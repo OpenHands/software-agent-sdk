@@ -5,6 +5,10 @@
 import { BashEvent } from '../models/workspace';
 import { ErrorCallbackType } from './websocket-client';
 
+// IMPORTANT: this block must never throw. See the matching note in
+// `events/websocket-client.ts` — the "no WebSocket implementation"
+// condition is deferred to connect() time so importing this module does
+// not crash consumers that never use bash event streaming.
 let WebSocketImpl: any;
 
 if (typeof window !== 'undefined' && window.WebSocket) {
@@ -15,9 +19,7 @@ if (typeof window !== 'undefined' && window.WebSocket) {
     const ws = require('ws');
     WebSocketImpl = ws;
   } catch {
-    throw new Error(
-      'WebSocket implementation not available. Install ws package for Node.js environments.'
-    );
+    WebSocketImpl = undefined;
   }
 }
 
@@ -75,6 +77,12 @@ export class BashWebSocketClient {
 
   private connect(): void {
     try {
+      if (!WebSocketImpl) {
+        throw new Error(
+          'WebSocket implementation not available. Install the `ws` package, ' +
+            'or run in an environment with a global WebSocket constructor.'
+        );
+      }
       const url = new URL(this.host);
       const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsScheme}//${url.host}${url.pathname.replace(/\/$/, '')}/sockets/bash-events`;
