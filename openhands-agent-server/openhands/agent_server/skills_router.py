@@ -92,6 +92,7 @@ class SkillInfo(BaseModel):
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
+    disable_model_invocation: bool = False
 
 
 class SkillsResponse(BaseModel):
@@ -166,6 +167,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
             source=info.source,
             description=info.description,
             is_agentskills_format=info.is_agentskills_format,
+            disable_model_invocation=info.disable_model_invocation,
         )
         for info in (skill.to_skill_info() for skill in result.skills)
     ]

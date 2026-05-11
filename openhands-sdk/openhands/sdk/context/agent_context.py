@@ -165,7 +165,7 @@ class AgentContext(BaseModel):
             if name not in existing_names:
                 self.skills.append(skill)
             else:
-                logger.warning(
+                logger.debug(
                     f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
                 )
 
@@ -207,10 +207,11 @@ class AgentContext(BaseModel):
         """Split skills into repo-context and available-skills lists.
 
         Categorization rules (shared by system-message and ACP adapters):
-        - AgentSkills-format: always in available_skills (progressive disclosure).
-          Triggers also auto-inject via ``get_user_message_suffix``.
+        - AgentSkills-format: available_skills unless direct model invocation is
+          disabled. Triggers still auto-inject via ``get_user_message_suffix``.
         - Legacy with ``trigger=None``: full content in REPO_CONTEXT (always active).
-        - Legacy with triggers: listed in available_skills, injected on trigger.
+        - Legacy with triggers: listed in available_skills unless direct model
+          invocation is disabled, injected on trigger.
 
         Returns:
             ``(repo_skills, available_skills)`` tuple.
@@ -219,7 +220,8 @@ class AgentContext(BaseModel):
         available_skills: list[Skill] = []
         for s in self.skills:
             if s.is_agentskills_format or s.trigger is not None:
-                available_skills.append(s)
+                if not s.disable_model_invocation:
+                    available_skills.append(s)
             else:
                 repo_skills.append(s)
         return repo_skills, available_skills

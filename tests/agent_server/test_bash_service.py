@@ -44,15 +44,6 @@ async def client(bash_service: BashEventService) -> AsyncIterator[httpx.AsyncCli
         yield ac
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "bash_service.py:276 sends SIGKILL before SIGTERM, so cleanup "
-        "traps never run. Fix: terminate() → wait → kill() (see "
-        "vscode_service.py:78-84). "
-        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3120."
-    ),
-)
 @pytest.mark.timeout(30)
 async def test_bash_timeout_runs_sigterm_trap(
     client: httpx.AsyncClient,

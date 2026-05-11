@@ -478,6 +478,56 @@ def test_get_changes_in_repo_ref_head_on_empty_repo_returns_untracked_as_added()
         ]
 
 
+def test_get_changes_in_repo_ref_head_on_orphan_branch_returns_untracked_as_added():
+    """``ref='HEAD'`` on an orphan branch (HEAD unborn but other branches
+    have commits) must not raise.
+
+    The original empty-repo fix used ``_repo_has_commits`` to detect "no
+    commits anywhere" and skip the ``rev-parse --verify HEAD^{commit}``
+    step. That check returns ``True`` here (commits exist on ``main``),
+    so without an additional safety net the user sees the same
+    ``Git command failed: git --no-pager rev-parse --verify 'HEAD^{commit}'``
+    400 in the Changes tab.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Land a commit on the default branch so the repo "has commits".
+        (Path(temp_dir) / "committed.txt").write_text("on main")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'on main'", temp_dir)
+
+        # Switch to an orphan branch: HEAD now points to refs/heads/orphan,
+        # which doesn't exist as a commit yet.
+        run_bash_command("git checkout --orphan orphan", temp_dir)
+        run_bash_command("git rm -rf --cached .", temp_dir)
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        # Act / Assert: must not raise GitCommandError; untracked file shows
+        # up as added (mirrors the empty-repo behavior).
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_non_head_ref_still_raises_after_fix():
+    """The ``HEAD`` fallback must not swallow typos in other refs.
+
+    Regression guard for the new ``except GitCommandError`` in
+    ``get_valid_ref``: it only short-circuits when the *override* is
+    exactly ``"HEAD"``. Any other unresolved ref must still raise so a
+    typo (e.g. ``ref=mian``) doesn't silently render as "no changes".
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="not-a-real-branch-name")
+
+
 def test_get_git_changes_propagates_ref():
     """``get_git_changes`` should pass the ref through to inner-repo lookups."""
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -67,6 +67,14 @@ class _StartConversationRequestBase(BaseModel):
         ...,
         description="Working directory for agent operations and tool execution.",
     )
+    worktree: bool = Field(
+        default=False,
+        description=(
+            "If true and the workspace is already inside a git repository, create "
+            "a dedicated git worktree for this conversation under "
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
+        ),
+    )
     conversation_id: UUID | None = Field(
         default=None,
         description=(

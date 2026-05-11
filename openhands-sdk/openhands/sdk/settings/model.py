@@ -713,6 +713,21 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool when saved LLM profiles are "
+            "available. The tool is omitted when no profiles exist."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable LLM switching tool",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+
     mcp_config: MCPConfig | None = Field(
         default=None,
         description="MCP server configuration for the agent.",
@@ -765,7 +780,14 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if value is None:
             return {}
         dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
-        if info.context and info.context.get("expose_secrets"):
+        # Pass through real env / headers when the caller has signalled trust:
+        # either ``expose_secrets`` (REST plaintext / encrypted modes) or a
+        # ``cipher`` (on-disk persistence path — the storage layer applies its
+        # own access controls and SecretStr fields are encrypted via
+        # ``serialize_secret``). Without one of those signals, fall back to
+        # redacting ``env`` / ``headers`` for the default REST response.
+        ctx = info.context or {}
+        if ctx.get("expose_secrets") or ctx.get("cipher") is not None:
             return dumped
         # ``sanitize_dict`` redacts ``env`` / ``headers`` (REDACT_ALL_VALUES_KEYS).
         return sanitize_dict(dumped)
@@ -782,6 +804,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent = settings.create_agent()
         """
         from openhands.sdk.agent import Agent
+        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
+        from openhands.sdk.tool.builtins.switch_llm import has_llm_profiles
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
         mcp_config = (
@@ -789,10 +813,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             if self.mcp_config is not None
             else {}
         )
+        include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
+        if self.enable_switch_llm_tool and has_llm_profiles():
+            include_default_tools.append(SwitchLLMTool.__name__)
+
         return Agent(
             llm=self.llm,
             tools=self.tools,
             mcp_config=mcp_config,
+            include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             condenser=self.build_condenser(self.llm),
             critic=self.build_critic(),

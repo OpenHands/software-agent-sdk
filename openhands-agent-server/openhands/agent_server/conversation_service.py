@@ -26,7 +26,8 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Agent, Event, Message
+from openhands.sdk import LLM, Agent, AgentContext, Event, Message
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -37,11 +38,148 @@ from openhands.sdk.conversation.title_utils import (
 )
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
     from openhands.sdk.subagent.schema import AgentDefinition
+
+CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
+
+
+def _build_worktree_guidance(
+    *,
+    source_workspace: Path,
+    worktree_root: Path,
+    workspace_dir: Path,
+    branch: str,
+) -> str:
+    return (
+        "This conversation uses a dedicated git worktree.\n"
+        f"- Original workspace: {source_workspace}\n"
+        f"- Worktree root: {worktree_root}\n"
+        f"- Active workspace: {workspace_dir}\n"
+        f"- Branch: {branch}\n"
+        "Do all file and git work inside this worktree. Do your work on a new, "
+        "appropriately-named branch, based off the main/master branch, "
+        "and do not switch back to the original workspace."
+    )
+
+
+def _append_worktree_guidance(
+    agent: AgentBase,
+    *,
+    source_workspace: Path,
+    worktree_root: Path,
+    workspace_dir: Path,
+    branch: str,
+) -> AgentBase:
+    context = agent.agent_context or AgentContext()
+    guidance = _build_worktree_guidance(
+        source_workspace=source_workspace,
+        worktree_root=worktree_root,
+        workspace_dir=workspace_dir,
+        branch=branch,
+    )
+    existing_suffix = (context.system_message_suffix or "").strip()
+    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
+
+
+def _get_worktree_start_point(repo_root: Path) -> str:
+    try:
+        current_branch = run_git_command(
+            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"],
+            repo_root,
+        )
+    except GitCommandError:
+        return "HEAD"
+    return current_branch if current_branch and current_branch != "HEAD" else "HEAD"
+
+
+def _create_conversation_worktree(
+    workspace: LocalWorkspace,
+    conversation_id: UUID,
+) -> tuple[LocalWorkspace, Path, Path, str] | None:
+    source_workspace = Path(workspace.working_dir).resolve()
+    try:
+        validate_git_repository(source_workspace)
+        repo_root = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                source_workspace,
+            )
+        ).resolve()
+    except (GitCommandError, GitRepositoryError):
+        return None
+
+    relative_workspace = source_workspace.relative_to(repo_root)
+    conversation_worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
+    worktree_root = conversation_worktree_root / repo_root.name
+    conversation_worktree_root.mkdir(parents=True, exist_ok=True)
+    branch = f"openhands/{conversation_id}"
+
+    if worktree_root.exists():
+        try:
+            run_git_command(
+                ["git", "worktree", "remove", "--force", str(worktree_root)],
+                repo_root,
+            )
+        except GitCommandError:
+            safe_rmtree(worktree_root)
+
+    run_git_command(["git", "worktree", "prune"], repo_root)
+
+    if run_git_command(["git", "branch", "--list", branch], repo_root):
+        run_git_command(["git", "branch", "-D", branch], repo_root)
+
+    run_git_command(
+        [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_root),
+            _get_worktree_start_point(repo_root),
+        ],
+        repo_root,
+    )
+
+    workspace_dir = worktree_root / relative_workspace
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    return (
+        LocalWorkspace(working_dir=workspace_dir),
+        source_workspace,
+        worktree_root,
+        branch,
+    )
+
+
+def _prepare_request_workspace(
+    request: StartConversationRequest | StartACPConversationRequest,
+    conversation_id: UUID,
+) -> StartConversationRequest | StartACPConversationRequest:
+    if not request.worktree:
+        return request
+
+    worktree = _create_conversation_worktree(request.workspace, conversation_id)
+    if worktree is None:
+        return request
+
+    new_workspace, source_workspace, worktree_root, branch = worktree
+    agent = _append_worktree_guidance(
+        request.agent,
+        source_workspace=source_workspace,
+        worktree_root=worktree_root,
+        workspace_dir=Path(new_workspace.working_dir),
+        branch=branch,
+    )
+    return request.model_copy(update={"workspace": new_workspace, "agent": agent})
 
 
 logger = logging.getLogger(__name__)
@@ -144,7 +282,7 @@ def _register_agent_definitions(
                 f"Failed to register agent definition "
                 f"'{agent_def.name}' ({context}): {e}"
             )
-    logger.info(
+    logger.debug(
         f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
@@ -432,6 +570,8 @@ class ConversationService:
                 else _compose_conversation_info_v1(existing_event_service.stored, state)
             )
             return conversation_info, False
+
+        request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
@@ -779,7 +919,7 @@ class ConversationService:
                             )
                             # Continue even if some tools fail to register
                     if stored.tool_module_qualnames:
-                        logger.info(
+                        logger.debug(
                             f"Dynamically registered "
                             f"{len(stored.tool_module_qualnames)} tools when "
                             f"resuming conversation {stored.id}: "
@@ -796,7 +936,7 @@ class ConversationService:
                 conversation_id = (
                     stored.id if stored is not None else conversation_dir.name
                 )
-                logger.info(
+                logger.debug(
                     "Skipping active conversation %s owned by %s until %s",
                     conversation_id,
                     exc.owner_instance_id,
@@ -1055,8 +1195,15 @@ class WebhookSubscriber(Subscriber):
                         f"Failed to post events to webhook {events_url} "
                         f"after {self.spec.num_retries + 1} attempts"
                     )
-                    # Re-queue events for potential retry later
                     self.queue.extend(events_to_post)
+                    overflow = len(self.queue) - self.spec.max_queue_size
+                    if overflow > 0:
+                        del self.queue[:overflow]
+                        logger.warning(
+                            f"Webhook queue exceeded max_queue_size="
+                            f"{self.spec.max_queue_size}; dropped {overflow} "
+                            f"oldest event(s) for {events_url}."
+                        )
 
     def _cancel_flush_timer(self):
         """Cancel the current flush timer if it exists."""

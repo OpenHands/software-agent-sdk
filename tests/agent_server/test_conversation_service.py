@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import tempfile
 import threading
 import time
@@ -42,6 +43,7 @@ from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -100,6 +102,26 @@ def _expire_conversation_lease(conversations_dir: Path, conversation_id) -> None
     payload = json.loads(lease_path.read_text())
     payload["expires_at"] = 0
     lease_path.write_text(json.dumps(payload))
+
+
+def _init_git_repo(repo_dir: Path) -> None:
+    repo_dir.mkdir()
+    (repo_dir / "README.md").write_text("# test repo\n")
+    run_git_command(["git", "init", "-b", "main"], repo_dir)
+    run_git_command(["git", "add", "README.md"], repo_dir)
+    run_git_command(
+        [
+            "git",
+            "-c",
+            "user.name=OpenHands Test",
+            "-c",
+            "user.email=openhands@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        repo_dir,
+    )
 
 
 @pytest.fixture
@@ -217,6 +239,50 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
             with pytest.raises(ConversationOwnershipLostError):
                 primary_state.execution_status = ConversationExecutionStatus.ERROR
+
+
+@pytest.mark.asyncio
+async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_path):
+    """Reproduces the crash-recovery bug: after a non-graceful shutdown the lease
+    file is left on disk pointing at a still-future expires_at. A fresh server
+    started before the TTL elapses must still pick up the conversation rather
+    than skipping it for up to the full TTL window.
+    """
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        conversation_id = conversation_info.id
+
+    # Simulate a non-graceful shutdown: forge a lease pointing at a PID
+    # that is guaranteed not to be running, with a far-future expires_at.
+    # A clean exit would have removed the lease via release(); a crash
+    # leaves it behind, which is what we are reproducing here.
+    lease_path = conversations_dir / conversation_id.hex / LEASE_FILE_NAME
+    forged_payload = {
+        "owner_instance_id": "ghost-instance-from-crashed-server",
+        "generation": 1,
+        "expires_at": time.time() + 3600.0,
+        "owner_host": socket.gethostname(),
+        "owner_pid": 2**31 - 1,
+    }
+    lease_path.write_text(json.dumps(forged_payload))
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services is not None
+        # The conversation must be present in the restarted service.
+        assert conversation_id in restarted._event_services, (
+            "Restart failed to pick up an existing conversation whose lease "
+            "was left orphaned by a non-graceful shutdown."
+        )
 
 
 class TestConversationServiceSearchConversations:
@@ -855,6 +921,183 @@ class TestConversationServiceStartConversation:
                 # Verify the result
                 assert result.id == mock_state.id
                 assert result.execution_status == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_worktree_uses_git_worktree(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        conversation_id = uuid4()
+        worktree_root = tmp_path / "conversation-worktrees"
+
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=repo_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+
+        captured: dict[str, StoredConversation] = {}
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            captured["stored"] = stored
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
+                worktree_root,
+            ),
+            patch(
+                "openhands.agent_server.conversation_service.EventService",
+                side_effect=_event_service_factory,
+            ),
+        ):
+            result, _ = await conversation_service.start_conversation(request)
+
+        stored = captured["stored"]
+        expected_worktree = worktree_root / str(conversation_id) / repo_dir.name
+        expected_branch = f"openhands/{conversation_id}"
+
+        assert stored.worktree is True
+        assert stored.workspace.working_dir == str(expected_worktree)
+        assert result.workspace.working_dir == str(expected_worktree)
+        assert (expected_worktree / ".git").exists()
+        assert (
+            run_git_command(
+                ["git", "--no-pager", "branch", "--show-current"],
+                expected_worktree,
+            )
+            == expected_branch
+        )
+        assert stored.agent.agent_context is not None
+        suffix = stored.agent.agent_context.system_message_suffix
+        assert suffix is not None
+        assert str(repo_dir.resolve()) in suffix
+        assert str(expected_worktree) in suffix
+        assert expected_branch in suffix
+        assert "Do all file and git work inside this worktree" in suffix
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_worktree_preserves_relative_workspace(
+        self, conversation_service, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        _init_git_repo(repo_dir)
+        workspace_dir = repo_dir / "src" / "pkg"
+        workspace_dir.mkdir(parents=True)
+        conversation_id = uuid4()
+        worktree_root = tmp_path / "conversation-worktrees"
+
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=workspace_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+
+        captured: dict[str, StoredConversation] = {}
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            captured["stored"] = stored
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
+                worktree_root,
+            ),
+            patch(
+                "openhands.agent_server.conversation_service.EventService",
+                side_effect=_event_service_factory,
+            ),
+        ):
+            result, _ = await conversation_service.start_conversation(request)
+
+        stored = captured["stored"]
+        expected_worktree = worktree_root / str(conversation_id) / repo_dir.name
+        expected_workspace = expected_worktree / "src" / "pkg"
+
+        assert stored.worktree is True
+        assert stored.workspace.working_dir == str(expected_workspace)
+        assert result.workspace.working_dir == str(expected_workspace)
+        assert (expected_worktree / ".git").exists()
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_worktree_ignores_non_git_workspace(
+        self, conversation_service, tmp_path
+    ):
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        conversation_id = uuid4()
+        worktree_root = tmp_path / "conversation-worktrees"
+
+        request = StartConversationRequest(
+            conversation_id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=workspace_dir),
+            confirmation_policy=NeverConfirm(),
+            worktree=True,
+        )
+
+        captured: dict[str, StoredConversation] = {}
+
+        def _event_service_factory(**kwargs):
+            stored = kwargs["stored"]
+            captured["stored"] = stored
+            mock_event_service = AsyncMock(spec=EventService)
+            mock_event_service.stored = stored
+            mock_event_service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            return mock_event_service
+
+        with (
+            patch(
+                "openhands.agent_server.conversation_service.CONVERSATION_WORKTREE_ROOT",
+                worktree_root,
+            ),
+            patch(
+                "openhands.agent_server.conversation_service.EventService",
+                side_effect=_event_service_factory,
+            ),
+        ):
+            result, _ = await conversation_service.start_conversation(request)
+
+        stored = captured["stored"]
+
+        assert stored.worktree is True
+        assert stored.workspace.working_dir == str(workspace_dir)
+        assert result.workspace.working_dir == str(workspace_dir)
+        assert stored.agent.agent_context is None
+        assert not (worktree_root / str(conversation_id)).exists()
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_custom_id(self, conversation_service):

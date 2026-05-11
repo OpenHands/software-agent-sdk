@@ -66,6 +66,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "agent",
         "tools",
         "enable_sub_agents",
+        "enable_switch_llm_tool",
         "mcp_config",
     }
     assert general_fields["agent"].default == "CodeActAgent"
@@ -76,6 +77,11 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["enable_sub_agents"].value_type == "boolean"
     assert general_fields["enable_sub_agents"].default is False
     assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
+    assert general_fields["enable_switch_llm_tool"].value_type == "boolean"
+    assert general_fields["enable_switch_llm_tool"].default is True
+    assert (
+        general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
+    )
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -255,7 +261,13 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
-    assert general_keys == {"agent", "tools", "enable_sub_agents", "mcp_config"}
+    assert general_keys == {
+        "agent",
+        "tools",
+        "enable_sub_agents",
+        "enable_switch_llm_tool",
+        "mcp_config",
+    }
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
@@ -802,6 +814,43 @@ def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
     assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
     assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_openhands_agent_settings_mcp_config_passes_through_with_cipher() -> None:
+    """Regression: when a cipher is in the serialization context (the on-disk
+    persistence path), MCP ``env`` / ``headers`` values must round-trip
+    verbatim instead of being overwritten with the literal ``"<redacted>"``.
+
+    Previously the field serializer only checked ``expose_secrets``, so saving
+    settings via ``FileSettingsStore`` (which passes ``{"cipher": cipher}``)
+    irreversibly destroyed every user's MCP credentials.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
+                },
+                "fetch": {
+                    "url": "https://example.com/mcp",
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                },
+            }
+        }
+    )
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+
+    servers = dumped["mcp_config"]["mcpServers"]
+    assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
+    assert servers["fetch"]["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+    assert "<redacted>" not in str(dumped)
 
 
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
