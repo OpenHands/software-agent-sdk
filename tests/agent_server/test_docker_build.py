@@ -357,19 +357,18 @@ def test_release_tag_aliases_sanitize_non_semver_tags():
     assert _release_tag_aliases("release/v1.2.3+build") == ["release-v1.2.3-build"]
 
 
-def test_versioned_tags_use_git_tag_semver_aliases():
-    """Test versioned_tags derived from a git tag strip the v prefix."""
+def test_versioned_tags_use_sdk_version_for_semver_git_tags():
+    """Semver git tags (v1.2.3) defer to sdk_version (PEP 440, no 'v')."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
         custom_tags="python",
         git_ref="refs/tags/v1.2.3",
-        sdk_version="9.9.9",
+        sdk_version="1.2.3",
         include_versioned_tag=True,
     )
 
-    # The "v" prefix is stripped so Docker tags use bare semver,
-    # matching the sdk_version fallback and downstream expectations.
+    # Docker tags use bare semver from sdk_version, not the git tag.
     assert opts.versioned_tags == ["1-python", "1.2-python", "1.2.3-python"]
 
 
@@ -448,6 +447,7 @@ def test_all_tags_includes_versioned_tags():
     opts = BuildOptions(
         custom_tags="python,java",
         git_ref="refs/tags/v1.2.0",
+        sdk_version="1.2.0",
         git_sha="abc1234567890",
         include_versioned_tag=True,
         include_base_tag=False,
@@ -493,6 +493,7 @@ def test_all_tags_with_arch_suffix():
     opts = BuildOptions(
         custom_tags="python",
         git_ref="refs/tags/v1.2.0",
+        sdk_version="1.2.0",
         git_sha="abc1234567890",
         arch="amd64",
         include_versioned_tag=True,
