@@ -993,28 +993,32 @@ class ConversationService:
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
         )
-        # Create subscribers...
-        await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
-        if stored.autotitle and stored.title is None:
-            await event_service.subscribe_to_events(
-                AutoTitleSubscriber(service=event_service)
-            )
-        asyncio.gather(
-            *[
-                event_service.subscribe_to_events(
-                    WebhookSubscriber(
-                        conversation_id=stored.id,
-                        service=event_service,
-                        spec=webhook_spec,
-                        session_api_key=self.session_api_key,
-                    )
-                )
-                for webhook_spec in self.webhook_specs
-            ]
-        )
 
         try:
             await event_service.start()
+            # Register subscribers after start() so subscribe_to_events runs
+            # its initial-state push synchronously and any failure surfaces to
+            # the caller instead of being silently logged on a later publish.
+            await event_service.subscribe_to_events(
+                _EventSubscriber(service=event_service)
+            )
+            if stored.autotitle and stored.title is None:
+                await event_service.subscribe_to_events(
+                    AutoTitleSubscriber(service=event_service)
+                )
+            await asyncio.gather(
+                *[
+                    event_service.subscribe_to_events(
+                        WebhookSubscriber(
+                            conversation_id=stored.id,
+                            service=event_service,
+                            spec=webhook_spec,
+                            session_api_key=self.session_api_key,
+                        )
+                    )
+                    for webhook_spec in self.webhook_specs
+                ]
+            )
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()

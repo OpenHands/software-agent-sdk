@@ -1304,19 +1304,6 @@ class TestWebhookSubscriberTimerBehavior:
         subscriber._post_events.assert_called_once()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Subscribe-time errors from a subscriber's initial __call__ never "
-        "reach the start_conversation caller. Two swallow sites in series: "
-        "event_service.py:411-416 wraps the initial state sync in "
-        "try/except + logger.error (no re-raise), and "
-        "conversation_service.py:862 fires asyncio.gather() on the webhook "
-        "subscribes without awaiting. Both must be fixed for init errors "
-        "to surface. "
-        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3121."
-    ),
-)
 @pytest.mark.timeout(30)
 async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
     persist = tmp_path / "persist"

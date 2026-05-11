@@ -424,10 +424,7 @@ class EventService:
                     f"Initial state push to subscriber {subscriber_id} timed "
                     f"out after {INITIAL_STATE_PUSH_TIMEOUT_SECONDS}s."
                 )
-            except Exception as e:
-                logger.error(
-                    f"Error sending initial state to subscriber {subscriber_id}: {e}"
-                )
+            # Non-timeout errors propagate to caller (e.g. webhook failures).
 
         return subscriber_id
 
