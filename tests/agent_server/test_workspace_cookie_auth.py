@@ -123,6 +123,8 @@ def test_mint_session_rejects_bad_header(client_factory):
 
 
 def test_mint_session_returns_cookie_attrs_over_https(client_factory):
+    """Behind a TLS-terminating proxy that sets X-Forwarded-Proto=https,
+    we issue the full cross-site iframe cookie attribute set."""
     client = client_factory(conversation_id=uuid4())
 
     resp = client.post(
@@ -130,6 +132,7 @@ def test_mint_session_returns_cookie_attrs_over_https(client_factory):
         headers={
             "X-Session-API-Key": SESSION_KEY,
             "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "agent.example.com",
         },
     )
     assert resp.status_code == 204
@@ -145,15 +148,47 @@ def test_mint_session_returns_cookie_attrs_over_https(client_factory):
     assert "Path=/api/conversations" in set_cookie
 
 
-def test_mint_session_over_plain_http_drops_secure_and_partitioned(client_factory):
-    """On non-HTTPS we still set the cookie (handy for local dev), but we
-    must NOT mark it Secure/Partitioned — those would be rejected by the
-    browser anyway. SameSite=None is preserved to keep behavior uniform."""
+@pytest.mark.parametrize(
+    "host_header",
+    [
+        "localhost",
+        "localhost:8000",
+        "127.0.0.1",
+        "127.0.0.1:8000",
+    ],
+)
+def test_mint_session_marks_cookie_secure_on_loopback(client_factory, host_header):
+    """Browsers (per the Secure Contexts spec) accept ``Secure`` cookies
+    on plain-HTTP loopback origins. Issuing Secure here lets local dev
+    against ``http://localhost`` actually receive the cookie, which a
+    ``SameSite=None`` non-Secure cookie would not."""
     client = client_factory(conversation_id=uuid4())
 
     resp = client.post(
         "/api/auth/workspace-session",
-        headers={"X-Session-API-Key": SESSION_KEY},  # no X-Forwarded-Proto
+        headers={"X-Session-API-Key": SESSION_KEY, "Host": host_header},
+    )
+    assert resp.status_code == 204
+
+    set_cookie = resp.headers["set-cookie"]
+    assert "Secure" in set_cookie
+    assert "Partitioned" in set_cookie
+
+
+def test_mint_session_over_remote_plain_http_drops_secure(client_factory):
+    """On non-HTTPS to a non-loopback host we don't claim Secure — the
+    browser would reject a Secure cookie over plain HTTP anyway. The
+    cookie won't actually work for cross-site embedding in that case
+    (SameSite=None requires Secure), but emitting a Secure attribute we
+    can't honor would just make the failure mode less obvious."""
+    client = client_factory(conversation_id=uuid4())
+
+    resp = client.post(
+        "/api/auth/workspace-session",
+        headers={
+            "X-Session-API-Key": SESSION_KEY,
+            "Host": "agent.example.com",
+        },
     )
     assert resp.status_code == 204
 

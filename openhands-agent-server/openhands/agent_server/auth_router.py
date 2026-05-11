@@ -19,10 +19,7 @@ cookie auth would otherwise add.
 from fastapi import APIRouter, Request, Response, status
 
 from openhands.agent_server.dependencies import WORKSPACE_SESSION_COOKIE_NAME
-from openhands.sdk.logger import get_logger
 
-
-logger = get_logger(__name__)
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -37,18 +34,36 @@ _COOKIE_MAX_AGE_SECONDS = 60 * 60 * 8  # 8 hours
 # never see the cookie.
 _COOKIE_PATH = "/api/conversations"
 
+# Hostnames the browser treats as "secure contexts" even over plain HTTP, so
+# we can issue ``Secure`` cookies against them in local development without
+# requiring TLS. Matches the platform-secure-contexts list in the WHATWG
+# Secure Contexts spec.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
-def _request_is_https(request: Request) -> bool:
-    """Detect HTTPS, honoring ``X-Forwarded-Proto`` set by trusted proxies.
 
-    We can't rely on ``request.url.scheme`` alone because the agent server
-    is typically behind nginx which terminates TLS and forwards plain HTTP.
-    Nginx (and the canvas ingress) set ``X-Forwarded-Proto`` accordingly.
+def _request_is_secure_context(request: Request) -> bool:
+    """Whether the request originated from a context where the browser
+    will accept ``Secure`` cookies.
+
+    That's true for:
+      - HTTPS (honoring ``X-Forwarded-Proto`` set by trusted proxies that
+        terminate TLS in front of us), and
+      - Plain HTTP against loopback hostnames, which browsers (per the
+        Secure Contexts spec) treat as secure.
     """
-    forwarded = request.headers.get("x-forwarded-proto", "").lower()
-    if forwarded:
-        return forwarded.split(",")[0].strip() == "https"
-    return request.url.scheme == "https"
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    scheme = forwarded_proto.split(",")[0].strip() or request.url.scheme
+    if scheme == "https":
+        return True
+
+    forwarded_host = request.headers.get("x-forwarded-host", "")
+    host = forwarded_host.split(",")[0].strip() or request.url.hostname or ""
+    # Strip an optional ``:port`` suffix; IPv6 hosts are bracketed.
+    if host.startswith("["):
+        host = host.partition("]")[0].lstrip("[")
+    else:
+        host = host.split(":")[0]
+    return host.lower() in _LOOPBACK_HOSTS
 
 
 def _set_workspace_cookie(
@@ -62,8 +77,11 @@ def _set_workspace_cookie(
     dropped under third-party-cookie phase-out.
 
     We always set ``SameSite=None`` so the same cookie works for both
-    same-site and cross-site iframes, and we always set ``HttpOnly`` so
-    JS in workspace HTML can't read it.
+    same-site and cross-site iframes, and always set ``HttpOnly`` so JS
+    in workspace HTML can't read it back. ``Secure`` is set whenever
+    the request comes from a secure context (HTTPS or loopback) — the
+    only contexts where a ``SameSite=None`` cookie will actually be
+    stored by the browser.
     """
     response.set_cookie(
         key=WORKSPACE_SESSION_COOKIE_NAME,
@@ -118,23 +136,12 @@ async def create_workspace_session(request: Request, response: Response) -> Resp
     workspace HTML cannot read it back.
     """
     session_api_key = request.headers.get("x-session-api-key", "")
-    secure = _request_is_https(request)
     _set_workspace_cookie(
         response,
         value=session_api_key,
-        secure=secure,
+        secure=_request_is_secure_context(request),
         max_age=_COOKIE_MAX_AGE_SECONDS,
     )
-    if not secure:
-        # SameSite=None requires Secure in modern browsers, so a non-HTTPS
-        # cookie will be rejected by Chrome/Firefox. Loudly warn so dev
-        # users investigating "my iframe is 401" can find the cause.
-        logger.warning(
-            "Issuing workspace-session cookie over a non-HTTPS connection; "
-            "browsers will reject SameSite=None cookies without Secure. "
-            "Run the agent server behind a TLS-terminating proxy that sets "
-            "X-Forwarded-Proto=https for cross-site iframe support."
-        )
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
 
@@ -152,7 +159,11 @@ async def delete_workspace_session(request: Request, response: Response) -> Resp
     overwrite with an empty value and ``max_age=0`` so the browser drops
     it immediately.
     """
-    secure = _request_is_https(request)
-    _set_workspace_cookie(response, value="", secure=secure, max_age=0)
+    _set_workspace_cookie(
+        response,
+        value="",
+        secure=_request_is_secure_context(request),
+        max_age=0,
+    )
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
