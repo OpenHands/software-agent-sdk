@@ -80,6 +80,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        seatbelt: bool = False,
     ) -> "LocalConversation": ...
 
     @overload
@@ -104,6 +105,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        seatbelt: bool = False,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -128,6 +130,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        seatbelt: bool = False,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -181,6 +184,7 @@ class Conversation:
                 secrets=secrets,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
+                seatbelt=seatbelt,
             )
 
         return LocalConversation(
@@ -199,4 +203,5 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            seatbelt=seatbelt,
         )

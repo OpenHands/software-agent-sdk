@@ -1,5 +1,6 @@
 """Tmux-based terminal backend implementation."""
 
+import shlex
 import time
 import uuid
 
@@ -7,6 +8,7 @@ import libtmux
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
+from openhands.sdk.utils.seatbelt import wrap_with_sandbox_exec
 from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
@@ -40,6 +42,21 @@ _TMUX_SPECIALS: dict[str, str] = {
 }
 
 
+def _seatbelt_wrap_shell(
+    shell_command: str, work_dir: str, seatbelt: bool
+) -> str:
+    """Wrap ``shell_command`` with ``sandbox-exec`` when seatbelt is enabled.
+
+    tmux's ``window_shell`` is a single shell-quoted command string, so we
+    need to render the argv produced by ``wrap_with_sandbox_exec`` back through
+    ``shlex.join`` for tmux to spawn it correctly.
+    """
+    if not seatbelt:
+        return shell_command
+    argv = wrap_with_sandbox_exec(shlex.split(shell_command), work_dir)
+    return shlex.join(argv)
+
+
 class TmuxTerminal(TerminalInterface):
     """Tmux-based terminal backend.
 
@@ -57,9 +74,11 @@ class TmuxTerminal(TerminalInterface):
         self,
         work_dir: str,
         username: str | None = None,
+        seatbelt: bool = False,
     ):
         super().__init__(work_dir, username)
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
+        self.seatbelt = seatbelt
 
     def initialize(self) -> None:
         """Initialize the tmux terminal session."""
@@ -74,7 +93,9 @@ class TmuxTerminal(TerminalInterface):
             # This starts a non-login (new) shell for the given user
             _shell_command = f"su {self.username} -"
 
-        window_command = _shell_command
+        window_command = _seatbelt_wrap_shell(
+            _shell_command, self.work_dir, self.seatbelt
+        )
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"

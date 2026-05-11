@@ -171,6 +171,17 @@ class _StartConversationRequestBase(BaseModel):
             "loads) → agent.llm → message truncation."
         ),
     )
+    seatbelt: bool = Field(
+        default=False,
+        description=(
+            "If true, run shell commands spawned by this conversation inside "
+            "macOS' Seatbelt sandbox via `sandbox-exec`. Only supported when "
+            "the agent server is running on macOS with `sandbox-exec` available; "
+            "the server will reject the request otherwise. The default sandbox "
+            "profile permits reads anywhere, network access, and writes only "
+            "to the conversation's workspace and the standard temp directories."
+        ),
+    )
     title_llm_profile: str | None = Field(
         default=None,
         description=(

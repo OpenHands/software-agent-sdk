@@ -84,6 +84,7 @@ class SubprocessTerminal(TerminalInterface):
         work_dir: str,
         username: str | None = None,
         shell_path: str | None = None,
+        seatbelt: bool = False,
     ):
         super().__init__(work_dir, username)
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
@@ -96,6 +97,7 @@ class SubprocessTerminal(TerminalInterface):
         self.reader_thread = None
         self._current_command_running = False
         self.shell_path = shell_path
+        self.seatbelt = seatbelt
 
     # ------------------------- Lifecycle -------------------------
 
@@ -142,6 +144,15 @@ class SubprocessTerminal(TerminalInterface):
         env["TERM"] = "xterm-256color"
 
         bash_cmd = [resolved_shell_path, "-i"]
+
+        # Wrap with macOS Seatbelt sandbox-exec if requested. The agent server
+        # validates that we're on macOS with sandbox-exec available before
+        # ever setting this flag, so we don't re-validate here.
+        if self.seatbelt:
+            from openhands.sdk.utils.seatbelt import wrap_with_sandbox_exec
+
+            bash_cmd = wrap_with_sandbox_exec(bash_cmd, self.work_dir)
+            logger.info("Bash will run inside Seatbelt sandbox-exec")
 
         # Create a PTY; give the slave to the child, keep the master
         master_fd, slave_fd = pty.openpty()

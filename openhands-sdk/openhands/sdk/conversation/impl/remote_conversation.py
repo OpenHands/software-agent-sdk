@@ -666,6 +666,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        seatbelt: bool = False,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -768,6 +769,8 @@ class RemoteConversation(BaseConversation):
                 "hook_config": hook_config.model_dump() if hook_config else None,
                 # Include tags if provided
                 "tags": tags or {},
+                # Opt-in macOS Seatbelt sandbox for shell tools
+                "seatbelt": seatbelt,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize

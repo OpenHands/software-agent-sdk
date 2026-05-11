@@ -81,6 +81,7 @@ def create_terminal_session(
     no_change_timeout_seconds: int | None = None,
     terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
     shell_path: str | None = None,
+    seatbelt: bool = False,
 ) -> TerminalSession:
     """Create an appropriate terminal session based on system capabilities.
 
@@ -92,6 +93,8 @@ def create_terminal_session(
             or 'powershell'). If None, auto-detect based on system capabilities.
         shell_path: Path to the shell binary. On Unix this is used for the
             subprocess backend; on Windows it can point to a PowerShell binary.
+        seatbelt: If True, run shells inside macOS' `sandbox-exec`. The
+            PowerShell backend ignores this flag (Seatbelt is macOS-only).
 
     Returns:
         TerminalSession instance
@@ -106,7 +109,7 @@ def create_terminal_session(
             from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
             logger.info("Using forced TmuxTerminal")
-            terminal = TmuxTerminal(work_dir, username)
+            terminal = TmuxTerminal(work_dir, username, seatbelt=seatbelt)
             return TerminalSession(terminal, no_change_timeout_seconds)
 
         if terminal_type == "powershell":
@@ -136,7 +139,9 @@ def create_terminal_session(
             )
 
             logger.info("Using forced SubprocessTerminal")
-            terminal = SubprocessTerminal(work_dir, username, shell_path)
+            terminal = SubprocessTerminal(
+                work_dir, username, shell_path, seatbelt=seatbelt
+            )
             return TerminalSession(terminal, no_change_timeout_seconds)
 
         raise ValueError(f"Unknown session type: {terminal_type}")
@@ -154,7 +159,7 @@ def create_terminal_session(
         from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
         logger.info("Auto-detected: Using TmuxTerminal (tmux available)")
-        terminal = TmuxTerminal(work_dir, username)
+        terminal = TmuxTerminal(work_dir, username, seatbelt=seatbelt)
         return TerminalSession(terminal, no_change_timeout_seconds)
 
     from openhands.tools.terminal.terminal.subprocess_terminal import (
@@ -168,5 +173,5 @@ def create_terminal_session(
     )
     logger.warning(_tmux_warning)
     warnings.warn(_tmux_warning, stacklevel=2)
-    terminal = SubprocessTerminal(work_dir, username, shell_path)
+    terminal = SubprocessTerminal(work_dir, username, shell_path, seatbelt=seatbelt)
     return TerminalSession(terminal, no_change_timeout_seconds)

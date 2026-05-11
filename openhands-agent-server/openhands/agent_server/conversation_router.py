@@ -35,6 +35,7 @@ from openhands.agent_server.models import (
     SendMessageRequest,
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
+    StartACPConversationRequest,
     StartConversationRequest,
     Success,
     UpdateConversationRequest,
@@ -42,6 +43,7 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.utils.seatbelt import is_seatbelt_supported
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
 
@@ -162,9 +164,34 @@ async def batch_get_conversations(
 # Write Methods
 
 
+def _ensure_seatbelt_available(
+    request: StartConversationRequest | StartACPConversationRequest,
+) -> None:
+    """Reject the request if seatbelt is requested but unavailable.
+
+    Seatbelt (`sandbox-exec`) only ships with macOS, so we fail fast at the API
+    boundary instead of letting the conversation start in an unsandboxed state
+    on a host that cannot honor the request. Used by both the legacy and ACP
+    conversation routers.
+    """
+    if not request.seatbelt:
+        return
+    if not is_seatbelt_supported():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "seatbelt=true is only supported on macOS hosts with "
+                "`sandbox-exec` available on PATH."
+            ),
+        )
+
+
 @conversation_router.post(
     "",
-    responses={409: {"description": "Conversation contract mismatch"}},
+    responses={
+        400: {"description": "Seatbelt requested but not available on this host"},
+        409: {"description": "Conversation contract mismatch"},
+    },
 )
 async def start_conversation(
     request: Annotated[
@@ -174,6 +201,7 @@ async def start_conversation(
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
+    _ensure_seatbelt_available(request)
     try:
         info, is_new = await conversation_service.start_conversation(request)
     except ConversationContractMismatchError as e:

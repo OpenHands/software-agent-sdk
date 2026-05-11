@@ -70,6 +70,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
+        seatbelt: bool = False,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -86,6 +87,10 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
+            seatbelt: If True, wrap shell processes with macOS' `sandbox-exec`
+                      so reads are unrestricted but writes are confined to the
+                      working directory and standard temp paths. Only valid on
+                      macOS; the caller is expected to validate availability.
         """
         self.shell_path = shell_path
         self._working_dir = working_dir
@@ -93,6 +98,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._terminal_type = terminal_type
         self._max_panes = max_panes
+        self._seatbelt = seatbelt
         self.full_output_save_dir: str | None = full_output_save_dir
 
         # Pool mode: use TmuxPanePool for parallel execution
@@ -113,6 +119,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
                 shell_path=shell_path,
+                seatbelt=seatbelt,
             )
             self._session.initialize()
             logger.info(
@@ -133,6 +140,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             self._working_dir,
             self._username,
             max_panes=self._max_panes,
+            seatbelt=self._seatbelt,
         )
         self._pool.initialize()
         logger.info(
@@ -398,6 +406,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             no_change_timeout_seconds=original_no_change_timeout,
             terminal_type=None,
             shell_path=self.shell_path,
+            seatbelt=self._seatbelt,
         )
         self._session.initialize()
 

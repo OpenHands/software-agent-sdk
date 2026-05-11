@@ -625,6 +625,7 @@ class EventService:
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
+            seatbelt=self.stored.seatbelt,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
