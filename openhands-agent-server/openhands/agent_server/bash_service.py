@@ -38,11 +38,13 @@ class BashEventService:
         self.bash_events_dir.mkdir(parents=True, exist_ok=True)
 
     def _timestamp_to_str(self, timestamp: datetime) -> str:
-        result = timestamp.strftime("%Y%m%d%H%M%S")
-        return result
+        # Include microseconds so filename-based ordering reflects emission
+        # order for sub-second bursts (e.g. fast `yes`-style floods that
+        # emit several BashOutput chunks in the same wall-clock second).
+        return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:
-        """Generate filename using YYYYMMDDHHMMSS_eventId_actionId format."""
+        """Generate filename using YYYYMMDDHHMMSSffffff_eventId_actionId format."""
         result = [self._timestamp_to_str(event.timestamp), event.kind]
         command_id = getattr(event, "command_id", None)
         if command_id:
