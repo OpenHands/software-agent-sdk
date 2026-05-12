@@ -10,10 +10,7 @@ from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import (
-    ConversationContractMismatchError,
-    ConversationService,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -25,6 +22,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
@@ -564,39 +562,76 @@ def test_start_conversation_existing(
         client.app.dependency_overrides.clear()
 
 
-def test_start_conversation_contract_mismatch_returns_409(
-    client, mock_conversation_service
-):
-    mock_conversation_service.start_conversation.side_effect = (
-        ConversationContractMismatchError(
-            "Conversation 123 exists but is only available through the ACP "
-            "conversation contract. Use /api/acp/conversations or attach with "
-            "ACPAgent."
-        )
+def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
+    now = utc_now()
+    acp_info = ConversationInfo(
+        id=uuid4(),
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="ACP Conversation",
+        created_at=now,
+        updated_at=now,
     )
-
+    mock_conversation_service.start_conversation.return_value = (acp_info, True)
     client.app.dependency_overrides[get_conversation_service] = (
         lambda: mock_conversation_service
     )
 
     try:
-        request_data = {
-            "agent": {
-                "kind": "Agent",
-                "llm": {
-                    "model": "gpt-4o",
-                    "api_key": "test-key",
-                    "usage_id": "test-llm",
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "kind": "ACPAgent",
+                    "acp_command": ["echo", "test"],
                 },
-                "tools": [{"name": "TerminalTool"}],
+                "workspace": {"working_dir": "/tmp/test"},
             },
-            "workspace": {"working_dir": "/tmp/test"},
-        }
+        )
 
-        response = client.post("/api/conversations", json=request_data)
+        assert response.status_code == 201
+        assert response.json()["agent"]["kind"] == "ACPAgent"
+        mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
 
-        assert response.status_code == 409
-        assert "ACP conversation contract" in response.json()["detail"]
+
+def test_start_conversation_accepts_acp_agent_settings(
+    client, mock_conversation_service
+):
+    now = utc_now()
+    acp_info = ConversationInfo(
+        id=uuid4(),
+        agent=ACPAgent(acp_command=["echo", "settings"]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="ACP Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (acp_info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "agent_kind": "acp",
+                    "acp_server": "custom",
+                    "acp_command": ["echo", "settings"],
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent.kind == "ACPAgent"
+        assert request.agent.acp_command == ["echo", "settings"]
     finally:
         client.app.dependency_overrides.clear()
 

@@ -5,10 +5,7 @@ import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.agent_server.models import (
-    StartACPConversationRequest,
-    StartConversationRequest,
-)
+from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
     LLM,
     ACPAgentSettings,
@@ -224,7 +221,7 @@ def test_conversation_settings_create_request() -> None:
     assert overridden_request.security_analyzer is None
 
 
-def test_conversation_settings_create_request_for_acp() -> None:
+def test_conversation_settings_create_request_with_acp_agent() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -234,12 +231,12 @@ def test_conversation_settings_create_request_for_acp() -> None:
     agent = ACPAgent(acp_command=["echo", "test"])
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -757,7 +754,7 @@ def test_conversation_settings_create_request_for_llm_variant() -> None:
     assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
 
 
-def test_conversation_settings_create_request_for_acp_variant() -> None:
+def test_conversation_settings_create_request_with_acp_agent_variant() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -767,12 +764,12 @@ def test_conversation_settings_create_request_for_acp_variant() -> None:
     agent = ACPAgentSettings(acp_command=["echo", "test"]).create_agent()
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)

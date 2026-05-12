@@ -19,13 +19,11 @@ from openhands.agent_server.conversation_lease import (
 )
 from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
-    ConversationContractMismatchError,
     ConversationService,
     _get_worktree_start_point,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
-    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -757,7 +755,7 @@ class TestConversationServiceCountConversations:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_count_acp_conversations_includes_legacy_and_acp(
+    async def test_count_conversations_includes_regular_and_acp(
         self, conversation_service
     ):
         legacy_conversation = StoredConversation(
@@ -793,8 +791,7 @@ class TestConversationServiceCountConversations:
             )
             conversation_service._event_services[stored_conv.id] = mock_service
 
-        assert await conversation_service.count_conversations() == 1
-        assert await conversation_service.count_acp_conversations() == 2
+        assert await conversation_service.count_conversations() == 2
 
 
 class TestConversationServiceStartConversation:
@@ -1367,14 +1364,11 @@ class TestConversationServiceStartConversation:
                 mock_start.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_start_conversation_rejects_existing_acp_conversation_id(
+    async def test_start_conversation_returns_existing_acp_conversation(
         self, conversation_service
     ):
         custom_id = uuid4()
-
-        mock_event_service = AsyncMock(spec=EventService)
-        mock_event_service.is_open.return_value = True
-        mock_event_service.stored = StoredConversation(
+        stored = StoredConversation(
             id=custom_id,
             agent=ACPAgent(acp_command=["echo", "test"]),
             workspace=LocalWorkspace(working_dir="workspace/project"),
@@ -1383,6 +1377,16 @@ class TestConversationServiceStartConversation:
             metrics=None,
             created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
             updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = True
+        mock_event_service.stored = stored
+        mock_event_service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
         )
         conversation_service._event_services[custom_id] = mock_event_service
 
@@ -1397,12 +1401,14 @@ class TestConversationServiceStartConversation:
             with patch.object(
                 conversation_service, "_start_event_service"
             ) as mock_start:
-                with pytest.raises(
-                    ConversationContractMismatchError,
-                    match="only available through the ACP conversation contract",
-                ):
-                    await conversation_service.start_conversation(request)
+                (
+                    conversation_info,
+                    is_new,
+                ) = await conversation_service.start_conversation(request)
 
+                assert is_new is False
+                assert isinstance(conversation_info, ConversationInfo)
+                assert conversation_info.agent.kind == "ACPAgent"
                 mock_start.assert_not_called()
 
     @pytest.mark.asyncio
@@ -1742,7 +1748,7 @@ class TestConversationServiceUpdateConversation:
             assert result is True
             mock_notify.assert_called_once()
             conversation_info = mock_notify.call_args[0][0]
-            assert isinstance(conversation_info, ACPConversationInfo)
+            assert isinstance(conversation_info, ConversationInfo)
             assert conversation_info.agent.kind == "ACPAgent"
 
     @pytest.mark.asyncio

@@ -8,13 +8,14 @@ agent-server.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Field, model_validator
 
-from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent  # noqa: F401
+from openhands.sdk.agent.agent import Agent as Agent  # noqa: F401
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
@@ -26,19 +27,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
-from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
-
-
-# ---------------------------------------------------------------------------
-# Helper type alias
-# ---------------------------------------------------------------------------
-
-ACPEnabledAgent = Annotated[
-    Annotated[Agent, Tag("Agent")] | Annotated[ACPAgent, Tag("ACPAgent")],
-    Discriminator(kind_of),
-]
-"""Discriminated union: either a regular Agent or an ACP-capable Agent."""
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +49,15 @@ class SendMessageRequest(BaseModel):
         return Message(role=self.role, content=self.content)
 
 
-class _StartConversationRequestBase(BaseModel):
-    """Common conversation creation fields shared by conversation contracts."""
+class StartConversationRequest(BaseModel):
+    """Payload to create a new conversation.
+
+    Supports any concrete :class:`AgentBase` implementation, including regular
+    OpenHands agents and ACP agents. Clients may provide either a concrete
+    ``agent`` payload or an ``agent_settings`` payload; when ``agent_settings``
+    is provided without ``agent``, the settings are validated with the
+    ``agent_kind`` discriminator and converted to the appropriate agent type.
+    """
 
     workspace: LocalWorkspace = Field(
         ...,
@@ -183,17 +179,45 @@ class _StartConversationRequestBase(BaseModel):
         ),
     )
 
+    agent_settings: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional agent settings payload. If `agent` is omitted, this is "
+            "validated with the AgentSettingsBase `agent_kind` discriminator and "
+            "used to construct the concrete agent."
+        ),
+    )
+    agent: AgentBase = Field(default=cast(AgentBase, None))
 
-class StartConversationRequest(_StartConversationRequestBase):
-    """Payload to create a new conversation.
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_agent_from_settings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("agent") is None and payload.get("agent_settings") is not None:
+            from openhands.sdk.settings.model import validate_agent_settings
 
-    Contains an Agent configuration along with conversation-specific options.
+            payload["agent"] = validate_agent_settings(
+                payload["agent_settings"]
+            ).create_agent()
+        elif isinstance(payload.get("agent"), dict):
+            agent_payload = dict(payload["agent"])
+            agent_payload.setdefault("kind", "Agent")
+            payload["agent"] = agent_payload
+        return payload
+
+    @model_validator(mode="after")
+    def _require_agent(self) -> StartConversationRequest:
+        if self.agent is None:
+            raise ValueError("Either `agent` or `agent_settings` must be provided")
+        return self
+
+
+class StartACPConversationRequest(StartConversationRequest):
+    """Deprecated compatibility alias for ACP-capable start requests.
+
+    Use :class:`StartConversationRequest` instead. It now supports both regular
+    OpenHands agents and ACP agents through the same request contract.
     """
-
-    agent: Agent
-
-
-class StartACPConversationRequest(_StartConversationRequestBase):
-    """Payload to create a conversation with ACP-capable agent support."""
-
-    agent: ACPEnabledAgent

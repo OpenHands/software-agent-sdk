@@ -1,5 +1,10 @@
 """ACP-capable conversation routes for the schema-sensitive endpoints."""
 
+# Deprecated REST contract: all /api/acp/conversations routes were deprecated
+# in v1.22.0 and are scheduled for removal in v1.27.0. The standard
+# FastAPI/OpenAPI deprecation marker for routes is ``deprecated=True`` on each
+# route decorator; keep matching docstring notices for CI deprecation checks.
+
 from typing import Annotated
 from uuid import UUID
 
@@ -9,11 +14,11 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
-    ACPConversationInfo,
-    ACPConversationPage,
+    ConversationInfo,
+    ConversationPage,
     ConversationSortOrder,
     SendMessageRequest,
-    StartACPConversationRequest,
+    StartConversationRequest,
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -28,7 +33,7 @@ conversation_router_acp = APIRouter(
 )
 
 START_ACP_CONVERSATION_EXAMPLES = [
-    StartACPConversationRequest(
+    StartConversationRequest(
         agent=Agent(
             llm=LLM(
                 usage_id="your-llm-service",
@@ -42,7 +47,7 @@ START_ACP_CONVERSATION_EXAMPLES = [
             role="user", content=[TextContent(text="Flip a coin!")]
         ),
     ).model_dump(exclude_defaults=True, mode="json"),
-    StartACPConversationRequest(
+    StartConversationRequest(
         agent=ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         initial_message=SendMessageRequest(
@@ -53,7 +58,7 @@ START_ACP_CONVERSATION_EXAMPLES = [
 ]
 
 
-@conversation_router_acp.get("/search")
+@conversation_router_acp.get("/search", deprecated=True)
 async def search_acp_conversations(
     page_id: Annotated[
         str | None,
@@ -72,16 +77,20 @@ async def search_acp_conversations(
         Query(title="Sort order for conversations"),
     ] = ConversationSortOrder.CREATED_AT_DESC,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ACPConversationPage:
-    """Search conversations using the ACP-capable contract."""
+) -> ConversationPage:
+    """Search conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/search`` instead.
+    """
     assert limit > 0
     assert limit <= 100
-    return await conversation_service.search_acp_conversations(
+    return await conversation_service.search_conversations(
         page_id, limit, status, sort_order
     )
 
 
-@conversation_router_acp.get("/count")
+@conversation_router_acp.get("/count", deprecated=True)
 async def count_acp_conversations(
     status: Annotated[
         ConversationExecutionStatus | None,
@@ -89,45 +98,63 @@ async def count_acp_conversations(
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
-    """Count conversations using the ACP-capable contract."""
-    return await conversation_service.count_acp_conversations(status)
+    """Count conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/count`` instead.
+    """
+    return await conversation_service.count_conversations(status)
 
 
 @conversation_router_acp.get(
     "/{conversation_id}",
     responses={404: {"description": "Item not found"}},
+    deprecated=True,
 )
 async def get_acp_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ACPConversationInfo:
-    """Get a conversation using the ACP-capable contract."""
-    conversation = await conversation_service.get_acp_conversation(conversation_id)
+) -> ConversationInfo:
+    """Get a conversation using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/{conversation_id}`` instead.
+    """
+    conversation = await conversation_service.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return conversation
 
 
-@conversation_router_acp.get("")
+@conversation_router_acp.get("", deprecated=True)
 async def batch_get_acp_conversations(
     ids: Annotated[list[UUID], Query()],
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> list[ACPConversationInfo | None]:
-    """Batch get conversations using the ACP-capable contract."""
+) -> list[ConversationInfo | None]:
+    """Batch get conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations`` instead.
+    """
     assert len(ids) < 100
-    return await conversation_service.batch_get_acp_conversations(ids)
+    return await conversation_service.batch_get_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post("", deprecated=True)
 async def start_acp_conversation(
     request: Annotated[
-        StartACPConversationRequest,
+        StartConversationRequest,
         Body(examples=START_ACP_CONVERSATION_EXAMPLES),
     ],
     response: Response,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ACPConversationInfo:
-    """Start a conversation using the ACP-capable contract."""
-    info, is_new = await conversation_service.start_acp_conversation(request)
+) -> ConversationInfo:
+    """Start a conversation using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations`` instead; it now accepts ACP agents and
+    ``agent_settings`` payloads.
+    """
+    info, is_new = await conversation_service.start_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info

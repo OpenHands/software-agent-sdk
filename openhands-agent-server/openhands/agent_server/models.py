@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABC
 from datetime import datetime
 from enum import Enum
@@ -6,10 +8,10 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
-    ACPEnabledAgent as ACPEnabledAgent,
     SendMessageRequest as SendMessageRequest,
     StartACPConversationRequest as StartACPConversationRequest,
     StartConversationRequest as StartConversationRequest,
@@ -67,7 +69,7 @@ class EventSortOrder(str, Enum):
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartACPConversationRequest):
+class StoredConversation(StartConversationRequest):
     """Stored details about a conversation.
 
     Extends StartConversationRequest with server-assigned fields.
@@ -186,34 +188,14 @@ class _ConversationInfoBase(BaseModel):
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
-    agent: Agent = Field(
+    agent: AgentBase = Field(
         ...,
-        description=(
-            "The legacy v1 agent configuration. "
-            "This endpoint remains pinned to the standard Agent contract."
-        ),
+        description="The agent running in the conversation.",
     )
 
 
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
-    next_page_id: str | None = None
-
-
-class ACPConversationInfo(_ConversationInfoBase):
-    """Conversation info that supports ACP-capable agent configs."""
-
-    agent: ACPEnabledAgent = Field(
-        ...,
-        description=(
-            "The agent running in the conversation. "
-            "Supports both Agent and ACPAgent payloads."
-        ),
-    )
-
-
-class ACPConversationPage(BaseModel):
-    items: list[ACPConversationInfo]
     next_page_id: str | None = None
 
 
