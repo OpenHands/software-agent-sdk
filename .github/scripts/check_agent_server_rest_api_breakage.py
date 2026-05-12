@@ -26,13 +26,13 @@ Policies enforced:
      OpenAPI description must declare a scheduled removal version that has been
      reached by the current package version.
 
-3) Additive response oneOf/anyOf expansion is allowed
-   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
-     schemas is a normal evolution for extensible event-stream APIs.  Clients MUST
+3) Additive request/response oneOf/anyOf expansion is allowed
+   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in request
+     or response schemas is a normal evolution for extensible APIs. Clients MUST
      handle unknown discriminator values gracefully (skip/ignore).
-   - oasdiff flags ``response-body-one-of-added`` and
-     ``response-property-one-of-added`` as ERR; this script downgrades them to
-     informational notices.
+   - oasdiff can report union widening as ERR plus secondary type-change or
+     property-removal artifacts for fields that still exist on one union member;
+     this script downgrades those artifacts to informational notices.
 
 4) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated

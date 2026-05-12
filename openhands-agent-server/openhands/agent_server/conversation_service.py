@@ -267,6 +267,7 @@ def _compose_acp_conversation_info(
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ACPConversationInfo | ConversationInfo:
+    # Response shape follows the stored agent type for OpenAPI discrimination.
     if isinstance(stored.agent, Agent):
         return _compose_conversation_info_v1(stored, state)
     return _compose_acp_conversation_info(stored, state)
