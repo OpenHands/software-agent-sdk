@@ -31,7 +31,7 @@ curl -X POST \
 ```
 
 **Key parameters:**
-- `benchmark`: `swebench`, `swebenchmultimodal`, `gaia`, `swtbench`, `commit0`, `multiswebench`, `terminalbench`
+- `benchmark`: `swebench`, `swebenchpro`, `swebenchmultimodal`, `gaia`, `swtbench`, `commit0`, `multiswebench`, `terminalbench`
 - `eval_limit`: Any positive integer (e.g., `1`, `10`, `50`, `200`)
 - `model_ids`: See `.github/run-eval/resolve_model_config.py` for available models
 - `benchmarks_branch`: Use feature branch from the benchmarks repo to test benchmark changes before merging

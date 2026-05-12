@@ -881,6 +881,8 @@ def test_load_skills_from_agent_server_calls_api():
                 "content": "Test content",
                 "description": "A test skill",
                 "triggers": ["test"],
+                "is_agentskills_format": True,
+                "disable_model_invocation": True,
             }
         ],
         "sources": {"public": 1},
@@ -893,6 +895,8 @@ def test_load_skills_from_agent_server_calls_api():
         assert len(skills) == 1
         assert skills[0].name == "test-skill"
         assert skills[0].content == "Test content"
+        assert skills[0].is_agentskills_format is True
+        assert skills[0].disable_model_invocation is True
         assert context.load_public_skills is False  # Skills were loaded
 
 
@@ -951,3 +955,181 @@ def test_load_skills_from_agent_server_with_project_dirs():
         # Should have loaded global skills + 2 project dirs = 3 calls
         assert mock_post.call_count == 3
         assert len(skills) >= 1  # At least the global skill
+
+
+# --- Completion callback tests ---
+
+
+def test_register_conversation_stores_id():
+    """Test register_conversation stores the conversation ID."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    workspace.register_conversation("conv-123")
+
+    assert workspace._conversation_id == "conv-123"
+    assert workspace.conversation_id == "conv-123"
+
+
+def test_conversation_id_property_returns_none_initially():
+    """Test conversation_id property returns None when not registered."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    assert workspace.conversation_id is None
+
+
+def test_send_completion_callback_on_success(monkeypatch):
+    """Test _send_completion_callback POSTs COMPLETED status."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        mock_client.post.assert_called_once()
+        (url,) = mock_client.post.call_args.args
+        payload = mock_client.post.call_args.kwargs["json"]
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert url == "https://svc.test/complete"
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert "error" not in payload
+        assert headers["Authorization"] == "Bearer test-api-key"
+
+
+def test_send_completion_callback_on_failure(monkeypatch):
+    """Test _send_completion_callback POSTs FAILED status with error."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-99")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        exc = RuntimeError("script crashed")
+        workspace._send_completion_callback(RuntimeError, exc)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "FAILED"
+        assert payload["run_id"] == "run-99"
+        assert "script crashed" in payload["error"]
+
+
+def test_send_completion_callback_no_op_without_url(monkeypatch):
+    """Test _send_completion_callback does nothing when URL not set."""
+    monkeypatch.delenv("AUTOMATION_CALLBACK_URL", raising=False)
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    with patch("httpx.Client") as MockClient:
+        workspace._send_completion_callback(None, None)
+        MockClient.assert_not_called()
+
+
+def test_send_completion_callback_swallows_errors(monkeypatch):
+    """Test _send_completion_callback doesn't raise on HTTP errors."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        # Should not raise
+        workspace._send_completion_callback(None, None)
+
+
+def test_send_completion_callback_without_api_key(monkeypatch):
+    """Test _send_completion_callback sends without Authorization when no key."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.delenv("AUTOMATION_CALLBACK_API_KEY", raising=False)
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert "Authorization" not in headers
+
+
+def test_send_completion_callback_includes_conversation_id(monkeypatch):
+    """Test _send_completion_callback includes conversation_id when registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    workspace.register_conversation("conv-xyz")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert payload["conversation_id"] == "conv-xyz"
+
+
+def test_send_completion_callback_omits_conversation_id_when_not_registered(
+    monkeypatch,
+):
+    """Test _send_completion_callback omits conversation_id when not registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "conversation_id" not in payload

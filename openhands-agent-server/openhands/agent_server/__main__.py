@@ -2,6 +2,7 @@ import argparse
 import atexit
 import faulthandler
 import importlib
+import os
 import signal
 import sys
 from types import FrameType
@@ -14,6 +15,32 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
+
+_INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+
+
+def _get_internal_server_url(host: str, port: int) -> str:
+    """Build the current agent-server URL for local secret lookups.
+
+    Wildcard binds are rewritten to loopback so in-process callers can connect
+    back to the current server instance, and IPv6 literals are bracketed to
+    produce a valid URL.
+
+    Examples:
+        >>> _get_internal_server_url("0.0.0.0", 8000)
+        'http://127.0.0.1:8000'
+        >>> _get_internal_server_url("::", 8000)
+        'http://127.0.0.1:8000'
+        >>> _get_internal_server_url("fe80::1", 8000)
+        'http://[fe80::1]:8000'
+    """
+    resolved_host = host
+    if host in {"0.0.0.0", "::", "[::]"}:
+        resolved_host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        resolved_host = f"[{host}]"
+    return f"http://{resolved_host}:{port}"
 
 
 def preload_modules(modules_arg: str | None) -> None:
@@ -156,6 +183,10 @@ def main() -> None:
 
     # Import user modules after early-exit checks
     preload_modules(args.import_modules)
+
+    os.environ[_INTERNAL_SERVER_URL_ENV] = _get_internal_server_url(
+        args.host, args.port
+    )
 
     print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
     print(f"API docs will be available at http://{args.host}:{args.port}/docs")

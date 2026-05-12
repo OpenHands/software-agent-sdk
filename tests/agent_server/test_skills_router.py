@@ -173,6 +173,7 @@ class TestGetSkillsEndpoint:
                         content="agent content",
                         trigger=None,
                         is_agentskills_format=True,
+                        disable_model_invocation=True,
                     ),
                 ],
                 sources={"public": 1},
@@ -185,6 +186,7 @@ class TestGetSkillsEndpoint:
             skill_info = data["skills"][0]
             assert skill_info["type"] == "agentskills"
             assert skill_info["is_agentskills_format"] is True
+            assert skill_info["disable_model_invocation"] is True
 
     def test_get_skills_response_sources(self, client):
         """Test that source counts are included in response."""

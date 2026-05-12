@@ -8,9 +8,15 @@ SECURITY WARNINGS:
 
 import hashlib
 from base64 import b64encode
+from typing import Final
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from pydantic import SecretStr
+
+
+# Fernet token prefix used to distinguish ciphertext from legacy plaintext.
+# Do not shorten: a 5-char prefix collides with realistic base64 plaintext.
+FERNET_TOKEN_PREFIX: Final[str] = "gAAAAA"
 
 
 class Cipher:
@@ -55,6 +61,13 @@ class Cipher:
                 "This may occur when loading conversations encrypted with a different "
                 "key or when upgrading from older versions."
             )
+            return None
+
+    def try_decrypt_str(self, value: str) -> str | None:
+        """Decrypt to a string, or ``None`` on InvalidToken (no logging)."""
+        try:
+            return self._get_fernet().decrypt(value.encode()).decode()
+        except InvalidToken:
             return None
 
     def _get_fernet(self):

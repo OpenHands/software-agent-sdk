@@ -26,7 +26,8 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Agent, Event, Message
+from openhands.sdk import LLM, Agent, AgentContext, Event, Message
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -37,11 +38,199 @@ from openhands.sdk.conversation.title_utils import (
 )
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
     from openhands.sdk.subagent.schema import AgentDefinition
+
+CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
+
+
+def _build_worktree_guidance(
+    *,
+    source_workspace: Path,
+    worktree_root: Path,
+    workspace_dir: Path,
+    branch: str,
+) -> str:
+    return (
+        "This conversation uses a dedicated git worktree.\n"
+        f"- Original workspace: {source_workspace}\n"
+        f"- Worktree root: {worktree_root}\n"
+        f"- Active workspace: {workspace_dir}\n"
+        f"- Branch: {branch}\n"
+        "Do all file and git work inside this worktree. Do your work on a new, "
+        "appropriately-named branch, based off the main/master branch, "
+        "and do not switch back to the original workspace."
+    )
+
+
+def _append_worktree_guidance(
+    agent: AgentBase,
+    *,
+    source_workspace: Path,
+    worktree_root: Path,
+    workspace_dir: Path,
+    branch: str,
+) -> AgentBase:
+    context = agent.agent_context or AgentContext()
+    guidance = _build_worktree_guidance(
+        source_workspace=source_workspace,
+        worktree_root=worktree_root,
+        workspace_dir=workspace_dir,
+        branch=branch,
+    )
+    existing_suffix = (context.system_message_suffix or "").strip()
+    suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
+    updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
+
+
+def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
+    try:
+        run_git_command(["git", "remote", "get-url", remote], repo_root)
+    except GitCommandError:
+        return False
+    return True
+
+
+def _local_branch_exists(repo_root: Path, branch: str) -> bool:
+    try:
+        run_git_command(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            repo_root,
+        )
+    except GitCommandError:
+        return False
+    return True
+
+
+def _get_worktree_start_point(repo_root: Path) -> str:
+    """Resolve the base ref a new conversation worktree should be created from.
+
+    Policy (in order):
+      1. ``origin/<default_branch>`` if an ``origin`` remote is configured.
+         ``git fetch origin`` is run first so the worktree starts from the
+         latest remote tip; the default branch is resolved via
+         ``refs/remotes/origin/HEAD``.
+      2. Local ``main`` if there is no usable remote default but ``main``
+         exists locally.
+      3. Local ``master`` if neither remote default nor local ``main`` is
+         available.
+      4. Fall back to ``HEAD`` only when none of the above applies, so worktree
+         creation still succeeds on freshly initialized repos.
+    """
+    if _has_git_remote(repo_root):
+        try:
+            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+        except GitCommandError as exc:
+            logger.warning(
+                "git fetch origin failed while choosing worktree start point "
+                "for %s; using cached refs. Error: %s",
+                repo_root,
+                exc,
+            )
+        try:
+            ref = run_git_command(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                repo_root,
+            )
+        except GitCommandError:
+            ref = ""
+        prefix = "refs/remotes/origin/"
+        if ref.startswith(prefix):
+            return f"origin/{ref[len(prefix) :]}"
+
+    if _local_branch_exists(repo_root, "main"):
+        return "main"
+    if _local_branch_exists(repo_root, "master"):
+        return "master"
+    return "HEAD"
+
+
+def _create_conversation_worktree(
+    workspace: LocalWorkspace,
+    conversation_id: UUID,
+) -> tuple[LocalWorkspace, Path, Path, str] | None:
+    source_workspace = Path(workspace.working_dir).resolve()
+    try:
+        validate_git_repository(source_workspace)
+        repo_root = Path(
+            run_git_command(
+                ["git", "--no-pager", "rev-parse", "--show-toplevel"],
+                source_workspace,
+            )
+        ).resolve()
+    except (GitCommandError, GitRepositoryError):
+        return None
+
+    relative_workspace = source_workspace.relative_to(repo_root)
+    conversation_worktree_root = CONVERSATION_WORKTREE_ROOT / str(conversation_id)
+    worktree_root = conversation_worktree_root / repo_root.name
+    conversation_worktree_root.mkdir(parents=True, exist_ok=True)
+    branch = f"openhands/{conversation_id}"
+
+    if worktree_root.exists():
+        try:
+            run_git_command(
+                ["git", "worktree", "remove", "--force", str(worktree_root)],
+                repo_root,
+            )
+        except GitCommandError:
+            safe_rmtree(worktree_root)
+
+    run_git_command(["git", "worktree", "prune"], repo_root)
+
+    if run_git_command(["git", "branch", "--list", branch], repo_root):
+        run_git_command(["git", "branch", "-D", branch], repo_root)
+
+    run_git_command(
+        [
+            "git",
+            "worktree",
+            "add",
+            "-b",
+            branch,
+            str(worktree_root),
+            _get_worktree_start_point(repo_root),
+        ],
+        repo_root,
+    )
+
+    workspace_dir = worktree_root / relative_workspace
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    return (
+        LocalWorkspace(working_dir=workspace_dir),
+        source_workspace,
+        worktree_root,
+        branch,
+    )
+
+
+def _prepare_request_workspace(
+    request: StartConversationRequest | StartACPConversationRequest,
+    conversation_id: UUID,
+) -> StartConversationRequest | StartACPConversationRequest:
+    if not request.worktree:
+        return request
+
+    worktree = _create_conversation_worktree(request.workspace, conversation_id)
+    if worktree is None:
+        return request
+
+    new_workspace, source_workspace, worktree_root, branch = worktree
+    agent = _append_worktree_guidance(
+        request.agent,
+        source_workspace=source_workspace,
+        worktree_root=worktree_root,
+        workspace_dir=Path(new_workspace.working_dir),
+        branch=branch,
+    )
+    return request.model_copy(update={"workspace": new_workspace, "agent": agent})
 
 
 logger = logging.getLogger(__name__)
@@ -144,7 +333,7 @@ def _register_agent_definitions(
                 f"Failed to register agent definition "
                 f"'{agent_def.name}' ({context}): {e}"
             )
-    logger.info(
+    logger.debug(
         f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
@@ -433,6 +622,8 @@ class ConversationService:
             )
             return conversation_info, False
 
+        request = _prepare_request_workspace(request, conversation_id)
+
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
             import importlib
@@ -454,9 +645,9 @@ class ConversationService:
                     # tools
             if request.tool_module_qualnames:
                 logger.info(
-                    f"Dynamically registered {len(request.tool_module_qualnames)} "
-                    f"tools for conversation {conversation_id}: "
-                    f"{list(request.tool_module_qualnames.keys())}"
+                    "Dynamically registered %d tools for conversation %s",
+                    len(request.tool_module_qualnames),
+                    conversation_id,
                 )
 
         # Register subagent definitions forwarded from the client
@@ -622,12 +813,13 @@ class ConversationService:
 
         updated_fields = []
         if request.title is not None:
-            updated_fields.append(f"title: {request.title}")
+            updated_fields.append("title")
         if request.tags is not None:
-            updated_fields.append(f"tags: {request.tags}")
+            updated_fields.append("tags")
         logger.info(
-            f"Successfully updated conversation {conversation_id} "
-            f"with {', '.join(updated_fields)}"
+            "Successfully updated conversation %s (%s)",
+            conversation_id,
+            ", ".join(updated_fields),
         )
         return True
 
@@ -779,7 +971,7 @@ class ConversationService:
                             )
                             # Continue even if some tools fail to register
                     if stored.tool_module_qualnames:
-                        logger.info(
+                        logger.debug(
                             f"Dynamically registered "
                             f"{len(stored.tool_module_qualnames)} tools when "
                             f"resuming conversation {stored.id}: "
@@ -796,7 +988,7 @@ class ConversationService:
                 conversation_id = (
                     stored.id if stored is not None else conversation_dir.name
                 )
-                logger.info(
+                logger.debug(
                     "Skipping active conversation %s owned by %s until %s",
                     conversation_id,
                     exc.owner_instance_id,
@@ -853,28 +1045,32 @@ class ConversationService:
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
         )
-        # Create subscribers...
-        await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
-        if stored.autotitle and stored.title is None:
-            await event_service.subscribe_to_events(
-                AutoTitleSubscriber(service=event_service)
-            )
-        asyncio.gather(
-            *[
-                event_service.subscribe_to_events(
-                    WebhookSubscriber(
-                        conversation_id=stored.id,
-                        service=event_service,
-                        spec=webhook_spec,
-                        session_api_key=self.session_api_key,
-                    )
-                )
-                for webhook_spec in self.webhook_specs
-            ]
-        )
 
         try:
             await event_service.start()
+            # Register subscribers after start() so subscribe_to_events runs
+            # its initial-state push synchronously and any failure surfaces to
+            # the caller instead of being silently logged on a later publish.
+            await event_service.subscribe_to_events(
+                _EventSubscriber(service=event_service)
+            )
+            if stored.autotitle and stored.title is None:
+                await event_service.subscribe_to_events(
+                    AutoTitleSubscriber(service=event_service)
+                )
+            await asyncio.gather(
+                *[
+                    event_service.subscribe_to_events(
+                        WebhookSubscriber(
+                            conversation_id=stored.id,
+                            service=event_service,
+                            spec=webhook_spec,
+                            session_api_key=self.session_api_key,
+                        )
+                    )
+                    for webhook_spec in self.webhook_specs
+                ]
+            )
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()
@@ -968,7 +1164,7 @@ class AutoTitleSubscriber(Subscriber):
             from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 
             profile_store = LLMProfileStore()
-            return profile_store.load(profile_name)
+            return profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
                 f"Failed to load title LLM profile '{profile_name}': {e}. "
@@ -1055,8 +1251,15 @@ class WebhookSubscriber(Subscriber):
                         f"Failed to post events to webhook {events_url} "
                         f"after {self.spec.num_retries + 1} attempts"
                     )
-                    # Re-queue events for potential retry later
                     self.queue.extend(events_to_post)
+                    overflow = len(self.queue) - self.spec.max_queue_size
+                    if overflow > 0:
+                        del self.queue[:overflow]
+                        logger.warning(
+                            f"Webhook queue exceeded max_queue_size="
+                            f"{self.spec.max_queue_size}; dropped {overflow} "
+                            f"oldest event(s) for {events_url}."
+                        )
 
     def _cancel_flush_timer(self):
         """Cancel the current flush timer if it exists."""

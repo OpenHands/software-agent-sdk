@@ -473,30 +473,31 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 result = future.result()
                 tools.extend(result)
 
-        logger.info(
-            f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
-        )
+        logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            logger.info(
-                f"Filtered to {len(tools)} tools after applying regex filter: "
-                f"{[tool.name for tool in tools]}",
-            )
+            logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
         # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
-        # loaded and the user hasn't already opted in explicitly.
-        has_agentskills = bool(
+        # directly invocable and the user hasn't already opted in explicitly.
+        has_invocable_agentskills = bool(
             self.agent_context
-            and any(s.is_agentskills_format for s in self.agent_context.skills)
+            and any(
+                s.is_agentskills_format and not s.disable_model_invocation
+                for s in self.agent_context.skills
+            )
         )
         default_tool_names = list(self.include_default_tools)
-        if has_agentskills and InvokeSkillTool.__name__ not in default_tool_names:
+        if (
+            has_invocable_agentskills
+            and InvokeSkillTool.__name__ not in default_tool_names
+        ):
             default_tool_names.append(InvokeSkillTool.__name__)
             logger.debug(
-                "Auto-attached %s (AgentSkills-format skill present in agent_context)",
+                "Auto-attached %s (invocable AgentSkills-format skill present)",
                 InvokeSkillTool.__name__,
             )
 

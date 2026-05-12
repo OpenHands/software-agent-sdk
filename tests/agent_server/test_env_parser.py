@@ -64,10 +64,10 @@ class OptionalModel(BaseModel):
 
 @pytest.fixture
 def clean_env():
-    """Clean environment fixture that removes test env vars after each test."""
+    """Run each test against an isolated environment snapshot."""
     original_env = os.environ.copy()
+    os.environ.clear()
     yield
-    # Restore original environment
     os.environ.clear()
     os.environ.update(original_env)
 

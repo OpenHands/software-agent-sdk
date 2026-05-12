@@ -52,6 +52,7 @@ class SkillInfo(BaseModel):
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
+    disable_model_invocation: bool = False
 
 
 class SkillResources(BaseModel):
@@ -206,6 +207,13 @@ class Skill(BaseModel):
         description=(
             "List of pre-approved tools for this skill. "
             "AgentSkills standard field (parsed from space-delimited string)."
+        ),
+    )
+    disable_model_invocation: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill can only be activated by trigger matching and "
+            "should not be advertised to the model for direct invocation."
         ),
     )
     resources: SkillResources | None = Field(
@@ -417,12 +425,17 @@ class Skill(BaseModel):
         allowed_tools_value = metadata_dict.get(
             "allowed-tools", metadata_dict.get("allowed_tools")
         )
+        disable_model_invocation_value = metadata_dict.get(
+            "disable-model-invocation",
+            metadata_dict.get("disable_model_invocation"),
+        )
         agentskills_fields = {
             "description": metadata_dict.get("description"),
             "license": metadata_dict.get("license"),
             "compatibility": metadata_dict.get("compatibility"),
             "metadata": metadata_dict.get("metadata"),
             "allowed_tools": allowed_tools_value,
+            "disable_model_invocation": disable_model_invocation_value,
         }
         # Remove None values to avoid passing unnecessary kwargs
         agentskills_fields = {
@@ -631,6 +644,7 @@ class Skill(BaseModel):
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
+            disable_model_invocation=self.disable_model_invocation,
         )
 
     def render_content(
@@ -1091,9 +1105,7 @@ def load_public_skills(
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
-    logger.info(
-        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
-    )
+    logger.info("Loaded %d public skills", len(all_skills))
     return all_skills
 
 

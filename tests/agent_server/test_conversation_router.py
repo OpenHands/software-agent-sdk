@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     ConversationContractMismatchError,
@@ -34,6 +35,11 @@ def client():
     """Create a test client for the FastAPI app without authentication."""
     app = FastAPI()
     app.include_router(conversation_router, prefix="/api")
+    # switch_llm reads request.app.state.config to get the optional cipher;
+    # populate it with a no-cipher config so unrelated tests don't 503.
+    app.state.config = Config(
+        static_files_path=None, session_api_keys=[], secret_key=None
+    )
     return TestClient(app)
 
 
@@ -1634,6 +1640,104 @@ def test_switch_conversation_llm_success(
         assert isinstance(forwarded_llm, LLM)
         assert forwarded_llm.model == "openai/gpt-4o"
         assert forwarded_llm.usage_id == "caller-supplied-id"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_decrypts_encrypted_api_key(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """When the server has a cipher and the client posts an encrypted api_key
+    (the natural FE flow: GET profile with X-Expose-Secrets: encrypted, then
+    forward into switch_llm), the router decrypts before applying. Regression
+    for #3164.
+    """
+    from base64 import urlsafe_b64encode
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    secret_key = urlsafe_b64encode(b"a" * 32).decode("ascii")
+    cipher = Cipher(secret_key)
+    encrypted_api_key = cipher.encrypt(SecretStr("plaintext-api-key"))
+    assert encrypted_api_key is not None
+
+    # Install a cipher-enabled config on the test app for this test.
+    client.app.state.config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=SecretStr(secret_key),
+    )
+
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": encrypted_api_key,
+                    "usage_id": "caller-supplied-id",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded_llm, LLM)
+        assert isinstance(forwarded_llm.api_key, SecretStr)
+        assert forwarded_llm.api_key.get_secret_value() == "plaintext-api-key"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_conversation_llm_plaintext_with_cipher_passes_through(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A plaintext api_key must pass through untouched even when the server
+    has a cipher configured (no Fernet prefix → no decrypt attempted).
+    Regression guard for #3164: backward-compat for app-servers that supply
+    plaintext keys.
+    """
+    from base64 import urlsafe_b64encode
+
+    secret_key = urlsafe_b64encode(b"a" * 32).decode("ascii")
+    client.app.state.config = Config(
+        static_files_path=None,
+        session_api_keys=[],
+        secret_key=SecretStr(secret_key),
+    )
+
+    mock_conversation = MagicMock()
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.get_conversation.return_value = mock_conversation
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_llm",
+            json={
+                "llm": {
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-plaintext",
+                    "usage_id": "caller-supplied-id",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        forwarded_llm = mock_conversation.switch_llm.call_args.args[0]
+        assert isinstance(forwarded_llm.api_key, SecretStr)
+        assert forwarded_llm.api_key.get_secret_value() == "sk-plaintext"
     finally:
         client.app.dependency_overrides.clear()
 

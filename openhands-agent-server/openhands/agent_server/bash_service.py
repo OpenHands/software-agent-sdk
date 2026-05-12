@@ -1,6 +1,8 @@
 import asyncio
 import glob
 import json
+import os
+import signal
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -178,6 +180,22 @@ class BashEventService:
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
 
+    def _signal_process_group(
+        self,
+        process: asyncio.subprocess.Process,
+        sig: signal.Signals,
+        command: str,
+    ) -> None:
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except ProcessLookupError:
+            pass
+        except OSError as e:
+            logger.debug(
+                f"Failed to send {sig.name} to process group for command "
+                f"'{command}': {e}"
+            )
+
     async def start_bash_command(
         self, request: ExecuteBashRequest
     ) -> tuple[BashCommand, asyncio.Task]:
@@ -194,7 +212,9 @@ class BashEventService:
     async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
         try:
-            # Create subprocess
+            # Create subprocess in a new session so we can signal the whole
+            # process group on teardown (the shell's children, e.g. sleep, must
+            # die before the shell can run user-installed traps).
             process = await asyncio.create_subprocess_shell(
                 command.command,
                 cwd=command.cwd,
@@ -202,6 +222,7 @@ class BashEventService:
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
                 env=sanitized_env(),
+                start_new_session=True,
             )
 
             # Track output order and buffers
@@ -272,14 +293,13 @@ class BashEventService:
                 )
                 exit_code = process.returncode
             except TimeoutError:
-                # Kill the process if it times out
-                process.kill()
+                # Send SIGTERM to the whole process group so user-installed
+                # cleanup traps can run, then escalate to SIGKILL if needed.
+                self._signal_process_group(process, signal.SIGTERM, command.command)
                 try:
-                    # Give the process a short time to die gracefully
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
-                    # If it still won't die, terminate it more forcefully
-                    process.terminate()
+                    self._signal_process_group(process, signal.SIGKILL, command.command)
                     try:
                         await asyncio.wait_for(process.wait(), timeout=1.0)
                     except TimeoutError:
