@@ -141,6 +141,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "aws_session_token",
 )
 
+LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
@@ -1521,6 +1523,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             return 0
 
+    @classmethod
+    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+        """Load a persisted LLM profile payload, applying schema migrations."""
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("LLM profile schema_version must be an integer")
+        if version > LLM_PROFILE_SCHEMA_VERSION:
+            raise ValueError(
+                "LLM profile schema_version "
+                f"{version} is newer than supported version "
+                f"{LLM_PROFILE_SCHEMA_VERSION}"
+            )
+
+        payload.pop("schema_version", None)
+        return cls.model_validate(payload, context=context)
+
+    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Serialize this LLM for profile persistence."""
+        data = self.model_dump(mode="json", exclude_none=True, context=context)
+        data["schema_version"] = LLM_PROFILE_SCHEMA_VERSION
+        return data
+
     # =========================================================================
     # Serialization helpers
     # =========================================================================
@@ -1540,7 +1568,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         with open(json_path) as f:
             data = json.load(f)
-        return cls.model_validate(data, context=context)
+        return cls.from_persisted(data, context=context)
 
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:

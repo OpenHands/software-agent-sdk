@@ -563,6 +563,51 @@ def test_start_conversation_existing(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_accepts_openhands_agent_settings(
+    client, mock_conversation_service
+):
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="settings-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="Settings Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 1,
+                    "agent_kind": "llm",
+                    "llm": {"model": "settings-model", "usage_id": "test-llm"},
+                    "tools": [],
+                    "verification": {
+                        "confirmation_mode": True,
+                        "security_analyzer": "llm",
+                    },
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent.kind == "Agent"
+        assert request.agent.llm.model == "settings-model"
+        assert "agent_settings" not in request.model_dump(mode="json")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
     now = utc_now()
     acp_info = ACPConversationInfo(
@@ -621,9 +666,15 @@ def test_start_conversation_accepts_acp_agent_settings(
             "/api/conversations",
             json={
                 "agent_settings": {
+                    "schema_version": 3,
                     "agent_kind": "acp",
                     "acp_server": "custom",
                     "acp_command": ["echo", "settings"],
+                    "acp_args": ["--verbose"],
+                    "acp_env": {"OPENAI_API_KEY": "sk-acp-env"},
+                    "acp_model": "acp-test-model",
+                    "acp_session_mode": "bypassPermissions",
+                    "acp_prompt_timeout": 123.0,
                 },
                 "workspace": {"working_dir": "/tmp/test"},
             },
@@ -633,6 +684,12 @@ def test_start_conversation_accepts_acp_agent_settings(
         request = mock_conversation_service.start_conversation.call_args.args[0]
         assert request.agent.kind == "ACPAgent"
         assert request.agent.acp_command == ["echo", "settings"]
+        assert request.agent.acp_args == ["--verbose"]
+        assert request.agent.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
+        assert request.agent.acp_model == "acp-test-model"
+        assert request.agent.acp_session_mode == "bypassPermissions"
+        assert request.agent.acp_prompt_timeout == 123.0
+
     finally:
         client.app.dependency_overrides.clear()
 
