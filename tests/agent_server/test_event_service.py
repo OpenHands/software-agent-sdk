@@ -6,6 +6,7 @@ import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -320,6 +321,84 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 0
         # Should still have next_page_id if there are events available
         assert result.next_page_id is not None
+
+    @pytest.mark.asyncio
+    async def test_search_events_does_not_scan_whole_log(self, event_service):
+        """Loading the most recent N events must be O(limit), not O(total).
+
+        Regression test for a previous implementation that read every event
+        from the EventLog before returning a single page, making long
+        conversations effectively unusable.
+        """
+
+        class _CountingEvents:
+            """Sequence wrapper that counts ``__getitem__`` accesses."""
+
+            def __init__(self, items: list[Event]):
+                self._items = items
+                self.getitem_calls = 0
+                # ``get_index`` is what EventLog exposes; mirroring it lets us
+                # verify the O(1) page_id lookup path is exercised.
+                self._id_to_idx = {e.id: i for i, e in enumerate(items)}
+
+            def __len__(self) -> int:
+                return len(self._items)
+
+            def __getitem__(self, idx: int) -> Event:
+                self.getitem_calls += 1
+                return self._items[idx]
+
+            def __iter__(self):  # pragma: no cover - must NOT be used in fast path
+                raise AssertionError(
+                    "search_events fell back to full iteration; expected "
+                    "index-based access only"
+                )
+
+            def get_index(self, event_id: str) -> int:
+                return self._id_to_idx[event_id]
+
+        total = 1000
+        events = [
+            MessageEvent(
+                id=f"event{i:05d}",
+                source="user",
+                llm_message=Message(role="user"),
+            )
+            for i in range(total)
+        ]
+        wrapper = _CountingEvents(cast(list[Event], events))
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.events = wrapper
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        # First page: 50 most recent events out of 1000.
+        result = await event_service.search_events(
+            limit=50, sort_order=EventSortOrder.TIMESTAMP_DESC
+        )
+        assert len(result.items) == 50
+        assert result.items[0].id == events[-1].id
+        assert result.items[-1].id == events[-50].id
+        assert result.next_page_id == events[-51].id
+        # Must read at most limit + 1 events (one extra for next_page_id).
+        assert wrapper.getitem_calls <= 51, (
+            f"Expected <=51 getitem calls, got {wrapper.getitem_calls}"
+        )
+
+        # Second page via page_id: also O(limit) and uses get_index (no scan).
+        wrapper.getitem_calls = 0
+        next_page = await event_service.search_events(
+            page_id=result.next_page_id,
+            limit=50,
+            sort_order=EventSortOrder.TIMESTAMP_DESC,
+        )
+        assert len(next_page.items) == 50
+        assert next_page.items[0].id == events[-51].id
+        assert wrapper.getitem_calls <= 51
 
     @pytest.mark.asyncio
     async def test_search_events_exact_pagination_boundary(self, event_service):

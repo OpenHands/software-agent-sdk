@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -69,6 +70,7 @@ class EventService:
     _lease: ConversationLease | None = field(default=None, init=False)
     _lease_generation: int | None = field(default=None, init=False)
     _lease_task: asyncio.Task | None = field(default=None, init=False)
+    _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
     @property
     def conversation_dir(self):
@@ -143,6 +145,33 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_event_sync, event_id)
 
+    def _event_matches_filters(
+        self,
+        event: Event,
+        kind: str | None,
+        source: str | None,
+        body: str | None,
+        timestamp_gte_str: str | None,
+        timestamp_lt_str: str | None,
+    ) -> bool:
+        """Return True if ``event`` matches all of the provided filters."""
+        if (
+            kind is not None
+            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        ):
+            return False
+        if source is not None and event.source != source:
+            return False
+        if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+            return False
+        if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+            return False
+        # ``body`` is the most expensive filter (deserializes message content),
+        # so evaluate it last.
+        if body is not None and not self._event_matches_body(event, body):
+            return False
+        return True
+
     def _search_events_sync(
         self,
         page_id: str | None = None,
@@ -159,67 +188,68 @@ class EventService:
         Reads directly from the EventLog without acquiring the state lock.
         EventLog reads are safe without the FIFOLock because events are
         append-only and immutable once written.
+
+        Performance:
+            Events are appended in chronological order and never reordered,
+            so the on-disk index order matches the timestamp sort order.
+            We exploit that by iterating the underlying ``Sequence`` lazily
+            by index (forward for TIMESTAMP, backward for TIMESTAMP_DESC),
+            stopping as soon as we have ``limit + 1`` filter matches.
+
+            This turns ``search_events`` from O(N) disk reads + O(N log N)
+            sort into O(limit + skipped) reads with no sort, which is the
+            difference between "loads instantly" and "blocks for seconds"
+            for long conversations.
         """
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        events = self._conversation._state.events
+        total = len(events)
 
         # Convert datetime to ISO string for comparison (ISO strings are comparable)
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        # Collect all events
-        all_events = []
-        for event in self._conversation._state.events:
-            # Apply kind filter if provided
-            if (
-                kind is not None
-                and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        reverse = sort_order == EventSortOrder.TIMESTAMP_DESC
+
+        # Resolve page_id to a starting index. Prefer the EventLog's O(1)
+        # id-to-index map; fall back to a linear scan for plain sequences
+        # (e.g. in tests). An unknown page_id falls back to the natural
+        # start of the iteration order, matching prior behavior.
+        start_index: int | None = None
+        if page_id:
+            get_index = getattr(events, "get_index", None)
+            if get_index is not None:
+                try:
+                    start_index = get_index(page_id)
+                except KeyError:
+                    start_index = None
+            else:
+                for i in range(total):
+                    if events[i].id == page_id:
+                        start_index = i
+                        break
+        if start_index is None:
+            start_index = total - 1 if reverse else 0
+
+        if reverse:
+            indices: range = range(start_index, -1, -1)
+        else:
+            indices = range(start_index, total)
+
+        items: list[Event] = []
+        next_page_id: str | None = None
+        for i in indices:
+            event = events[i]
+            if not self._event_matches_filters(
+                event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
                 continue
-
-            # Apply source filter if provided
-            if source is not None and event.source != source:
-                continue
-
-            # Apply body filter if provided (case-insensitive substring match)
-            if body is not None:
-                if not self._event_matches_body(event, body):
-                    continue
-
-            # Apply timestamp filters if provided (ISO string comparison)
-            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
-                continue
-            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                continue
-
-            all_events.append(event)
-
-        # Sort events based on sort_order
-        if sort_order == EventSortOrder.TIMESTAMP:
-            all_events.sort(key=lambda x: x.timestamp)
-        elif sort_order == EventSortOrder.TIMESTAMP_DESC:
-            all_events.sort(key=lambda x: x.timestamp, reverse=True)
-
-        # Handle pagination
-        items = []
-        start_index = 0
-
-        # Find the starting point if page_id is provided
-        if page_id:
-            for i, event in enumerate(all_events):
-                if event.id == page_id:
-                    start_index = i
-                    break
-
-        # Collect items for this page
-        next_page_id = None
-        for i in range(start_index, len(all_events)):
             if len(items) >= limit:
-                # We have more items, set next_page_id
-                if i < len(all_events):
-                    next_page_id = all_events[i].id
+                next_page_id = event.id
                 break
-            items.append(all_events[i])
+            items.append(event)
 
         return EventPage(items=items, next_page_id=next_page_id)
 
@@ -267,36 +297,29 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
+        events = self._conversation._state.events
+
+        # Fast path: with no filters, the count is just the sequence length
+        # and we can avoid reading any event payloads from disk.
+        if (
+            kind is None
+            and source is None
+            and body is None
+            and timestamp__gte is None
+            and timestamp__lt is None
+        ):
+            return len(events)
+
         # Convert datetime to ISO string for comparison (ISO strings are comparable)
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
-        for event in self._conversation._state.events:
-            # Apply kind filter if provided
-            if (
-                kind is not None
-                and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        for event in events:
+            if self._event_matches_filters(
+                event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
-                continue
-
-            # Apply source filter if provided
-            if source is not None and event.source != source:
-                continue
-
-            # Apply body filter if provided (case-insensitive substring match)
-            if body is not None:
-                if not self._event_matches_body(event, body):
-                    continue
-
-            # Apply timestamp filters if provided (ISO string comparison)
-            if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
-                continue
-            if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                continue
-
-            count += 1
-
+                count += 1
         return count
 
     async def count_events(
@@ -697,7 +720,7 @@ class EventService:
 
             async def _run_and_publish():
                 try:
-                    await loop.run_in_executor(None, conversation.run)
+                    await loop.run_in_executor(self._run_executor, conversation.run)
                 except Exception:
                     logger.exception("Error during conversation run")
                 finally:

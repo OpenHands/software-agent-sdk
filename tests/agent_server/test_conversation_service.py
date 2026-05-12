@@ -242,6 +242,41 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_event_services_share_dedicated_run_executor(tmp_path):
+    """Event services created by ConversationService should share a single
+    dedicated thread pool for conversation.run() calls."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir, max_concurrent_runs=5
+    ) as svc:
+        info, _ = await svc.start_conversation(request)
+        assert svc._event_services is not None
+        es = svc._event_services[info.id]
+
+        # A dedicated executor should exist on the service
+        assert svc._run_executor is not None
+        assert isinstance(svc._run_executor, ThreadPoolExecutor)
+        assert svc._run_executor._max_workers == 5
+
+        # EventService should share the same executor instance
+        assert es._run_executor is svc._run_executor
+
+    # After __aexit__, executor should be shut down
+    assert svc._run_executor is None
+
+
+@pytest.mark.asyncio
 async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_path):
     """Reproduces the crash-recovery bug: after a non-graceful shutdown the lease
     file is left on disk pointing at a still-future expires_at. A fresh server
