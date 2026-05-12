@@ -381,26 +381,9 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
-            run = (
-                await self._get_execution_status()
-                != ConversationExecutionStatus.RUNNING
-            )
-        if run:
-            conversation = self._conversation
-
-            async def _run_with_error_handling():
-                try:
-                    await loop.run_in_executor(None, conversation.run)
-                except Exception:
-                    logger.exception("Error during conversation run from send_message")
-
-            # Fire-and-forget: This task is intentionally not tracked because
-            # send_message() is designed to return immediately after queuing the
-            # message. The conversation run happens in the background and any
-            # errors are logged. Unlike the run() method which is explicitly
-            # awaited, this pattern allows clients to send messages without
-            # blocking on the full conversation execution.
-            loop.create_task(_run_with_error_handling())
+            # Already running or inactive — message was sent, skip run.
+            with suppress(ValueError):
+                await self.run()
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)

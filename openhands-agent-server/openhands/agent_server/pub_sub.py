@@ -62,16 +62,26 @@ class PubSub[T]:
 
     async def __call__(self, event: T) -> None:
         """Invoke all registered callbacks with the given event.
-        Each callback is invoked in its own try/catch block to prevent
-        one failing callback from affecting others.
+        Subscribers are notified concurrently so a slow client cannot
+        block delivery to others.  Each callback runs in its own
+        error-handling wrapper to preserve fault isolation.
         Args:
             event: The event to pass to all callbacks
         """
-        for subscriber_id, subscriber in list(self._subscribers.items()):
+        subscribers = list(self._subscribers.items())
+        if not subscribers:
+            return
+
+        async def _notify(subscriber_id: UUID, subscriber: Subscriber[T]):
             try:
                 await subscriber(event)
             except Exception as e:
-                logger.error(f"Error in subscriber {subscriber_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Error in subscriber {subscriber_id}: {e}",
+                    exc_info=True,
+                )
+
+        await asyncio.gather(*[_notify(sid, sub) for sid, sub in subscribers])
 
     async def close(self):
         await asyncio.gather(
