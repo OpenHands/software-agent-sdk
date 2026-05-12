@@ -528,6 +528,76 @@ class TestACPAgentInitState:
         assert "ACP server" in events[0].system_prompt.text
         assert events[0].tools == []
 
+    def test_init_state_no_dynamic_context_without_agent_context(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is None
+
+    def test_init_state_populates_dynamic_context_from_suffix(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "Team rules." in events[0].dynamic_context.text
+
+    def test_init_state_sets_pending_state_for_new_session(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "pending_first_prompt"
+        assert agent._installed_suffix is not None
+        assert "Team rules." in agent._installed_suffix
+
+    def test_init_state_sets_installed_for_resumed_session(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {"acp_session_id": "prior-session-id"}
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "installed"
+
+    def test_init_state_includes_registry_secrets_in_suffix(self, tmp_path):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(agent_context=AgentContext(current_datetime=None))
+        state = _make_state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "REGISTRY_TOKEN": StaticSecret(
+                    value=SecretStr("tok"), description="Registry token"
+                )
+            }
+        )
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
+
 
 # ---------------------------------------------------------------------------
 # _OpenHandsACPBridge
@@ -916,6 +986,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -963,6 +1036,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -1018,6 +1094,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -1030,6 +1109,58 @@ class TestACPAgentStep:
         assert "AgentSkills triggered review instructions." in prompt_text
         assert "<name>agentskill-review</name>" in prompt_text
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
+
+    def test_step_does_not_re_inject_suffix_on_second_turn(self, tmp_path):
+        """Suffix must not appear in subsequent turns after the first injection."""
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Turn 2.")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+        # Simulate: suffix was already installed on the first turn.
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "installed"
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_text = "\n\n".join(
+            b.text for b in agent._conn.prompt.await_args.args[0] if hasattr(b, "text")
+        )
+        assert "Team rules." not in prompt_text
+
+    def test_step_suffix_install_state_transitions_to_installed(self, tmp_path):
+        """After the first turn the install state must be 'installed'."""
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="First.")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "pending_first_prompt"
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "installed"
 
     def test_step_with_reasoning_surfaces_via_action_event(self, tmp_path):
         """Reasoning traces are preserved in ActionEvent.reasoning_content."""

@@ -337,7 +337,10 @@ class AgentContext(BaseModel):
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
             )
 
-    def to_acp_prompt_context(self) -> str | None:
+    def to_acp_prompt_context(
+        self,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> str | None:
         """Return the AgentContext fields that ACP can consume as prompt text.
 
         ACP servers own their tools, MCP servers, hooks, and execution model, so
@@ -356,11 +359,20 @@ class AgentContext(BaseModel):
         ``user_message_suffix`` is a compatible field but is not emitted here
         because ``LocalConversation`` already applies it through
         ``event.to_llm_message()``; including it would duplicate it.
+
+        Args:
+            additional_secret_infos: Optional list of additional secret info dicts
+                from the conversation's secret_registry, matching the interface of
+                :meth:`get_system_message_suffix`. When provided, these secrets are
+                merged with any secrets already on the AgentContext so the rendered
+                ``<CUSTOM_SECRETS>`` block matches what the regular Agent emits.
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
         # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
-        return self.get_system_message_suffix()
+        return self.get_system_message_suffix(
+            additional_secret_infos=additional_secret_infos
+        )
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]

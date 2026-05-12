@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from litellm.exceptions import (
     APIConnectionError,
+    AuthenticationError,
     BadRequestError,
     ContextWindowExceededError,
     OpenAIError,
+    PermissionDeniedError,
 )
 
 from .types import (
@@ -80,6 +82,10 @@ AUTH_PATTERNS: list[str] = [
 
 
 def looks_like_auth_error(exception: Exception) -> bool:
+    # Trust the typed exception when the provider/LiteLLM raised an explicit
+    # 401/403 — its message text may not contain the heuristic patterns below.
+    if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
+        return True
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
     s = str(exception).lower()
