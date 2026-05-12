@@ -594,9 +594,9 @@ class ConversationService:
                     # tools
             if request.tool_module_qualnames:
                 logger.info(
-                    f"Dynamically registered {len(request.tool_module_qualnames)} "
-                    f"tools for conversation {conversation_id}: "
-                    f"{list(request.tool_module_qualnames.keys())}"
+                    "Dynamically registered %d tools for conversation %s",
+                    len(request.tool_module_qualnames),
+                    conversation_id,
                 )
 
         # Register subagent definitions forwarded from the client
@@ -762,12 +762,13 @@ class ConversationService:
 
         updated_fields = []
         if request.title is not None:
-            updated_fields.append(f"title: {request.title}")
+            updated_fields.append("title")
         if request.tags is not None:
-            updated_fields.append(f"tags: {request.tags}")
+            updated_fields.append("tags")
         logger.info(
-            f"Successfully updated conversation {conversation_id} "
-            f"with {', '.join(updated_fields)}"
+            "Successfully updated conversation %s (%s)",
+            conversation_id,
+            ", ".join(updated_fields),
         )
         return True
 
