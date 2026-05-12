@@ -49,10 +49,12 @@ from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
 from .acp_providers import ACPProviderInfo, get_acp_provider
-from .controls import AgentControls
-from .controls import PlanLevel as PlanLevel
-from .controls import SaveMode as SaveMode
-from .controls import VerifyLevel as VerifyLevel
+from .controls import (
+    AgentControls,
+    PlanLevel as PlanLevel,
+    SaveMode as SaveMode,
+    VerifyLevel as VerifyLevel,
+)
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
