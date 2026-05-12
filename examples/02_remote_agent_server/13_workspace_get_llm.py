@@ -21,11 +21,10 @@ This pattern enables:
 """
 
 import os
-import time
 
 import httpx
-
 from _utils import ManagedAPIServer
+
 from openhands.sdk import Conversation, get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 from openhands.tools.preset.default import get_default_agent
@@ -51,6 +50,7 @@ with ManagedAPIServer(
 ) as server:
     # Create HTTP client for settings API - MUST include session API key!
     # The X-Session-API-Key header authenticates all requests
+    assert server.session_api_key is not None  # set via use_session_api_key=True
     client = httpx.Client(
         base_url=server.base_url,
         timeout=120.0,

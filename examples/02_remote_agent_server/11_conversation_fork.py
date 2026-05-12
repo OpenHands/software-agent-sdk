@@ -14,9 +14,9 @@ Scenarios covered:
 import os
 import tempfile
 
+from _utils import ManagedAPIServer
 from pydantic import SecretStr
 
-from _utils import ManagedAPIServer
 from openhands.sdk import LLM, Agent, Conversation, RemoteConversation, Tool, Workspace
 from openhands.tools.terminal import TerminalTool
 
