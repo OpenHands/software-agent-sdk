@@ -14,6 +14,7 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import RemoteWorkspace
@@ -170,6 +171,45 @@ class TestRemoteConversation:
         assert len(get_events_calls) >= 1, (
             "Should have made at least one GET call to /events/search "
             "to fetch initial events"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_llm_completion_log_callback_writes_utf8(self, mock_ws_client, tmp_path):
+        llm = LLM(
+            model="gpt-4o-mini",
+            api_key=SecretStr("test-key"),
+            log_completions=True,
+            log_completions_folder=str(tmp_path),
+        )
+        agent = Agent(llm=llm, tools=[])
+        conversation_id = str(uuid.uuid4())
+        self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=agent, workspace=self.workspace)
+        callback = conversation._create_llm_completion_log_callback()
+
+        real_open = open
+        open_calls = []
+
+        def capture_open(*args, **kwargs):
+            open_calls.append((args, kwargs))
+            return real_open(*args, **kwargs)
+
+        event = LLMCompletionLogEvent(
+            filename="completion.json",
+            log_data='{"message": "hello 🔐"}',
+            usage_id=llm.usage_id,
+        )
+        with patch("builtins.open", side_effect=capture_open):
+            callback(event)
+
+        assert open_calls
+        assert open_calls[0][1]["encoding"] == "utf-8"
+        assert (tmp_path / "completion.json").read_text(encoding="utf-8") == (
+            event.log_data
         )
 
     @patch(
