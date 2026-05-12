@@ -1105,9 +1105,7 @@ def load_public_skills(
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
-    logger.info(
-        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
-    )
+    logger.info("Loaded %d public skills", len(all_skills))
     return all_skills
 
 

@@ -90,15 +90,66 @@ def _append_worktree_guidance(
     return agent.model_copy(update={"agent_context": updated_context})
 
 
-def _get_worktree_start_point(repo_root: Path) -> str:
+def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
     try:
-        current_branch = run_git_command(
-            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"],
+        run_git_command(["git", "remote", "get-url", remote], repo_root)
+    except GitCommandError:
+        return False
+    return True
+
+
+def _local_branch_exists(repo_root: Path, branch: str) -> bool:
+    try:
+        run_git_command(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
             repo_root,
         )
     except GitCommandError:
-        return "HEAD"
-    return current_branch if current_branch and current_branch != "HEAD" else "HEAD"
+        return False
+    return True
+
+
+def _get_worktree_start_point(repo_root: Path) -> str:
+    """Resolve the base ref a new conversation worktree should be created from.
+
+    Policy (in order):
+      1. ``origin/<default_branch>`` if an ``origin`` remote is configured.
+         ``git fetch origin`` is run first so the worktree starts from the
+         latest remote tip; the default branch is resolved via
+         ``refs/remotes/origin/HEAD``.
+      2. Local ``main`` if there is no usable remote default but ``main``
+         exists locally.
+      3. Local ``master`` if neither remote default nor local ``main`` is
+         available.
+      4. Fall back to ``HEAD`` only when none of the above applies, so worktree
+         creation still succeeds on freshly initialized repos.
+    """
+    if _has_git_remote(repo_root):
+        try:
+            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+        except GitCommandError as exc:
+            logger.warning(
+                "git fetch origin failed while choosing worktree start point "
+                "for %s; using cached refs. Error: %s",
+                repo_root,
+                exc,
+            )
+        try:
+            ref = run_git_command(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                repo_root,
+            )
+        except GitCommandError:
+            ref = ""
+        prefix = "refs/remotes/origin/"
+        if ref.startswith(prefix):
+            return f"origin/{ref[len(prefix) :]}"
+
+    if _local_branch_exists(repo_root, "main"):
+        return "main"
+    if _local_branch_exists(repo_root, "master"):
+        return "master"
+    return "HEAD"
 
 
 def _create_conversation_worktree(
@@ -594,9 +645,9 @@ class ConversationService:
                     # tools
             if request.tool_module_qualnames:
                 logger.info(
-                    f"Dynamically registered {len(request.tool_module_qualnames)} "
-                    f"tools for conversation {conversation_id}: "
-                    f"{list(request.tool_module_qualnames.keys())}"
+                    "Dynamically registered %d tools for conversation %s",
+                    len(request.tool_module_qualnames),
+                    conversation_id,
                 )
 
         # Register subagent definitions forwarded from the client
@@ -762,12 +813,13 @@ class ConversationService:
 
         updated_fields = []
         if request.title is not None:
-            updated_fields.append(f"title: {request.title}")
+            updated_fields.append("title")
         if request.tags is not None:
-            updated_fields.append(f"tags: {request.tags}")
+            updated_fields.append("tags")
         logger.info(
-            f"Successfully updated conversation {conversation_id} "
-            f"with {', '.join(updated_fields)}"
+            "Successfully updated conversation %s (%s)",
+            conversation_id,
+            ", ".join(updated_fields),
         )
         return True
 

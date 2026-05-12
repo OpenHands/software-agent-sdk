@@ -365,11 +365,7 @@ class ConversationState(OpenHandsModel):
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
 
-            logger.info(
-                f"Resumed conversation {state.id} from persistent storage.\n"
-                f"State: {state.model_dump(exclude={'agent'})}\n"
-                f"Agent: {state.agent.model_dump_succint()}"
-            )
+            logger.info("Resumed conversation %s from persistent storage", state.id)
             return state
 
         # ---- Fresh path ----
@@ -394,11 +390,7 @@ class ConversationState(OpenHandsModel):
 
         state._save_base_state(file_store)  # initial snapshot
         state._autosave_enabled = True
-        logger.info(
-            f"Created new conversation {state.id}\n"
-            f"State: {state.model_dump(exclude={'agent'})}\n"
-            f"Agent: {state.agent.model_dump_succint()}"
-        )
+        logger.info("Created new conversation %s", state.id)
         return state
 
     # ===== Auto-persist base on public field changes =====

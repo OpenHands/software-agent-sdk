@@ -477,10 +477,10 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
         # expansion with per-conversation secrets. Only SKILL_ROOT is expanded now.
         config = load_mcp_config(mcp_json, skill_root=plugin_dir, expand_defaults=False)
         if config and "mcpServers" in config:
-            server_names = list(config["mcpServers"].keys())
             logger.info(
-                f"Loaded MCP config from {mcp_json} "
-                f"with {len(server_names)} server(s): {server_names}"
+                "Loaded MCP config from %s with %d server(s)",
+                mcp_json,
+                len(config["mcpServers"]),
             )
         return config
     except Exception as e:

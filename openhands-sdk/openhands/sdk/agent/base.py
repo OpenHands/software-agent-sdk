@@ -473,16 +473,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 result = future.result()
                 tools.extend(result)
 
-        logger.info(
-            f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
-        )
+        logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            logger.info(
-                f"Filtered to {len(tools)} tools after applying regex filter: "
-                f"{[tool.name for tool in tools]}",
-            )
+            logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
