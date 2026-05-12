@@ -130,6 +130,7 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
 - **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
 - **Secret Serialization**: Fields that carry secrets must use `serialize_secret()` from `openhands.sdk.utils.pydantic_secrets`. For `dict[str, str]` secret fields, wrap each value in `SecretStr` and call `serialize_secret` per value. Do not hand-roll redaction logic (e.g. custom sentinels or inline `expose_secrets` checks) in field serializers
+- **Info-Log Payloads**: `logger.info(...)` must not dump objects, dicts, or variable-length lists — see [Logging Hygiene](#logging-hygiene)
 
 ## Event Type Deprecation - Critical Review Checkpoint
 
@@ -220,6 +221,12 @@ When reviewing server endpoints that create conversations or persistent artifact
 1. Identify the "point of no return" where state is written to disk.
 2. Check that subsequent operations are wrapped in try/except with cleanup.
 3. For client-supplied IDs, verify there's a duplicate check before creating state (return 409 Conflict if taken).
+
+### Logging Hygiene
+
+`logger.info(...)` must not interpolate `model_dump(...)`, `.json()`, `to_dict()`, a list/dict of tool/skill/server names, or arbitrary user-supplied values. Log a count and/or id; move full payloads to `logger.debug(...)`.
+
+When reviewing a new or changed `logger.info(...)` call: if any interpolated value is an object, a dict, or a list whose size scales with load (tools, skills, conversations, requests), flag it.
 
 ## What NOT to Comment On
 
