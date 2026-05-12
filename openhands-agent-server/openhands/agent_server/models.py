@@ -8,10 +8,11 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM
+from openhands.sdk import LLM, Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
+    ACPEnabledAgent as ACPEnabledAgent,
     SendMessageRequest as SendMessageRequest,
     StartACPConversationRequest as StartACPConversationRequest,
     StartConversationRequest as StartConversationRequest,
@@ -188,14 +189,34 @@ class _ConversationInfoBase(BaseModel):
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
+    agent: Agent = Field(
+        ...,
+        description=(
+            "The legacy v1 agent configuration. "
+            "This schema remains pinned to the standard Agent contract."
+        ),
+    )
+
+
+class ACPConversationInfo(_ConversationInfoBase):
+    """Conversation info that supports ACP-capable agent configs."""
+
     agent: AgentBase = Field(
         ...,
-        description="The agent running in the conversation.",
+        description=(
+            "The agent running in the conversation. "
+            "Supports both Agent and ACPAgent payloads."
+        ),
     )
 
 
 class ConversationPage(BaseModel):
-    items: list[ConversationInfo]
+    items: list[ACPConversationInfo | ConversationInfo]
+    next_page_id: str | None = None
+
+
+class ACPConversationPage(BaseModel):
+    items: list[ACPConversationInfo]
     next_page_id: str | None = None
 
 

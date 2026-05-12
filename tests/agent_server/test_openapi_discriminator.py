@@ -186,14 +186,24 @@ def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
     assert "agent" not in request.get("required", [])
 
     response_schema = schemas["ConversationInfo"]
+    assert response_schema["properties"]["agent"]["$ref"] == (
+        "#/components/schemas/Agent-Output"
+    )
+
+    acp_response_schema = schemas["ACPConversationInfo"]
     response_agent_schema = schemas[
-        response_schema["properties"]["agent"]["$ref"].split("/")[-1]
+        acp_response_schema["properties"]["agent"]["$ref"].split("/")[-1]
     ]
     assert "oneOf" in response_agent_schema
     response_refs = {variant["$ref"] for variant in response_agent_schema["oneOf"]}
     assert "#/components/schemas/Agent-Output" in response_refs
     assert "#/components/schemas/ACPAgent-Output" in response_refs
-    assert "ACPConversationInfo" not in schemas
+
+    page_schema = schemas["ConversationPage"]
+    page_items = page_schema["properties"]["items"]["items"]
+    page_refs = {variant["$ref"] for variant in page_items["anyOf"]}
+    assert "#/components/schemas/ConversationInfo" in page_refs
+    assert "#/components/schemas/ACPConversationInfo" in page_refs
 
     assert "/api/v2/conversations" not in openapi_schema["paths"]
     assert "/api/conversations" in openapi_schema["paths"]

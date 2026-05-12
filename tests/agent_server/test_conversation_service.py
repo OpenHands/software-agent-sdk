@@ -24,6 +24,7 @@ from openhands.agent_server.conversation_service import (
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -1398,6 +1399,9 @@ class TestConversationServiceStartConversation:
                 conversation_id=custom_id,
             )
 
+            # Reattaching by conversation_id returns the stored conversation contract
+            # so callers can resume ACP conversations through the unified endpoint
+            # even if the new request carries a regular Agent config.
             with patch.object(
                 conversation_service, "_start_event_service"
             ) as mock_start:
@@ -1407,7 +1411,7 @@ class TestConversationServiceStartConversation:
                 ) = await conversation_service.start_conversation(request)
 
                 assert is_new is False
-                assert isinstance(conversation_info, ConversationInfo)
+                assert isinstance(conversation_info, ACPConversationInfo)
                 assert conversation_info.agent.kind == "ACPAgent"
                 mock_start.assert_not_called()
 

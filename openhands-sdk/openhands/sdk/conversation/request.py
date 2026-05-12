@@ -8,13 +8,13 @@ agent-server.
 
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
-from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent  # noqa: F401
-from openhands.sdk.agent.agent import Agent as Agent  # noqa: F401
+from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
+from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.hooks import HookConfig
@@ -27,7 +27,19 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
+
+
+# ---------------------------------------------------------------------------
+# Helper type alias
+# ---------------------------------------------------------------------------
+
+ACPEnabledAgent = Annotated[
+    Annotated[Agent, Tag("Agent")] | Annotated[ACPAgent, Tag("ACPAgent")],
+    Discriminator(kind_of),
+]
+"""Discriminated union: either a regular Agent or an ACP-capable Agent."""
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +216,8 @@ class StartConversationRequest(BaseModel):
             ).create_agent()
         elif isinstance(payload.get("agent"), dict):
             agent_payload = dict(payload["agent"])
-            agent_payload.setdefault("kind", "Agent")
+            if "kind" not in agent_payload and "llm" in agent_payload:
+                agent_payload["kind"] = "Agent"
             payload["agent"] = agent_payload
         return payload
 

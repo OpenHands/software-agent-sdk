@@ -22,6 +22,7 @@ from openhands.agent_server._secrets_exposure import (
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    ACPConversationInfo,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -115,7 +116,7 @@ async def count_conversations(
 async def get_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationInfo:
+) -> ACPConversationInfo | ConversationInfo:
     """Given an id, get a conversation"""
     conversation = await conversation_service.get_conversation(conversation_id)
     if conversation is None:
@@ -148,7 +149,7 @@ async def get_conversation_agent_final_response(
 async def batch_get_conversations(
     ids: Annotated[list[UUID], Query()],
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> list[ConversationInfo | None]:
+) -> list[ACPConversationInfo | ConversationInfo | None]:
     """Get a batch of conversations given their ids, returning null for
     any missing item"""
     assert len(ids) < 100
@@ -166,7 +167,7 @@ async def start_conversation(
     ],
     response: Response,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationInfo:
+) -> ACPConversationInfo | ConversationInfo:
     """Start a conversation in the local environment."""
     info, is_new = await conversation_service.start_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
@@ -408,7 +409,7 @@ async def fork_conversation(
     conversation_id: UUID,
     request: Annotated[ForkConversationRequest, Body()] = ForkConversationRequest(),  # noqa: B008
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> ConversationInfo:
+) -> ACPConversationInfo | ConversationInfo:
     """Fork a conversation, deep-copying its event history.
 
     The fork starts in ``idle`` status with a fresh event loop.
