@@ -1,6 +1,11 @@
 from unittest.mock import patch
 
+import httpx
 import pytest
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
@@ -49,6 +54,61 @@ def _has_input_image(item: dict) -> bool:
         if isinstance(c, dict) and c.get("type") == "input_image":
             return True
     return False
+
+
+def _collect_input_image_urls(items: list[dict]) -> list[str]:
+    urls: list[str] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if (
+                isinstance(content, dict)
+                and content.get("type") == "input_image"
+                and isinstance(content.get("image_url"), str)
+            ):
+                urls.append(content["image_url"])
+    return urls
+
+
+def _create_mock_chat_response() -> ModelResponse:
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content="done", role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion",
+        system_fingerprint="test",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+def _create_mock_responses_response() -> ResponsesAPIResponse:
+    output = ResponseOutputMessage.model_construct(
+        id="m1",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[ResponseOutputText(type="output_text", text="done", annotations=[])],
+    )
+    return ResponsesAPIResponse(
+        id="r1",
+        created_at=0,
+        output=[output],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+        instructions=None,
+        status="completed",
+    )
 
 
 @pytest.mark.parametrize(
@@ -167,6 +227,8 @@ def test_message_with_image_in_responses_does_not_include_input_image(
             )
         ]
     )
+    assert instructions is None or isinstance(instructions, str)
+    assert not any(_has_input_image(item) for item in input_items)
 
 
 @pytest.mark.parametrize(
@@ -192,3 +254,105 @@ def test_responses_serializes_images_when_vision_supported(model):
     assert instructions is None or isinstance(instructions, str)
 
     assert any(_has_input_image(item) for item in input_items)
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch("openhands.sdk.llm.llm.supports_vision", return_value=True)
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_moonshot_completion_inlines_remote_image_urls(
+    mock_completion, _mock_supports_vision, _mock_model_info, monkeypatch
+):
+    remote_url = "https://example.com/image.png"
+    download_calls: list[str] = []
+
+    def fake_get(url: str, *, follow_redirects: bool, timeout: float) -> httpx.Response:
+        download_calls.append(url)
+        assert follow_redirects is True
+        assert timeout == 10.0
+        return httpx.Response(
+            200,
+            content=b"png-bytes",
+            headers={"content-type": "image/png"},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.httpx.get", fake_get)
+    mock_completion.return_value = _create_mock_chat_response()
+
+    llm = LLM(
+        model="litellm_proxy/moonshot/kimi-k2.6",
+        api_key=SecretStr("k"),
+        usage_id="t",
+    )
+    llm._litellm_provider = "moonshot"
+
+    llm.completion(
+        [
+            Message(
+                role="user",
+                content=[
+                    TextContent(text="see image"),
+                    ImageContent(image_urls=[remote_url]),
+                ],
+            )
+        ]
+    )
+
+    image_parts = _collect_image_url_parts(
+        mock_completion.call_args.kwargs["messages"][0]
+    )
+    assert len(image_parts) == 1
+    assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert download_calls == [remote_url]
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch("openhands.sdk.llm.llm.supports_vision", return_value=True)
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_moonshot_responses_inlines_remote_image_urls(
+    mock_responses, _mock_supports_vision, _mock_model_info, monkeypatch
+):
+    remote_url = "https://example.com/image.png"
+
+    def fake_get(url: str, *, follow_redirects: bool, timeout: float) -> httpx.Response:
+        assert url == remote_url
+        assert follow_redirects is True
+        assert timeout == 10.0
+        return httpx.Response(
+            200,
+            content=b"png-bytes",
+            headers={"content-type": "image/png"},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.httpx.get", fake_get)
+    mock_responses.return_value = _create_mock_responses_response()
+
+    llm = LLM(
+        model="litellm_proxy/moonshot/kimi-k2.6",
+        api_key=SecretStr("k"),
+        usage_id="t",
+    )
+    llm._litellm_provider = "moonshot"
+
+    llm.responses(
+        [
+            Message(
+                role="user",
+                content=[
+                    TextContent(text="see image"),
+                    ImageContent(image_urls=[remote_url]),
+                ],
+            )
+        ]
+    )
+
+    image_urls = _collect_input_image_urls(mock_responses.call_args.kwargs["input"])
+    assert len(image_urls) == 1
+    assert image_urls[0].startswith("data:image/png;base64,")
