@@ -948,8 +948,9 @@ class ConversationService:
         """Single background task that renews leases for all active conversations.
 
         Replaces N per-conversation renewal tasks with one centralized loop,
-        reducing asyncio task overhead and spreading file-lock acquisitions
-        into a single sequential pass.
+        reducing asyncio task overhead.  Each renewal involves synchronous
+        file I/O (FileLock + read + write), so individual calls are offloaded
+        via ``asyncio.to_thread`` to avoid blocking the event loop.
         """
         try:
             while True:
@@ -958,7 +959,7 @@ class ConversationService:
                 if event_services is None:
                     return
                 for event_service in list(event_services.values()):
-                    event_service.renew_lease()
+                    await asyncio.to_thread(event_service.renew_lease)
         except asyncio.CancelledError:
             raise
 
