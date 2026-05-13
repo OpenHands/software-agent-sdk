@@ -273,6 +273,52 @@ async def test_event_services_use_centralized_lease_renewal(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_centralized_lease_renewal_invokes_renew(tmp_path):
+    """The centralized loop calls renew_lease() on every active service."""
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    with patch(
+        "openhands.agent_server.conversation_service.LEASE_RENEW_INTERVAL_SECONDS",
+        0.05,
+    ):
+        async with ConversationService(conversations_dir=conversations_dir) as svc:
+            info1, _ = await svc.start_conversation(request)
+            info2, _ = await svc.start_conversation(request)
+            assert svc._event_services is not None
+            es1 = svc._event_services[info1.id]
+            es2 = svc._event_services[info2.id]
+
+            renew_calls: dict[str, int] = {"es1": 0, "es2": 0}
+            original_renew1 = es1.renew_lease
+            original_renew2 = es2.renew_lease
+
+            def counting_renew1():
+                renew_calls["es1"] += 1
+                original_renew1()
+
+            def counting_renew2():
+                renew_calls["es2"] += 1
+                original_renew2()
+
+            es1.renew_lease = counting_renew1  # type: ignore[method-assign]
+            es2.renew_lease = counting_renew2  # type: ignore[method-assign]
+
+            # Wait for at least 2 renewal cycles
+            await asyncio.sleep(0.15)
+
+            assert renew_calls["es1"] >= 1, "renew_lease not called on es1"
+            assert renew_calls["es2"] >= 1, "renew_lease not called on es2"
+
+
+@pytest.mark.asyncio
 async def test_event_services_share_dedicated_run_executor(tmp_path):
     """Event services created by ConversationService should share a single
     dedicated thread pool for conversation.run() calls."""
