@@ -130,6 +130,22 @@ class Config(BaseModel):
             "The location of the directory where conversations and events are stored."
         ),
     )
+    finished_conversation_idle_ttl_seconds: float | None = Field(
+        default=3600.0,
+        gt=0,
+        description=(
+            "Evict terminal conversations from memory after this many seconds "
+            "without activity. Set to null to disable background eviction."
+        ),
+    )
+    finished_conversation_gc_interval_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "How often the background conversation eviction task scans for "
+            "terminal conversations that have exceeded the idle TTL."
+        ),
+    )
     bash_events_dir: Path = Field(
         default=Path("workspace/bash_events"),
         description=(

@@ -4,7 +4,7 @@ import socket
 import tempfile
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -284,6 +284,126 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
             "Restart failed to pick up an existing conversation whose lease "
             "was left orphaned by a non-graceful shutdown."
         )
+
+
+@pytest.mark.asyncio
+async def test_finished_conversation_eviction_keeps_info_and_rehydrates(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        finished_conversation_idle_ttl_seconds=60.0,
+        finished_conversation_gc_interval_seconds=3600.0,
+    ) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        assert service._event_services is not None
+
+        event_service = service._event_services[conversation_info.id]
+        state = await event_service.get_state()
+        state.execution_status = ConversationExecutionStatus.FINISHED
+        event_service.stored.updated_at = datetime.now(UTC) - timedelta(hours=2)
+
+        evicted_ids = await service._evict_finished_conversations_once()
+        assert evicted_ids == [conversation_info.id]
+        assert conversation_info.id not in service._event_services
+
+        search_result = await service.search_conversations()
+        assert [item.id for item in search_result.items] == [conversation_info.id]
+        assert await service.count_conversations() == 1
+
+        persisted_info = await service.get_conversation(conversation_info.id)
+        assert persisted_info is not None
+        assert (
+            persisted_info.execution_status == ConversationExecutionStatus.FINISHED
+        )
+
+        rehydrated_service = await service.get_event_service(conversation_info.id)
+        assert rehydrated_service is not None
+        assert conversation_info.id in service._event_services
+
+
+@pytest.mark.asyncio
+async def test_eviction_skips_non_terminal_conversations(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        finished_conversation_idle_ttl_seconds=60.0,
+        finished_conversation_gc_interval_seconds=3600.0,
+    ) as service:
+        conversation_info, _ = await service.start_conversation(request)
+        assert service._event_services is not None
+
+        event_service = service._event_services[conversation_info.id]
+        state = await event_service.get_state()
+        state.execution_status = ConversationExecutionStatus.IDLE
+        event_service.stored.updated_at = datetime.now(UTC) - timedelta(hours=2)
+
+        evicted_ids = await service._evict_finished_conversations_once()
+        assert evicted_ids == []
+        assert conversation_info.id in service._event_services
+
+
+@pytest.mark.asyncio
+async def test_startup_leaves_expired_terminal_conversation_evicted(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        finished_conversation_idle_ttl_seconds=60.0,
+        finished_conversation_gc_interval_seconds=3600.0,
+    ) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        assert primary._event_services is not None
+
+        event_service = primary._event_services[conversation_info.id]
+        state = await event_service.get_state()
+        state.execution_status = ConversationExecutionStatus.FINISHED
+        event_service.stored.updated_at = datetime.now(UTC) - timedelta(hours=2)
+        await event_service.save_meta()
+
+    async with ConversationService(
+        conversations_dir=conversations_dir,
+        finished_conversation_idle_ttl_seconds=60.0,
+        finished_conversation_gc_interval_seconds=3600.0,
+    ) as secondary:
+        assert secondary._event_services is not None
+        assert conversation_info.id not in secondary._event_services
+        assert await secondary.count_conversations() == 1
+
+        persisted_info = await secondary.get_conversation(conversation_info.id)
+        assert persisted_info is not None
+        assert (
+            persisted_info.execution_status == ConversationExecutionStatus.FINISHED
+        )
+
+        rehydrated_service = await secondary.get_event_service(conversation_info.id)
+        assert rehydrated_service is not None
+        assert conversation_info.id in secondary._event_services
 
 
 class TestConversationServiceSearchConversations:
