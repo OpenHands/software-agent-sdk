@@ -1,15 +1,4 @@
-"""Tree-sitter-bash backed command splitting and escape utilities.
-
-Replaces the previous bashlex implementation. bashlex is GPLv3+ and
-unmaintained; tree-sitter and tree-sitter-bash are MIT-licensed and
-recover gracefully on malformed input (no exception path needed).
-
-Public API and fallback semantics are preserved: when the parse contains
-``ERROR`` nodes, the input is returned unchanged — same behavior the
-terminal session relied on with bashlex.
-"""
-
-from __future__ import annotations
+"""Command splitting and escape utilities backed by tree-sitter-bash."""
 
 import re
 
