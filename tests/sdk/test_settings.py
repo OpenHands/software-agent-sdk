@@ -810,6 +810,46 @@ def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
     assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
 
 
+def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
+    """ACP env persistence should mirror other secret-bearing settings.
+
+    The on-disk path encrypts values with a cipher, and loading with the same
+    cipher must recover plaintext so ACP agents receive usable environment
+    variables after settings are read back.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
+
+    assert encrypted_value.startswith("gAAAA")
+    assert "sk-real-secret" not in json.dumps(dumped)
+
+    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    restored_from_persisted = AgentSettings.from_persisted(
+        dumped, context={"cipher": cipher}
+    )
+    assert isinstance(restored_from_persisted, ACPAgentSettings)
+    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    legacy_plaintext = ACPAgentSettings.model_validate(
+        {
+            "acp_command": ["echo", "test"],
+            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
+        },
+        context={"cipher": cipher},
+    )
+    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
+
+
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     mcp_config = MCPConfig.model_validate(
         {

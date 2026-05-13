@@ -209,11 +209,14 @@ class StartConversationRequest(BaseModel):
             return data
         payload = dict(data)
         if payload.get("agent") is None and payload.get("agent_settings") is not None:
-            from openhands.sdk.settings.model import validate_agent_settings
+            from openhands.sdk.settings.model import AgentSettings
 
-            payload["agent"] = validate_agent_settings(
-                payload["agent_settings"]
-            ).create_agent()
+            try:
+                payload["agent"] = AgentSettings.from_persisted(
+                    payload["agent_settings"]
+                ).create_agent()
+            except (TypeError, ValueError) as exc:
+                raise ValueError(str(exc)) from exc
         elif isinstance(payload.get("agent"), dict):
             agent_payload = dict(payload["agent"])
             if "kind" not in agent_payload and "llm" in agent_payload:

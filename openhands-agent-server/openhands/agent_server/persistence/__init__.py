@@ -7,6 +7,7 @@ See: openhands.sdk.settings.api_models
 """
 
 from openhands.agent_server.persistence.models import (
+    PERSISTED_SETTINGS_SCHEMA_VERSION,
     SECRET_NAME_PATTERN,
     CustomSecret,
     PersistedSettings,
@@ -26,6 +27,7 @@ from openhands.agent_server.persistence.store import (
 
 __all__ = [
     # Constants
+    "PERSISTED_SETTINGS_SCHEMA_VERSION",
     "SECRET_NAME_PATTERN",
     # Models
     "CustomSecret",
