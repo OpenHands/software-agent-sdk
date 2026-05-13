@@ -28,8 +28,8 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
 - **Complete Diff Upfront**: The agent receives a per-file diff payload in the initial message, preceded by a `Files Changed` manifest listing every file in the PR (so the agent always knows the full file set even when individual patches are abbreviated)
-  - Each file's patch is capped at `MAX_PER_FILE_PATCH` (12,000 chars) so a single large file can't starve smaller ones
-  - The combined patch block is capped at `MAX_TOTAL_DIFF` (150,000 chars); files past the cap appear in the manifest but their patch is replaced with a `[patch omitted: ...]` marker
+  - Each file's patch is capped at `MAX_PER_FILE_PATCH` (8,000 chars) so a single large file can't starve smaller ones
+  - The combined patch block is capped at `MAX_TOTAL_DIFF` (100,000 chars); files past the cap appear in the manifest but their patch is replaced with a `[patch omitted: ...]` marker
   - The agent has full repository access and is instructed to read truncated files directly from the workspace rather than treating them as missing
 - **Comprehensive Analysis**: Analyzes code changes in context of the entire repository
 - **Detailed Feedback**: Provides structured review comments covering:
