@@ -29,6 +29,7 @@ from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_BRANCH,
     PUBLIC_SKILLS_REPO,
+    _invalidate_public_skills_cache,
     load_skills_from_dir,
 )
 from openhands.sdk.skills.utils import (
@@ -380,6 +381,7 @@ def sync_public_skills() -> tuple[bool, str]:
         )
 
         if result:
+            _invalidate_public_skills_cache()
             return (True, "Skills repository synced successfully")
         else:
             return (False, "Failed to sync skills repository")
