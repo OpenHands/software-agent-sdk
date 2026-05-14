@@ -23,10 +23,10 @@ from pydantic import (
 )
 
 from openhands.sdk.settings import (
-    AgentSettings,
     AgentSettingsConfig,
     ConversationSettings,
     default_agent_settings,
+    validate_agent_settings,
 )
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -139,7 +139,7 @@ class PersistedSettings(BaseModel):
                     agent_update,
                 )
                 try:
-                    new_agent = AgentSettings.from_persisted(agent_merged)
+                    new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original
                     # exception may contain secret values in Pydantic errors
@@ -218,7 +218,7 @@ class PersistedSettings(BaseModel):
         ensuring forward compatibility when loading settings files saved with
         older schema versions.
 
-        Agent settings are normalized through ``AgentSettings.from_persisted``
+        Agent settings are normalized through ``validate_agent_settings``
         so the same migration entry point is used for settings files and direct
         SDK callers. The validation context is forwarded so cipher-based secret
         decryption still works during the nested settings validation.
@@ -229,7 +229,7 @@ class PersistedSettings(BaseModel):
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
             coerced = _coerce_dict_secrets(agent_settings)
-            data["agent_settings"] = AgentSettings.from_persisted(
+            data["agent_settings"] = validate_agent_settings(
                 coerced,
                 context=info.context,
             )

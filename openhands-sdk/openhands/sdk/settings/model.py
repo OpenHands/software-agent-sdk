@@ -1316,12 +1316,21 @@ def validate_agent_settings(
     *,
     context: Mapping[str, Any] | None = None,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
-    """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
+    """Load and validate an agent-settings payload.
 
-    This is the drop-in replacement for the old
-    ``AgentSettings.model_validate(...)`` classmethod.
+    Persisted payloads are migrated to the current schema version before
+    validation, including legacy ``agent_kind: "llm"`` payloads from before the
+    ``OpenHandsAgentSettings`` rename.
     """
-    return _AGENT_SETTINGS_ADAPTER.validate_python(data, context=context)
+    if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
+        return data
+    payload = _apply_persisted_migrations(
+        data,
+        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+        migrations=_AGENT_SETTINGS_MIGRATIONS,
+        payload_name="AgentSettings",
+    )
+    return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
 
 
 class AgentSettings(LLMAgentSettings):
@@ -1363,13 +1372,7 @@ class AgentSettings(LLMAgentSettings):
         context: Mapping[str, Any] | None = None,
     ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
         """Load persisted agent settings, applying any schema migrations."""
-        payload = _apply_persisted_migrations(
-            data,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
-        return validate_agent_settings(payload, context=context)
+        return validate_agent_settings(data, context=context)
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         from openhands.sdk.utils.deprecation import warn_deprecated
@@ -1409,7 +1412,7 @@ def create_agent_from_settings(
 
 
 def export_agent_settings_schema() -> SettingsSchema:
-    """Export a combined schema for the :data:`AgentSettings` union.
+    """Export a combined schema for the :data:`AgentSettingsConfig` union.
 
     Walks both variants, tags each non-shared section with its variant,
     and returns a single :class:`SettingsSchema`. The discriminator

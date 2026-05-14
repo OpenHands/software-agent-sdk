@@ -332,7 +332,7 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
         {"agent_kind": "llm", "llm": {"model": "legacy-model"}}
     )
     assert isinstance(legacy_llm, OpenHandsAgentSettings)
-    assert legacy_llm.agent_kind == "llm"
+    assert legacy_llm.agent_kind == "openhands"
     assert legacy_llm.llm.model == "legacy-model"
 
     acp = validate_agent_settings(
@@ -346,8 +346,8 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
     assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
-    settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
+def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
+    settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == 3
@@ -355,8 +355,8 @@ def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
     assert settings.llm.model == "test-model"
 
 
-def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
-    settings = AgentSettings.from_persisted(
+def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "acp",
@@ -371,10 +371,10 @@ def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
+def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
     the canonical ``'openhands'`` discriminator on read."""
-    settings = AgentSettings.from_persisted(
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "llm",
@@ -388,8 +388,8 @@ def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
     assert settings.llm.model == "legacy-model"
 
 
-def test_agent_settings_from_persisted_drops_legacy_verification_fields() -> None:
-    settings = AgentSettings.from_persisted(
+def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
+    settings = validate_agent_settings(
         {
             "schema_version": 2,
             "agent_kind": "openhands",
@@ -409,9 +409,9 @@ def test_agent_settings_from_persisted_drops_legacy_verification_fields() -> Non
     assert "security_analyzer" not in verification
 
 
-def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
+def test_validate_agent_settings_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported version 3"):
-        AgentSettings.from_persisted({"schema_version": 4, "llm": {"model": "m"}})
+        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
@@ -834,7 +834,7 @@ def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
     restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
     assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
 
-    restored_from_persisted = AgentSettings.from_persisted(
+    restored_from_persisted = validate_agent_settings(
         dumped, context={"cipher": cipher}
     )
     assert isinstance(restored_from_persisted, ACPAgentSettings)
