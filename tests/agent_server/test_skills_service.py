@@ -429,3 +429,124 @@ class TestSkillLoadResult:
 
         assert result.skills == []
         assert result.sources == {}
+
+
+class TestMarketplaceCatalogCache:
+    """Tests for TTL caching in service_get_marketplace_catalog."""
+
+    def setup_method(self):
+        """Reset the module-level cache before each test."""
+        import openhands.agent_server.skills_service as svc
+
+        svc._catalog_cache = None
+
+    def test_cache_miss_calls_fetch(self):
+        """First call (cold cache) fetches from the repository."""
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            result = service_get_marketplace_catalog()
+
+        mock_fetch.assert_called_once()
+        assert len(result) == 1
+        assert result[0].name == "github"
+        assert result[0].installed is False
+
+    def test_cache_hit_skips_fetch(self):
+        """Second call within TTL reuses cached entries without another fetch."""
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            service_get_marketplace_catalog()
+            service_get_marketplace_catalog()
+
+        mock_fetch.assert_called_once()  # only one fetch despite two calls
+
+    def test_installed_status_always_fresh(self):
+        """installed flag is derived fresh on every call, not from the cache."""
+        from unittest.mock import MagicMock
+
+        from openhands.agent_server.skills_service import (
+            InstalledSkillInfo,
+            service_get_marketplace_catalog,
+        )
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        installed_skill = MagicMock(spec=InstalledSkillInfo)
+        installed_skill.name = "github"
+
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ),
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+            ) as mock_installed,
+        ):
+            # First call: skill not installed
+            mock_installed.return_value = []
+            result1 = service_get_marketplace_catalog()
+            assert result1[0].installed is False
+
+            # Second call (cache hit): skill now installed
+            mock_installed.return_value = [installed_skill]
+            result2 = service_get_marketplace_catalog()
+            assert result2[0].installed is True
+
+        # service_list_installed_skills called twice (once per request)
+        assert mock_installed.call_count == 2
+
+    def test_cache_expires_after_ttl(self):
+        """After TTL expires, the next call fetches from the repository again."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            service_get_marketplace_catalog()
+            # Artificially expire the cache
+            assert svc._catalog_cache is not None
+            svc._catalog_cache = (
+                svc._catalog_cache[0] - svc._CATALOG_TTL_SECONDS - 1,
+                entries,
+            )
+            service_get_marketplace_catalog()
+
+        assert mock_fetch.call_count == 2  # fetched again after expiry

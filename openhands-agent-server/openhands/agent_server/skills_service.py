@@ -20,6 +20,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 
 from pydantic import BaseModel, ValidationError
 
@@ -555,6 +556,23 @@ class MarketplaceSkillInfo(BaseModel):
     installed: bool
 
 
+# ---------------------------------------------------------------------------
+# Marketplace catalog cache
+# ---------------------------------------------------------------------------
+# Each call to service_get_marketplace_catalog triggers a git fetch via
+# update_skills_repository, which is a network-bound operation that takes
+# multiple seconds. A short TTL cache avoids that hit on every tab open.
+#
+# Only the catalog structure (name, description, source) is cached; the
+# `installed` field is always derived fresh from the local FS so that
+# install/uninstall actions are reflected immediately.
+#
+# Type: (timestamp, list-of-(name, description, source)) or None
+_CatalogEntry = tuple[str, str | None, str]
+_catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
+_CATALOG_TTL_SECONDS = 300  # 5 minutes
+
+
 def service_get_marketplace_catalog(
     marketplace_path: str = DEFAULT_MARKETPLACE_PATH,
     installed_dir: Path | None = None,
@@ -563,6 +581,10 @@ def service_get_marketplace_catalog(
 
     Loads the marketplace JSON from the public extensions repository and
     enriches each entry with installation status.
+
+    The catalog structure (name, description, source) is cached for
+    _CATALOG_TTL_SECONDS to avoid a git fetch on every call. The
+    ``installed`` field is always resolved fresh from the local FS.
 
     Args:
         marketplace_path: Relative path to marketplace JSON file.
@@ -573,7 +595,36 @@ def service_get_marketplace_catalog(
     Returns:
         List of MarketplaceSkillInfo with skill details and installation status.
     """
-    # Ensure the public skills repository is cloned/updated
+    global _catalog_cache
+
+    now = monotonic()
+    if _catalog_cache is not None and now - _catalog_cache[0] < _CATALOG_TTL_SECONDS:
+        entries = _catalog_cache[1]
+    else:
+        entries = _fetch_catalog_entries(marketplace_path)
+        _catalog_cache = (now, entries)
+
+    # Always-fresh installed check — local FS scan, not a network call.
+    installed_names = {
+        s.name for s in service_list_installed_skills(installed_dir=installed_dir)
+    }
+    return [
+        MarketplaceSkillInfo(
+            name=name, description=desc, source=src, installed=name in installed_names
+        )
+        for name, desc, src in entries
+    ]
+
+
+def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
+    """Fetch marketplace catalog entries from the public extensions repository.
+
+    This is the slow path: it does a git fetch + reads the marketplace JSON.
+    Results are cached by the caller.
+
+    Returns:
+        List of (name, description, source) tuples, or an empty list on error.
+    """
     cache_dir = get_skills_cache_dir()
     repo_path = update_skills_repository(
         PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
@@ -583,7 +634,6 @@ def service_get_marketplace_catalog(
         logger.warning("Failed to access public skills repository")
         return []
 
-    # Load the marketplace manifest
     marketplace_file = repo_path / marketplace_path
     if not marketplace_file.exists():
         logger.warning(f"Marketplace file not found: {marketplace_file}")
@@ -603,19 +653,13 @@ def service_get_marketplace_catalog(
             logger.warning(f"Failed to load marketplace: {e}, {e2}")
             return []
 
-    # Get installed skill names for status check
-    installed_skills = service_list_installed_skills(installed_dir=installed_dir)
-    installed_names = {skill.name for skill in installed_skills}
-
     # Build catalog from plugins and skills.
     # Plugins take priority: if a name appears in both plugins and skills,
     # the plugin version is used (since plugins are added first).
-    catalog_dict: dict[str, MarketplaceSkillInfo] = {}
+    entries: dict[str, _CatalogEntry] = {}
 
     for plugin in marketplace.plugins:
-        # Resolve source URL
         source, ref, subpath = marketplace.resolve_plugin_source(plugin)
-
         # Build full source string for marketplace catalog.
         # Format: "github:owner/repo@ref/path" - the SDK's install_skill
         # can parse this format, so frontends can pass it directly to the
@@ -624,22 +668,14 @@ def service_get_marketplace_catalog(
             source = f"{source}@{ref}"
         if subpath:
             source = f"{source}/{subpath}"
+        entries[plugin.name] = (plugin.name, plugin.description, source)
 
-        catalog_dict[plugin.name] = MarketplaceSkillInfo(
-            name=plugin.name,
-            description=plugin.description,
-            source=source,
-            installed=plugin.name in installed_names,
-        )
-
-    # Also include standalone skills from the marketplace (if not already present)
     for skill_entry in marketplace.skills:
-        if skill_entry.name not in catalog_dict:
-            catalog_dict[skill_entry.name] = MarketplaceSkillInfo(
-                name=skill_entry.name,
-                description=skill_entry.description,
-                source=skill_entry.source,
-                installed=skill_entry.name in installed_names,
+        if skill_entry.name not in entries:
+            entries[skill_entry.name] = (
+                skill_entry.name,
+                skill_entry.description,
+                skill_entry.source,
             )
 
-    return list(catalog_dict.values())
+    return list(entries.values())
