@@ -1,5 +1,10 @@
 """ACP-capable conversation routes for the schema-sensitive endpoints."""
 
+# Deprecated REST contract: all /api/acp/conversations routes were deprecated
+# in v1.22.0 and are scheduled for removal in v1.27.0. The standard
+# FastAPI/OpenAPI deprecation marker for routes is ``deprecated=True`` on each
+# route decorator; keep matching docstring notices for CI deprecation checks.
+
 from typing import Annotated
 from uuid import UUID
 
@@ -53,7 +58,7 @@ START_ACP_CONVERSATION_EXAMPLES = [
 ]
 
 
-@conversation_router_acp.get("/search")
+@conversation_router_acp.get("/search", deprecated=True)
 async def search_acp_conversations(
     page_id: Annotated[
         str | None,
@@ -73,7 +78,11 @@ async def search_acp_conversations(
     ] = ConversationSortOrder.CREATED_AT_DESC,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationPage:
-    """Search conversations using the ACP-capable contract."""
+    """Search conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/search`` instead.
+    """
     assert limit > 0
     assert limit <= 100
     return await conversation_service.search_acp_conversations(
@@ -81,7 +90,7 @@ async def search_acp_conversations(
     )
 
 
-@conversation_router_acp.get("/count")
+@conversation_router_acp.get("/count", deprecated=True)
 async def count_acp_conversations(
     status: Annotated[
         ConversationExecutionStatus | None,
@@ -89,36 +98,49 @@ async def count_acp_conversations(
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
-    """Count conversations using the ACP-capable contract."""
-    return await conversation_service.count_acp_conversations(status)
+    """Count conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/count`` instead.
+    """
+    return await conversation_service.count_conversations(status)
 
 
 @conversation_router_acp.get(
     "/{conversation_id}",
     responses={404: {"description": "Item not found"}},
+    deprecated=True,
 )
 async def get_acp_conversation(
     conversation_id: UUID,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
-    """Get a conversation using the ACP-capable contract."""
+    """Get a conversation using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations/{conversation_id}`` instead.
+    """
     conversation = await conversation_service.get_acp_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     return conversation
 
 
-@conversation_router_acp.get("")
+@conversation_router_acp.get("", deprecated=True)
 async def batch_get_acp_conversations(
     ids: Annotated[list[UUID], Query()],
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> list[ACPConversationInfo | None]:
-    """Batch get conversations using the ACP-capable contract."""
+    """Batch get conversations using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations`` instead.
+    """
     assert len(ids) < 100
     return await conversation_service.batch_get_acp_conversations(ids)
 
 
-@conversation_router_acp.post("")
+@conversation_router_acp.post("", deprecated=True)
 async def start_acp_conversation(
     request: Annotated[
         StartACPConversationRequest,
@@ -127,7 +149,12 @@ async def start_acp_conversation(
     response: Response,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ACPConversationInfo:
-    """Start a conversation using the ACP-capable contract."""
+    """Start a conversation using the ACP-capable contract.
+
+    Deprecated since v1.22.0 and scheduled for removal in v1.27.0.
+    Use ``/api/conversations`` instead; it now accepts ACP agents and
+    ``agent_settings`` payloads.
+    """
     info, is_new = await conversation_service.start_acp_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
     return info

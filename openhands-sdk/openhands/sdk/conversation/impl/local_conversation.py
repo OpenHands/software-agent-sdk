@@ -1,4 +1,5 @@
 import atexit
+import contextlib
 import copy
 import uuid
 from collections.abc import Mapping
@@ -994,23 +995,20 @@ class LocalConversation(BaseConversation):
             self.agent.close()
         except Exception as e:
             logger.warning(f"Error closing agent: {e}")
-        if self.delete_on_close:
-            try:
-                tools_map = self.agent.tools_map
-            except (AttributeError, RuntimeError):
-                # Agent not initialized or partially constructed
-                return
-            for tool in tools_map.values():
-                try:
-                    executable_tool = tool.as_executable()
-                    executable_tool.executor.close()
-                except NotImplementedError:
-                    # Tool has no executor, skip it without erroring
-                    continue
-                except Exception as e:
-                    logger.warning(
-                        f"Error closing executor for tool '{tool.name}': {e}"
-                    )
+        # Always close tool executors — they hold runtime resources
+        # (subprocesses, connections, etc.) that must be released regardless
+        # of whether the conversation data is preserved (delete_on_close).
+        with contextlib.suppress(AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed → skip
+            for tool in self.agent.tools_map.values():
+                with contextlib.suppress(NotImplementedError):
+                    try:
+                        executable_tool = tool.as_executable()
+                        executable_tool.executor.close()
+                    except Exception as e:
+                        logger.warning(
+                            f"Error closing executor for tool '{tool.name}': {e}"
+                        )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.

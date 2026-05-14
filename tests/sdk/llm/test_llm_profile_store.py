@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM, LLM_PROFILE_SCHEMA_VERSION
 from openhands.sdk.llm.llm_profile_store import (
     LLMProfileStore,
     ProfileLimitExceeded,
@@ -119,6 +119,27 @@ def test_save_creates_file(profile_store: LLMProfileStore, sample_llm: LLM) -> N
 
     profile_path = profile_store.base_dir / "my_profile.json"
     assert profile_path.exists()
+
+
+def test_save_writes_profile_schema_version(
+    profile_store: LLMProfileStore, sample_llm: LLM
+) -> None:
+    profile_store.save("my_profile", sample_llm)
+
+    profile_path = profile_store.base_dir / "my_profile.json"
+    data = json.loads(profile_path.read_text())
+
+    assert data["schema_version"] == LLM_PROFILE_SCHEMA_VERSION
+
+
+def test_load_rejects_newer_profile_schema_version(
+    profile_store: LLMProfileStore,
+) -> None:
+    profile_path = profile_store.base_dir / "future.json"
+    profile_path.write_text(json.dumps({"schema_version": 2, "model": "test-model"}))
+
+    with pytest.raises(ValueError, match="newer than supported"):
+        profile_store.load("future")
 
 
 @pytest.mark.parametrize(

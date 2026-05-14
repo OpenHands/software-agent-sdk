@@ -267,6 +267,21 @@ jobs:
                   echo "📝 Regenerating poetry.lock..."
                   poetry lock
 
+                  # 2b. Regenerate enterprise/poetry.lock so its transitive SDK pins
+                  # match the root. enterprise/pyproject.toml depends on the root via
+                  # `openhands-ai = { path = "../", develop = true }`, but it keeps its
+                  # OWN poetry.lock that pins openhands-sdk/tools/agent-server. Without
+                  # this step the enterprise lockfile drifts behind (see PR #14409 that
+                  # had to be opened manually after PR #14350 missed it).
+                  # --no-cache invalidates the stale build of the path-installed
+                  # openhands-ai package; without it Poetry leaves the entries pinned
+                  # at the previous version.
+                  if [ -f "enterprise/poetry.lock" ] && [ -f "enterprise/pyproject.toml" ]; then
+                    echo "📝 Regenerating enterprise/poetry.lock..."
+                    (cd enterprise && poetry lock --no-cache)
+                    echo "✅ Updated enterprise/poetry.lock"
+                  fi
+
                   # 3. Update the version in sandbox_spec_service.py
                   echo "🔧 Updating AGENT_SERVER_IMAGE..."
                   SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
@@ -292,12 +307,16 @@ jobs:
 
                   # Commit and push
                   git add pyproject.toml poetry.lock "$SANDBOX_SPEC_FILE" "$PYPROJECT_FMT_CONFIG"
+                  if [ -f "enterprise/poetry.lock" ]; then
+                    git add enterprise/poetry.lock
+                  fi
                   git commit -m "Bump openhands-sdk, openhands-tools, openhands-agent-server to $VERSION" \
                     -m "Automated version bump after PyPI release." \
                     -m "" \
                     -m "Changes:" \
                     -m "- Updated SDK packages to v$VERSION with exact pins in pyproject.toml" \
                     -m "- Regenerated poetry.lock" \
+                    -m "- Regenerated enterprise/poetry.lock to keep transitive SDK pins aligned" \
                     -m "- Updated AGENT_SERVER_IMAGE to ${VERSION}" \
                     -m "" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
@@ -322,6 +341,7 @@ jobs:
                   ### Changes
                   - Updated SDK packages in \`pyproject.toml\` with exact pins
                   - Regenerated \`poetry.lock\` with the target repo's Poetry version
+                  - Regenerated \`enterprise/poetry.lock\` so its transitive SDK pins match the root
                   - Updated \`AGENT_SERVER_IMAGE\` to \`${VERSION}\` in \`sandbox_spec_service.py\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)

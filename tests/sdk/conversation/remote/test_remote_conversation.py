@@ -175,7 +175,7 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_acp_remote_conversation_uses_acp_agent_kind(self, mock_ws_client):
+    def test_acp_remote_conversation_uses_unified_endpoint(self, mock_ws_client):
         acp_agent = ACPAgent(acp_command=["echo", "test"])
         conversation_id = str(uuid.uuid4())
         mock_client_instance = Mock()
@@ -185,11 +185,11 @@ class TestRemoteConversation:
         mock_events_response = self.create_mock_events_response()
 
         def request_side_effect(method, url, **kwargs):
-            if method == "POST" and url == "/api/acp/conversations":
+            if method == "POST" and url == "/api/conversations":
                 return mock_conv_response
             if method == "GET" and "/api/conversations/" in url and "/events" in url:
                 return mock_events_response
-            if method == "GET" and url.startswith("/api/acp/conversations/"):
+            if method == "GET" and url.startswith("/api/conversations/"):
                 response = Mock()
                 response.status_code = 200
                 response.raise_for_status.return_value = None
@@ -217,7 +217,7 @@ class TestRemoteConversation:
         post_calls = [
             call
             for call in mock_client_instance.request.call_args_list
-            if call[0][0] == "POST" and call[0][1] == "/api/acp/conversations"
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
         ]
         assert len(post_calls) == 1
 
@@ -310,11 +310,6 @@ class TestRemoteConversation:
                 response.status_code = 404
                 response.raise_for_status.side_effect = None
                 return response
-            elif method == "GET" and url == f"/api/acp/conversations/{conversation_id}":
-                response = Mock()
-                response.status_code = 404
-                response.raise_for_status.side_effect = None
-                return response
             elif method == "POST" and url == "/api/conversations":
                 return mock_conv_response
             elif method == "GET" and "/events/search" in url:
@@ -380,7 +375,7 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_existing_acp_id_raises_clear_error(
+    def test_remote_conversation_existing_different_agent_kind_raises_clear_error(
         self, mock_ws_client
     ):
         conversation_id = uuid.uuid4()
@@ -389,11 +384,6 @@ class TestRemoteConversation:
 
         def request_side_effect(method, url, **kwargs):
             if method == "GET" and url == f"/api/conversations/{conversation_id}":
-                response = Mock()
-                response.status_code = 404
-                response.raise_for_status.side_effect = None
-                return response
-            if method == "GET" and url == f"/api/acp/conversations/{conversation_id}":
                 response = Mock()
                 response.status_code = 200
                 response.raise_for_status.return_value = None
@@ -414,7 +404,7 @@ class TestRemoteConversation:
 
         mock_client_instance.request.side_effect = request_side_effect
 
-        with pytest.raises(ValueError, match="was started with an ACP agent"):
+        with pytest.raises(ValueError, match="different agent kind"):
             RemoteConversation(
                 agent=self.agent,
                 workspace=self.workspace,

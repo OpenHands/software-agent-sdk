@@ -155,11 +155,7 @@ class LLMProfileStore:
                 else:
                     context["expose_secrets"] = True
 
-            profile_json = llm.model_dump_json(
-                exclude_none=True,
-                indent=2,
-                context=context,
-            )
+            profile_json = json.dumps(llm.to_persisted(context=context), indent=2)
             with tempfile.NamedTemporaryFile(
                 mode="w", dir=self.base_dir, suffix=".tmp", delete=False
             ) as tmp:

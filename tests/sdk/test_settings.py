@@ -5,10 +5,7 @@ import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.agent_server.models import (
-    StartACPConversationRequest,
-    StartConversationRequest,
-)
+from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
     LLM,
     ACPAgentSettings,
@@ -224,7 +221,7 @@ def test_conversation_settings_create_request() -> None:
     assert overridden_request.security_analyzer is None
 
 
-def test_conversation_settings_create_request_for_acp() -> None:
+def test_conversation_settings_create_request_with_acp_agent() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -234,12 +231,12 @@ def test_conversation_settings_create_request_for_acp() -> None:
     agent = ACPAgent(acp_command=["echo", "test"])
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -757,7 +754,7 @@ def test_conversation_settings_create_request_for_llm_variant() -> None:
     assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
 
 
-def test_conversation_settings_create_request_for_acp_variant() -> None:
+def test_conversation_settings_create_request_with_acp_agent_variant() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -767,12 +764,12 @@ def test_conversation_settings_create_request_for_acp_variant() -> None:
     agent = ACPAgentSettings(acp_command=["echo", "test"]).create_agent()
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -811,6 +808,46 @@ def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
 
     exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
     assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
+
+
+def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
+    """ACP env persistence should mirror other secret-bearing settings.
+
+    The on-disk path encrypts values with a cipher, and loading with the same
+    cipher must recover plaintext so ACP agents receive usable environment
+    variables after settings are read back.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
+
+    assert encrypted_value.startswith("gAAAA")
+    assert "sk-real-secret" not in json.dumps(dumped)
+
+    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    restored_from_persisted = AgentSettings.from_persisted(
+        dumped, context={"cipher": cipher}
+    )
+    assert isinstance(restored_from_persisted, ACPAgentSettings)
+    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    legacy_plaintext = ACPAgentSettings.model_validate(
+        {
+            "acp_command": ["echo", "test"],
+            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
+        },
+        context={"cipher": cipher},
+    )
+    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:

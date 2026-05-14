@@ -218,6 +218,8 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
+    _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
     @property
     def events(self) -> EventLog:
@@ -411,11 +413,16 @@ class ConversationState(OpenHandsModel):
             return
 
         if old is _sentinel or old != value:
-            try:
-                self._save_base_state(fs)
-            except Exception as e:
-                logger.exception("Auto-persist base_state failed", exc_info=True)
-                raise e
+            # Inside a context-manager block, defer the save until __exit__
+            # so that multiple field mutations produce a single I/O write.
+            if getattr(self, "_save_depth", 0) > 0:
+                self._dirty = True
+            else:
+                try:
+                    self._save_base_state(fs)
+                except Exception as e:
+                    logger.exception("Auto-persist base_state failed", exc_info=True)
+                    raise e
 
             # Call state change callback if set
             callback = getattr(self, "_on_state_change", None)
@@ -530,13 +537,27 @@ class ConversationState(OpenHandsModel):
         self._lock.release()
 
     def __enter__(self: Self) -> Self:
-        """Context manager entry."""
+        """Context manager entry.
+
+        Field mutations inside the ``with`` block are batched: the state
+        is persisted at most once, on exit, instead of on every assignment.
+        """
         self._lock.acquire()
+        self._save_depth += 1
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self._lock.release()
+        """Context manager exit — flushes any deferred save."""
+        try:
+            self._save_depth -= 1
+            if self._save_depth == 0 and self._dirty:
+                fs = getattr(self, "_fs", None)
+                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                if autosave_enabled and fs is not None:
+                    self._save_base_state(fs)
+                self._dirty = False
+        finally:
+            self._lock.release()
 
     def locked(self) -> bool:
         """

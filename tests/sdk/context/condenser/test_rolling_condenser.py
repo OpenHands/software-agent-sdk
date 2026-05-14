@@ -46,7 +46,7 @@ class MockRollingCondenser(RollingCondenser):
             )
         # Return a simple condensation for successful case
         return Condensation(
-            forgotten_event_ids=[view.events[0].id],
+            forgotten_event_ids={view.events[0].id},
             summary="Mock summary",
             summary_offset=0,
             llm_response_id="mock-response-id",
@@ -221,7 +221,7 @@ def test_hard_context_reset_condensation_is_returned() -> None:
 
     # Create a condensation that will be returned by hard_context_reset
     hard_reset_condensation = Condensation(
-        forgotten_event_ids=[events[0].id, events[1].id],
+        forgotten_event_ids={events[0].id, events[1].id},
         summary="Hard context reset summary",
         summary_offset=0,
         llm_response_id="hard_reset_response",

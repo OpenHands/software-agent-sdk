@@ -241,8 +241,8 @@ class TestDesignBoundaries:
     @pytest.mark.xfail(
         strict=True,
         reason=(
-            "Content beyond cap truncated."
-            " Cap is deliberate resource bound on regex runtime/memory."
+            "Content beyond _EXTRACT_HARD_CAP truncated."
+            " Cap is a deliberate resource bound on regex runtime/memory."
         ),
     )
     def test_payload_past_hard_cap(self):
