@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.skills_service import MarketplaceSkillInfo, SkillLoadResult
+from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     KeywordTrigger,
@@ -427,6 +428,24 @@ class TestInstallSkillEndpoint:
             response = client.post(
                 "/api/skills/install",
                 json={"source": "github:owner/repo/skills/test-skill"},
+            )
+
+            assert response.status_code == 400
+            assert "fetch" in response.json()["detail"].lower()
+
+    def test_install_skill_extension_fetch_error(self, client):
+        """ExtensionFetchError (raised by the SDK for GitHub URL/shorthand failures)
+        must map to 400, not 500."""
+        with patch(
+            "openhands.agent_server.skills_router.service_install_skill"
+        ) as mock_install:
+            mock_install.side_effect = ExtensionFetchError(
+                "Could not fetch from GitHub"
+            )
+
+            response = client.post(
+                "/api/skills/install",
+                json={"source": "https://github.com/Owner/repo/tree/main/path"},
             )
 
             assert response.status_code == 400

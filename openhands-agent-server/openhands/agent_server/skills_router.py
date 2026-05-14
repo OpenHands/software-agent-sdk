@@ -23,6 +23,7 @@ from openhands.agent_server.skills_service import (
     service_update_skill,
     sync_public_skills,
 )
+from openhands.sdk.extensions.fetch import ExtensionFetchError
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     SkillFetchError,
@@ -365,7 +366,7 @@ def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillRespon
             status_code=409,
             detail="Skill already installed. Use force=true to overwrite.",
         )
-    except SkillFetchError:
+    except (SkillFetchError, ExtensionFetchError):
         raise HTTPException(
             status_code=400,
             detail="Failed to fetch skill source. Check that the source is valid.",
