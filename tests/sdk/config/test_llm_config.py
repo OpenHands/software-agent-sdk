@@ -9,6 +9,9 @@ from openhands.sdk.llm import LLM
 
 def test_llm_config_defaults():
     """Test LLM with default values."""
+    default_config = LLM(usage_id="test-default-llm")
+    assert default_config.model == "gpt-5.5"
+
     config = LLM(model="gpt-4o-mini", usage_id="test-llm")
     assert config.model == "gpt-4o-mini"
     assert config.api_key is None
