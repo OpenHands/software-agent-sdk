@@ -21,7 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace import Marketplace
@@ -546,8 +546,7 @@ def service_update_skill(
     return update_skill(name=name, installed_dir=installed_dir)
 
 
-@dataclass
-class MarketplaceSkillInfo:
+class MarketplaceSkillInfo(BaseModel):
     """Information about a skill in the marketplace catalog."""
 
     name: str

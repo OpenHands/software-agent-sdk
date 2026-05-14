@@ -587,30 +587,30 @@ class TestUninstallSkillEndpoint:
             assert response.status_code == 404
 
 
-class TestUpdateSkillEndpoint:
-    """Tests for POST /skills/installed/{skill_name}/update endpoint."""
+class TestRefreshSkillEndpoint:
+    """Tests for POST /skills/installed/{skill_name}/refresh endpoint."""
 
-    def test_update_skill_success(self, client, mock_installed_skill_info):
-        """Test successful skill update."""
+    def test_refresh_skill_success(self, client, mock_installed_skill_info):
+        """Test successful skill refresh."""
         with patch(
             "openhands.agent_server.skills_router.service_update_skill"
         ) as mock_update:
             mock_update.return_value = mock_installed_skill_info
 
-            response = client.post("/api/skills/installed/test-skill/update")
+            response = client.post("/api/skills/installed/test-skill/refresh")
 
             assert response.status_code == 200
             data = response.json()
             assert data["skill"]["name"] == "test-skill"
 
-    def test_update_skill_not_found(self, client):
-        """Test updating a non-existent skill."""
+    def test_refresh_skill_not_found(self, client):
+        """Test refreshing a non-existent skill."""
         with patch(
             "openhands.agent_server.skills_router.service_update_skill"
         ) as mock_update:
             mock_update.return_value = None
 
-            response = client.post("/api/skills/installed/nonexistent/update")
+            response = client.post("/api/skills/installed/nonexistent/refresh")
 
             assert response.status_code == 404
 

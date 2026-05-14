@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
+    MarketplaceSkillInfo,
     load_all_skills,
     service_disable_skill,
     service_enable_skill,
@@ -28,6 +29,7 @@ from openhands.sdk.skills import (
     SkillValidationError,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.skills.utils import SKILL_NAME_PATTERN
 
 
 skills_router = APIRouter(prefix="/skills", tags=["Skills"])
@@ -39,8 +41,8 @@ SkillNamePath = Annotated[
     Path(
         min_length=1,
         max_length=255,
-        pattern=r"^[a-zA-Z0-9_-]+$",
-        description="Skill name (alphanumeric, hyphens, underscores)",
+        pattern=SKILL_NAME_PATTERN.pattern,
+        description="Skill name (lowercase alphanumeric, hyphens)",
     ),
 ]
 
@@ -186,6 +188,20 @@ class InstalledSkillResponse(BaseModel):
     installed_at: str = Field(description="ISO 8601 timestamp of installation")
     install_path: str = Field(description="Path where the skill is installed")
 
+    @classmethod
+    def from_skill_info(cls, info: InstalledSkillInfo) -> "InstalledSkillResponse":
+        return cls(
+            name=info.name,
+            version=info.version,
+            description=info.description,
+            enabled=info.enabled,
+            source=info.source,
+            resolved_ref=info.resolved_ref,
+            repo_path=info.repo_path,
+            installed_at=info.installed_at,
+            install_path=str(info.install_path),
+        )
+
 
 class InstalledSkillsListResponse(BaseModel):
     """Response containing list of installed skills."""
@@ -196,7 +212,7 @@ class InstalledSkillsListResponse(BaseModel):
 class UpdateSkillStateRequest(BaseModel):
     """Request body for updating skill state (enable/disable)."""
 
-    enabled: bool = Field(description="Whether to enable or disable the skill")
+    enabled: bool
 
 
 class UpdateSkillStateResponse(BaseModel):
@@ -216,22 +232,13 @@ class UpdateSkillResponse(BaseModel):
     """Response from skill update operation."""
 
     message: str
-    skill: InstalledSkillResponse | None = None
-
-
-class MarketplaceSkillItem(BaseModel):
-    """A skill entry in the marketplace catalog."""
-
-    name: str = Field(description="Skill name")
-    description: str | None = Field(default=None, description="Skill description")
-    source: str = Field(description="Source URL or path for installation")
-    installed: bool = Field(description="Whether the skill is currently installed")
+    skill: InstalledSkillResponse
 
 
 class MarketplaceCatalogResponse(BaseModel):
     """Response containing the marketplace catalog."""
 
-    skills: list[MarketplaceSkillItem]
+    skills: list[MarketplaceSkillInfo]
 
 
 @skills_router.post("", response_model=SkillsResponse)
@@ -319,22 +326,15 @@ def sync_skills() -> SyncResponse:
 # ---------------------------------------------------------------------------
 
 
-def _info_to_response(info: InstalledSkillInfo) -> InstalledSkillResponse:
-    """Convert an InstalledSkillInfo to an InstalledSkillResponse."""
-    return InstalledSkillResponse(
-        name=info.name,
-        version=info.version,
-        description=info.description,
-        enabled=info.enabled,
-        source=info.source,
-        resolved_ref=info.resolved_ref,
-        repo_path=info.repo_path,
-        installed_at=info.installed_at,
-        install_path=str(info.install_path),
-    )
-
-
-@skills_router.post("/install", response_model=InstalledSkillResponse)
+@skills_router.post(
+    "/install",
+    response_model=InstalledSkillResponse,
+    responses={
+        400: {"description": "Failed to fetch skill source"},
+        409: {"description": "Skill already installed (use force=true)"},
+        422: {"description": "Invalid skill (missing SKILL.md, etc.)"},
+    },
+)
 def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillResponse:
     """Install a skill from a source.
 
@@ -359,7 +359,7 @@ def install_skill_endpoint(request: InstallSkillRequest) -> InstalledSkillRespon
             repo_path=request.repo_path,
             force=request.force,
         )
-        return _info_to_response(info)
+        return InstalledSkillResponse.from_skill_info(info)
     except FileExistsError:
         raise HTTPException(
             status_code=409,
@@ -389,11 +389,15 @@ def list_installed_skills_endpoint() -> InstalledSkillsListResponse:
     """
     skills = service_list_installed_skills()
     return InstalledSkillsListResponse(
-        skills=[_info_to_response(info) for info in skills]
+        skills=[InstalledSkillResponse.from_skill_info(info) for info in skills]
     )
 
 
-@skills_router.get("/installed/{skill_name}", response_model=InstalledSkillResponse)
+@skills_router.get(
+    "/installed/{skill_name}",
+    response_model=InstalledSkillResponse,
+    responses={404: {"description": "Skill not installed"}},
+)
 def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillResponse:
     """Get information about a specific installed skill.
 
@@ -412,11 +416,15 @@ def get_installed_skill_endpoint(skill_name: SkillNamePath) -> InstalledSkillRes
             status_code=404,
             detail=f"Skill '{skill_name}' is not installed",
         )
-    return _info_to_response(info)
+    return InstalledSkillResponse.from_skill_info(info)
 
 
-@skills_router.patch("/installed/{skill_name}", response_model=UpdateSkillStateResponse)
-def update_skill_state_endpoint(
+@skills_router.patch(
+    "/installed/{skill_name}",
+    response_model=UpdateSkillStateResponse,
+    responses={404: {"description": "Skill not installed"}},
+)
+def set_skill_enabled_endpoint(
     skill_name: SkillNamePath, request: UpdateSkillStateRequest
 ) -> UpdateSkillStateResponse:
     """Enable or disable an installed skill.
@@ -431,12 +439,8 @@ def update_skill_state_endpoint(
     Raises:
         HTTPException 404: If the skill is not installed.
     """
-    if request.enabled:
-        success = service_enable_skill(name=skill_name)
-    else:
-        success = service_disable_skill(name=skill_name)
-
-    if not success:
+    fn = service_enable_skill if request.enabled else service_disable_skill
+    if not fn(name=skill_name):
         raise HTTPException(
             status_code=404,
             detail=f"Skill '{skill_name}' is not installed",
@@ -448,7 +452,11 @@ def update_skill_state_endpoint(
     )
 
 
-@skills_router.delete("/installed/{skill_name}", response_model=UninstallSkillResponse)
+@skills_router.delete(
+    "/installed/{skill_name}",
+    response_model=UninstallSkillResponse,
+    responses={404: {"description": "Skill not installed"}},
+)
 def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillResponse:
     """Uninstall a skill by name.
 
@@ -475,15 +483,17 @@ def uninstall_skill_endpoint(skill_name: SkillNamePath) -> UninstallSkillRespons
 
 
 @skills_router.post(
-    "/installed/{skill_name}/update", response_model=UpdateSkillResponse
+    "/installed/{skill_name}/refresh",
+    response_model=UpdateSkillResponse,
+    responses={404: {"description": "Skill not installed"}},
 )
-def update_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
-    """Update an installed skill to the latest version.
+def refresh_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
+    """Refresh an installed skill to the latest version.
 
     Re-fetches the skill from its original source and updates the installation.
 
     Args:
-        skill_name: Name of the skill to update.
+        skill_name: Name of the skill to refresh.
 
     Returns:
         UpdateSkillResponse with updated skill information.
@@ -499,7 +509,7 @@ def update_skill_endpoint(skill_name: SkillNamePath) -> UpdateSkillResponse:
         )
     return UpdateSkillResponse(
         message=f"Skill '{skill_name}' updated",
-        skill=_info_to_response(info),
+        skill=InstalledSkillResponse.from_skill_info(info),
     )
 
 
@@ -516,15 +526,4 @@ def get_marketplace_catalog() -> MarketplaceCatalogResponse:
     Returns:
         MarketplaceCatalogResponse containing list of available skills.
     """
-    catalog = service_get_marketplace_catalog()
-    return MarketplaceCatalogResponse(
-        skills=[
-            MarketplaceSkillItem(
-                name=item.name,
-                description=item.description,
-                source=item.source,
-                installed=item.installed,
-            )
-            for item in catalog
-        ]
-    )
+    return MarketplaceCatalogResponse(skills=service_get_marketplace_catalog())
