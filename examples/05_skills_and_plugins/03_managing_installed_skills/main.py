@@ -9,7 +9,7 @@ This example demonstrates installed skill lifecycle operations in the SDK:
 5. Uninstall a skill while leaving other installed skills available
 
 For marketplace installation flows, see:
-`examples/01_standalone_sdk/43_mixed_marketplace_skills/`.
+`examples/05_skills_and_plugins/05_mixed_marketplace_skills/`.
 """
 
 import json

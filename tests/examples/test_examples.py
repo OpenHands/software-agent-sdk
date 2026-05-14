@@ -27,9 +27,9 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
     EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
-    EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "05_mixed_marketplace_skills",
 )
 
 # LLM-specific examples that require model overrides
@@ -90,6 +90,12 @@ EXAMPLES = tuple(_iter_examples())
 def test_directory_example_is_discovered() -> None:
     assert (
         EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT
+        / "05_skills_and_plugins"
+        / "05_mixed_marketplace_skills"
+        / "main.py"
     ) in EXAMPLES
 
 
