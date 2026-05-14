@@ -567,6 +567,11 @@ class MarketplaceSkillInfo(BaseModel):
 # `installed` field is always derived fresh from the local FS so that
 # install/uninstall actions are reflected immediately.
 #
+# Thread safety: concurrent cache misses (cold start or TTL expiry) may
+# trigger parallel git fetches, but each fetch is idempotent and produces
+# the same result (last writer wins). For this low-traffic endpoint the
+# thundering-herd risk is acceptable without an explicit lock.
+#
 # Type: (timestamp, list-of-(name, description, source)) or None
 _CatalogEntry = tuple[str, str | None, str]
 _catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
