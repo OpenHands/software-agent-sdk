@@ -47,7 +47,7 @@ This pattern is useful for:
 - **`custom_tools/log_data.py`**: Example custom tool for logging structured data to JSON
 - **`Dockerfile`**: Simple Dockerfile that copies custom tools into the base image
 - **`build_custom_image.sh`**: Script to build the custom base image
-- **`custom_tool_example.py`**: SDK script demonstrating the full workflow
+- **`main.py`**: SDK script demonstrating the full workflow
 - **`README.md`**: This documentation
 
 ## The Custom Tool
@@ -106,7 +106,7 @@ When creating a conversation, the SDK:
 3. Server imports those modules, triggering auto-registration
 4. Tools become available for agent execution
 
-### 4. SDK Script (`custom_tool_example.py`)
+### 4. SDK Script (`main.py`)
 
 The script:
 - Builds the custom base image (if not already built)
@@ -133,7 +133,7 @@ The script:
 
 2. **Run the example**:
    ```bash
-   python custom_tool_example.py
+   python main.py
    ```
 
 The script will:
