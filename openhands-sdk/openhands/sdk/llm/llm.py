@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -458,6 +459,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _prompt_cache_key: str | None = PrivateAttr(default=None)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
+    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -1206,12 +1208,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
-        old = getattr(litellm, "modify_params", None)
-        try:
-            litellm.modify_params = flag
-            yield
-        finally:
-            litellm.modify_params = old
+        with self._litellm_modify_params_lock:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
 
     # =========================================================================
     # Capabilities, formatting, and info
