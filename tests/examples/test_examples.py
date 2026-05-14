@@ -22,25 +22,10 @@ EXAMPLES_ROOT = REPO_ROOT / "examples"
 # Maximum time (seconds) allowed for a single example script to run
 EXAMPLE_TIMEOUT_SECONDS = 600  # 10 minutes
 
-_TARGET_DIRECTORIES = (
-    EXAMPLES_ROOT / "01_standalone_sdk",
-    EXAMPLES_ROOT / "02_remote_agent_server",
-    # These examples live under subdirectories (each with a single `main.py`).
-    EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
-    EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
-    EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
-    EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
-)
+_TARGET_DIRECTORIES = (EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",)
 
 # LLM-specific examples that require model overrides
-_LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
-    "examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py": {
-        "LLM_MODEL": "openhands/gpt-5.1",
-    },
-    "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
-        "LLM_MODEL": "openhands/gemini-3.1-pro-preview",
-    },
-}
+_LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {}
 
 # Examples that require interactive input or additional infrastructure.
 _EXCLUDED_EXAMPLES = {
@@ -89,7 +74,10 @@ EXAMPLES = tuple(_iter_examples())
 
 def test_directory_example_is_discovered() -> None:
     assert (
-        EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store" / "main.py"
+        EXAMPLES_ROOT
+        / "02_remote_agent_server"
+        / "06_custom_tool"
+        / "custom_tool_example.py"
     ) in EXAMPLES
 
 
