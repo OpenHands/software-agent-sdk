@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -142,6 +143,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 )
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
+_litellm_modify_params_lock = threading.Lock()
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -1139,7 +1142,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> ModelResponse:
-        # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -1200,12 +1202,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
-        old = getattr(litellm, "modify_params", None)
-        try:
-            litellm.modify_params = flag
-            yield
-        finally:
-            litellm.modify_params = old
+        with _litellm_modify_params_lock:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
 
     # =========================================================================
     # Capabilities, formatting, and info
