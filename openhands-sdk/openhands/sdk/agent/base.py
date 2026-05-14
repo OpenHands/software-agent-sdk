@@ -69,7 +69,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="LLM configuration for the agent.",
         examples=[
             {
-                "model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                "model": "litellm_proxy/openai/gpt-5.5",
                 "base_url": "https://llm-proxy.eval.all-hands.dev",
                 "api_key": "your_api_key_here",
             }
@@ -315,7 +315,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {
                 "kind": "LLMSummarizingCondenser",
                 "llm": {
-                    "model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                    "model": "litellm_proxy/openai/gpt-5.5",
                     "base_url": "https://llm-proxy.eval.all-hands.dev",
                     "api_key": "your_api_key_here",
                 },

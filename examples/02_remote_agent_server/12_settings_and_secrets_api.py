@@ -131,7 +131,7 @@ class ManagedAPIServer:
 # Get LLM configuration from environment
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+llm_model = os.getenv("LLM_MODEL", "gpt-5.5")
 llm_base_url = os.getenv("LLM_BASE_URL")  # Optional custom base URL
 
 with ManagedAPIServer(port=8765) as server:

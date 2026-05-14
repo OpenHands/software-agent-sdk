@@ -22,7 +22,7 @@ store.save(
 
 agent = Agent(
     llm=LLM(
-        model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+        model=os.getenv("LLM_MODEL", "gpt-5.5"),
         api_key=LLM_API_KEY,
     ),
     tools=[Tool(name=TerminalTool.name)],

@@ -167,7 +167,7 @@ jobs:
 
             - name: Process TODO
               env:
-                  LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
+                  LLM_MODEL: litellm_proxy/openai/gpt-5.5
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}

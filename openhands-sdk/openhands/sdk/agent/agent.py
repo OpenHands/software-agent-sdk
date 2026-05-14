@@ -263,7 +263,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         from openhands.sdk import LLM, Agent, Tool
         from pydantic import SecretStr
 
-        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
