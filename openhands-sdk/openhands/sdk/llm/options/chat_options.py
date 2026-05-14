@@ -32,6 +32,14 @@ def select_chat_options(
     if llm.extra_headers is not None and "extra_headers" not in out:
         out["extra_headers"] = dict(llm.extra_headers)
 
+    # Inject OpenRouter HTTP-Referer / X-Title via extra_headers so we don't
+    # have to mutate os.environ (which would leak across conversations in a
+    # multi-tenant server; see issue #3138). User-supplied headers win.
+    openrouter_headers = llm._openrouter_headers()
+    if openrouter_headers:
+        existing = out.get("extra_headers") or {}
+        out["extra_headers"] = {**openrouter_headers, **existing}
+
     # Reasoning-model quirks
     supports_reasoning_effort = get_features(llm.model).supports_reasoning_effort
     if supports_reasoning_effort:

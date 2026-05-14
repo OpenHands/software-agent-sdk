@@ -504,24 +504,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return d
 
     @model_validator(mode="after")
-    def _set_env_side_effects(self):
-        if self.openrouter_site_url:
-            os.environ["OR_SITE_URL"] = self.openrouter_site_url
-        if self.openrouter_app_name:
-            os.environ["OR_APP_NAME"] = self.openrouter_app_name
-        if self.aws_access_key_id:
-            assert isinstance(self.aws_access_key_id, SecretStr)
-            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
-        if self.aws_secret_access_key:
-            assert isinstance(self.aws_secret_access_key, SecretStr)
-            os.environ["AWS_SECRET_ACCESS_KEY"] = (
-                self.aws_secret_access_key.get_secret_value()
-            )
-        if self.aws_session_token:
-            assert isinstance(self.aws_session_token, SecretStr)
-            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
-        if self.aws_region_name:
-            os.environ["AWS_REGION_NAME"] = self.aws_region_name
+    def _post_init(self):
+        # NOTE: AWS credentials and OpenRouter site/app identifiers are NOT
+        # written to ``os.environ`` here. Doing so in a multi-tenant agent
+        # server would let one conversation's credentials bleed into another
+        # via the shared process environment (see issue #3138). Instead,
+        # AWS credentials flow per-call through ``_aws_kwargs()`` and the
+        # OpenRouter ``HTTP-Referer`` / ``X-Title`` headers flow per-call
+        # through ``_openrouter_headers()``.
 
         # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
         # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
@@ -553,6 +543,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _openrouter_headers(self) -> dict[str, str]:
+        """Build OpenRouter HTTP-Referer / X-Title headers for per-call use.
+
+        Returns an empty dict when neither field is set. Passed via
+        ``extra_headers`` so litellm forwards them on the OpenRouter request
+        without us having to mutate ``os.environ`` (which would leak across
+        conversations in a multi-tenant server; see issue #3138).
+        """
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
 
     def _aws_kwargs(self) -> dict[str, str]:
         """Build kwargs dict for AWS params to pass to litellm calls."""

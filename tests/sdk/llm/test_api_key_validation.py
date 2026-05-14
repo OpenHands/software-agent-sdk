@@ -248,8 +248,14 @@ def test_aws_bedrock_params_forwarded_to_litellm():
         assert kw["aws_bedrock_runtime_endpoint"] == "https://my-proxy.example.com"
 
 
-def test_aws_env_vars_set_on_init(monkeypatch):
-    """Verify pre-existing AWS env vars are still set for backward compatibility."""
+def test_aws_env_vars_not_leaked_on_init(monkeypatch):
+    """Constructing an LLM with AWS creds must not bleed into os.environ.
+
+    Writing credentials into the process environment would let one
+    conversation's credentials be picked up by another in a multi-tenant
+    agent server (issue #3138). They must flow per-call via
+    ``_aws_kwargs()`` instead.
+    """
     for k in [
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
@@ -268,10 +274,10 @@ def test_aws_env_vars_set_on_init(monkeypatch):
         aws_region_name="us-west-2",
     )
 
-    assert os.environ["AWS_ACCESS_KEY_ID"] == "AKID"
-    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "SECRET"
-    assert os.environ["AWS_SESSION_TOKEN"] == "TOKEN"
-    assert os.environ["AWS_REGION_NAME"] == "us-west-2"
+    assert "AWS_ACCESS_KEY_ID" not in os.environ
+    assert "AWS_SECRET_ACCESS_KEY" not in os.environ
+    assert "AWS_SESSION_TOKEN" not in os.environ
+    assert "AWS_REGION_NAME" not in os.environ
 
 
 def test_aws_kwargs_returns_all_params():
