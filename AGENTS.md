@@ -374,4 +374,9 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
 
+<KNOWN_RACES_AND_GOTCHAS>
+- **`RemoteConversation._wait_for_run_completion` and stop hooks**: WebSocket terminal status events are *hints*, not authoritative termination. The server-side `LocalConversation.run` loop releases its state lock at the end of each iteration, so a `FINISHED` status set by `agent.step()` is visible to clients before the *next* loop iteration runs stop hooks (`hook_processor.run_stop`). If a stop hook returns rc=2 (denying the stop), status flips back to RUNNING and the agent gets another iteration. The client's `_wait_for_run_completion` therefore must **not** return on the first WS-delivered FINISHED — the REST poll path with `TERMINAL_POLL_THRESHOLD` consecutive terminal polls is the only authoritative termination check for FINISHED. ERROR/STUCK *do* short-circuit (they're not subject to hook reverts). See `_immediate_terminal_statuses`. Empirically this caused agents to consume just 0–1 iterations after a hook block on programbench retry-16; fix shipped in `feat/programbench`.
+- **Hook events vs `state.events`**: `HookExecutionEvent` is emitted via `hook_processor.original_callback` (the chained `_on_event`), so it *should* land in `state.events` when the run is allowed to complete. But because the WS-FINISHED race above used to make the client snapshot `list(conversation.state.events)` *before* the server-side hook eval ran, `output.jsonl` history could miss hook events while on-disk persisted events under `/workspace/conversations/.../events/` had them — useful as a forensic signal that the race fired.
+</KNOWN_RACES_AND_GOTCHAS>
+
 </REPO>

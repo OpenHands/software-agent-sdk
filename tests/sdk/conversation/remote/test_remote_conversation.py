@@ -757,6 +757,139 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_run_ws_finished_is_only_a_hint_not_terminal(
+        self, mock_ws_client
+    ):
+        """A WS-delivered FINISHED status must NOT terminate ``run()`` on its own.
+
+        Regression test for the stop-hook race we observed in retry-16
+        (run 25497962453, conversation dd86d184…, agourlay/zip-password-finder):
+
+        Server-side timeline within a single ``LocalConversation.run`` loop:
+          1. ``agent.step()`` sets ``execution_status = FINISHED``; that
+             status update event is broadcast over the WebSocket.
+          2. **Lock released** at end of iteration. Client observes
+             FINISHED via WS.
+          3. Next loop iteration acquires lock, runs stop hooks, hook
+             returns rc=2, status reverts to RUNNING, ``continue``.
+
+        With the old implementation, step 2 caused the client's
+        ``_wait_for_run_completion`` to ``return`` immediately on the
+        WS-delivered FINISHED — racing the server's hook eval and tearing
+        down the agent-server pod (via ``workspace_keepalive`` exit) before
+        the agent could consume its iteration budget.
+
+        The fix: WS FINISHED is a fast wakeup hint only. The REST-poll
+        ``TERMINAL_POLL_THRESHOLD`` confirmation pattern is the single
+        authoritative termination check. A FINISHED→RUNNING revert seen on
+        a REST poll naturally resets the consecutive-terminal counter.
+        """
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        # REST poll script: the first 3 polls show the server has flipped
+        # *back* to RUNNING (the stop-hook revert); subsequent polls show
+        # the agent's second finish, which should be honored.
+        rest_script = [
+            "running",
+            "running",
+            "running",
+            "finished",
+            "finished",
+            "finished",
+            "finished",
+        ]
+        poll_count = [0]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                idx = min(poll_count[0], len(rest_script) - 1)
+                status = rest_script[idx]
+                poll_count[0] += 1
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": status,
+                    "stats": {"usage_to_metrics": {}},
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Pre-seed the WS terminal-status queue with FINISHED to simulate
+        # the initial server-side FINISHED broadcast that races the hook.
+        # The fix must NOT treat this as authoritative termination.
+        conversation._terminal_status_queue.put("finished")
+
+        conversation.run(blocking=True, poll_interval=0.01)
+
+        # Must have polled past the 3 RUNNING REST responses (race window),
+        # then 3 consecutive FINISHED REST responses for confirmation,
+        # then 1 final state refresh. Pre-fix this would have returned on
+        # the seeded WS FINISHED with poll_count == 0.
+        assert poll_count[0] >= 3 + 3, (
+            f"Run() returned before REST confirmed termination. "
+            f"poll_count={poll_count[0]} — expected at least 6 (3 running "
+            f"during hook revert + 3 consecutive finished). The seeded WS "
+            f"FINISHED was treated as authoritative; this is the regression."
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_ws_error_still_terminates_immediately(
+        self, mock_ws_client
+    ):
+        """ERROR via WS still raises immediately (not subject to hook reverts).
+
+        Stop hooks operate on the FINISHED→agent-wants-to-stop transition.
+        ERROR and STUCK are not hookable terminal states; the SDK never
+        flips them back to RUNNING. So the WS fast-path must continue to
+        propagate them without waiting for REST confirmation, otherwise
+        we'd add 3+ poll intervals of latency to every error surface.
+        """
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation._get_last_error_detail = Mock(return_value="boom")
+
+        # ``run()`` drains the WS queue at trigger time (see line "Drain any
+        # stale terminal status events from previous runs"). We need the
+        # ERROR to land *after* that drain but before the first
+        # ``Queue.get`` in ``_wait_for_run_completion``. Hook into the POST
+        # /run trigger response to inject the WS event at the right moment.
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def post_run_seeds_error(method, url, **kwargs):
+            resp = original_side_effect(method, url, **kwargs)
+            if method == "POST" and url.endswith("/run"):
+                conversation._terminal_status_queue.put("error")
+            return resp
+
+        mock_client_instance.request.side_effect = post_run_seeds_error
+
+        with pytest.raises(Exception) as excinfo:  # ConversationRunError wraps it
+            conversation.run(blocking=True, poll_interval=10.0)
+        # Confirm ERROR was the trigger (and we didn't fall through to REST).
+        # poll_interval=10s means a fall-through would take 30+ seconds; we
+        # also assert below that we surfaced quickly.
+        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_run_rest_fallback_refreshes_final_state(
         self, mock_ws_client
     ):
