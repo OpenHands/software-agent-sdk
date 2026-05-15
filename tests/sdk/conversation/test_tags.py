@@ -5,7 +5,9 @@ from pydantic import ValidationError
 
 from openhands.sdk.conversation.types import (
     TAG_VALUE_MAX_LENGTH,
+    ConversationObservabilityMetadata,
     ConversationTags,
+    _validate_observability_metadata,
     _validate_tags,
 )
 
@@ -84,3 +86,39 @@ def test_tags_in_pydantic_model():
     # Invalid key rejected
     with pytest.raises(ValidationError):
         TestModel(tags={"BAD": "value"})
+
+
+def test_validate_observability_metadata_valid():
+    metadata = {
+        "repo_name": "OpenHands/software-agent-sdk",
+        "private": True,
+        "retry_count": 3,
+        "cost": 1.5,
+        "labels": ["repo", "cloud"],
+        "flags": [True, False],
+        "counts": [1, 2],
+        "scores": [0.1, 0.2],
+    }
+
+    assert _validate_observability_metadata(metadata) == metadata
+
+
+def test_validate_observability_metadata_rejects_nested_values():
+    with pytest.raises(ValueError, match="must be a scalar"):
+        _validate_observability_metadata({"repo": {"name": "openhands"}})  # type: ignore[dict-item]
+
+
+def test_observability_metadata_in_pydantic_model():
+    from pydantic import BaseModel
+
+    class TestModel(BaseModel):
+        observability_metadata: ConversationObservabilityMetadata = {}
+
+    m = TestModel(observability_metadata={"repo_name": "OpenHands/OpenHands"})
+    assert m.observability_metadata == {"repo_name": "OpenHands/OpenHands"}
+
+    m = TestModel.model_validate({"observability_metadata": None})
+    assert m.observability_metadata == {}
+
+    with pytest.raises(ValidationError):
+        TestModel(observability_metadata={"nested": {"bad": True}})

@@ -10,6 +10,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    TraceMetadataValue,
 )
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
@@ -127,11 +128,18 @@ class BaseConversation(ABC):
         # that constructed the conversation.
         self._observability_root_span: RootSpan | None = None
 
-    def _start_observability_span(self, session_id: str) -> None:
+    def _start_observability_span(
+        self,
+        session_id: str,
+        metadata: dict[str, TraceMetadataValue] | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
         """Start a per-conversation observability root span.
 
         Args:
             session_id: The session ID to associate with the trace
+            metadata: Optional trace-level metadata to attach to observability backends
+            tags: Optional span tags to attach to the conversation root span
         """
         if not should_enable_observability():
             return
@@ -139,7 +147,7 @@ class BaseConversation(ABC):
             # Idempotent: never start two roots for one conversation.
             return
         self._observability_root_span = start_root_span(
-            "conversation", session_id=session_id
+            "conversation", session_id=session_id, metadata=metadata, tags=tags
         )
 
     def _end_observability_span(self) -> None:

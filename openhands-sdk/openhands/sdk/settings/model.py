@@ -33,6 +33,7 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.types import TraceMetadataValue
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
@@ -530,6 +531,16 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Repository selected for the conversation.",
     )
+    observability_metadata: dict[str, TraceMetadataValue] | None = Field(
+        default=None,
+        exclude=True,
+        description="Trace-level metadata for observability backends.",
+    )
+    observability_tags: list[str] | None = Field(
+        default=None,
+        exclude=True,
+        description="Tags for the conversation root observability span.",
+    )
 
     # --- persisted fields ---------------------------------------------------
     max_iterations: int = Field(
@@ -650,6 +661,10 @@ class ConversationSettings(BaseModel):
             payload.setdefault("plugins", self.plugins)
         if self.hook_config is not None:
             payload.setdefault("hook_config", self.hook_config)
+        if self.observability_metadata is not None:
+            payload.setdefault("observability_metadata", self.observability_metadata)
+        if self.observability_tags is not None:
+            payload.setdefault("observability_tags", self.observability_tags)
 
         # --- persisted defaults ---------------------------------------------
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())

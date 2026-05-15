@@ -9,6 +9,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -80,6 +81,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -104,6 +107,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -128,6 +133,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -181,6 +188,8 @@ class Conversation:
                 secrets=secrets,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
+                observability_metadata=observability_metadata,
+                observability_tags=observability_tags,
             )
 
         return LocalConversation(
@@ -199,4 +208,6 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            observability_metadata=observability_metadata,
+            observability_tags=observability_tags,
         )
