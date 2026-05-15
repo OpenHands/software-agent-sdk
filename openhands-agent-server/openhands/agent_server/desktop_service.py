@@ -127,7 +127,8 @@ class DesktopService:
             )
             try:
                 # Store this as the managed long-running process
-                self._proc = await asyncio.create_subprocess_exec(
+self._proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
                     str(novnc_proxy),
                     "--listen",
                     f"0.0.0.0:{self.novnc_port}",

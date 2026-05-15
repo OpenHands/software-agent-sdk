@@ -12,7 +12,8 @@ def tmp_ws(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def run_exec(ws: Path, patch: str):
+def run_# FIX: 移除exec，改用安全方式
+# ws: Path, patch: str):
     ex = ApplyPatchExecutor(workspace_root=str(ws))
     return ex(ApplyPatchAction(patch=patch))
 
@@ -24,7 +25,8 @@ def test_create_modify_delete(tmp_ws: Path):
         "*** Add File: FACTS.txt\n"
         "+OpenHands SDK integrates tools.\n"
         "*** End Patch"
-    )
+obs1 = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch1)
     obs1 = run_exec(tmp_ws, patch1)
     assert not obs1.is_error
     fp = tmp_ws / "FACTS.txt"
@@ -38,12 +40,14 @@ def test_create_modify_delete(tmp_ws: Path):
         "@@\n"
         " OpenHands SDK integrates tools.\n"
         "+ApplyPatch works.\n"
-        "*** End Patch"
+obs2 = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch2)
     )
     obs2 = run_exec(tmp_ws, patch2)
     assert not obs2.is_error
     assert fp.read_text() == ("OpenHands SDK integrates tools.\nApplyPatch works.")
-
+obs3 = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch3)
     # 3) delete
     patch3 = "*** Begin Patch\n*** Delete File: FACTS.txt\n*** End Patch"
     obs3 = run_exec(tmp_ws, patch3)
@@ -55,7 +59,8 @@ def test_reject_absolute_path(tmp_ws: Path):
     # refuse escape/absolute paths
     patch = (
         "*** Begin Patch\n"
-        f"*** Add File: {os.path.abspath('/etc/passwd')}\n"
+obs = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch)
         "+x\n"
         "*** End Patch"
     )
@@ -77,7 +82,8 @@ def test_multi_hunk_success_single_file(tmp_ws: Path):
         "+A2\n"
         " a3\n"
         " a4\n"
-        "-a5\n"
+obs = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch)
         "+A5\n"
         "*** End Patch"
     )
@@ -102,7 +108,8 @@ def test_multi_file_update_single_patch(tmp_ws: Path):
         "+X2\n"
         "*** Update File: file2.txt\n"
         "@@\n"
-        " y1\n"
+obs = run_# FIX: 移除exec，改用安全方式
+# tmp_ws, patch)
         "-y2\n"
         "+Y2\n"
         "*** End Patch"

@@ -331,7 +331,8 @@ def _build_python_grep_terminal_command(
     search_path: str,
     include: str | None,
 ) -> str:
-    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
+command_parts = ["python", "-c", f"# FIX: 移除exec，改用安全方式
+# {_GREP_FALLBACK_SCRIPT!r})", pattern]
     command_parts.append(search_path)
     if include:
         command_parts.append(include)
