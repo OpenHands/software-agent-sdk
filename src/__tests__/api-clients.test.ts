@@ -94,6 +94,132 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('SkillsClient CRUD methods map to the correct endpoints', async () => {
+    const installedSkill = {
+      name: 'my-skill',
+      version: '1.0.0',
+      description: 'A test skill',
+      enabled: true,
+      source: '/tmp/my-skill',
+      installed_at: '2026-05-12T12:00:00Z',
+      install_path: '/home/.openhands/skills/installed/my-skill',
+    };
+    const installedList = { skills: [{ name: 'my-skill', version: '1.0.0', enabled: true }] };
+    const toggleResponse = { name: 'my-skill', enabled: false };
+    const uninstallResponse = { message: "Skill 'my-skill' uninstalled" };
+    const refreshResponse = {
+      message: "Skill 'my-skill' updated",
+      skill: { name: 'my-skill', version: '1.0.0', enabled: true },
+    };
+    const marketplaceResponse = {
+      skills: [
+        { name: 'my-skill', description: 'desc', source: 'github:org/repo', installed: false },
+      ],
+    };
+
+    const responses = [
+      installedSkill,
+      installedList,
+      installedSkill,
+      toggleResponse,
+      uninstallResponse,
+      refreshResponse,
+      marketplaceResponse,
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new SkillsClient({ host: 'http://example.com' });
+
+    const installed = await client.installSkill({ source: '/tmp/my-skill', force: false });
+    expect(installed.name).toBe('my-skill');
+    expect(installed.enabled).toBe(true);
+
+    const list = await client.listInstalledSkills();
+    expect(list.skills).toHaveLength(1);
+    expect(list.skills[0].name).toBe('my-skill');
+
+    const got = await client.getInstalledSkill('my-skill');
+    expect(got.name).toBe('my-skill');
+
+    const toggled = await client.toggleSkill('my-skill', false);
+    expect(toggled.enabled).toBe(false);
+
+    const uninstalled = await client.uninstallSkill('my-skill');
+    expect(uninstalled.message).toContain('uninstalled');
+
+    const refreshed = await client.refreshSkill('my-skill');
+    expect(refreshed.message).toContain('updated');
+    expect(refreshed.skill.name).toBe('my-skill');
+
+    const marketplace = await client.getMarketplace();
+    expect(marketplace.skills).toHaveLength(1);
+    expect(marketplace.skills[0].installed).toBe(false);
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/skills/install',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ source: '/tmp/my-skill', force: false }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/skills/installed',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/skills/installed/my-skill',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/skills/installed/my-skill',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: false }) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/skills/installed/my-skill',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
+      'http://example.com/api/skills/installed/my-skill/update',
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      7,
+      'http://example.com/api/skills/marketplace',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('SkillsClient percent-encodes skill names with special characters', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ name: 'my skill', enabled: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new SkillsClient({ host: 'http://example.com' });
+    await client.getInstalledSkill('my skill');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/skills/installed/my%20skill',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('BashClient.startCommand normalizes string requests', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       new Response(

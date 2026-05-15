@@ -78,6 +78,58 @@ export interface SyncResponse {
   message: string;
 }
 
+export interface InstallSkillRequest {
+  source: string;
+  force?: boolean;
+  ref?: string | null;
+  repo_path?: string | null;
+}
+
+export interface InstalledSkillInfo {
+  name: string;
+  version?: string | null;
+  description?: string | null;
+  enabled: boolean;
+  source?: string | null;
+  installed_at?: string | null;
+  install_path?: string | null;
+}
+
+export interface InstalledSkillSummary {
+  name: string;
+  version?: string | null;
+  enabled: boolean;
+}
+
+export interface InstalledSkillsResponse {
+  skills: InstalledSkillSummary[];
+}
+
+export interface ToggleSkillResponse {
+  name: string;
+  enabled: boolean;
+}
+
+export interface SkillActionResponse {
+  message: string;
+}
+
+export interface RefreshSkillResponse {
+  message: string;
+  skill: InstalledSkillSummary;
+}
+
+export interface MarketplaceSkill {
+  name: string;
+  description: string;
+  source: string;
+  installed: boolean;
+}
+
+export interface MarketplaceResponse {
+  skills: MarketplaceSkill[];
+}
+
 export interface DesktopUrlResponse {
   url: string | null;
 }
