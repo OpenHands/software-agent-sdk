@@ -439,35 +439,18 @@ class TestSafetyExperiences:
         sys_text = next(m for m in messages if m.role == "system").content[0].text
         assert "No tool-specific safety experiences" in sys_text
 
-    def test_default_none_auto_loads_terminal_and_filesystem(self):
-        """Regression: omitting ``safety_experiences`` (default None) should
-        auto-load the terminal + filesystem seed when toolshield is installed.
+    def test_default_is_bare_guardrail(self):
+        """Default ``safety_experiences=""`` -- no auto-load, no
+        ``toolshield`` dependency at construction time. The analyzer
+        still functions; it just lacks distilled per-tool guidance.
         """
-        # Don't pass safety_experiences -> default is None -> should auto-load.
         analyzer = ToolShieldLLMSecurityAnalyzer(
             llm=_make_test_llm(),
             history_window=5,
-        )
-        # The resolved field should now be a non-empty string
-        assert isinstance(analyzer.safety_experiences, str)
-        assert len(analyzer.safety_experiences) > 100, (
-            "Default seed should be non-trivial; got "
-            f"{len(analyzer.safety_experiences or '')} chars"
-        )
-        # And the experiences should reference the terminal + filesystem tools
-        text = analyzer.safety_experiences.lower()
-        assert "terminal" in text
-        assert "filesystem" in text or "file" in text
-
-    def test_explicit_empty_string_opts_out(self):
-        """Passing ``safety_experiences=''`` is a real opt-out -- the default
-        terminal + filesystem seed must NOT auto-load."""
-        analyzer = ToolShieldLLMSecurityAnalyzer(
-            llm=_make_test_llm(),
-            history_window=5,
-            safety_experiences="",
         )
         assert analyzer.safety_experiences == ""
+        # System prompt shows the bare-mode placeholder so reviewers can
+        # tell at a glance that no experiences were loaded.
         _patch_completion(analyzer, _mock_llm_response("RISK: LOW\n"))
         analyzer.security_risk(_make_action_event())
         messages = analyzer.llm.completion.call_args.kwargs.get(
@@ -476,24 +459,29 @@ class TestSafetyExperiences:
         sys_text = next(m for m in messages if m.role == "system").content[0].text
         assert "No tool-specific safety experiences" in sys_text
 
-    def test_default_falls_back_gracefully_when_toolshield_missing(self):
-        """If toolshield isn't installed, the None default must fall back to
-        empty string with a warning, not raise ImportError."""
-        import builtins
-        real_import = builtins.__import__
+    def test_opt_in_to_default_seed(self):
+        """Callers who want the ToolShield seed must opt in explicitly by
+        passing ``default_safety_experiences()`` -- there is no implicit
+        auto-load. Requires the ``[toolshield]`` extra (installed in CI).
+        """
+        from openhands.sdk.security import default_safety_experiences
 
-        def fake_import(name, *args, **kwargs):
-            # Force ImportError for the helper module and its dep
-            if name == "openhands.sdk.security.toolshield_helpers" or name == "toolshield":
-                raise ImportError(f"No module named {name!r} (test)")
-            return real_import(name, *args, **kwargs)
+        seed = default_safety_experiences()
+        assert isinstance(seed, str) and len(seed) > 100, (
+            "default_safety_experiences() should produce a non-trivial "
+            f"string; got {len(seed)} chars"
+        )
+        # And it should mention terminal + filesystem (the seed contents)
+        text_lower = seed.lower()
+        assert "terminal" in text_lower
+        assert "filesystem" in text_lower or "file" in text_lower
 
-        with patch("builtins.__import__", side_effect=fake_import):
-            analyzer = ToolShieldLLMSecurityAnalyzer(
-                llm=_make_test_llm(),
-                history_window=5,
-            )
-        assert analyzer.safety_experiences == ""
+        analyzer = ToolShieldLLMSecurityAnalyzer(
+            llm=_make_test_llm(),
+            history_window=5,
+            safety_experiences=seed,
+        )
+        assert analyzer.safety_experiences == seed
 
 
 # ---------------------------------------------------------------------------

@@ -178,9 +178,20 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
     analyzer only *assigns* the risk level; ``ConfirmRisky`` decides
     whether to pause for user confirmation.
 
-    On guardrail failure, returns ``SecurityRisk.UNKNOWN`` so the
-    confirmation policy can fall back to its configured behavior,
-    rather than silently allowing the action through.
+    By default the analyzer runs as a bare guardrail (no distilled
+    safety experiences). To enable the ToolShield seed, install
+    ``pip install openhands-sdk[toolshield]`` and pass the rendered
+    experiences via the ``safety_experiences`` field -- typically via
+    one of the helpers (``default_safety_experiences()``,
+    ``load_safety_experiences(...)``, ``auto_detect_safety_experiences()``).
+
+    Failure modes are consistent and ensemble-safe -- both an
+    infrastructure error (network, rate limit) and a parse failure
+    (the guardrail responded but its output had no parseable
+    ``RISK:`` label) return ``SecurityRisk.UNKNOWN``. ``ConfirmRisky``
+    with ``confirm_unknown=True`` then pauses for user confirmation,
+    matching the conservative posture without dominating ``max()`` in
+    ensemble fusion.
     """
 
     llm: LLM = Field(
@@ -194,19 +205,21 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
         default=20,
         description="Number of prior actions to include as context.",
     )
-    safety_experiences: str | None = Field(
-        default=None,
+    safety_experiences: str = Field(
+        default="",
         description=(
             "Pre-generated safety guidelines injected into the guardrail's "
-            "system prompt. Three tiers:\n"
-            "- ``None`` (default): auto-load the ToolShield terminal + "
-            "filesystem seed. Requires the ``[toolshield]`` optional extra "
-            "(``pip install openhands-sdk[toolshield]``). Falls back to "
-            "empty with a warning if ``toolshield`` isn't installed.\n"
-            "- ``\"\"``: explicit opt-out -- run as a bare guardrail with "
-            "no experiences.\n"
-            "- any other string: used as-is (custom guidelines, or the "
-            "output of ``load_safety_experiences(...)`` for a custom mix)."
+            "system prompt.\n"
+            "- ``\"\"`` (default): bare guardrail -- no experiences. The "
+            "analyzer still separates actor from judge; it just classifies "
+            "without distilled tool-specific guidance.\n"
+            "- Any non-empty string: used as-is. The intended pattern is to "
+            "call one of the helpers (``default_safety_experiences()``, "
+            "``load_safety_experiences(tool_names)``, "
+            "``auto_detect_safety_experiences()``) which require the "
+            "``[toolshield]`` optional extra "
+            "(``pip install openhands-sdk[toolshield]``). Callers with "
+            "their own source of guidelines can pass any custom string."
         ),
     )
 
@@ -226,41 +239,21 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
     def model_post_init(self, __context: Any) -> None:
         """Finalize initialization after Pydantic construction.
 
-        Resolves ``safety_experiences=None`` by auto-loading the default
-        ToolShield seed (terminal + filesystem). If the ``toolshield``
-        optional extra isn't installed, falls back to empty with a clear
-        warning so the analyzer still functions as a bare guardrail.
+        Renders the system prompt with whatever ``safety_experiences``
+        string the caller provided (default empty -> bare guardrail).
+        Opt into the ToolShield seed by passing
+        ``safety_experiences=default_safety_experiences()`` from
+        ``openhands.sdk.security``.
         """
-        if self.safety_experiences is None:
-            try:
-                from openhands.sdk.security.toolshield_helpers import (
-                    default_safety_experiences,
-                )
-                resolved = default_safety_experiences()
-            except ImportError:
-                logger.warning(
-                    "ToolShieldLLMSecurityAnalyzer defaulted to auto-loading "
-                    "the terminal + filesystem safety experiences, but the "
-                    "`toolshield` package is not installed. Running as bare "
-                    "guardrail. Install with `pip install openhands-sdk"
-                    "[toolshield]`, or pass `safety_experiences=\"\"` to "
-                    "opt out and silence this warning."
-                )
-                resolved = ""
-            # Bypass Pydantic's __setattr__ guard -- the field has a type
-            # that technically permits ``str`` but the instance is otherwise
-            # considered "validated".
-            object.__setattr__(self, "safety_experiences", resolved)
-
         self._action_history = deque(maxlen=self.history_window)
-        experiences_block = (self.safety_experiences or "").strip() or (
+        experiences_block = self.safety_experiences.strip() or (
             "(No tool-specific safety experiences provided.)"
         )
         self._system_prompt = _SYSTEM_PROMPT.format(experiences=experiences_block)
         logger.info(
             "ToolShieldLLMSecurityAnalyzer initialized: "
             f"model={self.llm.model}, history_window={self.history_window}, "
-            f"has_experiences={bool((self.safety_experiences or '').strip())}"
+            f"has_experiences={bool(self.safety_experiences.strip())}"
         )
 
     @staticmethod
