@@ -145,17 +145,29 @@ def test_llm_config_openrouter_defaults():
     assert config.openrouter_app_name == "OpenHands"
 
 
-def test_llm_config_post_init_openrouter_env_vars():
-    """Test that OpenRouter environment variables are set in post_init."""
+def test_llm_config_post_init_openrouter_does_not_set_env():
+    """OpenRouter site/app must NOT bleed into os.environ.
+
+    Constructing an LLM (potentially per-conversation in a multi-tenant
+    agent server) used to set ``OR_SITE_URL`` / ``OR_APP_NAME``, which
+    leaks across conversations via the shared process environment
+    (issue #3138). The values should now flow per-call via
+    ``extra_headers`` instead.
+    """
     with patch.dict(os.environ, {}, clear=True):
-        LLM(
+        llm = LLM(
             model="gpt-4o-mini",
             openrouter_site_url="https://custom.site.com",
             openrouter_app_name="CustomApp",
             usage_id="test-llm",
         )
-        assert os.environ.get("OR_SITE_URL") == "https://custom.site.com"
-        assert os.environ.get("OR_APP_NAME") == "CustomApp"
+        assert "OR_SITE_URL" not in os.environ
+        assert "OR_APP_NAME" not in os.environ
+        # Values still travel through the per-call helper.
+        assert llm._openrouter_headers() == {
+            "HTTP-Referer": "https://custom.site.com",
+            "X-Title": "CustomApp",
+        }
 
 
 def test_llm_config_post_init_reasoning_effort_default():
@@ -190,19 +202,29 @@ def test_llm_config_post_init_azure_api_version():
     assert config.api_version == "custom-version"
 
 
-def test_llm_config_post_init_aws_env_vars():
-    """Test that AWS credentials are set as environment variables."""
+def test_llm_config_post_init_aws_does_not_set_env():
+    """AWS credentials must NOT be written to os.environ on init.
+
+    Doing so would leak credentials across conversations in a multi-tenant
+    agent server (issue #3138). They are forwarded per-call via
+    ``_aws_kwargs()`` instead.
+    """
     with patch.dict(os.environ, {}, clear=True):
-        LLM(
+        llm = LLM(
             usage_id="test-llm",
             model="gpt-4o-mini",
             aws_access_key_id=SecretStr("test-access-key"),
             aws_secret_access_key=SecretStr("test-secret-key"),
             aws_region_name="us-west-2",
         )
-        assert os.environ.get("AWS_ACCESS_KEY_ID") == "test-access-key"
-        assert os.environ.get("AWS_SECRET_ACCESS_KEY") == "test-secret-key"
-        assert os.environ.get("AWS_REGION_NAME") == "us-west-2"
+        assert "AWS_ACCESS_KEY_ID" not in os.environ
+        assert "AWS_SECRET_ACCESS_KEY" not in os.environ
+        assert "AWS_REGION_NAME" not in os.environ
+        # Values still travel through the per-call helper.
+        kw = llm._aws_kwargs()
+        assert kw["aws_access_key_id"] == "test-access-key"
+        assert kw["aws_secret_access_key"] == "test-secret-key"
+        assert kw["aws_region_name"] == "us-west-2"
 
 
 def test_llm_config_log_completions_folder_default():

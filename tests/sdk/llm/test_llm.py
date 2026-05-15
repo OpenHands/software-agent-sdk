@@ -338,8 +338,11 @@ def test_llm_forwards_extra_headers_to_litellm(mock_completion):
 
     assert mock_completion.call_count == 1
     _, kwargs = mock_completion.call_args
-    # extra_headers forwarded either directly or inside **kwargs
-    assert kwargs.get("extra_headers") == headers
+    # User-supplied extra_headers must reach litellm. The LLM may also inject
+    # OpenRouter HTTP-Referer / X-Title defaults (issue #3138), so only assert
+    # the user's headers are a subset of the forwarded dict.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
@@ -386,7 +389,9 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
-    assert kwargs.get("extra_headers") == headers
+    # See test_llm_forwards_extra_headers_to_litellm for the same rationale.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
