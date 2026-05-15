@@ -287,10 +287,11 @@ jobs:
                   fi
 
                   echo "📝 Regenerating uv.lock..."
-                  # Pass --exclude-newer=now to override the 7-day freshness guardrail that
-                  # setup-uv writes into ~/.config/uv/uv.toml. A CLI flag takes precedence
-                  # over the config file, and "now" allows just-published packages through.
-                  uv lock --no-cache --exclude-newer "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  # --no-config bypasses ~/.config/uv/uv.toml where setup-uv writes its
+                  # 7-day freshness guardrail. Unlike --exclude-newer=<date>, it does not
+                  # bake a timestamp into uv.lock's [options] section (which would create
+                  # noise in every future bump PR).
+                  uv lock --no-cache --no-config
                   echo "✅ Updated uv.lock"
 
                   # 3. Update the version in sandbox_spec_service.py
