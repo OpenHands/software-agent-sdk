@@ -253,21 +253,27 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
-        if session_id or user_id:
-            # ``set_trace_session_id`` / ``set_trace_user_id`` require an
-            # active span; briefly enter the span context to apply them.
+        if session_id or user_id or metadata or tags:
+            # These trace/span helpers require an active span; briefly enter
+            # the span context to apply conversation-level observability data.
             with contextlib.suppress(Exception):
                 with Laminar.use_span(self.span):
                     if session_id:
                         Laminar.set_trace_session_id(session_id)
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
+                    if metadata:
+                        Laminar.set_trace_metadata(metadata)
+                    if tags:
+                        Laminar.set_span_tags(tags)
         self._ended = False
 
     def end(self) -> None:
@@ -285,6 +291,8 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -293,7 +301,13 @@ def start_root_span(
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id, user_id=user_id)
+        return RootSpan(
+            name,
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            tags=tags,
+        )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None

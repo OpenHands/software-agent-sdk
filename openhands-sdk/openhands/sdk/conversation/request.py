@@ -16,7 +16,10 @@ from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
 from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation.types import ConversationTags
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationTags,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
 from openhands.sdk.plugin import PluginSource
@@ -189,6 +192,17 @@ class StartConversationRequest(BaseModel):
             "When set, this is passed to Laminar.set_trace_user_id() so "
             "traces can be queried by user."
         ),
+    )
+    observability_metadata: ConversationObservabilityMetadata = Field(
+        default_factory=dict,
+        description=(
+            "Trace-level metadata to attach to observability backends. Values must "
+            "be scalars or homogeneous scalar lists supported by OpenTelemetry."
+        ),
+    )
+    observability_tags: list[str] = Field(
+        default_factory=list,
+        description="Tags to attach to the conversation root observability span.",
     )
     autotitle: bool = Field(
         default=True,

@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -673,6 +674,8 @@ class RemoteConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -706,6 +709,8 @@ class RemoteConversation(BaseConversation):
                       have no server-side executor — when the agent calls them an
                       ActionEvent is emitted over the WebSocket and the client
                       handles execution via callbacks.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -790,8 +795,10 @@ class RemoteConversation(BaseConversation):
                     if client_tools
                     else []
                 ),
-                # Include tags if provided
+                # Include tags and observability metadata if provided
                 "tags": tags or {},
+                "observability_metadata": observability_metadata or {},
+                "observability_tags": observability_tags or [],
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -957,7 +964,12 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id), user_id=user_id)
+        self._start_observability_span(
+            str(self._id),
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+        )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
