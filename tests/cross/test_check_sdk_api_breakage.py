@@ -35,7 +35,6 @@ DeprecatedSymbols = _prod.DeprecatedSymbols
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
-_is_allowed_field_default_change = _prod._is_allowed_field_default_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
@@ -534,22 +533,6 @@ def test_is_field_metadata_only_change_default_changed():
     old = "Field(default=False, description='desc')"
     new = "Field(default=True, description='desc')"
     assert _is_field_metadata_only_change(old, new) is False
-
-
-def test_allowed_field_default_change_llm_model():
-    """LLM.model default updates are allowed without widening the policy."""
-    old = "Field(default='claude-sonnet-4-20250514', description='Model name.')"
-    new = "Field(default='gpt-5.5', description='Model name.')"
-
-    assert _is_allowed_field_default_change("LLM.model", old, new) is True
-
-
-def test_allowed_field_default_change_rejects_other_fields():
-    """Arbitrary Field default updates still require a version bump."""
-    old = "Field(default='old-model', description='Model name.')"
-    new = "Field(default='new-model', description='Model name.')"
-
-    assert _is_allowed_field_default_change("Other.model", old, new) is False
 
 
 def test_is_field_metadata_only_change_not_field():

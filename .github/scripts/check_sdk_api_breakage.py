@@ -385,12 +385,6 @@ FIELD_METADATA_KWARGS = frozenset(
     }
 )
 
-# Keep this allowlist intentionally narrow. Most Field default changes alter
-# runtime behavior and should continue to require a minor version bump; these
-# entries are defaults the SDK intentionally treats as policy/configuration
-# choices that may move independently of the Python API shape.
-FIELD_DEFAULT_CHANGE_ALLOWLIST = frozenset({"LLM.model"})
-
 
 def _escape_newlines_in_string_literals(text: str) -> str:
     """Escape literal newlines that appear inside quoted string literals."""
@@ -456,32 +450,12 @@ def _parse_field_call(value: object) -> ast.Call | None:
     return expr
 
 
-def _filter_field_kwargs(call: ast.Call, ignored_kwargs: frozenset[str]) -> ast.Call:
-    """Return a copy of a ``Field(...)`` call without selected kwargs."""
+def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
+    """Return a copy of a ``Field(...)`` call without metadata-only kwargs."""
     return ast.Call(
         func=call.func,
         args=call.args,
-        keywords=[kw for kw in call.keywords if kw.arg not in ignored_kwargs],
-    )
-
-
-def _is_field_change_limited_to_kwargs(
-    old_val: object,
-    new_val: object,
-    ignored_kwargs: frozenset[str],
-) -> bool:
-    """Check if a ``Field(...)`` change is limited to selected keyword args."""
-    old_call = _parse_field_call(old_val)
-    new_call = _parse_field_call(new_val)
-    if old_call is None or new_call is None:
-        return False
-
-    return ast.dump(
-        _filter_field_kwargs(old_call, ignored_kwargs),
-        include_attributes=False,
-    ) == ast.dump(
-        _filter_field_kwargs(new_call, ignored_kwargs),
-        include_attributes=False,
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_METADATA_KWARGS],
     )
 
 
@@ -495,35 +469,17 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
     """
-    return _is_field_change_limited_to_kwargs(
-        old_val,
-        new_val,
-        FIELD_METADATA_KWARGS,
-    )
-
-
-def _qualified_member_name(obj: object | None) -> str | None:
-    """Return ``Class.member`` for a griffe class member object when possible."""
-    name = getattr(obj, "name", None)
-    parent = getattr(obj, "parent", None)
-    parent_name = getattr(parent, "name", None)
-    if not isinstance(name, str) or not isinstance(parent_name, str):
-        return None
-    return f"{parent_name}.{name}"
-
-
-def _is_allowed_field_default_change(
-    member_name: str | None,
-    old_val: object,
-    new_val: object,
-) -> bool:
-    """Check whether a Field default change is explicitly allowed by policy."""
-    if member_name not in FIELD_DEFAULT_CHANGE_ALLOWLIST:
+    old_call = _parse_field_call(old_val)
+    new_call = _parse_field_call(new_val)
+    if old_call is None or new_call is None:
         return False
-    return _is_field_change_limited_to_kwargs(
-        old_val,
-        new_val,
-        FIELD_METADATA_KWARGS | frozenset({"default"}),
+
+    return ast.dump(
+        _filter_field_metadata_kwargs(old_call),
+        include_attributes=False,
+    ) == ast.dump(
+        _filter_field_metadata_kwargs(new_call),
+        include_attributes=False,
     )
 
 
@@ -597,21 +553,10 @@ def _collect_breakages_pairs(
                 if br.kind == BreakageKind.ATTRIBUTE_CHANGED_VALUE:
                     old_value = getattr(br, "old_value", None)
                     new_value = getattr(br, "new_value", None)
-                    member_name = _qualified_member_name(obj)
                     if _is_field_metadata_only_change(old_value, new_value):
                         print(
                             f"::notice title={title}::Ignoring Field metadata-only "
                             f"change (non-breaking): {obj.name if obj else 'unknown'}"
-                        )
-                        continue
-                    if _is_allowed_field_default_change(
-                        member_name,
-                        old_value,
-                        new_value,
-                    ):
-                        print(
-                            f"::notice title={title}::Ignoring allowed Field "
-                            f"default change (non-breaking): {member_name}"
                         )
                         continue
 
