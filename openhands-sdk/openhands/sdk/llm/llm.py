@@ -511,7 +511,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 return sub.model_validate(data, context=info.context)
         return handler(data)
 
-    @field_validator("safety_settings", mode="before")
+    @field_validator("safety_settings", mode="before", check_fields=False)
     @classmethod
     def _warn_safety_settings_deprecated(
         cls, v: list[dict[str, str]] | None
