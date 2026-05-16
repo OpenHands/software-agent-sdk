@@ -25,6 +25,8 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.llm import llm_profile_store
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -604,6 +606,64 @@ def test_start_conversation_accepts_openhands_agent_settings(
         assert request.agent.kind == "Agent"
         assert request.agent.llm.model == "settings-model"
         assert "agent_settings" not in request.model_dump(mode="json")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_agent_settings_uses_sdk_default_tools(
+    client, mock_conversation_service, monkeypatch, tmp_path
+):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+    LLMProfileStore(base_dir=profile_dir).save(
+        "fast", LLM(model="fast-model", usage_id="fast")
+    )
+
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="settings-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="Settings Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 1,
+                    "agent_kind": "llm",
+                    "llm": {"model": "settings-model", "usage_id": "test-llm"},
+                    "enable_switch_llm_tool": True,
+                    "tools": [
+                        {"name": "terminal", "params": {}},
+                        {"name": "file_editor", "params": {}},
+                        {"name": "task_tracker", "params": {}},
+                        {"name": "browser_tool_set", "params": {}},
+                    ],
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert "SwitchLLMTool" in request.agent.include_default_tools
+        assert {tool.name for tool in request.agent.tools} == {
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_tool_set",
+        }
     finally:
         client.app.dependency_overrides.clear()
 

@@ -259,6 +259,10 @@ jobs:
                   sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
                   sed -i -E 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
 
+                  # Update mypy additional_dependencies pins so type-checking uses the same SDK version
+                  sed -i -E 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' "$PYPROJECT_FMT_CONFIG"
+                  sed -i -E 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' "$PYPROJECT_FMT_CONFIG"
+
                   echo "✅ Updated pyproject.toml"
 
                   # 2. Regenerate poetry.lock with the new versions
@@ -281,6 +285,14 @@ jobs:
                     (cd enterprise && poetry lock --no-cache)
                     echo "✅ Updated enterprise/poetry.lock"
                   fi
+
+                  echo "📝 Regenerating uv.lock..."
+                  # --no-config bypasses ~/.config/uv/uv.toml where setup-uv writes its
+                  # 7-day freshness guardrail. Unlike --exclude-newer=<date>, it does not
+                  # bake a timestamp into uv.lock's [options] section (which would create
+                  # noise in every future bump PR).
+                  uv lock --no-cache --no-config
+                  echo "✅ Updated uv.lock"
 
                   # 3. Update the version in sandbox_spec_service.py
                   echo "🔧 Updating AGENT_SERVER_IMAGE..."
@@ -306,7 +318,7 @@ jobs:
                   fi
 
                   # Commit and push
-                  git add pyproject.toml poetry.lock "$SANDBOX_SPEC_FILE" "$PYPROJECT_FMT_CONFIG"
+                  git add pyproject.toml poetry.lock uv.lock "$SANDBOX_SPEC_FILE" "$PYPROJECT_FMT_CONFIG"
                   if [ -f "enterprise/poetry.lock" ]; then
                     git add enterprise/poetry.lock
                   fi
@@ -317,7 +329,9 @@ jobs:
                     -m "- Updated SDK packages to v$VERSION with exact pins in pyproject.toml" \
                     -m "- Regenerated poetry.lock" \
                     -m "- Regenerated enterprise/poetry.lock to keep transitive SDK pins aligned" \
+                    -m "- Regenerated uv.lock" \
                     -m "- Updated AGENT_SERVER_IMAGE to ${VERSION}" \
+                    -m "- Updated mypy additional_dependencies pins in pre-commit config" \
                     -m "" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
@@ -342,7 +356,9 @@ jobs:
                   - Updated SDK packages in \`pyproject.toml\` with exact pins
                   - Regenerated \`poetry.lock\` with the target repo's Poetry version
                   - Regenerated \`enterprise/poetry.lock\` so its transitive SDK pins match the root
+                  - Regenerated \`uv.lock\` to match the updated SDK versions
                   - Updated \`AGENT_SERVER_IMAGE\` to \`${VERSION}\` in \`sandbox_spec_service.py\`
+                  - Updated mypy \`additional_dependencies\` pins in \`.pre-commit-config.yaml\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 
