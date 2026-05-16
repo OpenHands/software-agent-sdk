@@ -64,9 +64,7 @@ class TestMCPToolExecutorSecretExpansion:
 
         # Mock successful result
         mock_result = MagicMock(spec=mcp.types.CallToolResult)
-        mock_result.content = [
-            mcp.types.TextContent(type="text", text="Success")
-        ]
+        mock_result.content = [mcp.types.TextContent(type="text", text="Success")]
         mock_result.isError = False
 
         # Track what arguments were passed to call_tool_mcp
@@ -160,7 +158,9 @@ class TestMCPToolExecutorSecretExpansion:
         expanded_action = captured_args.get("action")
         assert expanded_action is not None
         assert expanded_action.data["auth"]["customer_id"] == "expanded-customer"
-        assert expanded_action.data["auth"]["credentials"]["token"] == "expanded-api-key"
+        assert (
+            expanded_action.data["auth"]["credentials"]["token"] == "expanded-api-key"
+        )
         assert expanded_action.data["ids"][0] == "expanded-customer"
         assert expanded_action.data["ids"][1] == "static-id"
 
@@ -177,9 +177,7 @@ class TestMCPToolExecutorSecretExpansion:
         )
 
         mock_result = MagicMock(spec=mcp.types.CallToolResult)
-        mock_result.content = [
-            mcp.types.TextContent(type="text", text="Success")
-        ]
+        mock_result.content = [mcp.types.TextContent(type="text", text="Success")]
         mock_result.isError = False
 
         captured_args: dict[str, Any] = {}
