@@ -219,7 +219,8 @@ class MCPToolExecutor(ToolExecutor):
                 is_error=observation.is_error,
                 tool_name=observation.tool_name,
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to mask secrets in MCP observation: {e}")
             return observation
 
     def close(self) -> None:

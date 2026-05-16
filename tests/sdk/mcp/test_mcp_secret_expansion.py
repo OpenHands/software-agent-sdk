@@ -51,8 +51,8 @@ class TestMCPToolExecutorSecretExpansion:
     def test_executor_expands_secrets_in_action_data(self):
         """Test that MCPToolExecutor expands secrets when conversation is provided.
 
-        Currently FAILING: MCPToolExecutor passes $CUSTOMER_ID as literal string
-        instead of expanding it to "expanded-customer".
+        Verifies that secret references like $VAR and ${VAR} are expanded to
+        actual secret values before being sent to the MCP server.
         """
         # Create action with secret references
         action = MCPToolAction(
