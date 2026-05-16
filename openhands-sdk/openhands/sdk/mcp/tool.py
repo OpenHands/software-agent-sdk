@@ -1,7 +1,7 @@
 """Utility functions for MCP integration."""
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 
@@ -28,6 +28,66 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
+
+# Regex pattern for environment variable references:
+# - $VAR or ${VAR} - simple variable reference
+# - ${VAR:-default} - variable with default value
+SECRET_VAR_PATTERN = re.compile(
+    r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}|\$([a-zA-Z_][a-zA-Z0-9_]*)"
+)
+
+
+def expand_secrets_in_data(
+    data: dict[str, Any],
+    get_secret: Callable[[str], str | None],
+) -> dict[str, Any]:
+    """Expand secret/environment variable references in MCP tool action data.
+
+    Supports variable expansion similar to shell and MCP config:
+    - $VAR - Simple variable reference
+    - ${VAR} - Braced variable reference
+    - ${VAR:-default} - With default value
+
+    Args:
+        data: MCP tool action data dictionary.
+        get_secret: Callback to look up a secret by name. Returns value or None.
+
+    Returns:
+        Data dictionary with secret references expanded.
+    """
+
+    def replace_var(match: re.Match) -> str:
+        # Group 1: braced variable name (from ${VAR} or ${VAR:-default})
+        # Group 2: default value (from ${VAR:-default})
+        # Group 3: unbraced variable name (from $VAR)
+        braced_var = match.group(1)
+        default_value = match.group(2)
+        unbraced_var = match.group(3)
+
+        var_name = braced_var or unbraced_var
+
+        # Look up the secret
+        secret_value = get_secret(var_name)
+        if secret_value is not None:
+            return secret_value
+
+        # Apply default if available (only for braced syntax)
+        if default_value is not None:
+            return default_value
+
+        # Return original if not found (preserves placeholder)
+        return match.group(0)
+
+    def expand_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return SECRET_VAR_PATTERN.sub(replace_var, value)
+        if isinstance(value, dict):
+            return {k: expand_value(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [expand_value(item) for item in value]
+        return value
+
+    return expand_value(data)
 
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
@@ -90,13 +150,33 @@ class MCPToolExecutor(ToolExecutor):
     def __call__(
         self,
         action: MCPToolAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,
     ) -> MCPToolObservation:
-        """Execute an MCP tool call."""
+        """Execute an MCP tool call.
+
+        If a conversation is provided, secret references in the action data
+        (e.g., $VAR, ${VAR}, ${VAR:-default}) are expanded using the
+        conversation's secret registry before calling the MCP server.
+        """
+        # Expand secrets in action data if conversation is available
+        expanded_action = action
+        if conversation is not None:
+            try:
+                secret_registry = conversation.state.secret_registry
+                expanded_data = expand_secrets_in_data(
+                    action.data, secret_registry.get_secret_value
+                )
+                expanded_action = MCPToolAction(data=expanded_data)
+            except Exception as e:
+                logger.warning(f"Failed to expand secrets in MCP tool action: {e}")
+                # Fall back to original action if expansion fails
+
         try:
-            return self.client.call_async_from_sync(
-                self.call_tool, action=action, timeout=self.timeout
+            observation = self.client.call_async_from_sync(
+                self.call_tool, action=expanded_action, timeout=self.timeout
             )
+            # Mask secrets in observation output
+            return self._mask_observation(observation, conversation)
         except TimeoutError:
             error_msg = (
                 f"MCP tool '{self.tool_name}' timed out after {self.timeout} seconds. "
@@ -109,6 +189,37 @@ class MCPToolExecutor(ToolExecutor):
                 is_error=True,
                 tool_name=self.tool_name,
             )
+
+    def _mask_observation(
+        self,
+        observation: MCPToolObservation,
+        conversation: "LocalConversation | None" = None,
+    ) -> MCPToolObservation:
+        """Apply automatic secrets masking to observation content."""
+        if conversation is None:
+            return observation
+
+        try:
+            secret_registry = conversation.state.secret_registry
+            # Mask secrets in all text content blocks
+            masked_content = []
+            for block in observation.content:
+                if hasattr(block, "text") and block.text:
+                    from openhands.sdk.llm import TextContent
+
+                    masked_text = secret_registry.mask_secrets_in_output(block.text)
+                    masked_content.append(TextContent(text=masked_text))
+                else:
+                    masked_content.append(block)
+
+            # Return new observation with masked content
+            return MCPToolObservation(
+                content=masked_content,
+                is_error=observation.is_error,
+                tool_name=observation.tool_name,
+            )
+        except Exception:
+            return observation
 
     def close(self) -> None:
         self.client.sync_close()
