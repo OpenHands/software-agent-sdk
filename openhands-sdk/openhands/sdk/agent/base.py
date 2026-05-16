@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -37,6 +38,7 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
@@ -46,9 +48,53 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-    from openhands.sdk.utils.cipher import Cipher
 
 logger = get_logger(__name__)
+
+
+def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
+    if not value.startswith(FERNET_TOKEN_PREFIX):
+        return value
+    decrypted = cipher.try_decrypt_str(value)
+    if decrypted is None:
+        logger.warning(
+            "MCP env/headers value looks encrypted but could not be decrypted "
+            "(cipher mismatch or corruption); leaving the ciphertext in place."
+        )
+        return value
+    return decrypted
+
+
+def _decrypt_mcp_secret_values(
+    config: dict[str, Any], cipher: Cipher
+) -> dict[str, Any]:
+    config = copy.deepcopy(config)
+    if "mcpServers" not in config:
+        return config
+    servers = config["mcpServers"]
+    if not isinstance(servers, dict):
+        raise ValueError("mcp_config.mcpServers must be a dictionary when provided")
+    for server_name, server in servers.items():
+        if not isinstance(server, dict):
+            raise ValueError(
+                f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
+            )
+        for key in ("env", "headers"):
+            if key not in server:
+                continue
+            mapping = server[key]
+            if not isinstance(mapping, dict):
+                raise ValueError(
+                    f"mcp_config.mcpServers[{server_name!r}].{key} must be "
+                    "a dictionary when provided"
+                )
+            server[key] = {
+                name: _decrypt_mcp_value_or_keep(cipher, value)
+                if isinstance(value, str)
+                else value
+                for name, value in mapping.items()
+            }
+    return config
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -217,20 +263,29 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not isinstance(data, dict):
             return data
-        # - Empty config: omit (default value, nothing to protect)
+        cipher: Cipher | None = info.context.get("cipher") if info.context else None
+        data = dict(data)
+        has_encrypted_mcp_config = "encrypted_mcp_config" in data
         encrypted = data.pop("encrypted_mcp_config", None)
-        if encrypted is None:
+        if not has_encrypted_mcp_config:
+            mcp_config = data.get("mcp_config")
+            if mcp_config is not None and not isinstance(mcp_config, dict):
+                raise ValueError("mcp_config must be a dictionary when provided")
+            if isinstance(mcp_config, dict) and cipher is not None:
+                data["mcp_config"] = _decrypt_mcp_secret_values(mcp_config, cipher)
             return data
 
+        if not isinstance(encrypted, str):
+            raise ValueError("encrypted_mcp_config must be a string when provided")
+
         # If no cipher in context, we can't decrypt - the encrypted value is lost
-        if not info.context or not info.context.get("cipher"):
+        if cipher is None:
             logger.warning(
                 "Found encrypted_mcp_config but no cipher in context - "
                 "MCP configuration will be lost. Provide a cipher to preserve it."
             )
             return data
 
-        cipher: Cipher = info.context["cipher"]
         decrypted = cipher.decrypt(encrypted)
         if decrypted is None:
             logger.warning(
@@ -240,9 +295,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return data
 
         try:
-            data["mcp_config"] = json.loads(decrypted.get_secret_value())
+            mcp_config = json.loads(decrypted.get_secret_value())
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse decrypted mcp_config as JSON: {e}")
+            raise ValueError("encrypted_mcp_config must decrypt to valid JSON") from e
+        if not isinstance(mcp_config, dict):
+            raise ValueError("encrypted_mcp_config must decrypt to a JSON object")
+        data["mcp_config"] = mcp_config
 
         return data
 
