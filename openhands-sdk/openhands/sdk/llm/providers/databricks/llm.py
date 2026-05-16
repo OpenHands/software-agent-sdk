@@ -343,6 +343,9 @@ class DatabricksLLM(LLM):
                 "streaming": enable_streaming,
             },
         )
+        # Pop 'stream' from kwargs — we control it via enable_streaming to avoid
+        # passing a duplicate keyword argument to chat_completion().
+        kwargs.pop("stream", None)
         return self._db_client.chat_completion(
             model=model_name,
             messages=messages,
