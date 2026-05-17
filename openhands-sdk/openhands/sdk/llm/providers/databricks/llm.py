@@ -343,9 +343,13 @@ class DatabricksLLM(LLM):
                 "streaming": enable_streaming,
             },
         )
-        # Pop 'stream' from kwargs — we control it via enable_streaming to avoid
-        # passing a duplicate keyword argument to chat_completion().
-        kwargs.pop("stream", None)
+        # Strip litellm-specific kwargs that must not appear in the JSON body
+        # forwarded to the Databricks AI Gateway.
+        #   - stream: controlled via enable_streaming to avoid duplicate kwarg
+        #   - extra_headers: litellm convention; headers are set by _make_headers()
+        #   - extra_body: litellm convention; unsupported by the gateway
+        for _k in ("stream", "extra_headers", "extra_body"):
+            kwargs.pop(_k, None)
         return self._db_client.chat_completion(
             model=model_name,
             messages=messages,

@@ -238,6 +238,30 @@ def test_transport_call_passes_through_streaming_flag() -> None:
     assert call_kwargs.kwargs.get("stream") is True
 
 
+def test_transport_call_strips_litellm_kwargs() -> None:
+    """_transport_call must strip litellm-specific kwargs (extra_headers,
+    extra_body, stream) before forwarding to chat_completion so they never
+    appear in the JSON body sent to the Databricks AI Gateway."""
+    llm = _make_llm()
+    received_kwargs: dict = {}
+
+    def mock_chat_completion(model, messages, stream=False, on_token=None, **kwargs):
+        received_kwargs.update(kwargs)
+        return MagicMock()
+
+    with patch.object(llm._db_client, "chat_completion", side_effect=mock_chat_completion):
+        llm._transport_call(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_headers={"X-Custom": "value"},
+            extra_body={"custom_param": True},
+            stream=True,  # also stripped; streaming controlled via enable_streaming
+        )
+
+    assert "extra_headers" not in received_kwargs, "extra_headers must be stripped before gateway call"
+    assert "extra_body"    not in received_kwargs, "extra_body must be stripped before gateway call"
+    assert "stream"        not in received_kwargs, "stream must be stripped; controlled via enable_streaming"
+
+
 # ---------------------------------------------------------------------------
 # Resilience knob passthrough
 # ---------------------------------------------------------------------------

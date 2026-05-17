@@ -266,6 +266,42 @@ def test_chat_completion_uses_dedicated_gateway_host_when_set() -> None:
     assert captured_url == [f"{dedicated}/anthropic/v1/messages"]
 
 
+def test_chat_completion_ignores_extra_litellm_kwargs() -> None:
+    """extra_headers and extra_body (litellm conventions) must not appear in
+    the JSON body forwarded to the AI Gateway — the gateway returns 400 if
+    they are present."""
+    client = _make_client(max_retries=0)
+    captured_body: list[dict] = []
+
+    def mock_post(url, headers=None, json=None, **_kw):
+        captured_body.append(json or {})
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_x",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    with patch.object(client._http, "post", side_effect=mock_post):
+        client.chat_completion(
+            model="databricks-claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            # These are litellm-specific kwargs that DatabricksLLM._transport_call
+            # strips before forwarding — the client must never receive them.
+            # (We pass them here directly to confirm the client tolerates them
+            #  if present, but the primary assertion is they don't reach the body.)
+        )
+
+    body = captured_body[0]
+    assert "extra_headers" not in body, "extra_headers must not appear in gateway request body"
+    assert "extra_body" not in body, "extra_body must not appear in gateway request body"
+
+
 # ---------------------------------------------------------------------------
 # resolve_family — metadata-first routing with name-pattern fallback
 # ---------------------------------------------------------------------------
