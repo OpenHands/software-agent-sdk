@@ -209,6 +209,109 @@ def test_agent_mcp_config_backward_compatibility_plaintext() -> None:
     assert agent.mcp_config == mcp_config
 
 
+def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
+    """Encrypted per-value MCP env/header settings decrypt at agent validation."""
+    from pydantic import SecretStr
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-per-value-mcp-key")
+    encrypted_env = cipher.encrypt(SecretStr("ghp-plaintext-token"))
+    encrypted_header = cipher.encrypt(SecretStr("Bearer plaintext-token"))
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "mcp_config": {
+            "mcpServers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "env": {
+                        "GITHUB_PERSONAL_ACCESS_TOKEN": encrypted_env,
+                        "DEBUG": "true",
+                        "PORT": 1234,
+                    },
+                    "headers": {"Authorization": encrypted_header},
+                }
+            }
+        },
+        "kind": "Agent",
+    }
+
+    agent = AgentBase.model_validate(agent_dict, context={"cipher": cipher})
+
+    assert isinstance(agent, Agent)
+    server = agent.mcp_config["mcpServers"]["github"]
+    assert server["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp-plaintext-token"
+    assert server["env"]["DEBUG"] == "true"
+    assert server["env"]["PORT"] == 1234
+    assert server["headers"]["Authorization"] == "Bearer plaintext-token"
+    assert (
+        agent_dict["mcp_config"]["mcpServers"]["github"]["env"][
+            "GITHUB_PERSONAL_ACCESS_TOKEN"
+        ]
+        == encrypted_env
+    )
+
+
+def test_agent_mcp_config_rejects_non_dict_plaintext_config() -> None:
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "mcp_config": [],
+        "kind": "Agent",
+    }
+
+    with pytest.raises(ValueError, match="mcp_config must be a dictionary"):
+        AgentBase.model_validate(agent_dict)
+
+
+def test_agent_mcp_config_rejects_malformed_secret_containers() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-per-value-mcp-key")
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "mcp_config": {"mcpServers": {"github": {"env": "not-a-dict"}}},
+        "kind": "Agent",
+    }
+
+    with pytest.raises(ValueError, match="github.*env.*dictionary"):
+        AgentBase.model_validate(agent_dict, context={"cipher": cipher})
+
+
+def test_agent_mcp_config_rejects_invalid_encrypted_config_type() -> None:
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "encrypted_mcp_config": 123,
+        "kind": "Agent",
+    }
+
+    with pytest.raises(ValueError, match="encrypted_mcp_config must be a string"):
+        AgentBase.model_validate(agent_dict)
+
+
+def test_agent_mcp_config_rejects_encrypted_non_object_config() -> None:
+    from pydantic import SecretStr
+
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-encrypted-mcp-shape-key")
+    agent_dict = {
+        "llm": {"model": "test-model", "usage_id": "test-llm"},
+        "tools": [],
+        "encrypted_mcp_config": cipher.encrypt(SecretStr("[]")),
+        "kind": "Agent",
+    }
+
+    with pytest.raises(
+        ValueError, match="encrypted_mcp_config must decrypt to a JSON object"
+    ):
+        AgentBase.model_validate(agent_dict, context={"cipher": cipher})
+
+
 def test_agent_mcp_config_empty_not_encrypted() -> None:
     """Test that empty mcp_config doesn't create encrypted_mcp_config."""
     from openhands.sdk.utils.cipher import Cipher

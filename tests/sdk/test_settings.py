@@ -90,6 +90,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
 
     assert llm_fields["llm.model"].value_type == "string"
     assert llm_fields["llm.model"].prominence is SettingProminence.CRITICAL
+    assert llm_fields["llm.max_input_tokens"].default is None
+    assert llm_fields["llm.max_output_tokens"].default is None
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL

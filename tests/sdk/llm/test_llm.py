@@ -338,8 +338,11 @@ def test_llm_forwards_extra_headers_to_litellm(mock_completion):
 
     assert mock_completion.call_count == 1
     _, kwargs = mock_completion.call_args
-    # extra_headers forwarded either directly or inside **kwargs
-    assert kwargs.get("extra_headers") == headers
+    # User-supplied extra_headers must reach litellm. The LLM may also inject
+    # OpenRouter HTTP-Referer / X-Title defaults (issue #3138), so only assert
+    # the user's headers are a subset of the forwarded dict.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
@@ -386,7 +389,9 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
-    assert kwargs.get("extra_headers") == headers
+    # See test_llm_forwards_extra_headers_to_litellm for the same rationale.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -1017,7 +1022,8 @@ def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
             api_key=SecretStr("test-key"),
             usage_id="test-llm",
         )
-        assert llm.max_input_tokens == 2048
+        assert llm.max_input_tokens is None
+        assert llm.effective_max_input_tokens == 2048
 
 
 # LLM model_copy Tests
@@ -1230,10 +1236,12 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
         usage_id="test-llm",
     )
 
-    # max_output_tokens should be capped, not set to 200000
-    assert llm.max_output_tokens is not None
-    assert llm.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
-    assert llm.max_output_tokens < 200000
+    # Config remains unset; the effective runtime value is capped.
+    assert llm.max_output_tokens is None
+    effective_max_output_tokens = llm.effective_max_output_tokens
+    assert effective_max_output_tokens is not None
+    assert effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    assert effective_max_output_tokens < 200000
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1252,8 +1260,9 @@ def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info)
         usage_id="test-llm",
     )
 
-    # Should use the actual max_output_tokens, not capped
-    assert llm.max_output_tokens == 8192
+    # Should use the actual effective max_output_tokens, not capped
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1274,9 +1283,10 @@ def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
         usage_id="test-llm",
     )
 
-    # Should use the actual value since it's below the cap
-    assert llm.max_output_tokens == 4096
-    assert llm.max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    # Should use the actual effective value since it's below the cap
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 4096
+    assert llm.effective_max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
 
 def test_explicit_max_output_tokens_not_overridden():
@@ -1290,6 +1300,7 @@ def test_explicit_max_output_tokens_not_overridden():
 
     # Should respect the explicit value
     assert llm.max_output_tokens == 32768
+    assert llm.effective_max_output_tokens == 32768
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1312,8 +1323,10 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 262144 // 2
-    assert llm.max_input_tokens == 262144
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 262144 // 2
+    assert llm.max_input_tokens is None
+    assert llm.effective_max_input_tokens == 262144
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1337,7 +1350,8 @@ def test_max_output_tokens_capped_when_equal_to_max_tokens(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 131072 // 2
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 131072 // 2
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1356,7 +1370,8 @@ def test_max_output_tokens_not_capped_when_below_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 8192
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
 
 
 # LLM Registry Tests

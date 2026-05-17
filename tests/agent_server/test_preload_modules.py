@@ -1,5 +1,6 @@
-"""Tests for the --import-modules preloading helper."""
+"""Tests for the --import-modules preloading and --extra-python-path helpers."""
 
+import importlib
 import logging
 import os
 import sys
@@ -8,7 +9,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from openhands.agent_server.__main__ import _get_internal_server_url, preload_modules
+from openhands.agent_server.__main__ import (
+    _EXTRA_PYTHON_PATH_ENV,
+    _get_internal_server_url,
+    extend_python_path,
+    preload_modules,
+)
 
 
 class TestPreloadModules:
@@ -110,6 +116,134 @@ class TestPreloadModules:
             "no_such_module_xyz_2771" in r.message and "--import-modules" in r.message
             for r in caplog.records
         )
+
+
+class TestExtendPythonPath:
+    """Tests for extend_python_path() — the enabler for custom tool imports
+    in both source and binary (PyInstaller) agent-server builds."""
+
+    def test_none_and_no_env_is_noop(self, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        original = sys.path.copy()
+        extend_python_path(None)
+        assert sys.path == original
+
+    def test_empty_string_and_no_env_is_noop(self, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        original = sys.path.copy()
+        extend_python_path("")
+        assert sys.path == original
+
+    def test_adds_directory_from_cli_arg(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "custom_tools"
+        d.mkdir()
+        extend_python_path(str(d))
+        assert str(d) in sys.path
+        sys.path.remove(str(d))
+
+    def test_adds_directory_from_env_var(self, tmp_path, monkeypatch):
+        d = tmp_path / "env_tools"
+        d.mkdir()
+        monkeypatch.setenv(_EXTRA_PYTHON_PATH_ENV, str(d))
+        extend_python_path(None)
+        assert str(d) in sys.path
+        sys.path.remove(str(d))
+
+    def test_merges_cli_and_env(self, tmp_path, monkeypatch):
+        d1 = tmp_path / "cli_tools"
+        d2 = tmp_path / "env_tools"
+        d1.mkdir()
+        d2.mkdir()
+        monkeypatch.setenv(_EXTRA_PYTHON_PATH_ENV, str(d2))
+        extend_python_path(str(d1))
+        assert str(d1) in sys.path
+        assert str(d2) in sys.path
+        sys.path.remove(str(d1))
+        sys.path.remove(str(d2))
+
+    def test_skips_nonexistent_dir_with_warning(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        bogus = str(tmp_path / "does_not_exist")
+        with caplog.at_level(logging.WARNING):
+            extend_python_path(bogus)
+        assert bogus not in sys.path
+        assert any("non-existent" in r.message for r in caplog.records)
+
+    def test_deduplicates(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "dup_tools"
+        d.mkdir()
+        extend_python_path(f"{d}{os.pathsep}{d}")
+        count = sys.path.count(str(d))
+        assert count == 1
+        sys.path.remove(str(d))
+
+    def test_skips_already_on_sys_path(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "already_there"
+        d.mkdir()
+        abs_d = str(d.resolve())
+        sys.path.insert(0, abs_d)
+        before_count = sys.path.count(abs_d)
+        extend_python_path(abs_d)
+        assert sys.path.count(abs_d) == before_count
+        sys.path.remove(abs_d)
+
+    def test_multiple_dirs_via_pathsep(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d1 = tmp_path / "tools_a"
+        d2 = tmp_path / "tools_b"
+        d1.mkdir()
+        d2.mkdir()
+        extend_python_path(f"{d1}{os.pathsep}{d2}")
+        assert str(d1) in sys.path
+        assert str(d2) in sys.path
+        sys.path.remove(str(d1))
+        sys.path.remove(str(d2))
+
+    def test_enables_import_of_external_module(self, tmp_path, monkeypatch):
+        """End-to-end: extend_python_path + importlib.import_module works
+        for a .py file placed in the extra directory."""
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "ext_tools"
+        d.mkdir()
+        mod_name = "ext_test_tool_abc123"
+        (d / f"{mod_name}.py").write_text("REGISTERED = True\n")
+
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(mod_name)
+
+        extend_python_path(str(d))
+        try:
+            mod = importlib.import_module(mod_name)
+            assert mod.REGISTERED is True
+        finally:
+            sys.path.remove(str(d))
+            sys.modules.pop(mod_name, None)
+
+    def test_enables_preload_modules_integration(self, tmp_path, monkeypatch):
+        """Confirm the intended workflow: extend_python_path() then
+        preload_modules() successfully imports an external tool module."""
+        monkeypatch.delenv(_EXTRA_PYTHON_PATH_ENV, raising=False)
+        d = tmp_path / "integration_tools"
+        d.mkdir()
+        mod_name = "integration_test_tool_xyz789"
+        (d / f"{mod_name}.py").write_text(
+            textwrap.dedent("""\
+                TOOL_REGISTRY = []
+                TOOL_REGISTRY.append("IntegrationTestTool")
+            """)
+        )
+
+        extend_python_path(str(d))
+        try:
+            preload_modules(mod_name)
+            imported = sys.modules[mod_name]
+            assert imported.TOOL_REGISTRY == ["IntegrationTestTool"]
+        finally:
+            sys.path.remove(str(d))
+            sys.modules.pop(mod_name, None)
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "[::]"])

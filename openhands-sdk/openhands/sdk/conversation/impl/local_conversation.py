@@ -977,6 +977,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
+        # Remove the atexit reference so the conversation object can be GC'd
+        # after close. atexit.unregister is a no-op if not registered.
+        atexit.unregister(self.close)
         # Use getattr for safety - object may be partially constructed
         if getattr(self, "_cleanup_initiated", False):
             return
