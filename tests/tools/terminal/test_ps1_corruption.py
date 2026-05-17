@@ -11,8 +11,6 @@ each ###PS1END###, automatically handling corruption scenarios.
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from openhands.tools.terminal.constants import CMD_OUTPUT_METADATA_PS1_REGEX
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
@@ -147,16 +145,19 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
             "The fix should recover the valid block from corrupted output."
         )
 
-    def test_handle_completed_command_fails_with_corrupted_output(self):
+    def test_handle_completed_command_graceful_fallback_with_corrupted_output(self):
         """
-        Test that _handle_completed_command raises AssertionError with corrupted output.
+        Test that _handle_completed_command returns a valid observation when
+        no PS1 blocks are found.
 
         When terminal output is corrupted such that NO valid PS1 blocks are found,
-        the assertion in _handle_completed_command fails with:
-        "Expected at least one PS1 metadata block, but got 0."
+        the session now gracefully returns a TerminalObservation with exit_code=-1
+        instead of crashing with an AssertionError.
 
-        This is the actual error seen in production (Datadog logs).
+        This fix addresses the production errors seen in Datadog logs.
         """
+        from openhands.tools.terminal.terminal.interface import TerminalObservation
+
         # Create a mock terminal interface
         mock_terminal = MagicMock()
         mock_terminal.work_dir = "/workspace"
@@ -164,6 +165,8 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 
         # Create session
         session = TerminalSession(terminal=mock_terminal)
+        session._cwd = "/workspace"
+        session._initialized = True
 
         # Simulate output where ALL PS1 blocks are corrupted
         # In this case, the JSON is completely broken - no valid blocks at all
@@ -189,18 +192,17 @@ ALSO BROKEN
             f"Expected 0 PS1 matches from corrupted output, got {len(ps1_matches)}"
         )
 
-        # Now verify the assertion fails as seen in production
-        with pytest.raises(AssertionError) as exc_info:
-            session._handle_completed_command(
-                command="npm test",
-                terminal_content=completely_corrupted_output,
-                ps1_matches=ps1_matches,
-            )
+        # Now verify it returns a valid observation instead of crashing
+        obs = session._handle_completed_command(
+            command="npm test",
+            terminal_content=completely_corrupted_output,
+            ps1_matches=ps1_matches,
+        )
 
-        # Verify the error message matches what we see in Datadog
-        error_msg = str(exc_info.value)
-        assert "Expected at least one PS1 metadata block, but got 0" in error_msg
-        assert "FULL OUTPUT" in error_msg
+        # Verify graceful fallback behavior
+        assert isinstance(obs, TerminalObservation)
+        assert obs.exit_code == -1  # Unknown exit code sentinel
+        assert "PS1 metadata" in obs.metadata.suffix
 
     def test_pager_output_causes_zero_ps1_matches(self):
         """
@@ -295,30 +297,37 @@ class TestPS1CorruptionIntegration:
 
     def test_terminal_session_handles_corrupted_output_gracefully(self):
         """
-        Test that TerminalSession raises AssertionError when no PS1 blocks found.
+        Test that TerminalSession handles missing PS1 blocks gracefully.
 
-        This documents the current behavior when corruption recovery fails.
+        When corruption recovery fails and no valid PS1 blocks are found,
+        the session now returns a valid TerminalObservation with exit_code=-1
+        instead of crashing with an AssertionError.
         """
+        from openhands.tools.terminal.terminal.interface import TerminalObservation
+
         mock_terminal = MagicMock()
         mock_terminal.work_dir = "/workspace"
         mock_terminal.username = None
 
         session = TerminalSession(terminal=mock_terminal)
+        session._cwd = "/workspace"
+        session._initialized = True
 
         # Empty PS1 matches list (as would happen with completely corrupted output)
         empty_matches = []
 
-        # This SHOULD NOT raise an error in production, but currently it does
-        with pytest.raises(AssertionError) as exc_info:
-            session._handle_completed_command(
-                command="echo test",
-                terminal_content="completely garbled output with no PS1 markers",
-                ps1_matches=empty_matches,
-            )
+        # Verify graceful fallback instead of crash
+        obs = session._handle_completed_command(
+            command="echo test",
+            terminal_content="completely garbled output with no PS1 markers",
+            ps1_matches=empty_matches,
+        )
 
-        # Document the current error behavior
-        error_msg = str(exc_info.value)
-        assert "Expected at least one PS1 metadata block, but got 0" in error_msg
+        # Verify the graceful fallback behavior
+        assert isinstance(obs, TerminalObservation)
+        assert obs.exit_code == -1  # Unknown exit code sentinel
+        assert "PS1 metadata" in obs.metadata.suffix
+        assert "echo test" in obs.text or "garbled" in obs.text
 
 
 class TestPS1ParserRobustness:

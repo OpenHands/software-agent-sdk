@@ -352,3 +352,212 @@ class TestConversationFactoryPlugins:
         # Should work without errors
         assert conversation is not None
         conversation.close()
+
+
+class TestPluginMcpSecretsExpansion:
+    """Tests for per-conversation secrets in MCP config expansion.
+
+    These tests verify that secrets injected via the REST API are correctly
+    used for MCP config variable expansion (${VAR} syntax).
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/2872
+    """
+
+    def test_plugin_mcp_secrets_without_defaults(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Test that per-conversation secrets work for variables without defaults.
+
+        This test verifies that ${VAR} placeholders (without defaults) are
+        correctly expanded using secrets from SecretRegistry.
+        """
+        # Mock create_mcp_tools to avoid actually starting MCP servers
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+
+        # Create plugin with MCP config using ${VAR} WITHOUT default
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer ${SECRET_TOKEN}"},
+                    }
+                }
+            },
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+        )
+
+        # Inject secret BEFORE triggering plugin loading
+        conversation.update_secrets({"SECRET_TOKEN": "my-actual-secret"})
+
+        # Trigger plugin loading and agent initialization
+        conversation._ensure_agent_ready()
+
+        # Verify the secret was expanded in the MCP config
+        assert conversation.agent.mcp_config is not None
+        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
+            "headers"
+        ]["Authorization"]
+        assert auth_header == "Bearer my-actual-secret", (
+            f"Expected 'Bearer my-actual-secret', got '{auth_header}'"
+        )
+
+        conversation.close()
+
+    def test_plugin_mcp_secrets_with_defaults(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Test that per-conversation secrets work with default values.
+
+        This test verifies that ${VAR:-default} placeholders use the secret
+        value when available, NOT the default.
+
+        This is a regression test for the double-expansion bug where:
+        1. First expansion in plugin.py replaces ${VAR:-default} with "default"
+        2. Second expansion in local_conversation.py sees no placeholder to expand
+
+        Expected: Secret value should be used, not the default.
+        """
+        # Mock create_mcp_tools to avoid actually starting MCP servers
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+
+        # Create plugin with MCP config using ${VAR:-default} WITH default
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {
+                        "url": "https://example.com/mcp",
+                        "headers": {
+                            "Authorization": "Bearer ${SECRET_TOKEN:-fallback-token}"
+                        },
+                    }
+                }
+            },
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+        )
+
+        # Inject secret BEFORE triggering plugin loading
+        conversation.update_secrets({"SECRET_TOKEN": "my-actual-secret"})
+
+        # Trigger plugin loading and agent initialization
+        conversation._ensure_agent_ready()
+
+        # CRITICAL: Verify the secret was used, NOT the default
+        assert conversation.agent.mcp_config is not None
+        auth_header = conversation.agent.mcp_config["mcpServers"]["test-server"][
+            "headers"
+        ]["Authorization"]
+
+        # This assertion will FAIL with double-expansion bug
+        assert auth_header == "Bearer my-actual-secret", (
+            f"Expected secret value 'Bearer my-actual-secret', got '{auth_header}'. "
+            "This is likely due to double-expansion: the default value was applied "
+            "during plugin loading before secrets were available."
+        )
+
+        conversation.close()
+
+    def test_plugin_mcp_secrets_fallback_to_default_when_no_secret(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Test that default values work when no secret is provided.
+
+        This test verifies that ${VAR:-default} correctly falls back to the
+        default value when no secret is injected.
+        """
+        # Mock create_mcp_tools to avoid actually starting MCP servers
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+
+        # Create plugin with MCP config using ${VAR:-default}
+        # Note: MCP config structure requires valid fields, so we use 'headers'
+        # for string values instead of 'timeout' which expects an integer
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={
+                "mcpServers": {
+                    "test-server": {
+                        "url": "${API_URL:-https://default.example.com/mcp}",
+                        "headers": {
+                            "X-Custom-Header": "${CUSTOM_HEADER:-default-header-value}"
+                        },
+                    }
+                }
+            },
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+        )
+
+        # Do NOT inject any secrets - should use defaults
+
+        # Trigger plugin loading and agent initialization
+        conversation._ensure_agent_ready()
+
+        # Verify defaults were used
+        assert conversation.agent.mcp_config is not None
+        url = conversation.agent.mcp_config["mcpServers"]["test-server"]["url"]
+        header = conversation.agent.mcp_config["mcpServers"]["test-server"]["headers"][
+            "X-Custom-Header"
+        ]
+
+        assert url == "https://default.example.com/mcp"
+        assert header == "default-header-value"
+
+        conversation.close()

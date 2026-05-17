@@ -29,7 +29,10 @@ def _make_llm() -> LLM:
     )
 
 
-def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
+def _make_parent_conversation(
+    tmp_path: Path,
+    persistence_dir: str | Path | None = None,
+) -> LocalConversation:
     """Create a real (minimal) parent conversation for the manager."""
     llm = _make_llm()
     agent = Agent(llm=llm, tools=[])
@@ -38,13 +41,17 @@ def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
         workspace=str(tmp_path),
         visualizer=None,
         delete_on_close=False,
+        persistence_dir=persistence_dir,
     )
 
 
-def _manager_with_parent(tmp_path: Path) -> tuple[TaskManager, LocalConversation]:
+def _manager_with_parent(
+    tmp_path: Path,
+    persistence_dir: str | Path | None = None,
+) -> tuple[TaskManager, LocalConversation]:
     """Return a TaskManager whose parent conversation is already set."""
     manager = TaskManager()
-    parent = _make_parent_conversation(tmp_path)
+    parent = _make_parent_conversation(tmp_path, persistence_dir=persistence_dir)
     manager._ensure_parent(parent)
     return manager, parent
 
@@ -118,11 +125,9 @@ class TestTaskManager:
         assert len(manager._tasks) == 0
         assert manager._parent_conversation is None
 
-    def test_tmp_dir_created(self):
+    def test_persistence_dir_none_at_init(self):
         manager = TaskManager()
-        assert manager._tmp_dir.exists()
-        manager.close()
-        assert not manager._tmp_dir.exists()
+        assert manager._persistence_dir is None
 
     def test_generate_task_id(self):
         """Generated task IDs should be unique and prefixed."""
@@ -166,9 +171,8 @@ class TestTaskManager:
         register_builtins_agents()
 
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="test task",
-            max_turns=3,
         )
         assert isinstance(task, Task)
         assert task.status == TaskStatus.RUNNING
@@ -181,16 +185,70 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
 
-        task = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.id in manager._tasks
         assert isinstance(manager._tasks[task.id].conversation_id, uuid.UUID)
+
+    def test_create_task_uses_parent_max_iteration_when_factory_is_none(self, tmp_path):
+        """Fallback to parent's max_iteration_per_run when factory has none."""
+        register_builtins_agents()
+        llm = _make_llm()
+        agent = Agent(llm=llm, tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_iteration_per_run=100,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        task = manager._create_task(subagent_type="default", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_iteration_per_run == 100
+
+    def test_create_task_prefers_factory_max_iteration_over_parent(self, tmp_path):
+        """Factory definition max_iteration_per_run takes precedence over parent."""
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="limited_agent",
+            description="Agent with iteration limit",
+            model="inherit",
+            tools=[],
+            system_prompt="You are limited.",
+            max_iteration_per_run=50,
+        )
+        factory_func = agent_definition_to_factory(agent_def)
+        register_agent(
+            name="limited_agent",
+            factory_func=factory_func,
+            description=agent_def,
+        )
+
+        llm = _make_llm()
+        agent = Agent(llm=llm, tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_iteration_per_run=200,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+
+        task = manager._create_task(subagent_type="limited_agent", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_iteration_per_run == 50
 
     def test_resume_unknown_task_raises(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         with pytest.raises(ValueError, match="not found"):
-            manager._resume_task(resume="task_nonexistent", subagent_type="default")
+            manager._resume_task(
+                resume="task_nonexistent", subagent_type="general-purpose"
+            )
 
     def test_resume_after_evict(self, tmp_path):
         """A task that was created, evicted, and then resumed should work."""
@@ -198,16 +256,16 @@ class TestTaskManager:
         register_builtins_agents()
 
         # Create and evict a task (simulating a completed first run)
-        task = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
-        )
+        task = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = task.id
         original_uuid = task.conversation_id
         manager._evict_task(task)
         assert original_id in manager._tasks
 
         # Resume it
-        resumed = manager._resume_task(resume=original_id, subagent_type="default")
+        resumed = manager._resume_task(
+            resume=original_id, subagent_type="general-purpose"
+        )
         assert resumed.id == original_id
         assert resumed.conversation_id == original_uuid
         assert resumed.status == TaskStatus.RUNNING
@@ -218,7 +276,7 @@ class TestTaskManager:
         """'default' should return an agent without raising."""
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
         assert isinstance(agent, Agent)
         assert agent.llm.stream is False
 
@@ -247,9 +305,10 @@ class TestTaskManager:
         with pytest.raises(ValueError, match="Unknown agent"):
             manager._get_sub_agent("nonexistent_agent")
 
-    def test_close(self):
-        manager = TaskManager()
-        assert manager._tmp_dir.exists()
+    def test_close(self, tmp_path):
+        manager, _ = _manager_with_parent(tmp_path)
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
 
         manager._tasks["tasks_123"] = Task(
             id="tasks_123",
@@ -259,14 +318,14 @@ class TestTaskManager:
 
         manager.close()
 
-        assert not manager._tmp_dir.exists()
+        assert not manager._persistence_dir.exists()
         assert len(manager._tasks) == 0
 
     def test_returns_local_conversation(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="quiz",
@@ -282,7 +341,7 @@ class TestTaskManager:
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description=None,
@@ -295,13 +354,13 @@ class TestTaskManager:
         persistence_dir = conv.state.persistence_dir
         assert persistence_dir is not None
         conv_persistence = Path(persistence_dir)
-        assert str(conv_persistence).startswith(str(manager._tmp_dir))
+        assert str(conv_persistence).startswith(str(manager._persistence_dir))
 
     def test_no_visualizer_when_parent_has_none(self, tmp_path):
         manager, _ = _manager_with_parent(tmp_path)
         register_builtins_agents()
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -311,6 +370,27 @@ class TestTaskManager:
             worker_agent=agent,
         )
         assert conv._visualizer is None
+
+    def test_sub_agents_inherit_parent_prompt_cache_key(self, tmp_path):
+        """Sibling sub-agents share the parent's OpenAI prefix-cache shard."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        parent_key = parent.agent.llm._prompt_cache_key
+
+        sub_keys = []
+        for _ in range(2):
+            task_id, conversation_id = manager._generate_ids()
+            agent = manager._get_sub_agent("general-purpose")
+            conv = manager._get_conversation(
+                description=None,
+                max_iteration_per_run=500,
+                task_id=task_id,
+                conversation_id=conversation_id,
+                worker_agent=agent,
+            )
+            sub_keys.append(conv.agent.llm._prompt_cache_key)
+
+        assert sub_keys == [parent_key, parent_key]
 
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
@@ -471,7 +551,7 @@ class TestStartTask:
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
                 prompt="do the thing",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 conversation=parent,
             )
 
@@ -491,7 +571,7 @@ class TestStartTask:
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             manager.start_task(
                 prompt="hello",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 conversation=parent,
             )
 
@@ -503,16 +583,14 @@ class TestStartTask:
         register_builtins_agents()
 
         # Create and evict a task to simulate a prior completed run
-        first = manager._create_task(
-            subagent_type="default", description=None, max_turns=None
-        )
+        first = manager._create_task(subagent_type="general-purpose", description=None)
         original_id = first.id
         manager._evict_task(first)
 
         with patch.object(manager, "_run_task", side_effect=self._fake_run_task):
             result = manager.start_task(
                 prompt="continue",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 resume=original_id,
                 conversation=parent,
             )
@@ -529,7 +607,7 @@ class TestStartTask:
         with pytest.raises(ValueError, match="not found"):
             manager.start_task(
                 prompt="continue",
-                subagent_type="default",
+                subagent_type="general-purpose",
                 resume="task_nonexistent",
                 conversation=parent,
             )
@@ -550,7 +628,7 @@ class TestTaskMetrics:
         register_builtins_agents()
 
         parent_llm = parent.agent.llm
-        sub_agent = manager._get_sub_agent("default")
+        sub_agent = manager._get_sub_agent("general-purpose")
 
         assert sub_agent.llm.metrics is not parent_llm.metrics
 
@@ -564,9 +642,8 @@ class TestTaskMetrics:
         register_builtins_agents()
 
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="test",
-            max_turns=3,
         )
 
         # Wire LLM into sub-conv stats (simulates what _ensure_agent_ready does)
@@ -612,9 +689,8 @@ class TestTaskMetrics:
 
         for cost in (1.00, 2.00):
             task = manager._create_task(
-                subagent_type="default",
+                subagent_type="general-purpose",
                 description="test",
-                max_turns=3,
             )
             sub_conv = task.conversation
             assert sub_conv is not None
@@ -684,7 +760,6 @@ class TestTaskManagerHooks:
         task = manager._create_task(
             subagent_type="hooked_agent",
             description="test hooks",
-            max_turns=3,
         )
 
         sub_conv = task.conversation
@@ -699,9 +774,8 @@ class TestTaskManagerHooks:
 
         manager, _ = _manager_with_parent(tmp_path)
         task = manager._create_task(
-            subagent_type="default",
+            subagent_type="general-purpose",
             description="no hooks",
-            max_turns=3,
         )
 
         sub_conv = task.conversation
@@ -726,7 +800,6 @@ class TestTaskManagerHooks:
         task = manager._create_task(
             subagent_type="hooked_resume",
             description="test",
-            max_turns=3,
         )
         original_id = task.id
         manager._evict_task(task)
@@ -756,7 +829,7 @@ class TestTaskManagerHooks:
         )
 
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -777,7 +850,7 @@ class TestTaskManagerHooks:
         manager, _ = _manager_with_parent(tmp_path)
 
         task_id, conversation_id = manager._generate_ids()
-        agent = manager._get_sub_agent("default")
+        agent = manager._get_sub_agent("general-purpose")
 
         conv = manager._get_conversation(
             description="test",
@@ -788,3 +861,84 @@ class TestTaskManagerHooks:
         )
 
         assert conv._pending_hook_config is None
+
+
+class TestTaskManagerPersistence:
+    """Tests for persistence directory behavior."""
+
+    def setup_method(self):
+        _reset_registry_for_tests()
+
+    def teardown_method(self):
+        _reset_registry_for_tests()
+
+    def test_no_persistence_uses_tmp_dir(self, tmp_path):
+        """When the parent has no persistence_dir, manager uses a temp directory."""
+        manager, parent = _manager_with_parent(tmp_path)
+        assert parent.state.persistence_dir is None
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
+        assert "openhands_tasks_" in str(manager._persistence_dir)
+
+    def test_no_persistence_close_deletes_tmp_dir(self, tmp_path):
+        """When the parent has no persistence_dir, close() deletes the temp dir."""
+        manager, _ = _manager_with_parent(tmp_path)
+        persistence_dir = manager._persistence_dir
+        assert persistence_dir is not None
+        assert persistence_dir.exists()
+
+        manager.close()
+
+        assert not persistence_dir.exists()
+
+    def test_with_persistence_creates_subagents_dir(self, tmp_path):
+        """When the parent persists, manager creates a subagents/ subdirectory."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, parent = _manager_with_parent(
+            tmp_path, persistence_dir=parent_persistence
+        )
+
+        assert parent.state.persistence_dir is not None
+        assert manager._persistence_dir is not None
+        assert manager._persistence_dir.exists()
+        assert manager._persistence_dir.name == "subagents"
+        assert str(manager._persistence_dir).startswith(
+            str(parent.state.persistence_dir)
+        )
+
+    def test_with_persistence_close_preserves_subagents_dir(self, tmp_path):
+        """When the parent persists, close() does NOT delete the subagents dir."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, _ = _manager_with_parent(tmp_path, persistence_dir=parent_persistence)
+        persistence_dir = manager._persistence_dir
+        assert persistence_dir is not None
+        assert persistence_dir.exists()
+
+        manager.close()
+
+        # The subagents dir should be preserved for future restarts
+        assert persistence_dir.exists()
+
+    def test_with_persistence_subagent_conv_stored_under_subagents(self, tmp_path):
+        """Sub-agent conversations should be persisted under the subagents/ dir."""
+        parent_persistence = tmp_path / "conversations"
+        parent_persistence.mkdir()
+        manager, _ = _manager_with_parent(tmp_path, persistence_dir=parent_persistence)
+        register_builtins_agents()
+
+        task_id, conversation_id = manager._generate_ids()
+        agent = manager._get_sub_agent("general-purpose")
+
+        conv = manager._get_conversation(
+            description=None,
+            max_iteration_per_run=500,
+            task_id=task_id,
+            worker_agent=agent,
+            conversation_id=conversation_id,
+        )
+
+        conv_persistence = conv.state.persistence_dir
+        assert conv_persistence is not None
+        assert str(conv_persistence).startswith(str(manager._persistence_dir))

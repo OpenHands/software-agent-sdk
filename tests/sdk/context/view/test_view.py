@@ -25,7 +25,7 @@ def test_view_preserves_uncondensed_lists() -> None:
 def test_view_forgets_events() -> None:
     """Tests that views drop forgotten events and the condensation actions."""
     message_events: list[Event] = [message_event(f"Event {i}") for i in range(5)]
-    message_event_ids: list[str] = [event.id for event in message_events]
+    message_event_ids = {event.id for event in message_events}
 
     # Build a list of events: M_1, ..., M_5, Condensation
     # The condensation specifically targets the IDs of all M_i messages
@@ -45,7 +45,7 @@ def test_view_forgets_events() -> None:
 def test_view_keeps_non_forgotten_events() -> None:
     """Tests that views keep non-forgotten events."""
     message_events: list[Event] = [message_event(f"Event {i}") for i in range(5)]
-    message_event_ids: list[str] = [event.id for event in message_events]
+    message_event_ids = {event.id for event in message_events}
 
     for forgotten_event_id in message_event_ids:
         events: list[Event] = [
@@ -55,7 +55,7 @@ def test_view_keeps_non_forgotten_events() -> None:
             # one of the events. That way we can check that the rest of the
             # events are preserved.
             Condensation(
-                forgotten_event_ids=[forgotten_event_id],
+                forgotten_event_ids={forgotten_event_id},
                 llm_response_id="condensation_response_1",
             ),
         ]
@@ -76,7 +76,7 @@ def test_view_inserts_summary() -> None:
         events = [
             *message_events,
             Condensation(
-                forgotten_event_ids=[],
+                forgotten_event_ids=set(),
                 summary="My Summary",
                 summary_offset=offset,
                 llm_response_id="condensation_response_1",
@@ -120,7 +120,7 @@ def test_no_condensation_action_in_view() -> None:
     events.extend(message_events[:2])
     events.append(
         Condensation(
-            forgotten_event_ids=[message_events[0].id],
+            forgotten_event_ids={message_events[0].id},
             llm_response_id="condensation_response_1",
         )
     )
@@ -172,7 +172,7 @@ def test_handled_condensation_request_with_condensation_action() -> None:
     )
     events.append(
         Condensation(
-            forgotten_event_ids=[event.id for event in events[:2]],
+            forgotten_event_ids={event.id for event in events[:2]},
             llm_response_id="condensation_response_1",
         )
     )
@@ -197,7 +197,7 @@ def test_multiple_condensation_requests_pattern() -> None:
         CondensationRequest(),  # First request
         message_event(content="Event 1"),
         Condensation(
-            forgotten_event_ids=[], llm_response_id="condensation_response_1"
+            forgotten_event_ids=set(), llm_response_id="condensation_response_1"
         ),  # Handles first request
         message_event(content="Event 2"),
         CondensationRequest(),  # Second request - should be unhandled
@@ -222,7 +222,7 @@ def test_condensation_action_before_request() -> None:
     events = [
         message_event(content="Event 0"),
         Condensation(
-            forgotten_event_ids=[], llm_response_id="condensation_response_1"
+            forgotten_event_ids=set(), llm_response_id="condensation_response_1"
         ),  # This doesn't handle the later request
         message_event(content="Event 1"),
         CondensationRequest(),  # This should be unhandled
@@ -282,7 +282,9 @@ def test_condensation_request_always_removed_from_view() -> None:
         message_event(content="Event 0"),
         CondensationRequest(),
         message_event(content="Event 1"),
-        Condensation(forgotten_event_ids=[], llm_response_id="condensation_response_1"),
+        Condensation(
+            forgotten_event_ids=set(), llm_response_id="condensation_response_1"
+        ),
         message_event(content="Event 2"),
     ]
     view_handled = View.from_events(events_handled)
@@ -292,85 +294,3 @@ def test_condensation_request_always_removed_from_view() -> None:
     for event in view_handled:
         assert not isinstance(event, CondensationRequest)
         assert not isinstance(event, Condensation)
-
-
-def test_condensations_field_empty_when_no_condensations() -> None:
-    """Test that condensations field is empty when there are no condensation events."""
-    events: list[Event] = [message_event(f"Event {i}") for i in range(3)]
-    view = View.from_events(events)
-
-    assert view.condensations == []
-
-
-def test_condensations_field_stores_all_condensations_in_order() -> None:
-    """Test that condensations field stores all condensation events in chronological
-    order.
-    """
-    message_events = [message_event(f"Event {i}") for i in range(5)]
-
-    # Create multiple condensations
-    condensation1 = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        summary="Summary 1",
-        llm_response_id="condensation_response_1",
-    )
-    condensation2 = Condensation(
-        forgotten_event_ids=[message_events[1].id],
-        summary="Summary 2",
-        llm_response_id="condensation_response_2",
-    )
-    condensation3 = Condensation(
-        forgotten_event_ids=[],
-        summary="Summary 3",
-        llm_response_id="condensation_response_3",
-    )
-
-    events: list[Event] = [
-        message_events[0],
-        message_events[1],
-        condensation1,
-        message_events[2],
-        condensation2,
-        message_events[3],
-        message_events[4],
-        condensation3,
-    ]
-
-    view = View.from_events(events)
-
-    # Check that all condensations are stored in order
-    assert len(view.condensations) == 3
-    assert view.condensations[0] == condensation1
-    assert view.condensations[1] == condensation2
-    assert view.condensations[2] == condensation3
-
-
-def test_condensations_field_with_mixed_events() -> None:
-    """Test condensations field behavior with mixed event types including requests."""
-    message_events = [message_event(f"Event {i}") for i in range(4)]
-
-    condensation1 = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        llm_response_id="condensation_response_1",
-    )
-    condensation2 = Condensation(
-        forgotten_event_ids=[], llm_response_id="condensation_response_2"
-    )
-
-    events: list[Event] = [
-        message_events[0],
-        CondensationRequest(),  # Should not appear in condensations
-        message_events[1],
-        condensation1,
-        message_events[2],
-        CondensationRequest(),  # Should not appear in condensations
-        condensation2,
-        message_events[3],
-    ]
-
-    view = View.from_events(events)
-
-    # Only actual Condensation events should be in the condensations field
-    assert len(view.condensations) == 2
-    assert view.condensations[0] == condensation1
-    assert view.condensations[1] == condensation2

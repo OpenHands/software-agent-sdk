@@ -8,6 +8,8 @@ available plugins with their metadata and source locations.
 
 Additionally, it provides utilities for managing installed plugins in the
 user's home directory (~/.openhands/plugins/installed/).
+
+Note: Marketplace classes live in ``openhands.sdk.marketplace``.
 """
 
 from openhands.sdk.plugin.fetch import (
@@ -16,7 +18,6 @@ from openhands.sdk.plugin.fetch import (
 )
 from openhands.sdk.plugin.installed import (
     InstalledPluginInfo,
-    InstalledPluginsMetadata,
     disable_plugin,
     enable_plugin,
     get_installed_plugin,
@@ -38,12 +39,6 @@ from openhands.sdk.plugin.source import (
 )
 from openhands.sdk.plugin.types import (
     CommandDefinition,
-    Marketplace,
-    MarketplaceEntry,
-    MarketplaceMetadata,
-    MarketplaceOwner,
-    MarketplacePluginEntry,
-    MarketplacePluginSource,
     PluginAuthor,
     PluginManifest,
     PluginSource,
@@ -63,13 +58,6 @@ __all__ = [
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
-    # Marketplace classes
-    "Marketplace",
-    "MarketplaceEntry",
-    "MarketplaceOwner",
-    "MarketplacePluginEntry",
-    "MarketplacePluginSource",
-    "MarketplaceMetadata",
     # Source path utilities
     "GitHubURLComponents",
     "parse_github_url",
@@ -78,7 +66,6 @@ __all__ = [
     "resolve_source_path",
     # Installed plugins management
     "InstalledPluginInfo",
-    "InstalledPluginsMetadata",
     "install_plugin",
     "uninstall_plugin",
     "list_installed_plugins",

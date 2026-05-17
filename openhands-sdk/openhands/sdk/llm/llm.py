@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -23,12 +24,13 @@ from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
-from openhands.sdk.utils.deprecation import warn_deprecated
+from openhands.sdk.settings.metadata import SettingProminence, field_meta
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
+    from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -65,6 +67,7 @@ from litellm.types.llms.openai import (
     RefusalDeltaEvent,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from litellm.types.utils import (
     Delta,
@@ -96,6 +99,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
@@ -133,6 +137,18 @@ ENV_ALLOW_SHORT_CONTEXT_WINDOWS: Final[str] = "ALLOW_SHORT_CONTEXT_WINDOWS"
 # 16384 is a safe default that works for most models (GPT-4o: 16k, Claude: 8k).
 DEFAULT_MAX_OUTPUT_TOKENS_CAP: Final[int] = 16384
 
+# Secret-bearing fields on LLM. Kept as a single source of truth so callers that
+# need to walk secrets (e.g. cipher-aware decryption on the save path) stay in
+# sync with the serializer below.
+LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
+    "api_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+)
+
+LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
@@ -142,33 +158,85 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     API authentication, retry logic, tool calling capabilities, and async
     cancellation support.
 
+    Attributes:
+        model: Model name (e.g., "claude-sonnet-4-20250514").
+        api_key: API key for authentication.
+        base_url: Custom API base URL.
+        num_retries: Number of retry attempts for failed requests.
+        timeout: Request timeout in seconds.
+
     Example:
-        >>> from openhands.sdk import LLM
-        >>> from pydantic import SecretStr
-        >>> llm = LLM(
-        ...     model="claude-sonnet-4-20250514",
-        ...     api_key=SecretStr("your-api-key"),
-        ...     usage_id="my-agent"
-        ... )
-        >>> # Use with agent or conversation
+        ```python
+        from openhands.sdk import LLM
+        from pydantic import SecretStr
+
+        llm = LLM(
+            model="claude-sonnet-4-20250514",
+            api_key=SecretStr("your-api-key"),
+            usage_id="my-agent"
+        )
+        # Use with agent or conversation
+        ```
     """
 
     # =========================================================================
     # Config fields
     # =========================================================================
-    model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
-    api_key: str | SecretStr | None = Field(default=None, description="API key.")
-    base_url: str | None = Field(default=None, description="Custom base URL.")
+
+    model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model name.",
+        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+    )
+    api_key: str | SecretStr | None = Field(
+        default=None,
+        description="API key.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="API Key",
+        ),
+    )
+    base_url: str | None = Field(
+        default=None,
+        description="Custom base URL.",
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
+    )
     api_version: str | None = Field(
-        default=None, description="API version (e.g., Azure)."
+        default=None,
+        description="API version (e.g., Azure).",
     )
 
-    aws_access_key_id: str | SecretStr | None = Field(default=None)
-    aws_secret_access_key: str | SecretStr | None = Field(default=None)
-    aws_region_name: str | None = Field(default=None)
+    aws_access_key_id: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_secret_access_key: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_session_token: str | SecretStr | None = Field(
+        default=None,
+    )
+    aws_region_name: str | None = Field(
+        default=None,
+    )
+    aws_profile_name: str | None = Field(
+        default=None,
+    )
+    aws_role_name: str | None = Field(
+        default=None,
+    )
+    aws_session_name: str | None = Field(
+        default=None,
+    )
+    aws_bedrock_runtime_endpoint: str | None = Field(
+        default=None,
+    )
 
-    openrouter_site_url: str = Field(default="https://docs.all-hands.dev/")
-    openrouter_app_name: str = Field(default="OpenHands")
+    openrouter_site_url: str = Field(
+        default="https://docs.all-hands.dev/",
+    )
+    openrouter_app_name: str = Field(
+        default="OpenHands",
+    )
 
     num_retries: int = Field(default=5, ge=0)
     retry_multiplier: float = Field(default=8.0, ge=0)
@@ -249,7 +317,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=0,
         description="The cost per output token. This will available in logs for user.",
     )
-    ollama_base_url: str | None = Field(default=None)
+    ollama_base_url: str | None = Field(
+        default=None,
+    )
 
     stream: bool = Field(
         default=False,
@@ -271,11 +341,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "processing (useful for cost reduction).",
     )
     disable_stop_word: bool | None = Field(
-        default=False, description="Disable using of stop word."
+        default=False,
+        description="Disable using of stop word.",
     )
-    caching_prompt: bool = Field(default=True, description="Enable caching of prompts.")
+    caching_prompt: bool = Field(
+        default=True,
+        description="Enable caching of prompts.",
+    )
     log_completions: bool = Field(
-        default=False, description="Enable logging of completions."
+        default=False,
+        description="Enable logging of completions.",
     )
     log_completions_folder: str = Field(
         default=os.path.join(ENV_LOG_DIR, "completions"),
@@ -283,7 +358,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Required if log_completions is True.",
     )
     custom_tokenizer: str | None = Field(
-        default=None, description="A custom tokenizer to use for token counting."
+        default=None,
+        description="A custom tokenizer to use for token counting.",
     )
     native_tool_calling: bool = Field(
         default=True,
@@ -331,18 +407,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "supported by Anthropic models.",
     )
     seed: int | None = Field(
-        default=None, description="The seed to use for random number generation."
-    )
-    # REMOVE_AT: 1.15.0 - Remove this field and its handling in chat_options.py
-    safety_settings: list[dict[str, str]] | None = Field(
         default=None,
-        description=(
-            "Deprecated: Safety settings for models that support them "
-            "(like Mistral AI and Gemini). This field is deprecated in 1.10.0 "
-            "and will be removed in 1.15.0. Safety settings are designed for "
-            "consumer-facing content moderation, which is not relevant for "
-            "coding agents."
-        ),
+        description="The seed to use for random number generation.",
     )
     usage_id: str = Field(
         default="default",
@@ -396,6 +462,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
+    _prompt_cache_key: str | None = PrivateAttr(default=None)
+    _effective_max_input_tokens: int | None = PrivateAttr(default=None)
+    _effective_max_output_tokens: int | None = PrivateAttr(default=None)
+    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
 
     # Async runner for interruptible LLM calls
     _async_runner: AsyncRunner | None = PrivateAttr(default=None)
@@ -407,30 +477,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
-    @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
+    @field_validator(
+        "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
+    )
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
-
-    # REMOVE_AT: 1.15.0 - Remove this validator
-    @field_validator("safety_settings", mode="before")
-    @classmethod
-    def _warn_safety_settings_deprecated(
-        cls, v: list[dict[str, str]] | None
-    ) -> list[dict[str, str]] | None:
-        """Emit deprecation warning when safety_settings is explicitly set."""
-        if v is not None:
-            warn_deprecated(
-                "LLM.safety_settings",
-                deprecated_in="1.10.0",
-                removed_in="1.15.0",
-                details=(
-                    "Safety settings are designed for consumer-facing content "
-                    "moderation, which is not relevant for coding agents."
-                ),
-                stacklevel=4,
-            )
-        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -455,37 +507,41 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
+        # Fix base_url for direct OpenAI - API expects /v1 suffix
+        # If base_url is "https://api.openai.com", set to None to use LiteLLM default
+        if model_val.startswith("openai/"):
+            base = d.get("base_url")
+            if base == "https://api.openai.com" or base == "https://api.openai.com/":
+                d["base_url"] = None  # Let LiteLLM use its default which includes /v1
+
         return d
 
     @model_validator(mode="after")
-    def _set_env_side_effects(self):
-        if self.openrouter_site_url:
-            os.environ["OR_SITE_URL"] = self.openrouter_site_url
-        if self.openrouter_app_name:
-            os.environ["OR_APP_NAME"] = self.openrouter_app_name
-        if self.aws_access_key_id:
-            assert isinstance(self.aws_access_key_id, SecretStr)
-            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
-        if self.aws_secret_access_key:
-            assert isinstance(self.aws_secret_access_key, SecretStr)
-            os.environ["AWS_SECRET_ACCESS_KEY"] = (
-                self.aws_secret_access_key.get_secret_value()
-            )
-        if self.aws_region_name:
-            os.environ["AWS_REGION_NAME"] = self.aws_region_name
+    def _post_init(self):
+        # NOTE: AWS credentials and OpenRouter site/app identifiers are NOT
+        # written to ``os.environ`` here. Doing so in a multi-tenant agent
+        # server would let one conversation's credentials bleed into another
+        # via the shared process environment (see issue #3138). Instead,
+        # AWS credentials flow per-call through ``_aws_kwargs()`` and the
+        # OpenRouter ``HTTP-Referer`` / ``X-Title`` headers flow per-call
+        # through ``_openrouter_headers()``.
 
-        # Metrics + Telemetry wiring
+        # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
+        # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
+        # and replacing _telemetry would silently drop any callback callers
+        # have attached via telemetry.set_*_callback().
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
 
-        self._telemetry = Telemetry(
-            model_name=self.model,
-            log_enabled=self.log_completions,
-            log_dir=self.log_completions_folder if self.log_completions else None,
-            input_cost_per_token=self.input_cost_per_token,
-            output_cost_per_token=self.output_cost_per_token,
-            metrics=self._metrics,
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self._metrics,
+            )
 
         # Async runner for cancellable LLM calls
         if self._async_runner is None:
@@ -505,6 +561,45 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self
 
+    def _openrouter_headers(self) -> dict[str, str]:
+        """Build OpenRouter HTTP-Referer / X-Title headers for per-call use.
+
+        Returns an empty dict when neither field is set. Passed via
+        ``extra_headers`` so litellm forwards them on the OpenRouter request
+        without us having to mutate ``os.environ`` (which would leak across
+        conversations in a multi-tenant server; see issue #3138).
+        """
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
+
+    def _aws_kwargs(self) -> dict[str, str]:
+        """Build kwargs dict for AWS params to pass to litellm calls."""
+        kw: dict[str, str] = {}
+        if self.aws_access_key_id:
+            assert isinstance(self.aws_access_key_id, SecretStr)
+            kw["aws_access_key_id"] = self.aws_access_key_id.get_secret_value()
+        if self.aws_secret_access_key:
+            assert isinstance(self.aws_secret_access_key, SecretStr)
+            kw["aws_secret_access_key"] = self.aws_secret_access_key.get_secret_value()
+        if self.aws_session_token:
+            assert isinstance(self.aws_session_token, SecretStr)
+            kw["aws_session_token"] = self.aws_session_token.get_secret_value()
+        if self.aws_region_name:
+            kw["aws_region_name"] = self.aws_region_name
+        if self.aws_profile_name:
+            kw["aws_profile_name"] = self.aws_profile_name
+        if self.aws_role_name:
+            kw["aws_role_name"] = self.aws_role_name
+        if self.aws_session_name:
+            kw["aws_session_name"] = self.aws_session_name
+        if self.aws_bedrock_runtime_endpoint:
+            kw["aws_bedrock_runtime_endpoint"] = self.aws_bedrock_runtime_endpoint
+        return kw
+
     def _retry_listener_fn(
         self, attempt_number: int, num_retries: int, _err: BaseException | None
     ) -> None:
@@ -519,9 +614,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Serializers
     # =========================================================================
-    @field_serializer(
-        "api_key", "aws_access_key_id", "aws_secret_access_key", when_used="always"
-    )
+    @field_serializer(*LLM_SECRET_FIELDS, when_used="always")
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
 
@@ -536,8 +629,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Metrics object containing token usage, costs, and other statistics.
 
         Example:
-            >>> cost = llm.metrics.accumulated_cost
-            >>> print(f"Total cost: ${cost}")
+            ```python
+            cost = llm.metrics.accumulated_cost
+            print(f"Total cost: ${cost}")
+            ```
         """
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
@@ -551,7 +646,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Telemetry object for managing logging and metrics callbacks.
 
         Example:
-            >>> llm.telemetry.set_log_completions_callback(my_callback)
+            ```python
+            llm.telemetry.set_log_completions_callback(my_callback)
+            ```
         """
         if self._telemetry is None:
             self._telemetry = Telemetry(
@@ -580,6 +677,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
+        # Keep telemetry in sync so post-resume LLM calls record into
+        # the restored metrics object, not the stale one from __init__.
+        if self._telemetry is not None:
+            self._telemetry.metrics = metrics
 
     def reset_metrics(self) -> None:
         """Reset metrics and telemetry to fresh instances.
@@ -727,12 +828,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         It handles message formatting, tool calling, and response processing.
 
         Args:
-            messages: List of conversation messages
-            tools: Optional list of tools available to the model
-            _return_metrics: Whether to return usage metrics
-            add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens
-            **kwargs: Additional arguments passed to the LLM API
+            messages: List of conversation messages.
+            tools: Optional list of tools available to the model.
+            _return_metrics: Whether to return usage metrics.
+            add_security_risk_prediction: Add security_risk field to tool schemas.
+            on_token: Optional callback for streaming tokens.
+            **kwargs: Additional arguments passed to the LLM API.
 
         Returns:
             LLMResponse containing the model's response and metadata.
@@ -745,10 +846,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             ValueError: If streaming is requested (not supported).
 
         Example:
-            >>> from openhands.sdk.llm import Message, TextContent
-            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            >>> response = llm.completion(messages)
-            >>> print(response.content)
+            ```python
+            from openhands.sdk.llm import Message, TextContent
+
+            messages = [Message(role="user", content=[TextContent(text="Hello")])]
+            response = llm.completion(messages)
+            print(response.content)
+            ```
         """
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -780,7 +884,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"for model {self.model}"
             )
             formatted_messages, kwargs = self.pre_request_prompt_mock(
-                formatted_messages, cc_tools or [], kwargs
+                formatted_messages,
+                cc_tools or [],
+                kwargs,
+                include_security_params=add_security_risk_prediction,
             )
 
         # 3) normalize provider params
@@ -793,7 +900,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
         if self._telemetry.log_enabled:
             telemetry_ctx.update(
                 {
@@ -829,7 +938,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
                 resp = self.post_response_prompt_mock(
-                    resp, nonfncall_msgs=formatted_messages, tools=cc_tools
+                    resp,
+                    nonfncall_msgs=formatted_messages,
+                    tools=cc_tools,
+                    include_security_params=add_security_risk_prediction,
                 )
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
@@ -938,7 +1050,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
         if self._telemetry.log_enabled:
             telemetry_ctx.update(
                 {
@@ -1023,6 +1137,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._litellm_provider = provider
         return provider
 
+    def _infer_model_info_provider(self) -> str | None:
+        if self._model_info is not None:
+            provider = self._model_info.get("litellm_provider")
+            if isinstance(provider, str) and provider:
+                return provider
+
+        return self._infer_litellm_provider()
+
     def _get_litellm_api_key_value(self) -> str | None:
         api_key_value: str | None = None
         if self.api_key:
@@ -1097,6 +1219,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 api_key_value = self._get_litellm_api_key_value()
 
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+
                 # Use async completion for cancellation support
                 ret = await litellm_acompletion(
                     model=self.model,
@@ -1107,7 +1236,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
-                    **kwargs,
+                    **{**self._aws_kwargs(), **kwargs},
                 )
 
                 if enable_streaming and on_token is not None:
@@ -1155,7 +1284,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     timeout=self.timeout,
                     drop_params=self.drop_params,
                     seed=self.seed,
-                    **final_kwargs,
+                    **{**self._aws_kwargs(), **final_kwargs},
                 )
 
                 if isinstance(ret, ResponsesAPIResponse):
@@ -1177,7 +1306,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         )
 
                     stream_callback = on_token if user_enable_streaming else None
+                    # Collect output items from streaming events.
+                    # Some endpoints (e.g., Codex subscription) send output
+                    # items as separate events but the final response.completed
+                    # event has output=[].  We accumulate them here and patch
+                    # the completed response if needed.
+                    collected_output_items: list[Any] = []
                     async for event in ret:
+                        if event is None:
+                            continue
+                        # Collect finished output items
+                        evt_type = getattr(event, "type", None)
+                        if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                            item = getattr(event, "item", None)
+                            if item is not None:
+                                collected_output_items.append(item)
                         if stream_callback is None:
                             continue
                         if isinstance(
@@ -1210,6 +1353,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                     completed_resp = completed_event.response
 
+                    # Patch empty output with items collected from stream
+                    if not completed_resp.output and collected_output_items:
+                        completed_resp.output = collected_output_items
+
                     assert self._telemetry is not None
                     self._telemetry.on_response(completed_resp)
                     return completed_resp
@@ -1218,12 +1365,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
-        old = getattr(litellm, "modify_params", None)
-        try:
-            litellm.modify_params = flag
-            yield
-        finally:
-            litellm.modify_params = old
+        with self._litellm_modify_params_lock:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
 
     # =========================================================================
     # Capabilities, formatting, and info
@@ -1239,18 +1387,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=self._model_name_for_capabilities(),
         )
 
-        # Context window and max_output_tokens
+        self._effective_max_input_tokens = self.max_input_tokens
         if (
-            self.max_input_tokens is None
+            self._effective_max_input_tokens is None
             and self._model_info is not None
             and isinstance(self._model_info.get("max_input_tokens"), int)
         ):
-            self.max_input_tokens = self._model_info.get("max_input_tokens")
+            self._effective_max_input_tokens = self._model_info.get("max_input_tokens")
 
         # Validate context window size
         self._validate_context_window_size()
 
-        if self.max_output_tokens is None:
+        effective_max_output_tokens = self.max_output_tokens
+        if effective_max_output_tokens is None:
             if any(
                 m in self.model
                 for m in [
@@ -1259,23 +1408,53 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "kimi-k2-thinking",
                 ]
             ):
-                self.max_output_tokens = (
+                effective_max_output_tokens = (
                     64000  # practical cap (litellm may allow 128k with header)
                 )
                 logger.debug(
-                    f"Setting max_output_tokens to {self.max_output_tokens} "
+                    f"Setting effective max_output_tokens to "
+                    f"{effective_max_output_tokens} "
                     f"for {self.model}"
                 )
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    effective_max_output_tokens = self._model_info.get(
+                        "max_output_tokens"
+                    )
+                    # Guard: if max_output_tokens >= the context window,
+                    # requesting that many output tokens would leave zero
+                    # room for input and strict providers (e.g. AWS Bedrock)
+                    # will reject every call. Halve it so input has
+                    # headroom. We check both max_input_tokens and
+                    # max_tokens since either may represent the context
+                    # window depending on the provider.
+                    context_window = (
+                        self.effective_max_input_tokens
+                        or self._model_info.get("max_tokens")
+                    )
+                    if (
+                        context_window is not None
+                        and effective_max_output_tokens is not None
+                        and effective_max_output_tokens >= context_window
+                    ):
+                        capped = effective_max_output_tokens // 2
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s "
+                            "for %s (max_output_tokens >= context "
+                            "window %s)",
+                            effective_max_output_tokens,
+                            capped,
+                            self.model,
+                            context_window,
+                        )
+                        effective_max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting
                     # output that exceeds the context window.
                     max_tokens_value = self._model_info.get("max_tokens")
                     assert isinstance(max_tokens_value, int)  # for type checker
-                    self.max_output_tokens = min(
+                    effective_max_output_tokens = min(
                         max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
                     )
                     if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
@@ -1283,19 +1462,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             "Capping max_output_tokens from %s to %s for %s "
                             "(max_tokens may be context window, not output)",
                             max_tokens_value,
-                            self.max_output_tokens,
+                            effective_max_output_tokens,
                             self.model,
                         )
 
         if "o3" in self.model:
             o3_limit = 100000
-            if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
-                self.max_output_tokens = o3_limit
+            if (
+                effective_max_output_tokens is None
+                or effective_max_output_tokens > o3_limit
+            ):
+                effective_max_output_tokens = o3_limit
                 logger.debug(
-                    "Clamping max_output_tokens to %s for %s",
-                    self.max_output_tokens,
+                    "Clamping effective max_output_tokens to %s for %s",
+                    effective_max_output_tokens,
                     self.model,
                 )
+
+        self._effective_max_output_tokens = effective_max_output_tokens
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""
@@ -1308,13 +1492,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return
 
         # Unknown context window - cannot validate
-        if self.max_input_tokens is None:
+        if self.effective_max_input_tokens is None:
             return
 
         # Check minimum requirement
-        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+        if self.effective_max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
             raise LLMContextWindowTooSmallError(
-                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+                self.effective_max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
             )
 
     def vision_is_active(self) -> bool:
@@ -1354,8 +1538,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         if not self.caching_prompt:
             return False
-        # We don't need to look-up model_info, because
-        # only Anthropic models need explicit caching breakpoints
+        # We don't need to look up model_info because explicit caching
+        # breakpoint support is tracked in the local feature table.
         return (
             self.caching_prompt
             and get_features(self._model_name_for_capabilities()).supports_prompt_cache
@@ -1371,6 +1555,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def model_info(self) -> dict | None:
         """Returns the model info dictionary."""
         return self._model_info
+
+    @property
+    def effective_max_input_tokens(self) -> int | None:
+        """Resolved context window used at runtime.
+
+        ``max_input_tokens`` remains the user-configured value. When it is
+        unset, this property reflects the value discovered from model metadata.
+        """
+        return self.max_input_tokens or self._effective_max_input_tokens
+
+    @property
+    def effective_max_output_tokens(self) -> int | None:
+        """Resolved output token limit used at runtime.
+
+        ``max_output_tokens`` remains the user-configured value. When it is
+        unset, this property reflects provider/model defaults and safety caps.
+        """
+        return self.max_output_tokens or self._effective_max_output_tokens
 
     # =========================================================================
     # Utilities preserved from previous class
@@ -1395,7 +1597,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # Single block: mark it for caching
                 sys_content[0].cache_prompt = True
 
-        # NOTE: this is only needed for anthropic
+        # Anthropic and Gemini both use these cache_control markers. LiteLLM
+        # performs the provider-specific cache setup for Gemini downstream.
         for message in reversed(messages):
             if message.role in ("user", "tool"):
                 message.content[
@@ -1420,6 +1623,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_model_info_provider(),
+            vision_enabled=vision_enabled,
+        )
 
         formatted_messages = [
             message.to_chat_dict(
@@ -1446,6 +1655,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
+
+        # Subscription mode (store=false): strip reasoning items from prior
+        # assistant turns. The Codex endpoint doesn't persist items, so
+        # referencing their IDs in follow-up requests causes a 404.
+        if self.is_subscription:
+            for m in msgs:
+                if m.role == "assistant" and m.responses_reasoning_item is not None:
+                    m.responses_reasoning_item = None
 
         # Determine vision based on model detection
         vision_active = self.vision_is_active()
@@ -1500,14 +1717,52 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             return 0
 
+    @classmethod
+    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+        """Load a persisted LLM profile payload, applying schema migrations."""
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("LLM profile schema_version must be an integer")
+        if version > LLM_PROFILE_SCHEMA_VERSION:
+            raise ValueError(
+                "LLM profile schema_version "
+                f"{version} is newer than supported version "
+                f"{LLM_PROFILE_SCHEMA_VERSION}"
+            )
+
+        payload.pop("schema_version", None)
+        return cls.model_validate(payload, context=context)
+
+    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Serialize this LLM for profile persistence."""
+        data = self.model_dump(mode="json", exclude_none=True, context=context)
+        data["schema_version"] = LLM_PROFILE_SCHEMA_VERSION
+        return data
+
     # =========================================================================
     # Serialization helpers
     # =========================================================================
     @classmethod
-    def load_from_json(cls, json_path: str) -> LLM:
+    def load_from_json(
+        cls, json_path: str, *, context: dict[str, Any] | None = None
+    ) -> LLM:
+        """Load an LLM instance from a JSON file.
+
+        Args:
+            json_path: Path to the JSON file containing LLM configuration.
+            context: Optional validation context (e.g., ``{"cipher": cipher}``
+                for decrypting secrets stored at rest).
+
+        Returns:
+            An LLM instance constructed from the JSON configuration.
+        """
         with open(json_path) as f:
             data = json.load(f)
-        return cls(**data)
+        return cls.from_persisted(data, context=context)
 
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:
@@ -1571,6 +1826,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model: str,
         force_login: bool = False,
         open_browser: bool = True,
+        auth_method: OpenAIAuthMethod = "browser",
         **llm_kwargs,
     ) -> LLM:
         """Authenticate with a subscription service and return an LLM instance.
@@ -1597,6 +1853,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 credentials exist.
             open_browser: Whether to automatically open the browser for the
                 OAuth login flow.
+            auth_method: Login method to use: "browser" or "device_code".
             **llm_kwargs: Additional arguments to pass to the LLM constructor.
 
         Returns:
@@ -1607,11 +1864,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             RuntimeError: If authentication fails.
 
         Example:
-            >>> from openhands.sdk import LLM
-            >>> # First time: opens browser for OAuth login
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
-            >>> # Subsequent calls: reuses cached credentials
-            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```python
+            from openhands.sdk import LLM
+
+            # First time: opens browser for OAuth login
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+
+            # Subsequent calls: reuses cached credentials
+            llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            ```
         """
         from openhands.sdk.llm.auth.openai import subscription_login
 
@@ -1620,5 +1881,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=model,
             force_login=force_login,
             open_browser=open_browser,
+            auth_method=auth_method,
             **llm_kwargs,
         )

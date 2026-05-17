@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import time
@@ -6,11 +7,13 @@ from importlib.metadata import version
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
+from openhands.sdk.tool.registry import list_usable_tools
+
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
 _last_event_time = time.time()
-_initialization_complete = False
+_initialization_complete = asyncio.Event()
 
 
 def _package_version(dist_name: str) -> str:
@@ -18,6 +21,10 @@ def _package_version(dist_name: str) -> str:
         return version(dist_name)
     except Exception:
         return "unknown"
+
+
+class HealthStatus(BaseModel):
+    status: str
 
 
 class ServerInfo(BaseModel):
@@ -43,6 +50,7 @@ class ServerInfo(BaseModel):
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
     python_version: str = Field(default_factory=lambda: sys.version)
+    usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
 
     docs: str = "/docs"
     redoc: str = "/redoc"
@@ -60,20 +68,19 @@ def mark_initialization_complete() -> None:
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
     """
-    global _initialization_complete
-    _initialization_complete = True
+    _initialization_complete.set()
 
 
 @server_details_router.get("/alive")
-async def alive():
+async def alive() -> HealthStatus:
     """Basic liveness check - returns OK if the server process is running."""
-    return {"status": "ok"}
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/health")
-async def health() -> str:
+async def health() -> HealthStatus:
     """Basic health check - returns OK if the server process is running."""
-    return "OK"
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/ready")
@@ -83,7 +90,7 @@ async def ready(response: Response) -> dict[str, str]:
     This endpoint should be used by Kubernetes readiness probes to determine
     when the pod is ready to receive traffic. Returns 503 during initialization.
     """
-    if _initialization_complete:
+    if _initialization_complete.is_set():
         return {"status": "ready"}
     else:
         response.status_code = 503

@@ -17,7 +17,19 @@ Usage:
     )
 """
 
-from openhands.tools.task.definition import TaskToolSet
+from openhands.tools.task.definition import (
+    TaskAction,
+    TaskObservation,
+    TaskTool,
+    TaskToolSet,
+)
+from openhands.tools.task.impl import TaskExecutor
 
 
-__all__ = ["TaskToolSet"]
+__all__ = [
+    "TaskAction",
+    "TaskExecutor",
+    "TaskObservation",
+    "TaskTool",
+    "TaskToolSet",
+]

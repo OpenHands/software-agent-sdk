@@ -87,7 +87,7 @@ def clone_pinned_software_agent_repo(workspace: str) -> Path:
 
 
 def default_behavior_tools(tool_preset: ToolPresetType = "default") -> list[Tool]:
-    """Register and return tools for behavior tests based on the tool preset."""
+    """Return the default tools for behavior tests based on the tool preset."""
     return get_tools_for_preset(tool_preset, enable_browser=False)
 
 

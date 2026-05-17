@@ -7,6 +7,7 @@ from litellm.exceptions import (
 from openhands.sdk.llm.exceptions import (
     is_context_window_exceeded,
     looks_like_auth_error,
+    looks_like_malformed_conversation_history_error,
 )
 
 
@@ -49,6 +50,26 @@ def test_is_context_window_exceeded_minimax_api_connection_error():
         llm_provider=PROVIDER,
     )
     assert is_context_window_exceeded(minimax_error) is True
+
+
+def test_looks_like_malformed_conversation_history_error_positive():
+    malformed_history_error = BadRequestError(
+        (
+            'AnthropicException - {"type":"error","error":{'
+            '"type":"invalid_request_error","message":'
+            '"messages.134: `tool_use` ids were found without `tool_result` '
+            "blocks immediately after: toolu_01Aye4s5HrR2uXwXFYgtQi4H. Each "
+            "`tool_use` block must have a corresponding `tool_result` "
+            'block in the next message."}}'
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert (
+        looks_like_malformed_conversation_history_error(malformed_history_error) is True
+    )
+    assert is_context_window_exceeded(malformed_history_error) is False
 
 
 def test_is_context_window_exceeded_negative():

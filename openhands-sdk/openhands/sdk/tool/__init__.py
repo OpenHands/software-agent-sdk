@@ -15,6 +15,7 @@ from openhands.sdk.tool.schema import (
 )
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import (
+    DeclaredResources,
     ExecutableTool,
     ToolAnnotations,
     ToolDefinition,
@@ -23,6 +24,7 @@ from openhands.sdk.tool.tool import (
 
 
 __all__ = [
+    "DeclaredResources",
     "Tool",
     "ToolDefinition",
     "ToolAnnotations",

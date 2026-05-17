@@ -1,11 +1,12 @@
 # state.py
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -13,7 +14,11 @@ from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTags,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -22,6 +27,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.types import EventID
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -30,7 +36,6 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -124,6 +129,15 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
+            "which tracks trigger-based activations."
+        ),
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
@@ -159,6 +173,14 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
+    # User-defined tags (key-value metadata)
+    tags: ConversationTags = Field(
+        default_factory=dict,
+        description="User-defined key-value tags for the conversation. "
+        "Keys must be lowercase alphanumeric. Values are arbitrary strings "
+        "up to 256 characters.",
+    )
+
     # Agent-specific runtime state (simple dict for flexibility)
     agent_state: dict[str, Any] = Field(
         default_factory=dict,
@@ -167,6 +189,17 @@ class ConversationState(OpenHandsModel):
         "To trigger autosave, always reassign: "
         "state.agent_state = {**state.agent_state, key: value}. "
         "See https://docs.openhands.dev/sdk/guides/convo-persistence#how-state-persistence-works",
+    )
+
+    # Hook configuration for the conversation
+    hook_config: HookConfig | None = Field(
+        default=None,
+        description=(
+            "Hook configuration for this conversation. Includes definitions for "
+            "PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd, "
+            "and Stop hooks. When set, these hooks are executed at the appropriate "
+            "points during conversation execution."
+        ),
     )
 
     # ===== Private attrs (NOT Fields) =====
@@ -179,32 +212,14 @@ class ConversationState(OpenHandsModel):
     _on_state_change: ConversationCallbackType | None = PrivateAttr(
         default=None
     )  # callback for state changes
+    _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
+        default=None
+    )
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
-
-    @model_validator(mode="before")
-    @classmethod
-    def _handle_legacy_fields(cls, data: Any) -> Any:
-        """Handle legacy field names for backward compatibility."""
-        if not isinstance(data, dict):
-            return data
-
-        # Handle legacy 'secrets_manager' field name
-        if "secrets_manager" in data:
-            warn_deprecated(
-                "ConversationState.secrets_manager",
-                deprecated_in="1.12.0",
-                removed_in="1.15.0",
-                details=(
-                    "The 'secrets_manager' field has been renamed to "
-                    "'secret_registry'. Please update your code to use "
-                    "'secret_registry' instead."
-                ),
-                stacklevel=4,
-            )
-            data["secret_registry"] = data.pop("secrets_manager")
-        return data
+    _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
+    _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
     @property
     def events(self) -> EventLog:
@@ -226,6 +241,13 @@ class ConversationState(OpenHandsModel):
         """
         self._on_state_change = callback
 
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
+        self._events.set_write_guard(write_guard)
+
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
         """
@@ -244,7 +266,11 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        if self._write_guard is None:
+            fs.write(BASE_STATE, payload)
+        else:
+            with self._write_guard():
+                fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -257,6 +283,7 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -284,6 +311,8 @@ class ConversationState(OpenHandsModel):
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
                     are redacted (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
 
         Returns:
             ConversationState ready for use
@@ -292,11 +321,16 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if persistence_dir:
+            file_store = LocalFileStore(
+                persistence_dir, cache_limit_size=max_iterations
+            )
+        else:
+            logger.warning(
+                "No persistence_dir provided; falling back to InMemoryFileStore. "
+                "EventLog data will not persist across requests."
+            )
+            file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)
@@ -333,11 +367,7 @@ class ConversationState(OpenHandsModel):
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
 
-            logger.info(
-                f"Resumed conversation {state.id} from persistent storage.\n"
-                f"State: {state.model_dump(exclude={'agent'})}\n"
-                f"Agent: {state.agent.model_dump_succint()}"
-            )
+            logger.info("Resumed conversation %s from persistent storage", state.id)
             return state
 
         # ---- Fresh path ----
@@ -353,6 +383,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            tags=tags or {},
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
@@ -361,11 +392,7 @@ class ConversationState(OpenHandsModel):
 
         state._save_base_state(file_store)  # initial snapshot
         state._autosave_enabled = True
-        logger.info(
-            f"Created new conversation {state.id}\n"
-            f"State: {state.model_dump(exclude={'agent'})}\n"
-            f"Agent: {state.agent.model_dump_succint()}"
-        )
+        logger.info("Created new conversation %s", state.id)
         return state
 
     # ===== Auto-persist base on public field changes =====
@@ -386,11 +413,16 @@ class ConversationState(OpenHandsModel):
             return
 
         if old is _sentinel or old != value:
-            try:
-                self._save_base_state(fs)
-            except Exception as e:
-                logger.exception("Auto-persist base_state failed", exc_info=True)
-                raise e
+            # Inside a context-manager block, defer the save until __exit__
+            # so that multiple field mutations produce a single I/O write.
+            if getattr(self, "_save_depth", 0) > 0:
+                self._dirty = True
+            else:
+                try:
+                    self._save_base_state(fs)
+                except Exception as e:
+                    logger.exception("Auto-persist base_state failed", exc_info=True)
+                    raise e
 
             # Call state change callback if set
             callback = getattr(self, "_on_state_change", None)
@@ -505,13 +537,27 @@ class ConversationState(OpenHandsModel):
         self._lock.release()
 
     def __enter__(self: Self) -> Self:
-        """Context manager entry."""
+        """Context manager entry.
+
+        Field mutations inside the ``with`` block are batched: the state
+        is persisted at most once, on exit, instead of on every assignment.
+        """
         self._lock.acquire()
+        self._save_depth += 1
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self._lock.release()
+        """Context manager exit — flushes any deferred save."""
+        try:
+            self._save_depth -= 1
+            if self._save_depth == 0 and self._dirty:
+                fs = getattr(self, "_fs", None)
+                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                if autosave_enabled and fs is not None:
+                    self._save_base_state(fs)
+                self._dirty = False
+        finally:
+            self._lock.release()
 
     def locked(self) -> bool:
         """

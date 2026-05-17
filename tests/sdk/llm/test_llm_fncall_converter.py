@@ -17,6 +17,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
     convert_tools_to_description,
+    system_message_suffix_TEMPLATE,
 )
 
 
@@ -919,3 +920,43 @@ def test_convert_tools_to_description_object_details():
     )
 
     assert result.strip() == expected.strip()
+
+
+def test_system_message_suffix_template_excludes_security_risk_by_default():
+    """Test that system_message_suffix_TEMPLATE does NOT include security_risk
+    when the security analyzer is disabled."""
+    assert "<parameter=security_risk>" not in system_message_suffix_TEMPLATE
+    assert "<parameter=summary>" not in system_message_suffix_TEMPLATE
+
+
+def test_security_params_included_when_flag_is_true():
+    """Test that security_risk and summary appear in converted messages
+    when include_security_params=True (i.e., security analyzer is active).
+
+    Regression test for issue #2740.
+    """
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+    ]
+    result = convert_fncall_messages_to_non_fncall_messages(
+        messages, FNCALL_TOOLS, include_security_params=True
+    )
+    system_content = result[0]["content"]
+    assert "<parameter=security_risk>" in system_content
+    assert "<parameter=summary>" in system_content
+
+
+def test_security_params_excluded_when_flag_is_false():
+    """Test that security_risk and summary do NOT appear in converted messages
+    when include_security_params=False (default)."""
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hello"},
+    ]
+    result = convert_fncall_messages_to_non_fncall_messages(
+        messages, FNCALL_TOOLS, include_security_params=False
+    )
+    system_content = result[0]["content"]
+    assert "<parameter=security_risk>" not in system_content
+    assert "<parameter=summary>" not in system_content

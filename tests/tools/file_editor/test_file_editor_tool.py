@@ -2,13 +2,16 @@
 
 import os
 import tempfile
+from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
+from openhands.sdk.tool import DeclaredResources
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.file_editor import (
     FileEditorAction,
@@ -222,6 +225,71 @@ def test_file_editor_tool_openai_format_includes_working_directory():
             "When exploring project structure, start with this directory "
             "instead of the root filesystem."
         ) in description
+
+
+@pytest.mark.parametrize(
+    "command", ["view", "create", "str_replace", "insert", "undo_edit"]
+)
+def test_declared_resources_locks_on_file_path(command):
+    """Every command locks on file:{path} with declared=True."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        action = FileEditorAction(command=command, path="/a.py")
+        expected_path = Path("/a.py").resolve()
+        assert tool.declared_resources(action) == DeclaredResources(
+            keys=(f"file:{expected_path}",), declared=True
+        )
+
+
+def test_declared_resources_different_paths_produce_different_keys():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(
+            FileEditorAction(command="str_replace", path="/a.py")
+        )
+        r2 = tool.declared_resources(
+            FileEditorAction(command="str_replace", path="/b.py")
+        )
+        assert r1.keys != r2.keys
+
+
+def test_declared_resources_same_path_same_key_across_commands():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a.py"))
+        r2 = tool.declared_resources(
+            FileEditorAction(command="str_replace", path="/a.py")
+        )
+        assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_dotdot_paths():
+    """Paths with '..' that resolve to the same file produce the same key."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
+        r2 = tool.declared_resources(
+            FileEditorAction(command="view", path="/a/b/../c.py")
+        )
+        assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_dot_paths():
+    """Paths with '.' that resolve to the same file produce the same key."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="/a/c.py"))
+        r2 = tool.declared_resources(FileEditorAction(command="view", path="/a/./c.py"))
+        assert r1.keys == r2.keys
+
+
+def test_declared_resources_normalizes_relative_paths():
+    """Relative paths are resolved to absolute path."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tool = FileEditorTool.create(_create_test_conv_state(temp_dir))[0]
+        r1 = tool.declared_resources(FileEditorAction(command="view", path="a.py"))
+        expected_path = Path("a.py").resolve()
+        assert r1.keys == (f"file:{expected_path}",)
 
 
 def test_file_editor_tool_image_viewing_line_with_vision_enabled():

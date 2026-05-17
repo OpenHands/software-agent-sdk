@@ -37,7 +37,7 @@ Usage:
 import sys
 from pathlib import Path
 
-from openhands.sdk.plugin import Marketplace
+from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.skills import (
     install_skills_from_marketplace,
     list_installed_skills,
@@ -116,3 +116,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    print("EXAMPLE_COST: 0")

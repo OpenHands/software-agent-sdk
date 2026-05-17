@@ -4,7 +4,8 @@ This module implements OAuth PKCE flow for authenticating with OpenAI's ChatGPT
 service, allowing users with ChatGPT Plus/Pro subscriptions to use Codex models
 without consuming API credits.
 
-Uses authlib for OAuth handling and aiohttp for the callback server.
+Uses joserfc for JWT handling, authlib for OAuth utilities, and aiohttp for the
+callback server.
 """
 
 from __future__ import annotations
@@ -15,16 +16,17 @@ import sys
 import threading
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode
 
 from aiohttp import web
 from authlib.common.security import generate_token
-from authlib.jose import JsonWebKey, jwt
-from authlib.jose.errors import JoseError
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from httpx import AsyncClient, Client
+from joserfc import jwk, jwt
+from joserfc.errors import JoseError
 
 from openhands.sdk.llm.auth.credentials import (
     CredentialStore,
@@ -40,6 +42,7 @@ if TYPE_CHECKING:
 # Supported vendors for subscription-based authentication.
 # Add new vendors here as they become supported.
 SupportedVendor = Literal["openai"]
+OpenAIAuthMethod = Literal["browser", "device_code"]
 
 logger = get_logger(__name__)
 
@@ -122,6 +125,7 @@ JWKS_URL = f"{ISSUER}/.well-known/jwks.json"
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_OAUTH_PORT = 1455
 OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes
+DEVICE_CODE_TIMEOUT_SECONDS = 900  # 15 minutes
 JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
 # Models available via ChatGPT subscription (not API)
@@ -141,11 +145,11 @@ class _JWKSCache:
     """Thread-safe cache for OpenAI's JWKS (JSON Web Key Set)."""
 
     def __init__(self) -> None:
-        self._keys: dict[str, Any] = {}
+        self._keys: jwk.KeySetSerialization = {"keys": []}
         self._fetched_at: float = 0
         self._lock = threading.Lock()
 
-    def get_key_set(self) -> Any:
+    def get_key_set(self) -> jwk.KeySet:
         """Get the JWKS, fetching from OpenAI if cache is stale or empty.
 
         Returns:
@@ -156,9 +160,12 @@ class _JWKSCache:
         """
         with self._lock:
             now = time.time()
-            if not self._keys or (now - self._fetched_at) > JWKS_CACHE_TTL_SECONDS:
+            if (
+                not self._keys["keys"]
+                or (now - self._fetched_at) > JWKS_CACHE_TTL_SECONDS
+            ):
                 self._fetch_jwks()
-            return JsonWebKey.import_key_set(self._keys)
+            return jwk.KeySet.import_key_set(self._keys)
 
     def _fetch_jwks(self) -> None:
         """Fetch JWKS from OpenAI's well-known endpoint."""
@@ -177,7 +184,7 @@ class _JWKSCache:
     def clear(self) -> None:
         """Clear the cache (useful for testing)."""
         with self._lock:
-            self._keys = {}
+            self._keys = {"keys": []}
             self._fetched_at = 0
 
 
@@ -207,13 +214,14 @@ def _extract_chatgpt_account_id(access_token: str) -> str | None:
     try:
         # Fetch JWKS and verify JWT signature
         key_set = _jwks_cache.get_key_set()
-        claims = jwt.decode(access_token, key_set)
+        token = jwt.decode(access_token, key_set)
 
         # Validate standard claims (issuer)
-        claims.validate()
+        claims_registry = jwt.JWTClaimsRegistry()
+        claims_registry.validate(token.claims)
 
         # Extract account ID from nested structure
-        auth_info = claims.get("https://api.openai.com/auth", {})
+        auth_info = token.claims.get("https://api.openai.com/auth", {})
         account_id = auth_info.get("chatgpt_account_id")
 
         if account_id:
@@ -271,6 +279,83 @@ async def _exchange_code_for_tokens(
         if not response.is_success:
             raise RuntimeError(f"Token exchange failed: {response.status_code}")
         return response.json()
+
+
+@dataclass(frozen=True)
+class DeviceCode:
+    """OpenAI device authorization details."""
+
+    verification_url: str
+    user_code: str
+    device_auth_id: str
+    interval: int
+
+
+async def _request_device_code() -> DeviceCode:
+    """Request a device code for headless ChatGPT sign-in."""
+    async with AsyncClient() as client:
+        response = await client.post(
+            f"{ISSUER}/api/accounts/deviceauth/usercode",
+            json={"client_id": CLIENT_ID},
+            headers={"Content-Type": "application/json"},
+        )
+        if not response.is_success:
+            if response.status_code == 404:
+                raise RuntimeError(
+                    "Device code login is not enabled for this OpenAI server. "
+                    "Use browser login instead."
+                )
+            raise RuntimeError(
+                f"Device code request failed with status {response.status_code}"
+            )
+
+        data = response.json()
+
+    try:
+        interval = int(str(data.get("interval", 5)).strip())
+        user_code = data.get("user_code") or data.get("usercode")
+        device_auth_id = data["device_auth_id"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Invalid device code response from OpenAI") from exc
+
+    if not user_code or not isinstance(user_code, str):
+        raise RuntimeError("Invalid device code response from OpenAI")
+
+    return DeviceCode(
+        verification_url=f"{ISSUER}/codex/device",
+        user_code=user_code,
+        device_auth_id=device_auth_id,
+        interval=max(interval, 1),
+    )
+
+
+async def _poll_device_code(device_code: DeviceCode) -> dict[str, Any]:
+    """Poll until OpenAI issues an authorization code for a device login."""
+    deadline = time.monotonic() + DEVICE_CODE_TIMEOUT_SECONDS
+
+    async with AsyncClient() as client:
+        while time.monotonic() < deadline:
+            response = await client.post(
+                f"{ISSUER}/api/accounts/deviceauth/token",
+                json={
+                    "device_auth_id": device_code.device_auth_id,
+                    "user_code": device_code.user_code,
+                },
+                headers={"Content-Type": "application/json"},
+            )
+
+            if response.is_success:
+                return response.json()
+
+            if response.status_code in (403, 404):
+                await asyncio.sleep(
+                    min(device_code.interval, max(0, deadline - time.monotonic()))
+                )
+                continue
+
+            raise RuntimeError(f"Device auth failed with status {response.status_code}")
+
+    raise RuntimeError("Device auth timed out after 15 minutes")
 
 
 async def _refresh_access_token(refresh_token: str) -> dict[str, Any]:
@@ -396,15 +481,22 @@ class OpenAISubscriptionAuth:
         )
         return updated
 
-    async def login(self, open_browser: bool = True) -> OAuthCredentials:
+    async def login(
+        self,
+        open_browser: bool = True,
+        auth_method: OpenAIAuthMethod = "browser",
+    ) -> OAuthCredentials:
         """Perform OAuth login flow.
 
-        This starts a local HTTP server to handle the OAuth callback,
-        opens the browser for user authentication, and waits for the
-        callback with the authorization code.
+        The browser method starts a local HTTP server to handle the OAuth
+        callback, opens the browser for user authentication, and waits for the
+        callback with the authorization code. The device-code method prints a
+        URL and one-time code, then polls until the browser-side authorization
+        completes.
 
         Args:
             open_browser: Whether to automatically open the browser.
+            auth_method: Login method to use: "browser" or "device_code".
 
         Returns:
             The obtained OAuth credentials.
@@ -412,6 +504,11 @@ class OpenAISubscriptionAuth:
         Raises:
             RuntimeError: If the OAuth flow fails or times out.
         """
+        if auth_method == "device_code":
+            return await self._login_with_device_code()
+        if auth_method != "browser":
+            raise ValueError(f"Unsupported OpenAI auth method: {auth_method}")
+
         code_verifier, code_challenge = _generate_pkce()
         state = generate_token(32)
         redirect_uri = f"http://localhost:{self._oauth_port}/auth/callback"
@@ -526,6 +623,46 @@ class OpenAISubscriptionAuth:
         finally:
             await runner.cleanup()
 
+    async def _login_with_device_code(self) -> OAuthCredentials:
+        """Perform device-code OAuth login flow."""
+        device_code = await _request_device_code()
+        logger.info(
+            "Open this URL in your browser and enter the one-time code:\n"
+            f"{device_code.verification_url}\n\n"
+            f"Code: {device_code.user_code}\n\n"
+            "Device codes are a common phishing target. Never share this code."
+        )
+        print(
+            "\nOpen this URL in your browser and sign in to ChatGPT:\n"
+            f"{device_code.verification_url}\n\n"
+            f"Enter code: {device_code.user_code}\n\n"
+            "Device codes are a common phishing target. Never share this code.\n"
+        )
+
+        code_response = await _poll_device_code(device_code)
+        try:
+            authorization_code = code_response["authorization_code"]
+            code_verifier = code_response["code_verifier"]
+        except KeyError as exc:
+            raise RuntimeError("Invalid device token response from OpenAI") from exc
+
+        tokens = await _exchange_code_for_tokens(
+            authorization_code,
+            f"{ISSUER}/deviceauth/callback",
+            code_verifier,
+        )
+
+        expires_at = int(time.time() * 1000) + (tokens.get("expires_in", 3600) * 1000)
+        credentials = OAuthCredentials(
+            vendor=self.vendor,
+            access_token=tokens["access_token"],
+            refresh_token=tokens["refresh_token"],
+            expires_at=expires_at,
+        )
+        self._credential_store.save(credentials)
+        logger.info("OpenAI device-code login successful")
+        return credentials
+
     def logout(self) -> bool:
         """Remove stored credentials.
 
@@ -607,6 +744,7 @@ class OpenAISubscriptionAuth:
         llm._is_subscription = True
         # Ensure these stay None even if model info tried to set them
         llm.max_output_tokens = None
+        llm._effective_max_output_tokens = None
         llm.temperature = None
         return llm
 
@@ -616,6 +754,7 @@ async def subscription_login_async(
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,
+    auth_method: OpenAIAuthMethod = "browser",
     skip_consent: bool = False,
     **llm_kwargs: Any,
 ) -> LLM:
@@ -629,6 +768,7 @@ async def subscription_login_async(
         model: The model to use.
         force_login: If True, always perform a fresh login.
         open_browser: Whether to automatically open the browser for login.
+        auth_method: Login method to use: "browser" or "device_code".
         skip_consent: If True, skip the consent prompt (for programmatic use
             where consent has been obtained through other means).
         **llm_kwargs: Additional arguments to pass to LLM constructor.
@@ -665,7 +805,7 @@ async def subscription_login_async(
             raise RuntimeError("User declined to continue with ChatGPT sign-in")
 
     # Perform login
-    creds = await auth.login(open_browser=open_browser)
+    creds = await auth.login(open_browser=open_browser, auth_method=auth_method)
     return auth.create_llm(model=model, credentials=creds, **llm_kwargs)
 
 
@@ -674,6 +814,7 @@ def subscription_login(
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,
+    auth_method: OpenAIAuthMethod = "browser",
     skip_consent: bool = False,
     **llm_kwargs: Any,
 ) -> LLM:
@@ -687,6 +828,7 @@ def subscription_login(
             model=model,
             force_login=force_login,
             open_browser=open_browser,
+            auth_method=auth_method,
             skip_consent=skip_consent,
             **llm_kwargs,
         )

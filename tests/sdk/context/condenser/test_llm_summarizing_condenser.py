@@ -56,12 +56,17 @@ def mock_llm() -> LLM:
     )
     mock_llm.format_messages_for_llm = lambda messages: messages
 
-    # Mock the required attributes that are checked in _set_env_side_effects
+    # Mock the required attributes that the LLM validator reads
     mock_llm.openrouter_site_url = "https://docs.all-hands.dev/"
     mock_llm.openrouter_app_name = "OpenHands"
     mock_llm.aws_access_key_id = None
     mock_llm.aws_secret_access_key = None
+    mock_llm.aws_session_token = None
     mock_llm.aws_region_name = None
+    mock_llm.aws_profile_name = None
+    mock_llm.aws_role_name = None
+    mock_llm.aws_session_name = None
+    mock_llm.aws_bedrock_runtime_endpoint = None
     mock_llm.metrics = None
     mock_llm.model = "test-model"
     mock_llm.log_completions = False
@@ -79,6 +84,7 @@ def mock_llm() -> LLM:
     mock_llm._metrics = None
     mock_llm._async_runner = None
     mock_llm.usage_id = "test-llm"
+    mock_llm._telemetry = None
 
     # Helper method to set mock response content
     def set_mock_response_content(content: str):
@@ -191,7 +197,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     # Add a condensation to simulate previous summarization
     # The summary will be inserted at keep_first due to summary_offset
     condensation = Condensation(
-        forgotten_event_ids=[events[3].id, events[4].id],
+        forgotten_event_ids={events[3].id, events[4].id},
         summary="Previous summary content",
         summary_offset=keep_first,
         llm_response_id="condensation_response_1",

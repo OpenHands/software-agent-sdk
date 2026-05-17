@@ -1,8 +1,11 @@
 import atexit
+import contextlib
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -52,6 +55,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -105,6 +109,7 @@ class LocalConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
+        tags: dict[str, str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -144,6 +149,8 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            tags: Optional key-value tags for the conversation. Keys must be
+                  lowercase alphanumeric, values up to 256 characters.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -182,7 +189,10 @@ class LocalConversation(BaseConversation):
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
+            tags=tags,
         )
+
+        self._pin_prompt_cache_key()
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -257,6 +267,7 @@ class LocalConversation(BaseConversation):
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore()
+        self._cipher = cipher
 
         # Initialize secrets if provided
         if secrets:
@@ -303,6 +314,109 @@ class LocalConversation(BaseConversation):
         """
         return self._resolved_plugins
 
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
+
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
+
+            # Deep-copy events from source → fork so the source stays
+            # immutable.
+            for event in self._state.events:
+                fork_conv._state.events.append(event.model_copy(deep=True))
+
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
+
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({event_count} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
+
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
 
@@ -324,14 +438,16 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        merged_context = self.agent.agent_context
+        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Track whether we have plugins or MCP config to process
+        has_mcp_config = bool(merged_mcp)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -355,6 +471,7 @@ class LocalConversation(BaseConversation):
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                has_mcp_config = has_mcp_config or bool(merged_mcp)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -364,7 +481,28 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Expand MCP config variables with per-conversation secrets
+        # This handles ${VAR} and ${VAR:-default} placeholders:
+        # - Variables referencing secrets injected via API are expanded to secret values
+        # - Variables with defaults that don't have secrets fall back to their defaults
+        # - This is the ONLY place where defaults are applied (plugin loading preserves
+        #   placeholders with expand_defaults=False to avoid double-expansion)
+        if merged_mcp:
+            # Pass the registry's lookup method as a callback - secrets are retrieved
+            # lazily, one at a time, only when actually referenced in the config
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
+            )
+            logger.debug("Expanded MCP config variables")
+
+        # Update agent with merged content only if we have plugins or MCP config
+        # Skip update when nothing changed to avoid unnecessary agent state mutations
+        if self._plugin_specs or has_mcp_config:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -375,8 +513,6 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -400,6 +536,9 @@ class LocalConversation(BaseConversation):
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
+            # Store final hook_config in state for observability
+            self._state.hook_config = final_hook_config
+
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
@@ -478,11 +617,51 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
-    def switch_profile(self, profile_name: str) -> None:
-        """Switch the agent's LLM to a named profile.
+    def _should_initialize_agent_on_send_message(self) -> bool:
+        """Return whether send_message() should eagerly initialize the agent.
 
-        Loads the profile from the LLMProfileStore (cached in the registry
-        after the first load) and updates the agent and conversation state.
+        ACPAgent startup is substantially heavier than regular agent
+        initialization because it launches and handshakes with an external ACP
+        subprocess. Deferring that work to run() keeps send_message() fast and
+        avoids HTTP client read timeouts on the remote conversation endpoint.
+        """
+        return not isinstance(self.agent, ACPAgent)
+
+    def _pin_prompt_cache_key(self) -> None:
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
+        # Skip if a key is already set: sub-agent LLMs inherit the parent's
+        # via model_copy, and overwriting would put each sub-agent on its own
+        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
+        if self.agent.llm._prompt_cache_key is None:
+            self.agent.llm._prompt_cache_key = str(self._state.id)
+
+    def switch_llm(self, llm: LLM) -> None:
+        """Swap the agent's LLM to the given object.
+
+        The caller owns ``llm.usage_id``; it is the registry key. If an
+        entry with that key already exists, the cached LLM is reused and
+        the passed ``llm`` is dropped — matching the rest of the
+        registry's "first-write-wins" contract.
+
+        Args:
+            llm: LLM to install on the agent.
+        """
+        try:
+            new_llm = self.llm_registry.get(llm.usage_id)
+        except KeyError:
+            new_llm = llm
+            self.llm_registry.add(new_llm)
+        with self._state:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
+            self._pin_prompt_cache_key()
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a profile loaded from disk.
+
+        Loads the profile from :class:`LLMProfileStore` (cached in the
+        registry under ``profile:{profile_name}`` after first load) and
+        delegates the swap to :meth:`switch_llm`.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -493,14 +672,11 @@ class LocalConversation(BaseConversation):
         """
         usage_id = f"profile:{profile_name}"
         try:
-            new_llm = self.llm_registry.get(usage_id)
+            cached = self.llm_registry.get(usage_id)
         except KeyError:
-            new_llm = self._profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
-        with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
-            self._state.agent = self.agent
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            cached = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(cached)
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -514,8 +690,12 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
-        # Ensure agent is fully initialized (loads plugins and initializes agent)
-        self._ensure_agent_ready()
+        # ACPAgent startup can take much longer than a normal send_message()
+        # round-trip because it launches and initializes a subprocess-backed
+        # session. Defer that work to run() so enqueueing the user message
+        # remains fast for remote callers.
+        if self._should_initialize_agent_on_send_message():
+            self._ensure_agent_ready()
 
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -524,10 +704,13 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+            if self._state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.STUCK,
+            ):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
-                )  # now we have a new message
+                )  # new message resets terminal states
 
             # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
@@ -582,6 +765,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
@@ -667,6 +851,14 @@ class LocalConversation(BaseConversation):
                         break
 
                     if iteration >= self.max_iteration_per_run:
+                        # If the agent finished on this final iteration,
+                        # preserve the FINISHED status rather than
+                        # overwriting it with ERROR.
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
                         error_msg = (
                             f"Agent reached maximum iterations limit "
                             f"({self.max_iteration_per_run})."
@@ -820,6 +1012,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
+        # Remove the atexit reference so the conversation object can be GC'd
+        # after close. atexit.unregister is a no-op if not registered.
+        atexit.unregister(self.close)
         # Use getattr for safety - object may be partially constructed
         if getattr(self, "_cleanup_initiated", False):
             return
@@ -833,23 +1028,25 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        if self.delete_on_close:
-            try:
-                tools_map = self.agent.tools_map
-            except (AttributeError, RuntimeError):
-                # Agent not initialized or partially constructed
-                return
-            for tool in tools_map.values():
-                try:
-                    executable_tool = tool.as_executable()
-                    executable_tool.executor.close()
-                except NotImplementedError:
-                    # Tool has no executor, skip it without erroring
-                    continue
-                except Exception as e:
-                    logger.warning(
-                        f"Error closing executor for tool '{tool.name}': {e}"
-                    )
+        # Clean up agent resources (e.g., ACPAgent subprocess)
+        try:
+            self.agent.close()
+        except Exception as e:
+            logger.warning(f"Error closing agent: {e}")
+        # Always close tool executors — they hold runtime resources
+        # (subprocesses, connections, etc.) that must be released regardless
+        # of whether the conversation data is preserved (delete_on_close).
+        with contextlib.suppress(AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed → skip
+            for tool in self.agent.tools_map.values():
+                with contextlib.suppress(NotImplementedError):
+                    try:
+                        executable_tool = tool.as_executable()
+                        executable_tool.executor.close()
+                    except Exception as e:
+                        logger.warning(
+                            f"Error closing executor for tool '{tool.name}': {e}"
+                        )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
@@ -927,9 +1124,13 @@ class LocalConversation(BaseConversation):
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
+        If an explicit LLM is provided, it takes precedence. Otherwise the
+        agent's LLM is used. If neither is available, the title falls back to
+        simple message truncation.
+
         Args:
-            llm: Optional LLM to use for title generation. If not provided,
-                 uses self.agent.llm.
+            llm: Optional LLM to use for title generation. Takes precedence
+                 over the agent's LLM when provided.
             max_length: Maximum length of the generated title.
 
         Returns:
@@ -938,11 +1139,9 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
-        # Use provided LLM or fall back to agent's LLM
-        llm_to_use = llm or self.agent.llm
-
+        effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=llm_to_use, max_length=max_length
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
 
     def condense(self) -> None:

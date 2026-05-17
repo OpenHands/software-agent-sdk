@@ -169,24 +169,29 @@ llm = LLM(
 cwd = os.getcwd()
 
 
-def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
-    """Create terminal and custom grep tools sharing one executor."""
+class BashAndGrepToolSet(ToolDefinition[Action, Observation]):
+    """Create terminal and grep tools sharing one terminal executor."""
 
-    terminal_executor = TerminalExecutor(working_dir=conv_state.workspace.working_dir)
-    # terminal_tool = terminal_tool.set_executor(executor=terminal_executor)
-    terminal_tool = TerminalTool.create(conv_state, executor=terminal_executor)[0]
+    @classmethod
+    def create(cls, conv_state, **params) -> Sequence[ToolDefinition]:
+        terminal_executor = TerminalExecutor(
+            working_dir=conv_state.workspace.working_dir
+        )
+        terminal_tool = TerminalTool.create(
+            conv_state, executor=terminal_executor, **params
+        )[0]
+        grep_tool = GrepTool.create(
+            conv_state,
+            terminal_executor=terminal_executor,
+        )[0]
+        return [terminal_tool, grep_tool]
 
-    # Use the GrepTool.create() method with shared terminal_executor
-    grep_tool = GrepTool.create(conv_state, terminal_executor=terminal_executor)[0]
 
-    return [terminal_tool, grep_tool]
-
-
-register_tool("BashAndGrepToolSet", _make_bash_and_grep_tools)
+register_tool(BashAndGrepToolSet.name, BashAndGrepToolSet)
 
 tools = [
     Tool(name=FileEditorTool.name),
-    Tool(name="BashAndGrepToolSet"),
+    Tool(name=BashAndGrepToolSet.name),
 ]
 
 # Agent

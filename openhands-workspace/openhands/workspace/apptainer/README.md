@@ -71,6 +71,23 @@ with ApptainerWorkspace(
     print(result.stdout)
 ```
 
+### Enable NVIDIA GPU Passthrough
+
+```python
+from openhands.workspace import ApptainerWorkspace
+
+with ApptainerWorkspace(
+    server_image="ghcr.io/openhands/agent-server:latest-python",
+    host_port=8010,
+    enable_gpu=True,
+) as workspace:
+    result = workspace.execute_command("nvidia-smi -L")
+    print(result.stdout)
+```
+
+This starts the container with `apptainer run --nv ...`, which makes NVIDIA GPUs
+available inside the workspace when the host has a working NVIDIA runtime.
+
 ## Configuration Options
 
 | Parameter | Type | Default | Description |
@@ -84,6 +101,7 @@ with ApptainerWorkspace(
 | `detach_logs` | `bool` | `True` | Stream logs in background |
 | `platform` | `PlatformType` | `"linux/amd64"` | Platform architecture |
 | `extra_ports` | `bool` | `False` | Expose additional ports (VSCode, VNC) |
+| `enable_gpu` | `bool` | `False` | Enable NVIDIA GPU passthrough with `--nv` |
 | `use_fakeroot` | `bool` | `True` | Use --fakeroot for consistent file ownership |
 
 ## How It Works

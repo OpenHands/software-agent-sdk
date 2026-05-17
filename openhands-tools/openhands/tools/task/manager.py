@@ -12,11 +12,12 @@ if the task is resumed for further work later.
 
 import shutil
 import tempfile
+import threading
 import uuid
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +41,8 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 
 
 logger = get_logger(__name__)
+
+_SUBAGENTS_DIR: Final[str] = "subagents"
 
 
 class TaskStatus(StrEnum):
@@ -97,13 +100,23 @@ class TaskManager:
         self._confirmation_handler = confirmation_handler
 
         self._tasks: dict[str, Task] = {}
+        self._tasks_lock = threading.Lock()
 
-        # tmp directory to save task to eventually resume it later
-        self._tmp_dir = Path(tempfile.mkdtemp(prefix="openhands_tasks_"))
+        # Set once in _ensure_parent: uses the parent's subagents dir
+        # when the parent persists, otherwise a temporary directory.
+        self._persistence_dir: Path | None = None
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation
+            parent_persistence_dir = conversation.state.persistence_dir
+            if parent_persistence_dir is not None:
+                self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
+                self._persistence_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                self._persistence_dir = Path(
+                    tempfile.mkdtemp(prefix="openhands_tasks_")
+                )
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -125,15 +138,14 @@ class TaskManager:
         if task.conversation:
             task.conversation.pause()
             task.conversation.close()
-        # evict in-memory conversation
-        self._tasks[task.id] = task.model_copy(update={"conversation": None})
+        with self._tasks_lock:
+            self._tasks[task.id] = task.model_copy(update={"conversation": None})
 
     def start_task(
         self,
         prompt: str,
         subagent_type: str = "default",
         resume: str | None = None,
-        max_turns: int | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
     ) -> Task:
@@ -144,7 +156,6 @@ class TaskManager:
             subagent_type: Type of agent to use.
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
-            max_turns: Maximum number of agent iterations.
             conversation: Parent conversation (set on first call).
 
         Returns:
@@ -162,7 +173,6 @@ class TaskManager:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
-                max_turns=max_turns,
             )
 
         return self._run_task(
@@ -172,88 +182,83 @@ class TaskManager:
 
     def _resume_task(self, resume: str, subagent_type: str) -> Task:
         """Resume a sub-agent task."""
-        if resume not in self._tasks:
-            raise ValueError(
-                f"Task '{resume}' not found. "
-                f"Available tasks: {', '.join(sorted(self._tasks))}"
+        with self._tasks_lock:
+            if resume not in self._tasks:
+                raise ValueError(
+                    f"Task '{resume}' not found. "
+                    f"Available tasks: {', '.join(sorted(self._tasks))}"
+                )
+
+            factory = get_agent_factory(subagent_type)
+            worker_agent = self._get_sub_agent_from_factory(factory)
+            conversation_id = self._tasks[resume].conversation_id
+            conversation = LocalConversation(
+                agent=worker_agent,
+                workspace=self.parent_conversation.state.workspace.working_dir,
+                persistence_dir=self._persistence_dir,
+                conversation_id=conversation_id,
+                hook_config=factory.definition.hooks,
+                delete_on_close=True,
             )
 
-        factory = get_agent_factory(subagent_type)
-        worker_agent = self._get_sub_agent_from_factory(factory)
-        conversation_id = self._tasks[resume].conversation_id
-        conversation = LocalConversation(
-            agent=worker_agent,
-            workspace=self.parent_conversation.state.workspace.working_dir,
-            persistence_dir=self._tmp_dir,
-            conversation_id=conversation_id,
-            hook_config=factory.definition.hooks,
-            delete_on_close=False,
-        )
+            self._set_confirmation_policy(
+                conversation,
+                factory.definition.get_confirmation_policy(),
+            )
 
-        self._set_confirmation_policy(
-            conversation,
-            factory.definition.get_confirmation_policy(),
-        )
+            self._tasks[resume] = self._tasks[resume].model_copy(
+                update={
+                    "conversation": conversation,
+                    "status": TaskStatus.RUNNING,
+                }
+            )
 
-        self._tasks[resume] = self._tasks[resume].model_copy(
-            update={
-                "conversation": conversation,
-                "status": TaskStatus.RUNNING,
-            }
-        )
-
-        return self._tasks[resume]
+            return self._tasks[resume]
 
     def _create_task(
         self,
         subagent_type: str,
         description: str | None,
-        max_turns: int | None,
     ) -> Task:
         """Create a fresh task.
 
         The iteration limit is resolved with the following precedence:
         1. ``factory.definition.max_iteration_per_run`` (from the agent definition)
-        2. ``max_turns`` (explicit caller override)
-        3. Hard-coded default of 500
+        2. The parent conversation's ``max_iteration_per_run``
         """
-        task_id, conversation_id = self._generate_ids()
-
         factory = get_agent_factory(subagent_type)
         worker_agent = self._get_sub_agent_from_factory(factory)
 
-        # Priority:
-        # 1. factory.definition.max_iteration_per_run (agent def)
-        # 2. max_turns (caller)
-        # 3. default to 500
-        if factory.definition.max_iteration_per_run:
-            effective_max_iter = factory.definition.max_iteration_per_run
-        elif max_turns:
-            effective_max_iter = max_turns
-        else:
-            effective_max_iter = 500
-
-        sub_conversation = self._get_conversation(
-            description=description,
-            max_iteration_per_run=effective_max_iter,
-            task_id=task_id,
-            worker_agent=worker_agent,
-            conversation_id=conversation_id,
-            hook_config=factory.definition.hooks,
+        effective_max_iter = (
+            factory.definition.max_iteration_per_run
+            if factory.definition.max_iteration_per_run
+            else self.parent_conversation.max_iteration_per_run
         )
 
-        self._set_confirmation_policy(
-            sub_conversation,
-            factory.definition.get_confirmation_policy(),
-        )
+        with self._tasks_lock:
+            task_id, conversation_id = self._generate_ids()
 
-        self._tasks[task_id] = Task(
-            id=task_id,
-            conversation_id=conversation_id,
-            conversation=sub_conversation,
-            status=TaskStatus.RUNNING,
-        )
-        return self._tasks[task_id]
+            sub_conversation = self._get_conversation(
+                description=description,
+                max_iteration_per_run=effective_max_iter,
+                task_id=task_id,
+                worker_agent=worker_agent,
+                conversation_id=conversation_id,
+                hook_config=factory.definition.hooks,
+            )
+
+            self._set_confirmation_policy(
+                sub_conversation,
+                factory.definition.get_confirmation_policy(),
+            )
+
+            self._tasks[task_id] = Task(
+                id=task_id,
+                conversation_id=conversation_id,
+                conversation=sub_conversation,
+                status=TaskStatus.RUNNING,
+            )
+            return self._tasks[task_id]
 
     def _get_conversation(
         self,
@@ -276,11 +281,11 @@ class TaskManager:
             agent=worker_agent,
             workspace=parent.state.workspace.working_dir,
             visualizer=visualizer,
-            persistence_dir=self._tmp_dir,
+            persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
             hook_config=hook_config,
-            delete_on_close=False,
+            delete_on_close=True,
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
@@ -384,8 +389,19 @@ class TaskManager:
             )
 
     def close(self) -> None:
-        """Clean up tmp directory and remove all created tasks."""
-        if self._tmp_dir.exists():
-            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        """Clean up temporary directory (if used) and remove all created tasks."""
+        # Only clean up when using a temp dir (parent had no persistence).
+        # When the parent persists, subagent data lives under its directory.
+        parent_persists = (
+            self._parent_conversation is not None
+            and self._parent_conversation.state.persistence_dir is not None
+        )
+        if (
+            not parent_persists
+            and self._persistence_dir is not None
+            and self._persistence_dir.exists()
+        ):
+            shutil.rmtree(self._persistence_dir, ignore_errors=True)
 
-        self._tasks.clear()
+        with self._tasks_lock:
+            self._tasks.clear()

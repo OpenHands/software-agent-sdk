@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 import openhands.tools.preset.default as _preset_default
@@ -35,51 +36,98 @@ def _make_test_llm() -> LLM:
 
 def test_builtins_contains_expected_agents() -> None:
     md_files = {f.stem for f in SUBAGENTS_DIR.glob("*.md")}
-    assert {"default", "explore", "bash"}.issubset(md_files)
+    assert {"default", "code_explorer", "bash_runner", "web_researcher"}.issubset(
+        md_files
+    )
 
 
 def test_load_all_builtins() -> None:
     """Every .md file in subagents/ should parse without errors."""
     agents = load_agents_from_dir(SUBAGENTS_DIR)
     names = {a.name for a in agents}
-    assert {"default", "explore", "bash"}.issubset(names)
+    assert {
+        "general-purpose",
+        "code-explorer",
+        "bash-runner",
+        "web-researcher",
+    }.issubset(names)
 
 
 @pytest.mark.parametrize(
-    "cli_mode, agent_names",
+    "enable_browser, expected_agents",
     [
-        (False, ["default", "explore", "bash"]),
-        (True, ["default cli mode", "explore", "bash"]),
+        (
+            True,
+            ["general-purpose", "code-explorer", "bash-runner", "web-researcher"],
+        ),
+        (
+            False,
+            ["general-purpose", "code-explorer", "bash-runner"],
+        ),
     ],
 )
 def test_register_builtins_agents_registers_expected_factories(
-    cli_mode: bool, agent_names: list[str]
+    enable_browser: bool, expected_agents: list[str]
 ) -> None:
-    register_builtins_agents(cli_mode=cli_mode)
+    register_builtins_agents(enable_browser=enable_browser)
 
     llm = _make_test_llm()
     agent_tool_names: dict[str, list[str]] = {}
-    for name in agent_names:
+    for name in expected_agents:
         factory = get_agent_factory(name)
         agent = factory.factory_func(llm)
         assert isinstance(agent, Agent)
         agent_tool_names[name] = [t.name for t in agent.tools]
 
-    assert len(agent_tool_names) == 3
+    assert len(agent_tool_names) == len(expected_agents)
 
-    if cli_mode:
-        assert agent_tool_names["default cli mode"] == [
-            "terminal",
-            "file_editor",
-            "task_tracker",
-        ]
-    else:
-        assert agent_tool_names["default"] == [
-            "terminal",
-            "file_editor",
-            "task_tracker",
-            "browser_tool_set",
-        ]
+    # general purpose agent should never include browser tools
+    assert agent_tool_names["general-purpose"] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+    ]
 
-    assert agent_tool_names["explore"] == ["terminal"]
-    assert agent_tool_names["bash"] == ["terminal"]
+    assert agent_tool_names["code-explorer"] == ["terminal"]
+    assert agent_tool_names["bash-runner"] == ["terminal"]
+
+    if enable_browser:
+        assert "browser_tool_set" in agent_tool_names["web-researcher"]
+
+
+def test_general_purpose_has_no_browser_tools() -> None:
+    """general-purpose agent should not have browser tools (architectural change)."""
+    register_builtins_agents(enable_browser=True)
+    factory = get_agent_factory("general-purpose")
+    agent = factory.factory_func(_make_test_llm())
+    tool_names = [t.name for t in agent.tools]
+    assert "browser_tool_set" not in tool_names
+
+
+def test_register_builtins_agents_skips_web_researcher_without_browser() -> None:
+    """When enable_browser=False, the web researcher agent should not be registered."""
+    register_builtins_agents(enable_browser=False)
+    with pytest.raises(ValueError, match="Unknown agent 'web-researcher'"):
+        get_agent_factory("web-researcher")
+
+
+@pytest.mark.parametrize(
+    "old_name, expected_tools",
+    [
+        ("default", ["terminal", "file_editor", "task_tracker"]),
+        ("default cli mode", ["terminal", "file_editor", "task_tracker"]),
+        ("explore", ["terminal"]),
+        ("bash", ["terminal"]),
+    ],
+)
+def test_deprecated_agent_names_still_work(
+    old_name: str, expected_tools: list[str]
+) -> None:
+    """Old agent names should resolve to the correct agent with the right tools."""
+    register_builtins_agents()
+    llm = _make_test_llm()
+
+    with pytest.warns(DeprecatedWarning, match=f"'{old_name}'"):
+        agent = get_agent_factory(old_name).factory_func(llm)
+        assert isinstance(agent, Agent)
+        assert [t.name for t in agent.tools] == expected_tools

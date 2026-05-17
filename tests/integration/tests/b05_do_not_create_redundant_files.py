@@ -7,13 +7,7 @@ import subprocess
 from textwrap import dedent
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool
-from tests.integration.base import (
-    BaseIntegrationTest,
-    SkipTest,
-    TestResult,
-    get_tools_for_preset,
-)
+from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 from tests.integration.behavior_utils import (
     get_conversation_summary,
 )
@@ -34,10 +28,6 @@ class NoRedundantFilesTest(BaseIntegrationTest):
     that are not asked by users when performing the task."""
 
     INSTRUCTION: str = INSTRUCTION
-
-    @property
-    def tools(self) -> list[Tool]:
-        return get_tools_for_preset(self.tool_preset, enable_browser=False)
 
     def setup(self) -> None:  # noqa: D401
         """Set up a realistic codebase by cloning the lerobot repo."""

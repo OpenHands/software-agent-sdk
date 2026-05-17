@@ -1,17 +1,34 @@
 import logging
 import time
 from collections.abc import Generator
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, TypeAdapter
 
 from openhands.sdk.git.models import GitChange, GitDiff
+from openhands.sdk.utils.path import to_posix_path
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
 _logger = logging.getLogger(__name__)
+
+
+def _remote_path(path: str | Path) -> str:
+    return to_posix_path(path)
+
+
+def _join_remote_path(base: str | Path, path: str | Path) -> str:
+    path_str = _remote_path(path)
+    if path_str.startswith("/") or PureWindowsPath(path_str).is_absolute():
+        return path_str
+
+    base_str = _remote_path(base)
+    prefix = "/" if base_str.startswith("/") else ""
+    base_parts = [part for part in base_str.split("/") if part]
+    path_parts = [part for part in path_str.split("/") if part]
+    return prefix + "/".join(base_parts + path_parts)
 
 
 class RemoteWorkspaceMixin(BaseModel):
@@ -74,7 +91,7 @@ class RemoteWorkspaceMixin(BaseModel):
             "timeout": int(timeout),
         }
         if cwd is not None:
-            payload["cwd"] = str(cwd)
+            payload["cwd"] = _remote_path(cwd)
 
         try:
             # Start the command
@@ -200,6 +217,7 @@ class RemoteWorkspaceMixin(BaseModel):
         """
         source = Path(source_path)
         destination = Path(destination_path)
+        destination_remote = _remote_path(destination_path)
 
         _logger.debug(f"Remote file upload: {source} -> {destination}")
 
@@ -210,14 +228,13 @@ class RemoteWorkspaceMixin(BaseModel):
 
             # Prepare the upload
             files = {"file": (source.name, file_content)}
-            data = {"destination_path": str(destination)}
 
-            # Make HTTP call
+            # Make HTTP call using query parameter for path
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/file/upload/{destination}",
+                "url": f"{self.host}/api/file/upload",
+                "params": {"path": destination_remote},
                 "files": files,
-                "data": data,
                 "headers": self._headers,
                 "timeout": 60.0,
             }
@@ -228,7 +245,7 @@ class RemoteWorkspaceMixin(BaseModel):
             return FileOperationResult(
                 success=result_data.get("success", True),
                 source_path=str(source),
-                destination_path=str(destination),
+                destination_path=destination_remote,
                 file_size=result_data.get("file_size"),
                 error=result_data.get("error"),
             )
@@ -238,7 +255,7 @@ class RemoteWorkspaceMixin(BaseModel):
             return FileOperationResult(
                 success=False,
                 source_path=str(source),
-                destination_path=str(destination),
+                destination_path=destination_remote,
                 error=str(e),
             )
 
@@ -260,20 +277,16 @@ class RemoteWorkspaceMixin(BaseModel):
         """
         source = Path(source_path)
         destination = Path(destination_path)
+        source_remote = _remote_path(source_path)
 
         _logger.debug(f"Remote file download: {source} -> {destination}")
 
         try:
-            # Construct URL with path parameter (not query parameter)
-            # Double slash ensures FastAPI extracts path with leading slash
-            # for absolute path validation
-            source_str = str(source)
-            url = f"/api/file/download//{source_str.lstrip('/')}"
-
-            # Make HTTP call
+            # Make HTTP call using query parameter for path
             response = yield {
                 "method": "GET",
-                "url": url,
+                "url": "/api/file/download",
+                "params": {"path": source_remote},
                 "headers": self._headers,
                 "timeout": 60.0,
             }
@@ -288,7 +301,7 @@ class RemoteWorkspaceMixin(BaseModel):
 
             return FileOperationResult(
                 success=True,
-                source_path=str(source),
+                source_path=source_remote,
                 destination_path=str(destination),
                 file_size=len(response.content),
             )
@@ -297,7 +310,7 @@ class RemoteWorkspaceMixin(BaseModel):
             _logger.error(f"Remote file download failed: {e}")
             return FileOperationResult(
                 success=False,
-                source_path=str(source),
+                source_path=source_remote,
                 destination_path=str(destination),
                 error=str(e),
             )
@@ -317,10 +330,11 @@ class RemoteWorkspaceMixin(BaseModel):
         Raises:
             Exception: If path is not a git repository or getting changes failed
         """
-        # Make HTTP call
+        remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": Path("/api/git/changes") / self.working_dir / path,
+            "url": "/api/git/changes",
+            "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,
         }
@@ -344,10 +358,11 @@ class RemoteWorkspaceMixin(BaseModel):
         Raises:
             Exception: If path is not a git repository or getting diff failed
         """
-        # Make HTTP call
+        remote_path = _join_remote_path(self.working_dir, path)
         response = yield {
             "method": "GET",
-            "url": Path("/api/git/diff") / self.working_dir / path,
+            "url": "/api/git/diff",
+            "params": {"path": remote_path},
             "headers": self._headers,
             "timeout": 60.0,
         }

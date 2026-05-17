@@ -65,6 +65,18 @@ class LLMContextWindowExceedError(LLMError):
         super().__init__(message)
 
 
+class LLMMalformedConversationHistoryError(LLMError):
+    def __init__(
+        self,
+        message: str = (
+            "Conversation history produced an invalid LLM request. "
+            "Consider retrying with condensed history and investigating the "
+            "event stream."
+        ),
+    ) -> None:
+        super().__init__(message)
+
+
 class LLMContextWindowTooSmallError(LLMError):
     """Raised when the model's context window is too small for OpenHands to work."""
 

@@ -22,12 +22,12 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout agent-sdk repository
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 0
 
             - name: Checkout docs repository (try feature branch)
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               continue-on-error: true
               id: checkout-feature
               with:
@@ -38,7 +38,7 @@ jobs:
 
             - name: Checkout docs repository (fallback to main)
               if: steps.checkout-feature.outcome == 'failure'
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
               with:
                   repository: OpenHands/docs
                   path: docs

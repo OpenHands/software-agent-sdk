@@ -1,5 +1,6 @@
 """Tests for event_router.py endpoints."""
 
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
@@ -10,12 +11,54 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.dependencies import get_event_service
-from openhands.agent_server.event_router import event_router
+from openhands.agent_server.event_router import (
+    event_router,
+    normalize_datetime_to_server_timezone,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
+
+
+def test_normalize_datetime_naive_passthrough():
+    """Naive datetimes should be returned unchanged."""
+    naive_dt = datetime(2025, 1, 15, 10, 30, 0)
+    result = normalize_datetime_to_server_timezone(naive_dt)
+
+    assert result == naive_dt
+    assert result.tzinfo is None
+
+
+def test_normalize_datetime_utc_converted_to_naive():
+    """UTC datetime should be converted to server local time and made naive."""
+    utc_dt = datetime(2025, 1, 15, 10, 30, 0, tzinfo=UTC)
+    result = normalize_datetime_to_server_timezone(utc_dt)
+
+    assert result.tzinfo is None
+    expected = utc_dt.astimezone(None).replace(tzinfo=None)
+    assert result == expected
+
+
+def test_normalize_datetime_preserves_microseconds():
+    """Microseconds should be preserved through conversion."""
+    utc_dt = datetime(2025, 1, 15, 10, 30, 0, 123456, tzinfo=UTC)
+    result = normalize_datetime_to_server_timezone(utc_dt)
+
+    assert result.microsecond == 123456
+
+
+def test_normalize_datetime_fixed_offset_timezone():
+    """Test with a specific fixed offset timezone (UTC+5:30)."""
+    ist = timezone(timedelta(hours=5, minutes=30))
+    ist_dt = datetime(2025, 1, 15, 16, 0, 0, tzinfo=ist)
+
+    result = normalize_datetime_to_server_timezone(ist_dt)
+
+    assert result.tzinfo is None
+    expected = ist_dt.astimezone(None).replace(tzinfo=None)
+    assert result == expected
 
 
 @pytest.fixture

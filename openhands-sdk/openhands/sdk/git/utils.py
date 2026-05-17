@@ -101,10 +101,23 @@ def _repo_has_commits(repo_dir: str | Path) -> bool:
         return False
 
 
-def get_valid_ref(repo_dir: str | Path) -> str | None:
+def get_valid_ref(repo_dir: str | Path, override: str | None = None) -> str | None:
     """Get a valid git reference to compare against.
 
-    Tries multiple strategies to find a valid reference:
+    If ``override`` is provided, it is resolved via ``git rev-parse --verify``
+    and returned. This lets callers request, for example, ``HEAD`` to get
+    ``git status``-style diffs against the latest commit instead of against
+    the remote branch.
+
+    The ``"HEAD"`` override is treated specially: if it does not resolve
+    (no commits on the current branch — e.g. a freshly ``git init``'d
+    workspace, or an orphan branch in a repo that has commits elsewhere),
+    we fall back to the empty-tree hash so callers see untracked files as
+    additions instead of an opaque ``rev-parse --verify`` failure. Other
+    overrides that do not resolve still raise ``GitCommandError`` so a
+    typo'd branch/SHA is not silently swallowed.
+
+    Otherwise, tries multiple strategies to find a valid reference:
     1. Current branch's origin (e.g., origin/main)
     2. Default branch (e.g., origin/main, origin/master)
     3. Merge base with default branch
@@ -112,10 +125,51 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
 
     Args:
         repo_dir: Path to the git repository
+        override: Optional explicit ref (e.g. ``"HEAD"`` or a commit hash) to
+            use instead of the auto-detected comparison ref.
 
     Returns:
         Valid git reference hash, or None if no valid reference found
+
+    Raises:
+        GitCommandError: If a non-``"HEAD"`` ``override`` is provided and
+            does not resolve.
     """
+    if override is not None:
+        try:
+            # Resolve explicit override and surface failure to the caller so
+            # the difference between "ref not found" and "no changes" stays
+            # visible.
+            return run_git_command(
+                [
+                    "git",
+                    "--no-pager",
+                    "rev-parse",
+                    "--verify",
+                    f"{override}^{{commit}}",
+                ],
+                repo_dir,
+            )
+        except GitCommandError:
+            # ``HEAD`` is the canonical "current branch tip"; if it doesn't
+            # resolve, the current branch has no commits yet. That happens for
+            # freshly ``git init``'d workspaces *and* for orphan branches in
+            # repos that have commits on other branches (so ``_repo_has_commits``
+            # alone can't catch the latter). Treat both as empty-tree compares
+            # so the Changes tab renders working-tree additions instead of
+            # bubbling up an opaque ``rev-parse --verify`` failure to the GUI.
+            #
+            # For non-``HEAD`` overrides (explicit branches/SHAs the caller
+            # asked for), keep the strict behavior so a typo doesn't silently
+            # become "no changes".
+            if override == "HEAD":
+                logger.debug(
+                    "Override 'HEAD' did not resolve in %s; using empty tree",
+                    repo_dir,
+                )
+                return GIT_EMPTY_TREE_HASH
+            raise
+
     refs_to_try = []
 
     # Check if repo has any commits first. Empty repos (created with git init)

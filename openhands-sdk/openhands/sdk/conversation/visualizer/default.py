@@ -1,6 +1,9 @@
 import logging
 import re
+import sys
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import IO, TextIO, cast
 
 from pydantic import BaseModel
 from rich.console import Console, Group
@@ -52,6 +55,40 @@ DEFAULT_HIGHLIGHT_REGEX = {
     r"\*\*(.*?)\*\*": "bold",
     r"\*(.*?)\*": "italic",
 }
+
+
+@dataclass(slots=True)
+class _EncodingSafeTextIO:
+    """Text stream wrapper that replaces characters unsupported by stdout."""
+
+    _stream: TextIO
+
+    @property
+    def encoding(self) -> str | None:
+        return self._stream.encoding
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+    def write(self, text: str) -> int:
+        encoding = self.encoding
+        if encoding:
+            try:
+                text.encode(encoding)
+            except UnicodeEncodeError:
+                text = text.encode(encoding, errors="replace").decode(encoding)
+        return self._stream.write(text)
+
+
+def _create_console() -> Console:
+    stdout = getattr(sys.stdout, "rich_proxied_file", sys.stdout)
+    return Console(file=cast(IO[str], _EncodingSafeTextIO(cast(TextIO, stdout))))
 
 
 class EventVisualizationConfig(BaseModel):
@@ -242,7 +279,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                                 scenarios where user input is not relevant to show.
         """
         super().__init__()
-        self._console = Console()
+        self._console = _create_console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
 
@@ -360,7 +397,12 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         # Cache hit rate (prompt + cache)
         prompt = usage.prompt_tokens or 0
         cache_read = usage.cache_read_tokens or 0
-        cache_rate = f"{(cache_read / prompt * 100):.2f}%" if prompt > 0 else "N/A"
+        # litellm/OpenAI convention: prompt_tokens includes cached reads, so
+        # prompt is the right denominator. ACP (claude-agent-acp) reports
+        # input_tokens excluding cached reads, in which case the two are
+        # disjoint and the total is prompt + cache_read.
+        denom = prompt + cache_read if cache_read > prompt else prompt
+        cache_rate = f"{(cache_read / denom * 100):.2f}%" if denom > 0 else "N/A"
         reasoning_tokens = usage.reasoning_tokens or 0
 
         # Cost

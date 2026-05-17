@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.options.chat_options import select_chat_options
 
 
@@ -14,10 +15,24 @@ class DummyLLM:
     extra_headers: dict[str, str] | None = None
     reasoning_effort: str | None = None
     extended_thinking_budget: int | None = None
-    safety_settings: list[dict[str, Any]] | None = None
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
+    _prompt_cache_key: str | None = None
+    openrouter_site_url: str = ""
+    openrouter_app_name: str = ""
+
+    def _openrouter_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
+
+    @property
+    def effective_max_output_tokens(self) -> int:
+        return self.max_output_tokens
 
 
 def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
@@ -60,11 +75,25 @@ def test_gpt5_uses_reasoning_effort_and_strips_temp_top_p():
     assert "top_p" not in out
 
 
-def test_gemini_2_5_pro_defaults_reasoning_effort_low_when_none():
-    llm = DummyLLM(model="gemini-2.5-pro-experimental", reasoning_effort=None)
+def test_kimi_k2_thinking_does_not_send_reasoning_effort():
+    llm = DummyLLM(
+        model="litellm_proxy/moonshot/kimi-k2-thinking",
+        temperature=1.0,
+        reasoning_effort="high",
+    )
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
 
-    assert out.get("reasoning_effort") == "low"
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 1.0
+
+
+def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():
+    llm = DummyLLM(model="gemini-2.5-pro", reasoning_effort=None)
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "reasoning_effort" not in out
+    assert out.get("temperature") == 0.0
+    assert out.get("top_p") == 1.0
 
 
 def test_non_reasoning_model_preserves_temp_and_top_p():
@@ -164,3 +193,53 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
         "budget_tokens": 500,
     }
     assert out.get("max_tokens") == 1000
+
+
+def test_chat_options_forwards_prompt_cache_key_when_set():
+    """Regression test for #2904."""
+    llm = LLM(model="gpt-4o")
+    llm._prompt_cache_key = "conv-abc123"
+    assert (
+        select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
+        == "conv-abc123"
+    )
+
+
+def test_chat_options_omits_prompt_cache_key_when_unset():
+    llm = LLM(model="gpt-4o")
+    assert "prompt_cache_key" not in select_chat_options(
+        llm, user_kwargs={}, has_tools=True
+    )
+
+
+def test_chat_options_injects_openrouter_headers_via_extra_headers():
+    """OpenRouter site/app must flow per-call (issue #3138), not via env."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+    assert out["extra_headers"]["X-Title"] == "ExampleApp"
+
+
+def test_chat_options_user_extra_headers_win_over_openrouter_defaults():
+    """User-supplied extra_headers must override per-call OpenRouter values."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+        extra_headers={"X-Title": "UserOverride"},
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["X-Title"] == "UserOverride"
+    # Site URL still injected since user didn't override it
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+
+
+def test_chat_options_omits_openrouter_headers_when_unset():
+    """Empty site/app must not add extra_headers."""
+    llm = DummyLLM(model="gpt-4o")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert "extra_headers" not in out

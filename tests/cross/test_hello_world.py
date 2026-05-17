@@ -2,10 +2,12 @@
 
 import logging
 import os
+import sys
 import tempfile
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from pydantic import SecretStr
 
@@ -27,6 +29,12 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Hello-world cross tests include TerminalTool until PowerShell follow-up.",
+)
 
 
 class TestHelloWorld:

@@ -1,6 +1,7 @@
 """Read file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import Field
@@ -8,6 +9,7 @@ from rich.text import Text
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -107,6 +109,20 @@ MAX_LINES_PER_READ = 1000
 class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
     """Tool for reading file contents with pagination support."""
 
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Lock on the target file path so a read never sees
+        partially-written content from a concurrent write.
+        Reads of different files run in parallel.
+        """
+        assert isinstance(action, ReadFileAction)
+        path = Path(action.file_path)
+        if not path.is_absolute():
+            assert self.meta is not None, (
+                "workspace_root required to resolve relative paths"
+            )
+            path = Path(self.meta["workspace_root"]) / path
+        return DeclaredResources(keys=(f"file:{path.resolve()}",), declared=True)
+
     @classmethod
     def create(
         cls,
@@ -141,6 +157,7 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
                     openWorldHint=False,
                 ),
                 executor=executor,
+                meta={"workspace_root": working_dir},
             )
         ]
 

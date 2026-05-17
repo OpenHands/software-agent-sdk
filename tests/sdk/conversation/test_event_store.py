@@ -402,3 +402,42 @@ def test_event_log_concurrent_writes_serialized():
 
         files = [f for f in fs.list("events") if not f.endswith(".lock")]
         assert len(files) == 2
+
+
+def test_get_single_item_recovers_from_stale_index():
+    """_get_single_item rebuilds the index when _idx_to_id is stale."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    # Use UUID-like IDs to match EVENT_NAME_RE pattern
+    evt_id = "00000000-0000-0000-0000-000000000001"
+    event = create_test_event(evt_id, "Should recover")
+    log.append(event)
+    assert log[0].id == evt_id
+
+    # Simulate a stale in-memory index (e.g., external file modification)
+    log._idx_to_id.clear()
+    log._id_to_idx.clear()
+
+    # Access should rebuild the index transparently and succeed
+    recovered = log[0]
+    assert recovered.id == evt_id
+
+
+def test_get_single_item_stale_index_out_of_range():
+    """After index rebuild, raise IndexError if the index no longer exists."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    evt_id = "00000000-0000-0000-0000-000000000002"
+    event = create_test_event(evt_id, "Only one")
+    log.append(event)
+
+    # Clear index AND artificially inflate length to simulate stale state
+    log._idx_to_id.clear()
+    log._id_to_idx.clear()
+    log._length = 5  # pretend there are 5 events
+
+    # Index 3 doesn't exist on disk; should raise IndexError after rebuild
+    with pytest.raises(IndexError, match="Event index out of range"):
+        log[3]

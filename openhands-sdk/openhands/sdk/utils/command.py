@@ -6,9 +6,16 @@ import threading
 from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
+
+
+# Env vars that should not be exposed to subprocesses (e.g., bash commands
+# executed by the agent). These credentials allow access to user secrets via
+# the SaaS API and must remain isolated to the SDK's Python process.
+_SENSITIVE_ENV_VARS = frozenset({"SESSION_API_KEY"})
 
 
 def sanitized_env(
@@ -19,6 +26,10 @@ def sanitized_env(
     PyInstaller-based binaries rewrite ``LD_LIBRARY_PATH`` so their vendored
     libraries win. This function restores the original value so that subprocess
     will not use them.
+
+    Sensitive environment variables (e.g., ``SESSION_API_KEY``) are stripped
+    to prevent LLM-driven agents from accessing credentials via terminal
+    commands.
     """
 
     base_env: dict[str, str]
@@ -26,6 +37,10 @@ def sanitized_env(
         base_env = dict(os.environ)
     else:
         base_env = dict(env)
+
+    # Strip sensitive env vars to prevent agent access via bash commands
+    for key in _SENSITIVE_ENV_VARS:
+        base_env.pop(key, None)
 
     if "LD_LIBRARY_PATH_ORIG" in base_env:
         origin = base_env["LD_LIBRARY_PATH_ORIG"]
@@ -47,11 +62,14 @@ def execute_command(
     if isinstance(cmd, str):
         cmd_to_run = cmd
         use_shell = True
-        logger.info("$ %s", cmd)
+        cmd_str = cmd
     else:
         cmd_to_run = cmd
         use_shell = False
-        logger.info("$ %s", " ".join(shlex.quote(c) for c in cmd))
+        cmd_str = " ".join(shlex.quote(c) for c in cmd)
+
+    # Log the command with sensitive values redacted
+    logger.info("$ %s", redact_text_secrets(cmd_str))
 
     proc = subprocess.Popen(
         cmd_to_run,

@@ -241,3 +241,89 @@ def test_forward_env_empty_list_results_in_empty_environment():
 
         workspace._runtime_id = None
         workspace.cleanup()
+
+
+def test_start_runtime_logs_environment_keys_without_values(caplog):
+    """Test that start-runtime logs do not include forwarded env values."""
+    from openhands.workspace import APIRemoteWorkspace
+
+    with patch.dict(
+        os.environ,
+        {
+            "SECRET_TOKEN": "super-secret-value",
+            "ANOTHER_SECRET": "another-secret-value",
+        },
+    ):
+        with patch.object(
+            APIRemoteWorkspace, "_start_or_attach_to_runtime"
+        ) as mock_attach:
+            mock_attach.return_value = None
+
+            workspace = APIRemoteWorkspace(
+                runtime_api_url="https://example.com",
+                runtime_api_key="test-key",
+                server_image="test-image",
+                forward_env=["SECRET_TOKEN", "ANOTHER_SECRET"],
+            )
+
+            mock_response = MagicMock()
+            mock_response.json.return_value = {
+                "runtime_id": "test-id",
+                "url": "https://test-runtime.com",
+                "session_api_key": "test-key",
+            }
+
+            with patch.object(
+                workspace, "_send_api_request", return_value=mock_response
+            ):
+                with caplog.at_level("INFO"):
+                    workspace._start_runtime()
+
+            log_text = "\n".join(record.getMessage() for record in caplog.records)
+            assert "super-secret-value" not in log_text
+            assert "another-secret-value" not in log_text
+            assert "Runtime start payload:" in log_text
+            assert "environment_keys=['ANOTHER_SECRET', 'SECRET_TOKEN']" in log_text
+
+            workspace._runtime_id = None
+            workspace.cleanup()
+
+
+# --- Callback integration tests ---
+
+
+def _make_workspace():
+    """Create a workspace without starting runtime for callback tests."""
+    from openhands.workspace import APIRemoteWorkspace
+
+    with patch.object(APIRemoteWorkspace, "_start_or_attach_to_runtime"):
+        ws = APIRemoteWorkspace(
+            runtime_api_url="https://example.com",
+            runtime_api_key="test-key",
+            server_image="test-image",
+        )
+        ws._runtime_id = None  # Prevent cleanup from making API calls
+        return ws
+
+
+def test_api_remote_workspace_exit_sends_callback(monkeypatch):
+    """Test that APIRemoteWorkspace.__exit__ sends completion callback."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    ws = _make_workspace()
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        ws.__exit__(None, None, None)
+
+        mock_client.post.assert_called_once()
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "COMPLETED"

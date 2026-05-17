@@ -5,10 +5,15 @@ while keeping the LLM deterministic via monkeypatching.
 """
 
 import json
+import shutil
+import sys
+import textwrap
 import threading
 import time
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 import pytest
@@ -16,7 +21,8 @@ import uvicorn
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.agent_server.__main__ import preload_modules
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation import RemoteConversation
 from openhands.sdk.event import (
     ActionEvent,
@@ -24,12 +30,15 @@ from openhands.sdk.event import (
     CondensationSummaryEvent,
     ConversationStateUpdateEvent,
     Event,
+    HookExecutionEvent,
     LLMConvertibleEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.skills import Skill
 from openhands.sdk.subagent import AgentDefinition
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -42,8 +51,12 @@ from openhands.sdk.workspace import RemoteWorkspace
 from openhands.workspace.docker.workspace import find_available_tcp_port
 
 
-@pytest.fixture
-def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+@contextmanager
+def live_server_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    import_modules: str | None = None,
+) -> Generator[dict]:
     """Launch a real FastAPI server backed by temp workspace and conversations.
 
     We set OPENHANDS_AGENT_SERVER_CONFIG_PATH before creating the app so that
@@ -55,9 +68,6 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     workspace_path = tmp_path / "workspace"
 
     # Ensure clean directories (both tmp and any leftover in cwd)
-    import shutil
-    from pathlib import Path
-
     # Clean up any leftover directories from previous runs in current working directory
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
@@ -97,6 +107,9 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     monkeypatch.setenv("OPENHANDS_AGENT_SERVER_CONFIG_PATH", str(cfg_file))
     monkeypatch.delenv("SESSION_API_KEY", raising=False)
 
+    if import_modules is not None:
+        preload_modules(import_modules)
+
     # Build app after env is set
     from openhands.agent_server.api import create_app
     from openhands.agent_server.config import Config
@@ -114,7 +127,6 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
     thread.start()
 
     # Wait for the server to be ready with health check
-    import httpx
 
     base_url = f"http://127.0.0.1:{port}"
     server_ready = False
@@ -133,7 +145,12 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
         raise RuntimeError("Server failed to start within timeout")
 
     try:
-        yield {"host": f"http://127.0.0.1:{port}"}
+        yield {
+            "app": app,
+            "conversation_service": app.state.conversation_service,
+            "host": f"http://127.0.0.1:{port}",
+            "workspace_path": workspace_path,
+        }
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
         server.should_exit = True
@@ -143,6 +160,20 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dic
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
             shutil.rmtree(cwd_conversations)
+
+
+def test_health_endpoints_return_ok_json(server_env):
+    with httpx.Client() as client:
+        for endpoint in ("/alive", "/health"):
+            response = client.get(f"{server_env['host']}{endpoint}", timeout=1.0)
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok"}
+
+
+@pytest.fixture
+def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[dict]:
+    with live_server_env(tmp_path, monkeypatch) as env:
+        yield env
 
 
 @pytest.fixture
@@ -192,6 +223,233 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+
+def test_preloaded_custom_tool_resolves_in_live_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A startup-preloaded tool is available during live conversation creation."""
+    from openhands.sdk.tool import Tool, registry as tool_registry
+
+    package_name = "preload_live_server_tools_2771"
+    module_qualname = f"{package_name}.tools"
+    package_dir = tmp_path / package_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "tools.py").write_text(
+        textwrap.dedent(
+            """\
+            from __future__ import annotations
+
+            from collections.abc import Sequence
+            from typing import ClassVar
+
+            from openhands.sdk.tool import (
+                Action,
+                Observation,
+                ToolDefinition,
+                ToolExecutor,
+                register_tool,
+            )
+
+
+            class PreloadedAction(Action):
+                pass
+
+
+            class PreloadedObservation(Observation):
+                pass
+
+
+            class PreloadedExecutor(
+                ToolExecutor[PreloadedAction, PreloadedObservation]
+            ):
+                def __call__(
+                    self,
+                    action: PreloadedAction,
+                    conversation=None,
+                ) -> PreloadedObservation:
+                    return PreloadedObservation.from_text("preloaded")
+
+
+            class PreloadedLiveServerTool(
+                ToolDefinition[PreloadedAction, PreloadedObservation]
+            ):
+                name: ClassVar[str] = "preloaded_live_server_tool"
+
+                @classmethod
+                def create(
+                    cls, conv_state=None, **params
+                ) -> Sequence[PreloadedLiveServerTool]:
+                    return [
+                        cls(
+                            description="Tool registered by startup preload.",
+                            action_type=PreloadedAction,
+                            observation_type=PreloadedObservation,
+                            executor=PreloadedExecutor(),
+                        )
+                    ]
+
+
+            register_tool(PreloadedLiveServerTool.name, PreloadedLiveServerTool)
+            """
+        )
+    )
+
+    registry_snapshot = dict(tool_registry._REG)
+    usability_snapshot = dict(tool_registry._USABILITY_REG)
+    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    sys.modules.pop(package_name, None)
+    sys.modules.pop(module_qualname, None)
+
+    try:
+        with live_server_env(
+            tmp_path, monkeypatch, import_modules=module_qualname
+        ) as env:
+            llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+            agent = Agent(
+                llm=llm,
+                tools=[Tool(name="preloaded_live_server_tool")],
+                include_default_tools=[],
+            )
+            payload = {
+                "agent": agent.model_dump(
+                    mode="json", context={"expose_secrets": True}
+                ),
+                "workspace": {"working_dir": "/tmp/workspace/project"},
+                "initial_message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "Initialize tools."}],
+                },
+                "tool_module_qualnames": {},
+            }
+
+            with httpx.Client(base_url=env["host"]) as client:
+                response = client.post("/api/conversations", json=payload, timeout=10)
+
+            assert response.status_code == 201, response.text
+            conversation_id = UUID(response.json()["id"])
+            event_service = env["conversation_service"]._event_services[conversation_id]
+            assert event_service._conversation is not None
+            assert (
+                "preloaded_live_server_tool"
+                in event_service._conversation.agent.tools_map
+            )
+    finally:
+        sys.modules.pop(package_name, None)
+        sys.modules.pop(module_qualname, None)
+        tool_registry._REG.clear()
+        tool_registry._REG.update(registry_snapshot)
+        tool_registry._USABILITY_REG.clear()
+        tool_registry._USABILITY_REG.update(usability_snapshot)
+        tool_registry._MODULE_QUALNAMES.clear()
+        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
+
+
+def test_websocket_attach_wait_does_not_block_ready_endpoint(server_env):
+    """A blocked websocket snapshot must not stall the live server event loop.
+
+    This exercises the production-shaped failure mode end-to-end: hold a real
+    conversation's synchronous state lock, start a second RemoteConversation that
+    attaches to the same server-side conversation, and verify `/ready` still
+    responds while the websocket subscription is waiting for its initial locked
+    state snapshot.
+    """
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conv.id
+
+    event_service = server_env["conversation_service"]._event_services[conversation_id]
+    assert event_service is not None
+    assert event_service._conversation is not None
+
+    attach_error: list[BaseException] = []
+    attach_result: dict[str, RemoteConversation] = {}
+    attach_thread = None
+    lock_thread = None
+    lock_acquired = threading.Event()
+    release_state_lock = threading.Event()
+    snapshot_started = threading.Event()
+    original_snapshot = event_service._create_state_update_event_sync
+
+    def traced_snapshot() -> ConversationStateUpdateEvent:
+        snapshot_started.set()
+        return original_snapshot()
+
+    def hold_state_lock() -> None:
+        assert event_service._conversation is not None
+        with event_service._conversation._state:
+            lock_acquired.set()
+            release_state_lock.wait(timeout=5.0)
+
+    def attach_conversation() -> None:
+        attach_workspace = RemoteWorkspace(
+            host=server_env["host"], working_dir="/tmp/workspace/project"
+        )
+        try:
+            attach_result["conversation"] = Conversation(
+                agent=agent,
+                workspace=attach_workspace,
+                conversation_id=conversation_id,
+            )
+        except BaseException as exc:  # pragma: no cover - surfaced by assertions
+            attach_error.append(exc)
+
+    event_service._create_state_update_event_sync = traced_snapshot
+
+    try:
+        lock_thread = threading.Thread(target=hold_state_lock, daemon=True)
+        lock_thread.start()
+        assert lock_acquired.wait(timeout=2.0), (
+            "Failed to acquire the conversation state lock for the live-server "
+            "reproduction"
+        )
+
+        attach_thread = threading.Thread(target=attach_conversation, daemon=True)
+        attach_thread.start()
+        assert snapshot_started.wait(timeout=5.0), (
+            "The websocket attach never reached the initial state snapshot"
+        )
+        assert attach_thread.is_alive(), (
+            "Expected websocket attach to still be waiting on the state lock"
+        )
+
+        ready_started = time.monotonic()
+        with httpx.Client() as client:
+            ready_response = client.get(f"{server_env['host']}/ready", timeout=1.0)
+        ready_elapsed = time.monotonic() - ready_started
+
+        assert ready_response.status_code == 200
+        assert ready_response.json() == {"status": "ready"}
+        assert ready_elapsed < 0.5, (
+            f"/ready took {ready_elapsed:.3f}s while websocket attach was waiting "
+            "for the conversation state lock"
+        )
+    finally:
+        event_service._create_state_update_event_sync = original_snapshot
+        release_state_lock.set()
+        if lock_thread is not None:
+            lock_thread.join(timeout=2.0)
+        if attach_thread is not None:
+            attach_thread.join(timeout=10.0)
+        attached_conv = attach_result.get("conversation")
+        if attached_conv is not None:
+            attached_conv.close()
+        conv.close()
+
+    assert not attach_error, (
+        f"Attaching to the existing conversation failed: {attach_error[0]}"
+    )
+    assert attach_thread is not None
+    assert not attach_thread.is_alive(), "Websocket attach never finished"
+    attached_conv = attach_result.get("conversation")
+    assert attached_conv is not None
+    assert attached_conv.id == conversation_id
 
 
 def test_remote_conversation_over_real_server(server_env, patched_llm):
@@ -318,6 +576,10 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         shutil.rmtree(cwd_conversations)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The live bash endpoint depends on the Unix terminal backend.",
+)
 def test_bash_command_endpoint_with_live_server(server_env):
     """Integration test for bash command execution through live server.
 
@@ -366,16 +628,12 @@ def test_bash_command_endpoint_with_live_server(server_env):
 def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     """Integration test for file upload through live server.
 
-    This test validates that the /api/file/upload/{path} endpoint works
+    This test validates that the /api/file/upload endpoint works
     correctly end-to-end by:
     1. Starting a real FastAPI server with file upload endpoints
     2. Creating a RemoteWorkspace pointing to that server
     3. Creating a test file and uploading it
     4. Verifying the file was uploaded to the correct location with correct content
-
-    This is a regression test for the file upload issue where the client was
-    calling /api/file/upload (without the path parameter) instead of
-    /api/file/upload/{path} as the server expects.
     """
     # Create a RemoteWorkspace pointing to the live server
     workspace = RemoteWorkspace(
@@ -388,7 +646,8 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     test_file.write_text(test_content)
 
     # Define the destination path (must be absolute for the server)
-    destination = "/tmp/test_workspace/uploaded_file.txt"
+    destination = server_env["workspace_path"] / "uploaded_file.txt"
+    destination_remote = destination.as_posix()
 
     # Upload the file
     result = workspace.file_upload(str(test_file), destination)
@@ -401,25 +660,19 @@ def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
     assert result.source_path == str(test_file), (
         f"Expected source_path to be {test_file}, got {result.source_path}"
     )
-    assert result.destination_path == destination, (
-        f"Expected destination_path to be {destination}, got {result.destination_path}"
+    assert result.destination_path == destination_remote, (
+        f"Expected destination_path to be {destination_remote}, "
+        f"got {result.destination_path}"
     )
 
-    # Verify the file exists at the destination with correct content
-    # Use bash command to check file existence and read content
-    check_cmd = f"test -f {destination} && cat {destination}"
-    check_result = workspace.execute_command(check_cmd, timeout=5.0)
-
-    assert check_result.exit_code == 0, (
-        f"File does not exist at destination or could not be read. "
-        f"Exit code: {check_result.exit_code}, "
-        f"stderr: {check_result.stderr}"
+    downloaded_file = tmp_path / "downloaded_upload.txt"
+    download_result = workspace.file_download(destination, downloaded_file)
+    assert download_result.success is True, (
+        f"File download failed. Error: {download_result.error}, "
+        f"Source: {download_result.source_path}, "
+        f"Destination: {download_result.destination_path}"
     )
-
-    # Verify the content matches what we uploaded
-    assert check_result.stdout == test_content, (
-        f"File content mismatch. Expected:\n{test_content}\nGot:\n{check_result.stdout}"
-    )
+    assert downloaded_file.read_text() == test_content
 
 
 def test_conversation_stats_with_live_server(
@@ -587,7 +840,6 @@ def test_events_not_lost_during_client_disconnection(
 
     See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
     """
-    import httpx
 
     def fake_completion_with_finish_tool(
         self,
@@ -748,8 +1000,6 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     This test is intentionally conservative: it doesn't change production logic
     except for injecting a delay into the client-side callback.
     """
-
-    import httpx
 
     ws_delay_s = 0.75
 
@@ -1028,6 +1278,182 @@ def test_security_risk_field_with_live_server(
     # 2. ActionEvent always has a security_risk attribute
 
 
+def test_hook_config_sent_to_server(
+    server_env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Test that hook_config is properly sent to the server and hooks are executed.
+
+    This validates the fix for the bug where hook_config was accepted by
+    RemoteConversation but never sent to the server, meaning server-side hooks
+    (PreToolUse, PostToolUse, UserPromptSubmit, Stop) were never executed.
+
+    The test:
+    1. Configures both post_tool_use and stop hooks
+    2. Uses a patched LLM that returns a finish tool call
+    3. Verifies HookExecutionEvent events are received for both hook types
+    """
+    # Create hook scripts that output JSON to indicate successful execution
+    post_tool_hook = tmp_path / "post_tool_hook.sh"
+    post_tool_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    post_tool_hook.chmod(0o755)
+
+    stop_hook = tmp_path / "stop_hook.sh"
+    stop_hook.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0\n')
+    stop_hook.chmod(0o755)
+
+    hook_config = HookConfig(
+        post_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(post_tool_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+        stop=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=str(stop_hook),
+                        timeout=5,
+                    )
+                ],
+            )
+        ],
+    )
+
+    # Create a patched LLM that returns a finish tool call to trigger hooks
+    call_count = {"count": 0}
+
+    def fake_completion_with_finish(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        # First call: return finish tool call (triggers PostToolUse and Stop hooks)
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": '{"message": "Task complete"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            # Subsequent calls: simple message
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    # Create an Agent
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    # Create conversation via factory with hook_config
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        hook_config=hook_config,
+    )
+
+    # Verify the conversation was created successfully
+    assert conv._id is not None
+
+    # Send a message and run - this triggers the finish tool call
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for events to be received and check for HookExecutionEvents
+    found_post_tool_use_hook = False
+    found_stop_hook = False
+    events: list[Event] = []
+
+    for attempt in range(50):  # up to ~5s
+        events = list(conv.state.events)
+        for e in events:
+            if isinstance(e, HookExecutionEvent):
+                if e.hook_event_type == "PostToolUse":
+                    found_post_tool_use_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(post_tool_hook) in e.hook_command
+                elif e.hook_event_type == "Stop":
+                    found_stop_hook = True
+                    # Verify hook executed successfully
+                    assert e.success is True
+                    assert e.blocked is False
+                    assert e.exit_code == 0
+                    assert str(stop_hook) in e.hook_command
+
+        if found_post_tool_use_hook and found_stop_hook:
+            break
+        time.sleep(0.1)
+
+    # Assert both hooks were executed and their events were received
+    assert found_post_tool_use_hook, (
+        "Expected HookExecutionEvent for PostToolUse hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+    assert found_stop_hook, (
+        "Expected HookExecutionEvent for Stop hook. "
+        f"Events received: {[type(e).__name__ for e in events]}"
+    )
+
+    # Verify state transitions occurred (proves the conversation ran successfully)
+    state = conv.state
+    assert state.execution_status.value in {"finished", "idle", "running"}
+
+    conv.close()
+
+
 def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     """Agent definitions registered on the client survive the HTTP roundtrip.
 
@@ -1105,3 +1531,373 @@ def test_subagent_definitions_forwarded_to_server(server_env, patched_llm):
     assert "Code review specialist" in info
 
     _reset_registry_for_tests()
+
+
+def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPatch):
+    """GET /api/conversations/{id}/agent_final_response returns the finish message.
+
+    Creates a conversation, runs the agent with a patched LLM that calls
+    ``finish(message="Task complete")``, then hits the endpoint and verifies
+    the response text.  Also checks the 404 case for an unknown conversation.
+    """
+
+    call_count = {"count": 0}
+
+    def fake_completion_with_finish(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": ('{"message": "Task complete"}'),
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message,
+            metrics=metrics_snapshot,
+            raw_response=raw_response,
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+    conversation_id = conv.id
+
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for the finish action event to be persisted
+    for _ in range(50):
+        events = list(conv.state.events)
+        if any(isinstance(e, ActionEvent) and e.tool_name == "finish" for e in events):
+            break
+        time.sleep(0.1)
+
+    # Hit the endpoint and verify the agent's final response
+    with httpx.Client(base_url=server_env["host"]) as client:
+        resp = client.get(
+            f"/api/conversations/{conversation_id}/agent_final_response",
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["response"] == "Task complete"
+
+        # 404 for unknown conversation
+        from uuid import uuid4
+
+        resp_404 = client.get(
+            f"/api/conversations/{uuid4()}/agent_final_response",
+            timeout=10.0,
+        )
+        assert resp_404.status_code == 404
+
+    conv.close()
+
+
+def test_server_info_exposes_usable_tools(server_env):
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get("/server_info", timeout=10.0)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload.get("usable_tools"), list)
+    assert "terminal" in payload["usable_tools"]
+
+
+def test_remote_state_exposes_invoked_skills(
+    server_env,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """End-to-end coverage for the `invoke_skill` tool on the remote agent-server.
+
+    Patches the LLM to emit an `invoke_skill(name=...)` tool call on the first
+    turn and a stop message on the second, then asserts:
+
+    1. The server records the invocation and `RemoteState.invoked_skills`
+       surfaces it through the REST response model.
+    2. The tool's ObservationEvent includes the location footer with the real
+       skill directory, proving the footer logic works through the remote
+       execution path (skill source resolves on disk server-side).
+    """
+    call_count = {"count": 0}
+
+    # Real on-disk SKILL.md so the footer resolves to a real directory.
+    skill_dir = tmp_path / "frobnitz-converter"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text("placeholder")
+
+    def fake_completion(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_invoke",
+                            "type": "function",
+                            "function": {
+                                "name": "invoke_skill",
+                                "arguments": '{"name": "frobnitz-converter"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+    skill = Skill(
+        name="frobnitz-converter",
+        content="Convert frobs to meters.",
+        description="Fake skill for remote-server test.",
+        source=str(skill_md),
+        is_agentskills_format=True,
+    )
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[], agent_context=AgentContext(skills=[skill]))
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    assert conv.state.invoked_skills == []
+
+    conv.send_message("Please run the frobnitz-converter skill.")
+    conv.run()
+
+    # Bust the WS-populated cache so the assertion exercises the REST
+    # `ConversationInfo` response model end-to-end.
+    conv.state.refresh_from_server()
+    assert conv.state.invoked_skills == ["frobnitz-converter"]
+    assert call_count["count"] >= 2, (
+        "Expected the agent to make a follow-up LLM call after the tool "
+        "observation, proving the invoke_skill tool actually executed."
+    )
+
+    # Find the invoke_skill ObservationEvent and confirm the footer points at
+    # the skill's real on-disk directory.
+    skill_observations = [
+        e
+        for e in conv.state.events
+        if isinstance(e, ObservationEvent) and e.tool_name == "invoke_skill"
+    ]
+    assert skill_observations, "No ObservationEvent emitted for invoke_skill"
+    obs_text = skill_observations[-1].observation.text
+    skill_dir_display = skill_dir.resolve().as_posix()
+    assert skill_dir_display in obs_text, (
+        f"Footer missing skill directory {skill_dir_display}: {obs_text!r}"
+    )
+    assert obs_text.rstrip().endswith("relative to that directory.")
+
+    conv.close()
+
+
+def test_settings_and_secrets_api_with_live_server(server_env):
+    """End-to-end test for settings and secrets API endpoints.
+
+    Validates the full REST API for settings and secrets management
+    through the live agent-server, including:
+    - GET/PATCH settings
+    - GET/PUT/DELETE secrets
+    - Secret name validation
+    - Encryption/decryption round-trip
+    """
+    with httpx.Client(base_url=server_env["host"], timeout=10.0) as client:
+        # ── Test settings endpoints ────────────────────────────────────────
+        # GET settings (initial state)
+        get_resp = client.get("/api/settings")
+        assert get_resp.status_code == 200
+        initial = get_resp.json()
+        assert "agent_settings" in initial
+        assert "conversation_settings" in initial
+        assert "llm_api_key_is_set" in initial
+
+        # PATCH settings (update LLM model)
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()
+        assert patched["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+        # ── Test secrets CRUD endpoints ────────────────────────────────────
+        # List secrets (should be empty initially)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        assert list_resp.json()["secrets"] == []
+
+        # Create a secret
+        create_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-test-live-server-12345",
+                "description": "Test API key for live server test",
+            },
+        )
+        assert create_resp.status_code == 200
+        created = create_resp.json()
+        assert created["name"] == "TEST_API_KEY"
+        assert created["description"] == "Test API key for live server test"
+
+        # List secrets again (should have one)
+        list_resp = client.get("/api/settings/secrets")
+        assert list_resp.status_code == 200
+        secrets = list_resp.json()["secrets"]
+        assert len(secrets) == 1
+        assert secrets[0]["name"] == "TEST_API_KEY"
+        # Value should NOT be returned in list
+        assert "value" not in secrets[0]
+
+        # Get secret value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-test-live-server-12345"
+
+        # Update the secret (upsert)
+        update_resp = client.put(
+            "/api/settings/secrets",
+            json={
+                "name": "TEST_API_KEY",
+                "value": "sk-updated-value",
+                "description": "Updated description",
+            },
+        )
+        assert update_resp.status_code == 200
+
+        # Verify updated value
+        value_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert value_resp.status_code == 200
+        assert value_resp.text == "sk-updated-value"
+
+        # Create another secret
+        client.put(
+            "/api/settings/secrets",
+            json={"name": "ANOTHER_SECRET", "value": "another-value"},
+        )
+        list_resp = client.get("/api/settings/secrets")
+        assert len(list_resp.json()["secrets"]) == 2
+
+        # Delete one secret
+        delete_resp = client.delete("/api/settings/secrets/TEST_API_KEY")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json()["deleted"] is True
+
+        # Verify deleted
+        get_deleted_resp = client.get("/api/settings/secrets/TEST_API_KEY")
+        assert get_deleted_resp.status_code == 404
+
+        # ── Test secret name validation ────────────────────────────────────
+        # Invalid name: starts with number
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "123_invalid", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # Invalid name: contains special characters
+        invalid_resp = client.put(
+            "/api/settings/secrets",
+            json={"name": "invalid-name", "value": "test"},
+        )
+        assert invalid_resp.status_code == 422
+
+        # ── Test settings with encrypted secrets ───────────────────────────
+        # Update LLM API key
+        patch_resp = client.patch(
+            "/api/settings",
+            json={"agent_settings_diff": {"llm": {"api_key": "sk-live-test-key"}}},
+        )
+        assert patch_resp.status_code == 200
+        assert patch_resp.json()["llm_api_key_is_set"] is True
+        # Response should redact the key (no X-Expose-Secrets header)
+        assert patch_resp.json()["agent_settings"]["llm"]["api_key"] == "**********"
+
+        # Cleanup
+        client.delete("/api/settings/secrets/ANOTHER_SECRET")

@@ -12,6 +12,50 @@ from openhands.tools.terminal.definition import (
 )
 
 
+# Canonical set of named special keys that all TerminalInterface
+# implementations must support.  Each backend maps these to its own
+# representation (ANSI escape bytes for PTY, tmux key names for tmux).
+SUPPORTED_SPECIAL_KEYS: frozenset[str] = frozenset(
+    {
+        "ENTER",
+        "TAB",
+        "BS",
+        "ESC",
+        "UP",
+        "DOWN",
+        "LEFT",
+        "RIGHT",
+        "HOME",
+        "END",
+        "PGUP",
+        "PGDN",
+        "C-L",
+        "C-D",
+        "C-C",
+    }
+)
+
+
+def parse_ctrl_key(text: str) -> str | None:
+    """Parse a Ctrl-<letter> token and return the normalized form ``C-x``.
+
+    Accepts ``C-x``, ``CTRL-x``, and ``CTRL+x`` (case-insensitive)
+    where *x* is a single ASCII letter.  Returns ``None`` when *text*
+    is not a recognized Ctrl sequence.
+    """
+    upper = text.strip().upper()
+    key: str | None = None
+    if upper.startswith("C-"):
+        key = upper[2:]
+    elif upper.startswith("CTRL-"):
+        key = upper[5:]
+    elif upper.startswith("CTRL+"):
+        key = upper[5:]
+    if key and len(key) == 1 and "A" <= key <= "Z":
+        return f"C-{key.lower()}"
+    return None
+
+
 class TerminalInterface(ABC):
     """Abstract interface for terminal backends.
 
@@ -63,9 +107,17 @@ class TerminalInterface(ABC):
     def send_keys(self, text: str, enter: bool = True) -> None:
         """Send text/keys to the terminal.
 
+        All implementations must support:
+          - Plain text (sent verbatim)
+          - Named specials: ENTER, TAB, BS, ESC, UP, DOWN, LEFT, RIGHT,
+            HOME, END, PGUP, PGDN, C-L, C-D, C-C
+          - Generic Ctrl sequences: ``C-<letter>``, ``CTRL-<letter>``,
+            ``CTRL+<letter>`` (case-insensitive, a-z)
+
         Args:
             text: Text or key sequence to send to the terminal.
-            enter: Whether to send Enter key after the text. Defaults to True.
+            enter: Whether to send Enter key after the text.
+                   Defaults to True.  Ignored for special/ctrl keys.
         """
 
     @abstractmethod

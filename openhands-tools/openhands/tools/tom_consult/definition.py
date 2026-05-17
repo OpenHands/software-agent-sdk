@@ -11,7 +11,13 @@ from pydantic import Field
 
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool import Action, Observation, ToolDefinition, register_tool
+from openhands.sdk.tool import (
+    Action,
+    DeclaredResources,
+    Observation,
+    ToolDefinition,
+    register_tool,
+)
 
 
 if TYPE_CHECKING:
@@ -142,6 +148,14 @@ This is typically used at the end of a conversation or when explicitly requested
 
 class TomConsultTool(ToolDefinition[ConsultTomAction, ConsultTomObservation]):
     """Tool for consulting Tom agent."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        """Declare resources for parallel execution.
+
+        Consulting Tom is a read-only LLM call with no shared mutable
+        state, so it is always safe to run in parallel.
+        """
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     @override

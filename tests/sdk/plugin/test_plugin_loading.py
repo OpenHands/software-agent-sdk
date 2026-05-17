@@ -38,6 +38,21 @@ class TestPluginManifest:
         assert manifest.author.name == "Test Author"
         assert manifest.author.email == "test@example.com"
 
+    def test_manifest_with_entry_command(self):
+        """Test parsing manifest with entry_command field."""
+        manifest = PluginManifest(
+            name="city-weather",
+            version="1.0.0",
+            entry_command="now",
+        )
+        assert manifest.name == "city-weather"
+        assert manifest.entry_command == "now"
+
+    def test_manifest_without_entry_command(self):
+        """Test that entry_command defaults to None."""
+        manifest = PluginManifest(name="test-plugin")
+        assert manifest.entry_command is None
+
 
 class TestPluginLoading:
     """Tests for Plugin.load() functionality."""
@@ -229,9 +244,43 @@ Review the specified code and provide feedback.
         assert "Read" in command.allowed_tools
         assert "Review the specified code" in command.content
 
+    def test_load_plugin_with_entry_command(self, tmp_path: Path):
+        """Test loading a plugin with entry_command in manifest."""
+        plugin_dir = tmp_path / "city-weather"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        # Write manifest with entry_command
+        manifest_file = manifest_dir / "plugin.json"
+        manifest_file.write_text(
+            """{
+            "name": "city-weather",
+            "version": "1.0.0",
+            "description": "Get current weather for any city",
+            "entry_command": "now"
+        }"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.name == "city-weather"
+        assert plugin.manifest.entry_command == "now"
+        assert plugin.entry_slash_command == "/city-weather:now"
+
+    def test_load_plugin_without_entry_command(self, tmp_path: Path):
+        """Test that entry_slash_command returns None when no entry_command is set."""
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        plugin = Plugin.load(plugin_dir)
+
+        assert plugin.manifest.entry_command is None
+        assert plugin.entry_slash_command is None
+
     def test_command_to_skill_conversion(self, tmp_path: Path):
         """Test converting a command to a keyword-triggered skill."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "city-weather"
         plugin_dir.mkdir()
@@ -278,7 +327,7 @@ Fetch and display the current weather for the specified city.
 
     def test_get_all_skills_with_commands(self, tmp_path: Path):
         """Test get_all_skills returns both skills and command-derived skills."""
-        from openhands.sdk.context.skills.trigger import KeywordTrigger
+        from openhands.sdk.skills.trigger import KeywordTrigger
 
         plugin_dir = tmp_path / "test-plugin"
         plugin_dir.mkdir()
@@ -493,6 +542,22 @@ class TestPluginAuthor:
         assert author.name == "John Doe"
         assert author.email == "john@example.com"
 
+    def test_with_url(self):
+        """Test PluginAuthor with url field."""
+        author = PluginAuthor(
+            name="John Doe",
+            email="john@example.com",
+            url="https://github.com/johndoe",
+        )
+        assert author.name == "John Doe"
+        assert author.email == "john@example.com"
+        assert author.url == "https://github.com/johndoe"
+
+    def test_url_defaults_to_none(self):
+        """Test that url field defaults to None."""
+        author = PluginAuthor(name="John Doe")
+        assert author.url is None
+
 
 class TestCommandDefinition:
     """Tests for CommandDefinition loading."""
@@ -606,3 +671,156 @@ Content.
 
         command = CommandDefinition.load(command_md)
         assert command.metadata.get("custom_field") == "custom_value"
+
+
+class TestPluginMcpConfigLoading:
+    """Tests for Plugin MCP config loading and variable expansion.
+
+    These tests verify that MCP config variables are handled correctly
+    during plugin loading, specifically that variables with defaults
+    are NOT prematurely expanded.
+    """
+
+    def test_plugin_mcp_config_preserves_unexpanded_variables(self, tmp_path: Path):
+        """Test that MCP config variables WITHOUT defaults are preserved.
+
+        Variables like ${VAR} should remain as placeholders after plugin loading
+        so they can be expanded later with per-conversation secrets.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create MCP config with unexpanded variable (no default)
+        mcp_json = plugin_dir / ".mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "url": "https://example.com",
+                            "headers": {"Authorization": "Bearer ${SECRET_TOKEN}"},
+                        }
+                    }
+                }
+            )
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        # Variable without default should remain as placeholder
+        assert plugin.mcp_config is not None
+        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
+            "Authorization"
+        ]
+        assert auth_header == "Bearer ${SECRET_TOKEN}", (
+            f"Expected placeholder to be preserved, got '{auth_header}'"
+        )
+
+    def test_plugin_mcp_config_preserves_variables_with_defaults(self, tmp_path: Path):
+        """Test that MCP config variables WITH defaults are preserved as placeholders.
+
+        Variables like ${VAR:-default} should remain as placeholders after plugin
+        loading so they can be expanded later with per-conversation secrets.
+
+        This is a regression test for the double-expansion bug where variables
+        with defaults were prematurely replaced with their default values during
+        plugin loading.
+
+        Expected: The placeholder ${VAR:-default} should be preserved, NOT replaced
+        with the default value during plugin loading.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create MCP config with variable that has a default
+        mcp_json = plugin_dir / ".mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "url": "https://example.com",
+                            "headers": {
+                                "Authorization": "Bearer ${SECRET_TOKEN:-fallback}"
+                            },
+                        }
+                    }
+                }
+            )
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        # CRITICAL: Variable with default should be preserved as a placeholder,
+        # NOT replaced with "fallback" during plugin loading
+        assert plugin.mcp_config is not None
+        auth_header = plugin.mcp_config["mcpServers"]["test-server"]["headers"][
+            "Authorization"
+        ]
+
+        # This assertion will FAIL with the current implementation
+        expected = "Bearer ${SECRET_TOKEN:-fallback}"
+        assert auth_header == expected, (
+            f"Expected placeholder '{expected}' to be preserved, "
+            f"but got '{auth_header}'. "
+            "This is the double-expansion bug: the default value was applied "
+            "during plugin loading instead of being deferred."
+        )
+
+    def test_plugin_mcp_skill_root_is_expanded(self, tmp_path: Path):
+        """Test that SKILL_ROOT is correctly expanded during plugin loading.
+
+        ${SKILL_ROOT} is a special variable that should be expanded to the
+        plugin directory path during loading.
+        """
+        import json
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+
+        # Create minimal manifest
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        (manifest_dir / "plugin.json").write_text(
+            json.dumps({"name": "test-plugin", "version": "1.0.0"})
+        )
+
+        # Create MCP config with SKILL_ROOT variable
+        mcp_json = plugin_dir / ".mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "test-server": {
+                            "command": "${SKILL_ROOT}/scripts/server.py",
+                        }
+                    }
+                }
+            )
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        # SKILL_ROOT should be expanded to the plugin directory
+        assert plugin.mcp_config is not None
+        command = plugin.mcp_config["mcpServers"]["test-server"]["command"]
+        assert str(plugin_dir) in command
+        assert "${SKILL_ROOT}" not in command

@@ -5,6 +5,11 @@ from enum import Enum
 from rich.text import Text
 
 
+# Shared ordering for concrete risk levels. UNKNOWN is excluded by design --
+# comparisons involving UNKNOWN raise ValueError.
+_RISK_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+
 class SecurityRisk(str, Enum):
     """Security risk levels for actions.
 
@@ -90,11 +95,53 @@ class SecurityRisk(str, Enum):
         if self.value == SecurityRisk.UNKNOWN or other.value == SecurityRisk.UNKNOWN:
             raise ValueError("Cannot compare unknown risk levels.")
 
-        # Map risk levels to a well-ordered domain for comparison. No need to map
-        # UNKNOWN since we'll already have raised an error by now if either is UNKNOWN.
-        risk_order = {
-            SecurityRisk.LOW: 1,
-            SecurityRisk.MEDIUM: 2,
-            SecurityRisk.HIGH: 3,
-        }
-        return risk_order[self] > risk_order[other] or (reflexive and self == other)
+        return _RISK_ORDER[self.value] > _RISK_ORDER[other.value] or (
+            reflexive and self == other
+        )
+
+    def _check_comparable(self, other: object) -> int | None:
+        """Validate comparability and return ordering key for other.
+
+        Returns None (with NotImplemented semantics) if other is not a
+        SecurityRisk. Raises ValueError if either side is UNKNOWN.
+        """
+        if not isinstance(other, SecurityRisk):
+            return None
+        if self == SecurityRisk.UNKNOWN or other == SecurityRisk.UNKNOWN:
+            raise ValueError("Cannot compare unknown risk levels.")
+        return _RISK_ORDER[other.value]
+
+    def __lt__(self, other: object) -> bool:
+        """Compare risk levels for ordering: LOW < MEDIUM < HIGH.
+
+        UNKNOWN is not comparable -- raises ValueError, consistent with is_riskier().
+        This enables max() on concrete risk lists without helper dicts.
+        """
+        other_ord = self._check_comparable(other)
+        if other_ord is None:
+            return NotImplemented
+        return _RISK_ORDER[self.value] < other_ord
+
+    def __gt__(self, other: object) -> bool:
+        """Explicit __gt__ required because str.__gt__ takes precedence via
+        MRO, which gives alphabetical ordering (HIGH < LOW < MEDIUM).
+
+        Note: @functools.total_ordering cannot help here -- it detects
+        str's comparison methods as already-defined and skips them.
+        """
+        other_ord = self._check_comparable(other)
+        if other_ord is None:
+            return NotImplemented
+        return _RISK_ORDER[self.value] > other_ord
+
+    def __le__(self, other: object) -> bool:
+        other_ord = self._check_comparable(other)
+        if other_ord is None:
+            return NotImplemented
+        return _RISK_ORDER[self.value] <= other_ord
+
+    def __ge__(self, other: object) -> bool:
+        other_ord = self._check_comparable(other)
+        if other_ord is None:
+            return NotImplemented
+        return _RISK_ORDER[self.value] >= other_ord

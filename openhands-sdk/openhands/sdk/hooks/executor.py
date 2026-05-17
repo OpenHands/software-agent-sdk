@@ -17,7 +17,16 @@ from openhands.sdk.utils import sanitized_env
 class HookResult(BaseModel):
     """Result from executing a hook.
 
-    Exit code 0 = success, exit code 2 = block operation.
+    Exit-code semantics (matching Claude Code's hook contract):
+
+    - **Exit 0**: success. ``stdout`` is parsed as JSON for structured output
+      (``decision``, ``reason``, ``additionalContext``, ``continue``).
+    - **Exit 2**: blocking error. The operation is denied / the agent is
+      prevented from stopping. ``stderr`` should explain why.
+    - **Any other non-zero exit code**: non-blocking error. ``success`` is set
+      to ``False`` and the error is logged, but the operation still proceeds.
+      In particular, exit code ``1`` does **not** block — only ``2`` does.
+      Hooks intended to enforce a policy must exit with ``2``.
     """
 
     success: bool = True
@@ -70,6 +79,23 @@ class AsyncProcessManager:
         Uses process groups to kill the entire process tree, not just
         the parent shell when shell=True is used.
         """
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            return
+
         try:
             # Kill the entire process group (handles shell=True child processes)
             pgid = os.getpgid(process.pid)
@@ -149,6 +175,12 @@ class HookExecutor:
         # Handle async hooks: fire and forget
         if hook.async_:
             try:
+                creationflags = 0
+                start_new_session = True
+                if os.name == "nt":
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    start_new_session = False
+
                 process = subprocess.Popen(
                     hook.command,
                     shell=True,
@@ -157,7 +189,8 @@ class HookExecutor:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True,  # Create new process group for cleanup
+                    start_new_session=start_new_session,
+                    creationflags=creationflags,
                 )
                 # Write event JSON to stdin safely
                 try:

@@ -1,5 +1,6 @@
 """Test agent loading (conversation restart) behavior."""
 
+import sys
 import tempfile
 import uuid
 from unittest.mock import patch
@@ -20,6 +21,12 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import get_default_agent
 from openhands.tools.terminal import TerminalTool
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool restore tests require the Unix terminal backend.",
+)
 
 
 register_tool("TerminalTool", TerminalTool)
@@ -160,17 +167,15 @@ def test_conversation_fails_when_removing_tools():
                 visualizer=None,
             )
 
-        assert "tools cannot be changed mid-conversation" in str(exc_info.value)
+        assert "tools were removed mid-conversation" in str(exc_info.value)
         assert "removed:" in str(exc_info.value)
         assert "FileEditorTool" in str(exc_info.value)
 
 
-def test_conversation_fails_when_adding_tools():
-    """Test that adding new tools fails.
+def test_conversation_succeeds_when_adding_tools():
+    """Test that adding new tools succeeds on resume.
 
-    Tools are part of the system prompt and cannot be changed mid-conversation.
-    To use different tools, start a new conversation or use conversation forking.
-    See: https://github.com/OpenHands/OpenHands/issues/8560
+    Adding tools is allowed — only removing tools is rejected.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with only one tool
@@ -194,7 +199,7 @@ def test_conversation_fails_when_adding_tools():
         conversation_id = conversation.state.id
         del conversation
 
-        # Resume with additional tools - should FAIL (tools must match exactly)
+        # Resume with additional tools - should SUCCEED (adding tools is allowed)
         expanded_tools = [
             Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),  # New tool added
@@ -204,18 +209,14 @@ def test_conversation_fails_when_adding_tools():
         )
         expanded_agent = Agent(llm=llm2, tools=expanded_tools)
 
-        with pytest.raises(ValueError) as exc_info:
-            LocalConversation(
-                agent=expanded_agent,
-                workspace=temp_dir,
-                persistence_dir=temp_dir,
-                conversation_id=conversation_id,
-                visualizer=None,
-            )
-
-        assert "tools cannot be changed mid-conversation" in str(exc_info.value)
-        assert "added:" in str(exc_info.value)
-        assert "FileEditorTool" in str(exc_info.value)
+        conversation = LocalConversation(
+            agent=expanded_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+        assert conversation is not None
 
 
 def test_conversation_fails_when_used_tool_is_missing():
@@ -274,10 +275,8 @@ def test_conversation_fails_when_used_tool_is_missing():
         )
         reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
-        # This should raise - tools cannot be changed mid-conversation
-        with pytest.raises(
-            ValueError, match="tools cannot be changed mid-conversation"
-        ):
+        # This should raise - tools were removed mid-conversation
+        with pytest.raises(ValueError, match="tools were removed mid-conversation"):
             LocalConversation(
                 agent=reduced_agent,
                 workspace=temp_dir,

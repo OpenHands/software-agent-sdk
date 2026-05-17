@@ -76,6 +76,29 @@ def test_llm_context_window_exceed_error_custom():
     assert error.message == custom_message
 
 
+def test_llm_malformed_conversation_history_error_default():
+    """Test LLMMalformedConversationHistoryError with default message."""
+    from openhands.sdk.llm.exceptions import LLMMalformedConversationHistoryError
+
+    error = LLMMalformedConversationHistoryError()
+    expected_message = "Conversation history produced an invalid LLM request. "
+    expected_message += (
+        "Consider retrying with condensed history and investigating the event stream."
+    )
+    assert str(error) == expected_message
+    assert error.message == expected_message
+
+
+def test_llm_malformed_conversation_history_error_custom():
+    """Test LLMMalformedConversationHistoryError with custom message."""
+    from openhands.sdk.llm.exceptions import LLMMalformedConversationHistoryError
+
+    custom_message = "Custom malformed history error"
+    error = LLMMalformedConversationHistoryError(custom_message)
+    assert str(error) == custom_message
+    assert error.message == custom_message
+
+
 def test_function_call_not_exists_error():
     """Test FunctionCallNotExistsError."""
     from openhands.sdk.llm.exceptions import FunctionCallNotExistsError

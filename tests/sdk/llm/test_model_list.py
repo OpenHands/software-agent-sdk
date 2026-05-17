@@ -5,6 +5,10 @@ from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
     get_unverified_models,
 )
+from openhands.sdk.llm.utils.verified_models import (
+    VERIFIED_MODELS,
+    VERIFIED_OPENHANDS_MODELS,
+)
 
 
 def test_organize_models_and_providers():
@@ -77,3 +81,42 @@ def test_list_bedrock_models_with_boto3(monkeypatch):
     result = _list_bedrock_foundation_models("us-east-1", "key", "secret")
 
     assert result == ["bedrock/anthropic.claude-3"]
+
+
+def test_openhands_models_all_have_provider_list():
+    """Every model in VERIFIED_OPENHANDS_MODELS must also appear in at least one
+    provider-specific list so that the UI can display it under its actual provider.
+
+    Exception: models that are only available through the OpenHands provider
+    (e.g. ``trinity-large-thinking``) are not exposed under any other provider.
+    """
+    openhands_only_models = {"trinity-large-thinking"}
+
+    provider_models = set()
+    for provider, models in VERIFIED_MODELS.items():
+        if provider == "openhands":
+            continue
+        provider_models.update(models)
+
+    missing = [
+        m
+        for m in VERIFIED_OPENHANDS_MODELS
+        if m not in provider_models and m not in openhands_only_models
+    ]
+    assert not missing, (
+        f"Models in VERIFIED_OPENHANDS_MODELS missing from any provider list: {missing}"
+    )
+
+
+def test_trinity_model_is_openhands_only():
+    """trinity-large-thinking should be available only via the OpenHands provider
+    and must not be listed under any other provider.
+    """
+    assert "trinity-large-thinking" in VERIFIED_OPENHANDS_MODELS
+    assert "trinity" not in VERIFIED_MODELS
+    for provider, models in VERIFIED_MODELS.items():
+        if provider == "openhands":
+            continue
+        assert "trinity-large-thinking" not in models, (
+            f"trinity-large-thinking should not be in provider list {provider!r}"
+        )

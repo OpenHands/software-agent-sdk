@@ -1,0 +1,17 @@
+---
+# Dependabot configuration for automated dependency updates
+# See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Note: Python (pip) ecosystem is not configured here because Dependabot does not
+# fully support uv workspaces yet. See issue #2510 for tracking.
+
+version: 2
+
+updates:
+  # GitHub Actions
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+          interval: weekly
+      commit-message:
+          prefix: chore(deps)

@@ -98,7 +98,7 @@ These classes demonstrate the proper pattern for handling deprecated fields whil
 
 Symbols exported via `openhands.sdk.__all__` are the SDK's public surface. Two CI policies govern changes:
 
-1. **Deprecation before removal** – before removing a public API object, it must have been marked deprecated for at least one release using the canonical helpers in `openhands.sdk.utils.deprecation`.
+1. **Deprecation before removal** – before removing a public API object, it must have been marked deprecated using the canonical helpers in `openhands.sdk.utils.deprecation`, and the deprecation must declare a removal target at least **5 minor releases** after `deprecated_in`.
 
    This applies to:
    - Removing a symbol from `openhands.sdk.__all__`.

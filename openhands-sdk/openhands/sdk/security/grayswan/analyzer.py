@@ -91,34 +91,25 @@ class GraySwanAnalyzer(SecurityAnalyzerBase):
 
     def model_post_init(self, __context: Any) -> None:
         """Initialize the analyzer after model creation."""
-        # Resolve API key from environment if not provided
-        if self.api_key is None:
-            env_key = os.getenv("GRAYSWAN_API_KEY")
-            if env_key:
-                self.api_key = SecretStr(env_key)
-                logger.debug(
-                    "API key resolved from GRAYSWAN_API_KEY environment variable"
-                )
-
-        if not self.api_key:
-            # Design choice: Graceful degradation instead of fail-fast.
-            # This allows deployment without API key configured, returning UNKNOWN
-            # risk for all analyses. This is intentional to support environments
-            # where security analysis is optional or configured later.
+        # ALWAYS prefer environment variable - this ensures Docker gets the correct key
+        # even if serialization didn't work properly
+        env_key = os.getenv("GRAYSWAN_API_KEY")
+        if env_key:
+            self.api_key = SecretStr(env_key)
+            logger.info("Using GraySwan API key from environment")
+        elif not self.api_key or not self.api_key.get_secret_value():
             logger.warning(
                 "GRAYSWAN_API_KEY not set. GraySwanAnalyzer will return UNKNOWN risk."
             )
 
-        # Resolve policy ID from environment if not provided
-        if self.policy_id is None:
-            self.policy_id = os.getenv("GRAYSWAN_POLICY_ID")
-
-        if not self.policy_id:
-            # Use GraySwan default coding agent policy
+        # Always prefer environment variable for policy ID too
+        env_policy = os.getenv("GRAYSWAN_POLICY_ID")
+        if env_policy:
+            self.policy_id = env_policy
+            logger.info(f"Using GraySwan policy ID from environment: {self.policy_id}")
+        elif not self.policy_id:
             self.policy_id = "689ca4885af3538a39b2ba04"
             logger.info(f"Using default GraySwan policy ID: {self.policy_id}")
-        else:
-            logger.info(f"Using GraySwan policy ID from environment: {self.policy_id}")
 
         logger.info(
             f"GraySwanAnalyzer initialized with history_limit={self.history_limit}, "

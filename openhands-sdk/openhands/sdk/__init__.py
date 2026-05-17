@@ -1,15 +1,14 @@
+from __future__ import annotations
+
 from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
     AgentBase,
 )
-from openhands.sdk.context import (
-    AgentContext,
-    load_project_skills,
-    load_skills_from_dir,
-    load_user_skills,
-)
+from openhands.sdk.banner import _print_banner
+from openhands.sdk.context import AgentContext
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -22,11 +21,12 @@ from openhands.sdk.conversation import (
     RemoteConversation,
 )
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import Event, LLMConvertibleEvent
+from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    LLM_PROFILE_SCHEMA_VERSION,
     FallbackStrategy,
     ImageContent,
     LLMProfileStore,
@@ -38,6 +38,7 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
     TokenCallbackType,
+    TokenUsage,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -47,6 +48,44 @@ from openhands.sdk.mcp import (
     create_mcp_tools,
 )
 from openhands.sdk.plugin import Plugin
+from openhands.sdk.settings import (
+    ACP_PROVIDERS,
+    ACPAgentSettings,
+    ACPProviderInfo,
+    AgentSettings,
+    AgentSettingsBase,
+    AgentSettingsConfig,
+    CondenserSettings,
+    ConversationSettings,
+    OpenHandsAgentSettings,
+    SettingsChoice,
+    SettingsFieldSchema,
+    SettingsSchema,
+    SettingsSectionSchema,
+    VerificationSettings,
+    build_session_model_meta,
+    default_agent_settings,
+    detect_acp_provider_by_agent_name,
+    export_agent_settings_schema,
+    export_settings_schema,
+    get_acp_provider,
+    validate_agent_settings,
+)
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.settings import LLMAgentSettings
+from openhands.sdk.settings.metadata import (
+    SettingProminence,
+    SettingsFieldMetadata,
+    SettingsSectionMetadata,
+    field_meta,
+)
+from openhands.sdk.skills import (
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
+)
 from openhands.sdk.subagent import (
     agent_definition_to_factory,
     load_agents_from_dir,
@@ -63,7 +102,9 @@ from openhands.sdk.tool import (
     register_tool,
     resolve_tool,
 )
+from openhands.sdk.utils import page_iterator
 from openhands.sdk.workspace import (
+    AsyncRemoteWorkspace,
     LocalWorkspace,
     RemoteWorkspace,
     Workspace,
@@ -75,13 +116,48 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0"  # fallback for editable/unbuilt environments
 
+# Print startup banner
+_print_banner(__version__)
+
+_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
+    "LLMAgentSettings": {
+        "deprecated_in": "1.19.0",
+        "removed_in": "1.24.0",
+        "details": (
+            "Use ``OpenHandsAgentSettings`` directly. "
+            "``LLMAgentSettings`` was renamed in v1.19.0."
+        ),
+    },
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEPRECATED_SDK_EXPORTS:
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        info = _DEPRECATED_SDK_EXPORTS[name]
+        warn_deprecated(
+            f"Importing {name!r} from openhands.sdk",
+            deprecated_in=info["deprecated_in"],
+            removed_in=info["removed_in"],
+            details=info["details"],
+            stacklevel=3,
+        )
+        from openhands.sdk import settings as _settings
+
+        return getattr(_settings, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "LLM",
+    "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
     "FallbackStrategy",
     "TokenCallbackType",
+    "TokenUsage",
     "ConversationStats",
     "RegistryEvent",
     "Message",
@@ -99,6 +175,7 @@ __all__ = [
     "MCPToolDefinition",
     "MCPToolObservation",
     "MessageEvent",
+    "HookExecutionEvent",
     "create_mcp_tools",
     "get_logger",
     "Conversation",
@@ -111,6 +188,32 @@ __all__ = [
     "LLMConvertibleEvent",
     "AgentContext",
     "LLMSummarizingCondenser",
+    "CondenserSettings",
+    "ConversationSettings",
+    "VerificationSettings",
+    "ACP_PROVIDERS",
+    "ACPAgentSettings",
+    "ACPProviderInfo",
+    "AgentSettings",
+    "AgentSettingsBase",
+    "AgentSettingsConfig",
+    "LLMAgentSettings",
+    "OpenHandsAgentSettings",
+    "build_session_model_meta",
+    "default_agent_settings",
+    "detect_acp_provider_by_agent_name",
+    "export_agent_settings_schema",
+    "get_acp_provider",
+    "validate_agent_settings",
+    "SettingsChoice",
+    "SettingProminence",
+    "SettingsFieldMetadata",
+    "SettingsFieldSchema",
+    "SettingsSchema",
+    "SettingsSectionMetadata",
+    "SettingsSectionSchema",
+    "export_settings_schema",
+    "field_meta",
     "FileStore",
     "LocalFileStore",
     "Plugin",
@@ -120,6 +223,7 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "AsyncRemoteWorkspace",
     "register_agent",
     "load_project_agents",
     "load_user_agents",
@@ -128,5 +232,6 @@ __all__ = [
     "load_project_skills",
     "load_skills_from_dir",
     "load_user_skills",
+    "page_iterator",
     "__version__",
 ]

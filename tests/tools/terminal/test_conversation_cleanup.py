@@ -34,7 +34,6 @@ def test_conversation_close_calls_executor_close(mock_llm):
             llm=mock_llm,
             tools=[Tool(name="test_terminal")],
         )
-        # delete_on_close=True is required to trigger executor cleanup
         conversation = Conversation(
             agent=agent, workspace=temp_dir, delete_on_close=True
         )
@@ -46,6 +45,34 @@ def test_conversation_close_calls_executor_close(mock_llm):
         conversation.close()
 
         # Verify that the executor's close method was called
+        terminal_executor.close.assert_called_once()
+
+
+def test_conversation_close_calls_executor_close_without_delete(mock_llm):
+    """Executors are closed even when delete_on_close=False."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
+        terminal_executor.close = Mock()
+
+        def _make_tool(conv_state, **params):
+            tools = TerminalTool.create(conv_state)
+            tool = tools[0]
+            return [tool.model_copy(update={"executor": terminal_executor})]
+
+        register_tool("test_terminal", _make_tool)
+
+        agent = Agent(
+            llm=mock_llm,
+            tools=[Tool(name="test_terminal")],
+        )
+        conversation = Conversation(
+            agent=agent, workspace=temp_dir, delete_on_close=False
+        )
+        conversation._ensure_agent_ready()
+        conversation.close()
+
         terminal_executor.close.assert_called_once()
 
 
@@ -70,7 +97,6 @@ def test_conversation_del_calls_close(mock_llm):
             llm=mock_llm,
             tools=[Tool(name="test_terminal")],
         )
-        # delete_on_close=True is required to trigger executor cleanup
         conversation = Conversation(
             agent=agent, workspace=temp_dir, delete_on_close=True
         )
@@ -166,8 +192,8 @@ def test_terminal_executor_close_handles_missing_session():
             working_dir=temp_dir, terminal_type="subprocess"
         )
 
-        # Remove the session attribute
-        delattr(terminal_executor, "session")
+        # Clear the session to simulate a missing/uninitialized state
+        terminal_executor._session = None
 
         # This should not raise an exception
         terminal_executor.close()

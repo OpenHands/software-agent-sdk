@@ -2,7 +2,6 @@ import os
 from unittest.mock import patch
 
 import pytest
-from deprecation import DeprecatedWarning
 from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.llm import LLM
@@ -24,8 +23,10 @@ def test_llm_config_defaults():
     assert config.temperature is None  # None to use provider defaults
     assert config.top_p is None  # None to use provider defaults
     assert config.top_k is None
-    assert config.max_input_tokens == 128000  # Auto-populated from model info
-    assert config.max_output_tokens == 16384  # Auto-populated from model info
+    assert config.max_input_tokens is None  # None means use discovered value
+    assert config.max_output_tokens is None  # None means use discovered value
+    assert config.effective_max_input_tokens == 128000
+    assert config.effective_max_output_tokens == 16384
     assert config.input_cost_per_token is None
     assert config.output_cost_per_token is None
     assert config.ollama_base_url is None
@@ -39,56 +40,41 @@ def test_llm_config_defaults():
     assert config.native_tool_calling is True
     assert config.reasoning_effort == "high"
     assert config.seed is None
-    assert config.safety_settings is None
 
 
 def test_llm_config_custom_values():
     """Test LLM with custom values."""
-    # safety_settings is deprecated starting in 1.10.0
-    # Mock the version to simulate being on 1.10.0+ to trigger the warning
-    with (
-        patch(
-            "openhands.sdk.utils.deprecation._current_version", return_value="1.10.0"
-        ),
-        pytest.warns(DeprecatedWarning, match="LLM.safety_settings"),
-    ):
-        config = LLM(
-            usage_id="test-llm",
-            model="gpt-4o-mini",
-            api_key=SecretStr("test-key"),
-            base_url="https://api.example.com",
-            api_version="v1",
-            num_retries=3,
-            retry_multiplier=2,
-            retry_min_wait=1,
-            retry_max_wait=10,
-            timeout=30,
-            max_message_chars=10000,
-            temperature=0.5,
-            top_p=0.9,
-            top_k=50,
-            max_input_tokens=20000,
-            max_output_tokens=1000,
-            input_cost_per_token=0.001,
-            output_cost_per_token=0.002,
-            ollama_base_url="http://localhost:11434",
-            drop_params=False,
-            modify_params=False,
-            disable_vision=True,
-            disable_stop_word=True,
-            caching_prompt=False,
-            log_completions=True,
-            custom_tokenizer=None,  # Avoid HF API call
-            native_tool_calling=True,
-            reasoning_effort="high",
-            seed=42,
-            safety_settings=[
-                {
-                    "category": "HARM_CATEGORY_HARASSMENT",
-                    "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-                }
-            ],
-        )
+    config = LLM(
+        usage_id="test-llm",
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.example.com",
+        api_version="v1",
+        num_retries=3,
+        retry_multiplier=2,
+        retry_min_wait=1,
+        retry_max_wait=10,
+        timeout=30,
+        max_message_chars=10000,
+        temperature=0.5,
+        top_p=0.9,
+        top_k=50,
+        max_input_tokens=20000,
+        max_output_tokens=1000,
+        input_cost_per_token=0.001,
+        output_cost_per_token=0.002,
+        ollama_base_url="http://localhost:11434",
+        drop_params=False,
+        modify_params=False,
+        disable_vision=True,
+        disable_stop_word=True,
+        caching_prompt=False,
+        log_completions=True,
+        custom_tokenizer=None,  # Avoid HF API call
+        native_tool_calling=True,
+        reasoning_effort="high",
+        seed=42,
+    )
 
     assert config.model == "gpt-4o-mini"
     assert config.api_key is not None
@@ -120,9 +106,6 @@ def test_llm_config_custom_values():
     assert config.native_tool_calling is True
     assert config.reasoning_effort == "high"
     assert config.seed == 42
-    assert config.safety_settings == [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"}
-    ]
 
 
 def test_llm_config_secret_str():
@@ -162,17 +145,29 @@ def test_llm_config_openrouter_defaults():
     assert config.openrouter_app_name == "OpenHands"
 
 
-def test_llm_config_post_init_openrouter_env_vars():
-    """Test that OpenRouter environment variables are set in post_init."""
+def test_llm_config_post_init_openrouter_does_not_set_env():
+    """OpenRouter site/app must NOT bleed into os.environ.
+
+    Constructing an LLM (potentially per-conversation in a multi-tenant
+    agent server) used to set ``OR_SITE_URL`` / ``OR_APP_NAME``, which
+    leaks across conversations via the shared process environment
+    (issue #3138). The values should now flow per-call via
+    ``extra_headers`` instead.
+    """
     with patch.dict(os.environ, {}, clear=True):
-        LLM(
+        llm = LLM(
             model="gpt-4o-mini",
             openrouter_site_url="https://custom.site.com",
             openrouter_app_name="CustomApp",
             usage_id="test-llm",
         )
-        assert os.environ.get("OR_SITE_URL") == "https://custom.site.com"
-        assert os.environ.get("OR_APP_NAME") == "CustomApp"
+        assert "OR_SITE_URL" not in os.environ
+        assert "OR_APP_NAME" not in os.environ
+        # Values still travel through the per-call helper.
+        assert llm._openrouter_headers() == {
+            "HTTP-Referer": "https://custom.site.com",
+            "X-Title": "CustomApp",
+        }
 
 
 def test_llm_config_post_init_reasoning_effort_default():
@@ -207,19 +202,29 @@ def test_llm_config_post_init_azure_api_version():
     assert config.api_version == "custom-version"
 
 
-def test_llm_config_post_init_aws_env_vars():
-    """Test that AWS credentials are set as environment variables."""
+def test_llm_config_post_init_aws_does_not_set_env():
+    """AWS credentials must NOT be written to os.environ on init.
+
+    Doing so would leak credentials across conversations in a multi-tenant
+    agent server (issue #3138). They are forwarded per-call via
+    ``_aws_kwargs()`` instead.
+    """
     with patch.dict(os.environ, {}, clear=True):
-        LLM(
+        llm = LLM(
             usage_id="test-llm",
             model="gpt-4o-mini",
             aws_access_key_id=SecretStr("test-access-key"),
             aws_secret_access_key=SecretStr("test-secret-key"),
             aws_region_name="us-west-2",
         )
-        assert os.environ.get("AWS_ACCESS_KEY_ID") == "test-access-key"
-        assert os.environ.get("AWS_SECRET_ACCESS_KEY") == "test-secret-key"
-        assert os.environ.get("AWS_REGION_NAME") == "us-west-2"
+        assert "AWS_ACCESS_KEY_ID" not in os.environ
+        assert "AWS_SECRET_ACCESS_KEY" not in os.environ
+        assert "AWS_REGION_NAME" not in os.environ
+        # Values still travel through the per-call helper.
+        kw = llm._aws_kwargs()
+        assert kw["aws_access_key_id"] == "test-access-key"
+        assert kw["aws_secret_access_key"] == "test-secret-key"
+        assert kw["aws_region_name"] == "us-west-2"
 
 
 def test_llm_config_log_completions_folder_default():
@@ -348,7 +353,6 @@ def test_llm_config_optional_fields():
         custom_tokenizer=None,
         reasoning_effort=None,
         seed=None,
-        safety_settings=None,
         usage_id="test-llm",
     )
 
@@ -360,12 +364,10 @@ def test_llm_config_optional_fields():
     assert config.aws_region_name is None
     assert config.timeout is None
     assert config.top_k is None
-    assert (
-        config.max_input_tokens == 128000
-    )  # Auto-populated from model info even when set to None
-    assert (
-        config.max_output_tokens == 16384
-    )  # Auto-populated from model info even when set to None
+    assert config.max_input_tokens is None
+    assert config.max_output_tokens is None
+    assert config.effective_max_input_tokens == 128000
+    assert config.effective_max_output_tokens == 16384
     assert config.input_cost_per_token is None
     assert config.output_cost_per_token is None
     assert config.ollama_base_url is None
@@ -374,4 +376,3 @@ def test_llm_config_optional_fields():
     assert config.custom_tokenizer is None
     assert config.reasoning_effort is None  # Explicitly set to None overrides default
     assert config.seed is None
-    assert config.safety_settings is None

@@ -280,3 +280,51 @@ def test_whitespace_in_json_strings():
 
     assert action.items == ["a", "b", "c"]
     assert action.config == {"x": 1, "y": 2}
+
+
+@pytest.mark.parametrize(
+    "field, raw_value, expected",
+    [
+        pytest.param(
+            "items",
+            '["a", "b"]<parameter name="security_risk">LOW',
+            ["a", "b"],
+            id="list_with_trailing_xml",
+        ),
+        pytest.param(
+            "config",
+            '{"x": 1}<extra>stuff</extra>',
+            {"x": 1},
+            id="dict_with_trailing_xml",
+        ),
+        pytest.param(
+            "items",
+            "no brackets at all",
+            None,
+            id="completely_invalid_rejected",
+        ),
+    ],
+)
+def test_trailing_garbage_truncation(field, raw_value, expected):
+    """Test truncation of trailing garbage after valid JSON (#2670)."""
+    data = {"items": "[]", "config": "{}", "name": "test", field: raw_value}
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+
+    if expected is None:
+        with pytest.raises(ValidationError):
+            JsonDecodingTestAction.model_validate(fixed_data)
+    else:
+        action = JsonDecodingTestAction.model_validate(fixed_data)
+        assert getattr(action, field) == expected
+
+
+def test_trailing_garbage_with_nested_braces():
+    """Test truncation works with nested braces in the valid JSON prefix (#2670)."""
+    data = {
+        "nested_dict": '{"outer": {"inner": "v"}}  <tag>junk',
+        "nested_list": "[[1]]",
+    }
+    fixed_data = fix_malformed_tool_arguments(data, _NestedActionForMalformedArgs)
+    action = _NestedActionForMalformedArgs.model_validate(fixed_data)
+
+    assert action.nested_dict == {"outer": {"inner": "v"}}

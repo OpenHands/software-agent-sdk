@@ -1,0 +1,25 @@
+---
+name: Version bump guard
+
+on:
+    pull_request:
+        branches: [main]
+
+jobs:
+    version-bump-guard:
+        name: Check package versions
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
+
+            - name: Validate package version changes
+              env:
+                  VERSION_BUMP_BASE_REF: ${{ github.base_ref }}
+                  PR_TITLE: ${{ github.event.pull_request.title }}
+                  PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+              run: python3 .github/scripts/check_version_bumps.py

@@ -10,12 +10,21 @@ on:
 
 jobs:
     publish:
+        # Skip PyPI publishing for pre-releases (e.g., release candidates).
+        # Pre-releases can still be created on GitHub for testing without
+        # pushing packages to PyPI.  Manual workflow_dispatch always runs.
+        if: >
+            github.event_name == 'workflow_dispatch' ||
+            !github.event.release.prerelease
         runs-on: ubuntu-24.04
+        permissions:
+            actions: write
+            contents: read
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
             - name: Checkout
-              uses: actions/checkout@v5
+              uses: actions/checkout@v6
 
             - name: Extract version from release tag
               id: extract_version
@@ -67,4 +76,15 @@ jobs:
                   echo "✅ All packages built and published successfully!"
                   echo ""
                   echo "📋 Note: Version bump PRs will be created by the 'Create Version Bump PRs' workflow"
-                  echo "   which triggers automatically after this workflow completes."
+                  echo "   which is dispatched after this publish succeeds."
+
+            - name: Dispatch version bump workflow
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
+              run: |
+                  gh workflow run version-bump-prs.yml \
+                    --repo "${{ github.repository }}" \
+                    -f "version=${VERSION}"
+
+                  echo "🚀 Dispatched version-bump-prs.yml for v${VERSION}"

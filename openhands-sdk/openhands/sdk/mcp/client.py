@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client as AsyncMCPClient
 
+from openhands.sdk.mcp.exceptions import MCPError
 from openhands.sdk.utils.async_executor import AsyncExecutor
 
 
@@ -48,7 +49,10 @@ class MCPClient(AsyncMCPClient):
 
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
-        await self.__aenter__()
+        try:
+            await self.__aenter__()
+        except RuntimeError as exc:
+            raise MCPError("MCP Connection Failure") from exc
 
     def call_async_from_sync(
         self,

@@ -53,8 +53,8 @@ def test_terminal_executor_with_conversation_secrets():
             secrets=test_secrets,
         )
 
-        # Create executor without env_provider
-        executor = TerminalExecutor(working_dir=temp_dir)
+        # Force subprocess mode so we have a single session to mock
+        executor = TerminalExecutor(working_dir=temp_dir, terminal_type="subprocess")
 
         try:
             # Mock the session to avoid subprocess issues in tests
@@ -69,7 +69,7 @@ def test_terminal_executor_with_conversation_secrets():
             )
             mock_session.execute.return_value = mock_observation
             mock_session._closed = False
-            executor.session = mock_session
+            executor._session = mock_session
 
             # Execute command with conversation - secrets should be exported and masked
             action = TerminalAction(

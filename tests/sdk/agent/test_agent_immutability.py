@@ -113,8 +113,11 @@ class TestAgentImmutability:
             llm=self.llm, tools=[], system_prompt_filename="system_prompt.j2"
         )
 
-        # They should have the same configuration
-        assert agent1 == agent2
+        # Compare via model_dump() because direct equality (agent1 == agent2)
+        # fails: each agent has its own ParallelToolExecutor instance via
+        # PrivateAttr(default_factory=...), and Pydantic frozen models include
+        # private attrs in __eq__.
+        assert agent1.model_dump() == agent2.model_dump()
         assert agent1.system_prompt_filename == agent2.system_prompt_filename
 
         # But they should be different instances

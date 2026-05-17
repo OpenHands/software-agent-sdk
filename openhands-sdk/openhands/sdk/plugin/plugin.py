@@ -8,12 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.skills import Skill
-from openhands.sdk.context.skills.utils import (
-    discover_skill_resources,
-    find_skill_md,
-    load_mcp_config,
-)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.fetch import fetch_plugin
@@ -22,7 +16,14 @@ from openhands.sdk.plugin.types import (
     PluginAuthor,
     PluginManifest,
 )
+from openhands.sdk.skills.skill import Skill
+from openhands.sdk.skills.utils import (
+    discover_skill_resources,
+    find_skill_md,
+    load_mcp_config,
+)
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -86,6 +87,22 @@ class Plugin(BaseModel):
     def description(self) -> str:
         """Get the plugin description."""
         return self.manifest.description
+
+    @property
+    def entry_slash_command(self) -> str | None:
+        """Get the full slash command for the entry point, if defined.
+
+        Returns the slash command in format /<plugin-name>:<command-name>,
+        or None if no entry_command is defined in the manifest.
+
+        Example:
+            >>> plugin = Plugin.load(path)
+            >>> plugin.entry_slash_command
+            '/city-weather:now'
+        """
+        if not self.manifest.entry_command:
+            return None
+        return f"/{self.name}:{self.manifest.entry_command}"
 
     def get_all_skills(self) -> list[Skill]:
         """Get all skills including those converted from commands.
@@ -309,7 +326,7 @@ class Plugin(BaseModel):
 
         return cls(
             manifest=manifest,
-            path=str(plugin_dir),
+            path=to_posix_path(plugin_dir),
             skills=skills,
             hooks=hooks,
             mcp_config=mcp_config,
@@ -362,7 +379,7 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
     if manifest_path:
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Handle author field - can be string or object
@@ -441,18 +458,29 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
 
 def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
-    """Load MCP configuration from .mcp.json."""
+    """Load MCP configuration from .mcp.json.
+
+    Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
+    is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
+    are preserved as placeholders to be expanded later when per-conversation
+    secrets are available (in LocalConversation._ensure_plugins_loaded()).
+
+    This prevents the double-expansion bug where defaults would be applied
+    during plugin loading before secrets are available.
+    """
     mcp_json = plugin_dir / ".mcp.json"
     if not mcp_json.exists():
         return None
 
     try:
-        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        # expand_defaults=False: preserve ${VAR:-default} placeholders for later
+        # expansion with per-conversation secrets. Only SKILL_ROOT is expanded now.
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir, expand_defaults=False)
         if config and "mcpServers" in config:
-            server_names = list(config["mcpServers"].keys())
             logger.info(
-                f"Loaded MCP config from {mcp_json} "
-                f"with {len(server_names)} server(s): {server_names}"
+                "Loaded MCP config from %s with %d server(s)",
+                mcp_json,
+                len(config["mcpServers"]),
             )
         return config
     except Exception as e:

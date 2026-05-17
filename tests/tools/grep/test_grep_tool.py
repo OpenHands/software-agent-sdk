@@ -5,11 +5,13 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
+from openhands.sdk.tool.tool import DeclaredResources
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.grep import GrepAction, GrepObservation, GrepTool
 
@@ -131,7 +133,7 @@ def test_grep_tool_specific_directory():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(src_dir.resolve())
-        assert str(src_dir) in observation.matches[0]
+        assert str(src_dir.resolve()) in observation.matches[0]
 
 
 def test_grep_tool_no_matches():
@@ -273,6 +275,36 @@ def test_grep_tool_to_llm_content_error():
         assert content[0].text == GrepObservation.ERROR_MESSAGE_HEADER
         text = content[1].text
         assert "Invalid regex pattern" in text
+
+
+@pytest.mark.parametrize(
+    "pattern, path, include",
+    [
+        ("log.*Error", None, None),
+        ("function\\s+\\w+", "/some/custom/path", None),
+        ("TODO", None, "*.py"),
+        ("import", "/another/path", "*.{ts,tsx}"),
+    ],
+    ids=[
+        "regex-no-path",
+        "regex-custom-path",
+        "simple-with-include",
+        "custom-path-with-include",
+    ],
+)
+def test_grep_tool_declared_resources(pattern, path, include):
+    """Test that GrepTool declares parallel-safe resources for all backends."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        tools = GrepTool.create(conv_state)
+        tool = tools[0]
+
+        action = GrepAction(pattern=pattern, path=path, include=include)
+        resources = tool.declared_resources(action)
+
+        assert isinstance(resources, DeclaredResources)
+        assert resources.declared is True
+        assert resources.keys == ()
 
 
 def test_grep_tool_truncation():

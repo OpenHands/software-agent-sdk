@@ -26,6 +26,7 @@ from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     split_bash_commands,
 )
+from openhands.tools.terminal.utils.escape_filter import TerminalQueryFilter
 
 
 logger = get_logger(__name__)
@@ -43,6 +44,16 @@ class TerminalCommandStatus(Enum):
 
 def _remove_command_prefix(command_output: str, command: str) -> str:
     return command_output.lstrip().removeprefix(command.lstrip()).lstrip()
+
+
+def _remove_powershell_echo(command_output: str, command: str) -> str:
+    command_output = command_output.lstrip()
+    command = command.lstrip()
+    first_line = command_output.splitlines()[0] if command_output else ""
+    if command and command in first_line:
+        _, separator, rest = command_output.partition("\n")
+        command_output = rest if separator else ""
+    return re.sub(r"(?:\r?\n)?PS [^\r\n]*>\s*$", "", command_output).lstrip()
 
 
 class TerminalSession(TerminalSessionBase):
@@ -79,6 +90,24 @@ class TerminalSession(TerminalSessionBase):
         # Store the last command for interactive input handling
         self.prev_status = None
         self.prev_output = ""
+        # Stateful filter for terminal query sequences (handles split sequences)
+        self._query_filter = TerminalQueryFilter()
+
+    @classmethod
+    def attach_to_existing(
+        cls,
+        terminal: TerminalInterface,
+        no_change_timeout_seconds: int | None = None,
+    ) -> "TerminalSession":
+        """Create a TerminalSession for an already-initialized terminal.
+
+        Use this instead of ``__init__`` + ``initialize()`` when the
+        terminal has already been set up (e.g. by a pane pool) and
+        calling ``initialize()`` again would create a duplicate session.
+        """
+        session = cls(terminal, no_change_timeout_seconds)
+        session._initialized = True
+        return session
 
     def initialize(self) -> None:
         """Initialize the terminal backend."""
@@ -119,8 +148,22 @@ class TerminalSession(TerminalSessionBase):
         raw_command_output: str,
         metadata: CmdOutputMetadata,
         continue_prefix: str = "",
+        is_final: bool = False,
     ) -> str:
-        """Get the command output with the previous command output removed."""
+        """Get the command output with the previous command output removed.
+
+        Also filters terminal query sequences that could cause visible escape
+        code garbage when the output is displayed. Uses stateful filtering to
+        handle escape sequences that may be split across incremental outputs.
+        See: https://github.com/OpenHands/software-agent-sdk/issues/2244
+
+        Args:
+            command: The command being executed
+            raw_command_output: Raw output from terminal
+            metadata: Output metadata to populate
+            continue_prefix: Prefix for continuation output
+            is_final: If True, flush any pending filter state (command completed)
+        """
         # remove the previous command output from the new output if any
         if self.prev_output:
             command_output = raw_command_output.removeprefix(self.prev_output)
@@ -128,7 +171,19 @@ class TerminalSession(TerminalSessionBase):
         else:
             command_output = raw_command_output
         self.prev_output = raw_command_output  # update current command output anyway
-        command_output = _remove_command_prefix(command_output, command)
+        if self.terminal.is_powershell():
+            command_output = _remove_powershell_echo(command_output, command)
+        else:
+            command_output = _remove_command_prefix(command_output, command)
+
+        # Filter terminal query sequences that would cause the terminal to
+        # respond when displayed, producing visible garbage.
+        # The filter is stateful to handle sequences split across chunks.
+        command_output = self._query_filter.filter(command_output)
+        if is_final:
+            # Flush any pending bytes when command completes
+            command_output += self._query_filter.flush()
+
         return command_output.rstrip()
 
     def _handle_completed_command(
@@ -139,10 +194,43 @@ class TerminalSession(TerminalSessionBase):
     ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
-        assert len(ps1_matches) >= 1, (
-            f"Expected at least one PS1 metadata block, but got {len(ps1_matches)}.\n"
-            f"---FULL OUTPUT---\n{terminal_content!r}\n---END OF OUTPUT---"
-        )
+
+        # When PS1 metadata markers are missing (e.g., corrupted by TUI/ANSI
+        # output or scrolled off-screen), fall back gracefully instead of
+        # crashing. The command likely completed but we can't extract the
+        # exit code or working directory.
+        if len(ps1_matches) == 0:
+            logger.warning(
+                "No PS1 metadata found in terminal output. "
+                "Command output may have overwritten the markers "
+                "(e.g., TUI rendering, large output)."
+            )
+            metadata = CmdOutputMetadata(exit_code=-1, working_dir=self._cwd)
+            metadata.suffix = (
+                "\n[The command completed but the exit code could not "
+                "be determined. Terminal output may have corrupted the "
+                "PS1 metadata markers.]"
+            )
+            command_output = self._get_command_output(
+                command,
+                terminal_content,
+                metadata,
+                is_final=True,
+            )
+            command_output = maybe_truncate(
+                command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
+            )
+            self.prev_status = TerminalCommandStatus.COMPLETED
+            self.prev_output = ""
+            self._query_filter.reset()
+            self._ready_for_next_command()
+            return TerminalObservation.from_text(
+                command=command,
+                text=command_output,
+                metadata=metadata,
+                exit_code=metadata.exit_code,
+            )
+
         metadata = CmdOutputMetadata.from_ps1_match(ps1_matches[-1])
 
         # Special case where the previous command output is truncated
@@ -184,6 +272,7 @@ class TerminalSession(TerminalSessionBase):
             command,
             raw_command_output,
             metadata,
+            is_final=True,  # Command completed, flush filter state
         )
         command_output = maybe_truncate(
             command_output, truncate_after=MAX_CMD_OUTPUT_SIZE
@@ -191,6 +280,7 @@ class TerminalSession(TerminalSessionBase):
 
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
+        self._query_filter.reset()  # Reset filter for next command
         self._ready_for_next_command()
         return TerminalObservation.from_text(
             command=command,
@@ -417,6 +507,7 @@ class TerminalSession(TerminalSessionBase):
             return obs
 
         # Send actual command/inputs to the terminal
+        sent_command = command != ""
         if command != "":
             is_special_key = self._is_special_key(command)
             if is_input:
@@ -452,6 +543,9 @@ class TerminalSession(TerminalSessionBase):
             )
             ps1_matches = CmdOutputMetadata.matches_ps1_metadata(cur_terminal_output)
             current_ps1_count = len(ps1_matches)
+            output_changed_since_command = (
+                cur_terminal_output != initial_terminal_output
+            )
 
             if cur_terminal_output != last_terminal_output:
                 last_terminal_output = cur_terminal_output
@@ -463,7 +557,7 @@ class TerminalSession(TerminalSessionBase):
             # Condition 2: The prompt count hasn't increased (potentially because the
             # initial one scrolled off), BUT the *current* visible terminal ends with a
             # prompt, indicating completion.
-            if (
+            if (not sent_command or output_changed_since_command) and (
                 current_ps1_count > initial_ps1_count
                 or cur_terminal_output.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
             ):

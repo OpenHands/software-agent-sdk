@@ -3,7 +3,7 @@
 import pytest
 
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.event import ActionEvent, HookExecutionEvent, MessageEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
@@ -11,6 +11,27 @@ from openhands.sdk.hooks.conversation_hooks import (
 )
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.llm import Message, TextContent
+from tests.command_utils import python_command
+
+
+def _json_command(payload: dict[str, object], exit_code: int = 0) -> str:
+    return python_command(
+        f"import json, sys; print(json.dumps({payload!r})); sys.exit({exit_code})"
+    )
+
+
+def _stderr_exit_command(message: str, exit_code: int) -> str:
+    return python_command(
+        f"import sys; sys.stderr.write({message!r} + '\\n'); sys.exit({exit_code})"
+    )
+
+
+def _write_stdin_to_file_command(path) -> str:
+    return python_command(
+        "import sys; "
+        "from pathlib import Path; "
+        f"Path({str(path)!r}).write_text(sys.stdin.read())"
+    )
 
 
 class TestBlockedActionsState:
@@ -135,16 +156,13 @@ class TestUserPromptSubmitBlocking:
         self, tmp_path, mock_conversation_state
     ):
         """Test blocking UserPromptSubmit hooks add message ID to blocked_messages."""
-        # Create a blocking hook script
-        script = tmp_path / "block_prompt.sh"
-        script.write_text('#!/bin/bash\necho "Blocked by policy" >&2\nexit 2')
-        script.chmod(0o755)
+        command = _stderr_exit_command("Blocked by policy", 2)
 
         config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -174,15 +192,13 @@ class TestUserPromptSubmitBlocking:
         self, tmp_path, mock_conversation_state
     ):
         """Test that non-blocking hooks don't add to blocked_messages."""
-        script = tmp_path / "allow_prompt.sh"
-        script.write_text("#!/bin/bash\nexit 0")
-        script.chmod(0o755)
+        command = python_command("import sys; sys.exit(0)")
 
         config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -211,11 +227,7 @@ class TestHookEventProcessorBlocking:
     @pytest.fixture
     def blocking_config(self, tmp_path):
         """Create a config with a blocking hook."""
-        script = tmp_path / "block.sh"
-        script.write_text(
-            '#!/bin/bash\necho \'{"decision": "deny", "reason": "Test block"}\'\nexit 2'
-        )
-        script.chmod(0o755)
+        command = _json_command({"decision": "deny", "reason": "Test block"}, 2)
 
         return HookConfig.from_dict(
             {
@@ -223,7 +235,7 @@ class TestHookEventProcessorBlocking:
                     "PreToolUse": [
                         {
                             "matcher": "*",
-                            "hooks": [{"type": "command", "command": str(script)}],
+                            "hooks": [{"type": "command", "command": command}],
                         }
                     ]
                 }
@@ -334,9 +346,7 @@ class TestPostToolUseActionLookup:
     def logging_config(self, tmp_path):
         """Create a config with a PostToolUse hook that logs tool_input."""
         log_file = tmp_path / "hook_output.log"
-        script = tmp_path / "log_input.sh"
-        script.write_text(f"#!/bin/bash\ncat > {log_file}\nexit 0")
-        script.chmod(0o755)
+        command = _write_stdin_to_file_command(log_file)
 
         return HookConfig.from_dict(
             {
@@ -344,7 +354,7 @@ class TestPostToolUseActionLookup:
                     "PostToolUse": [
                         {
                             "matcher": "*",
-                            "hooks": [{"type": "command", "command": str(script)}],
+                            "hooks": [{"type": "command", "command": command}],
                         }
                     ]
                 }
@@ -490,19 +500,15 @@ class TestLocalConversationHookCallbackWiring:
         from openhands.sdk.llm import LLM
 
         # Create a hook that adds additional_context
-        script = tmp_path / "add_context.sh"
-        script.write_text(
-            "#!/bin/bash\n"
-            'echo \'{"additionalContext": "HOOK_INJECTED_CONTEXT"}\'\n'
-            "exit 0"
+        command = _json_command(
+            {"additionalContext": "HOOK_INJECTED_CONTEXT"},
         )
-        script.chmod(0o755)
 
         hook_config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -564,19 +570,15 @@ class TestAdditionalContextInjection:
     ):
         """Test hook additional_context is injected into extended_content."""
         # Create a hook that returns additional context
-        script = tmp_path / "add_context.sh"
-        script.write_text(
-            "#!/bin/bash\n"
-            'echo \'{"additionalContext": "Important context from hook"}\'\n'
-            "exit 0"
+        command = _json_command(
+            {"additionalContext": "Important context from hook"},
         )
-        script.chmod(0o755)
 
         config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -603,10 +605,10 @@ class TestAdditionalContextInjection:
 
         processor.on_event(original_event)
 
-        # Check that the callback received a modified event
-        assert len(processed_events) == 1
-        processed_event = processed_events[0]
-        assert isinstance(processed_event, MessageEvent)
+        # Filter for MessageEvent (excluding HookExecutionEvent)
+        message_events = [e for e in processed_events if isinstance(e, MessageEvent)]
+        assert len(message_events) == 1
+        processed_event = message_events[0]
 
         # The extended_content should contain the hook's additional context
         assert len(processed_event.extended_content) == 1
@@ -616,17 +618,13 @@ class TestAdditionalContextInjection:
         self, tmp_path, mock_conversation_state
     ):
         """Test that hook additional_context appears when converting to LLM message."""
-        script = tmp_path / "add_context.sh"
-        script.write_text(
-            '#!/bin/bash\necho \'{"additionalContext": "Injected by hook"}\'\nexit 0'
-        )
-        script.chmod(0o755)
+        command = _json_command({"additionalContext": "Injected by hook"})
 
         config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -653,8 +651,10 @@ class TestAdditionalContextInjection:
 
         processor.on_event(original_event)
 
-        # Get the LLM message from the processed event
-        processed_event = processed_events[0]
+        # Filter for MessageEvent (excluding HookExecutionEvent)
+        message_events = [e for e in processed_events if isinstance(e, MessageEvent)]
+        assert len(message_events) == 1
+        processed_event = message_events[0]
         llm_message = processed_event.to_llm_message()
 
         # The content should include both original message and hook context
@@ -668,17 +668,13 @@ class TestAdditionalContextInjection:
         self, tmp_path, mock_conversation_state
     ):
         """Test that hook context is appended to existing extended_content."""
-        script = tmp_path / "add_context.sh"
-        script.write_text(
-            '#!/bin/bash\necho \'{"additionalContext": "Hook context"}\'\nexit 0'
-        )
-        script.chmod(0o755)
+        command = _json_command({"additionalContext": "Hook context"})
 
         config = HookConfig.from_dict(
             {
                 "hooks": {
                     "UserPromptSubmit": [
-                        {"hooks": [{"type": "command", "command": str(script)}]}
+                        {"hooks": [{"type": "command", "command": command}]}
                     ]
                 }
             }
@@ -707,7 +703,10 @@ class TestAdditionalContextInjection:
 
         processor.on_event(original_event)
 
-        processed_event = processed_events[0]
+        # Filter for MessageEvent (excluding HookExecutionEvent)
+        message_events = [e for e in processed_events if isinstance(e, MessageEvent)]
+        assert len(message_events) == 1
+        processed_event = message_events[0]
 
         # Both existing and hook context should be present
         assert len(processed_event.extended_content) == 2
@@ -743,16 +742,10 @@ class TestStopHookIntegration:
 
     def test_run_stop_with_allowing_hook(self, tmp_path, mock_conversation_state):
         """Test that run_stop returns True when hook allows stopping."""
-        script = tmp_path / "allow_stop.sh"
-        script.write_text('#!/bin/bash\necho \'{"decision": "allow"}\'\nexit 0')
-        script.chmod(0o755)
+        command = _json_command({"decision": "allow"})
 
         config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": str(script)}]}]
-                }
-            }
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
         )
 
         manager = HookManager(config=config, working_dir=str(tmp_path))
@@ -766,20 +759,13 @@ class TestStopHookIntegration:
 
     def test_run_stop_with_denying_hook(self, tmp_path, mock_conversation_state):
         """Test that run_stop returns False when hook denies stopping."""
-        script = tmp_path / "deny_stop.sh"
-        script.write_text(
-            "#!/bin/bash\n"
-            'echo \'{"decision": "deny", "reason": "Not done yet"}\'\n'
-            "exit 2"
+        command = _json_command(
+            {"decision": "deny", "reason": "Not done yet"},
+            2,
         )
-        script.chmod(0o755)
 
         config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": str(script)}]}]
-                }
-            }
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
         )
 
         manager = HookManager(config=config, working_dir=str(tmp_path))
@@ -795,17 +781,13 @@ class TestStopHookIntegration:
         self, tmp_path, mock_conversation_state
     ):
         """Test additional_context is returned as feedback when stop is denied."""
-        script = tmp_path / "deny_with_feedback.sh"
-        context_json = '{"decision": "deny", "additionalContext": "Please complete X"}'
-        script.write_text(f"#!/bin/bash\necho '{context_json}'\nexit 2")
-        script.chmod(0o755)
+        command = _json_command(
+            {"decision": "deny", "additionalContext": "Please complete X"},
+            2,
+        )
 
         config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": str(script)}]}]
-                }
-            }
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
         )
 
         manager = HookManager(config=config, working_dir=str(tmp_path))
@@ -821,16 +803,10 @@ class TestStopHookIntegration:
         self, tmp_path, mock_conversation_state
     ):
         """Test that hook errors are handled gracefully and stopping is allowed."""
-        script = tmp_path / "error_hook.sh"
-        script.write_text("#!/bin/bash\nexit 1")  # Non-blocking error exit
-        script.chmod(0o755)
+        command = python_command("import sys; sys.exit(1)")
 
         config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": str(script)}]}]
-                }
-            }
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
         )
 
         manager = HookManager(config=config, working_dir=str(tmp_path))
@@ -862,28 +838,22 @@ class TestStopHookConversationIntegration:
         stop_count_file = tmp_path / "stop_count"
         stop_count_file.write_text("0")
 
-        script = tmp_path / "conditional_stop.sh"
-        script.write_text(f"""#!/bin/bash
-count=$(cat {stop_count_file})
-new_count=$((count + 1))
-echo $new_count > {stop_count_file}
-
-if [ "$count" -eq "0" ]; then
-    echo '{{"decision": "deny", "additionalContext": "Complete the task first"}}'
-    exit 2
-else
-    echo '{{"decision": "allow"}}'
-    exit 0
-fi
-""")
-        script.chmod(0o755)
+        command = python_command(
+            "import json, sys; "
+            "from pathlib import Path; "
+            f"path = Path({str(stop_count_file)!r}); "
+            "count = int(path.read_text()); "
+            "path.write_text(str(count + 1)); "
+            "payload = "
+            "({'decision': 'deny', "
+            "'additionalContext': 'Complete the task first'} "
+            "if count == 0 else {'decision': 'allow'}); "
+            "print(json.dumps(payload)); "
+            "sys.exit(2 if count == 0 else 0)"
+        )
 
         hook_config = HookConfig.from_dict(
-            {
-                "hooks": {
-                    "Stop": [{"hooks": [{"type": "command", "command": str(script)}]}]
-                }
-            }
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
         )
 
         llm = LLM(model="test-model", api_key=SecretStr("test-key"))
@@ -941,3 +911,240 @@ fi
             )
         ]
         assert len(feedback_messages) == 1, "Feedback message should be injected once"
+
+
+class TestHookExecutionEventEmission:
+    """Tests for HookExecutionEvent emission during hook execution."""
+
+    @pytest.fixture
+    def mock_conversation_state(self, tmp_path):
+        """Create a mock conversation state using the factory method."""
+        import uuid
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.workspace import LocalWorkspace
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+        workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        return ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=None,
+        )
+
+    def test_hook_execution_event_emitted_for_user_prompt_submit(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that HookExecutionEvent is emitted when UserPromptSubmit hooks run."""
+        command = _json_command({"decision": "allow"})
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": command}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=True,
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        original_event = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+        )
+
+        processor.on_event(original_event)
+
+        # Should have both HookExecutionEvent and MessageEvent
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        message_events = [e for e in processed_events if isinstance(e, MessageEvent)]
+
+        assert len(hook_events) == 1
+        assert len(message_events) == 1
+
+        hook_event = hook_events[0]
+        assert hook_event.hook_event_type == "UserPromptSubmit"
+        assert hook_event.hook_command == command
+        assert hook_event.success is True
+        assert hook_event.blocked is False
+        assert hook_event.exit_code == 0
+        assert hook_event.source == "hook"
+
+    def test_hook_execution_event_not_emitted_when_disabled(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that HookExecutionEvent is not emitted when emit_hook_events=False."""
+        command = _json_command({"decision": "allow"})
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": command}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=False,  # Disabled
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        original_event = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+        )
+
+        processor.on_event(original_event)
+
+        # Should only have MessageEvent, no HookExecutionEvent
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        message_events = [e for e in processed_events if isinstance(e, MessageEvent)]
+
+        assert len(hook_events) == 0
+        assert len(message_events) == 1
+
+    def test_hook_execution_event_captures_blocking(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that HookExecutionEvent captures blocking status correctly."""
+        command = _json_command({"decision": "deny", "reason": "Blocked!"}, 2)
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": command}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=True,
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        original_event = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+        )
+
+        processor.on_event(original_event)
+
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        assert len(hook_events) == 1
+
+        hook_event = hook_events[0]
+        assert hook_event.blocked is True
+        assert hook_event.reason == "Blocked!"
+        assert hook_event.exit_code == 2
+
+    def test_hook_execution_event_emitted_for_session_start(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that HookExecutionEvent is emitted for SessionStart hooks."""
+        command = python_command("print('Session started')")
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": command}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=True,
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        processor.run_session_start()
+
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        assert len(hook_events) == 1
+
+        hook_event = hook_events[0]
+        assert hook_event.hook_event_type == "SessionStart"
+        assert hook_event.success is True
+
+    def test_hook_execution_event_emitted_for_stop(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that HookExecutionEvent is emitted for Stop hooks."""
+        command = _json_command({"decision": "allow"})
+
+        config = HookConfig.from_dict(
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processed_events = []
+
+        def capture_callback(event):
+            processed_events.append(event)
+
+        processor = HookEventProcessor(
+            hook_manager=manager,
+            original_callback=capture_callback,
+            emit_hook_events=True,
+        )
+        processor.set_conversation_state(mock_conversation_state)
+
+        should_stop, _ = processor.run_stop(reason="finish")
+
+        assert should_stop is True
+
+        hook_events = [e for e in processed_events if isinstance(e, HookExecutionEvent)]
+        assert len(hook_events) == 1
+
+        hook_event = hook_events[0]
+        assert hook_event.hook_event_type == "Stop"
+        assert hook_event.success is True
+        assert hook_event.hook_input == {"reason": "finish"}

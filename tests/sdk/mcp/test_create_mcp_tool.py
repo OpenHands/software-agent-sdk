@@ -14,7 +14,7 @@ import pytest
 from fastmcp import FastMCP
 
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.mcp.exceptions import MCPTimeoutError
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 
 
 logger = logging.getLogger(__name__)
@@ -341,7 +341,7 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
     try:
         tools = create_mcp_tools(config, timeout=5.0)
         assert len(tools) == 0  # No tools from failed connection
-    except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, RuntimeError):
+    except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, MCPError):
         pass  # Expected connection errors are acceptable
 
 

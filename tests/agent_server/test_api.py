@@ -1,14 +1,63 @@
 """Tests for the agent server API functionality."""
 
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from openhands.agent_server.api import api_lifespan, create_app
+from openhands.agent_server.api import (
+    _default_server_tmux_tmpdir,
+    _ensure_server_tmux_tmpdir,
+    _get_root_path,
+    api_lifespan,
+    create_app,
+)
 from openhands.agent_server.config import Config
+
+
+@pytest.fixture(autouse=True)
+def clear_web_url_env(monkeypatch):
+    monkeypatch.delenv("OH_WEB_URL", raising=False)
+    monkeypatch.delenv("RUNTIME_URL", raising=False)
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
+
+def test_default_server_tmux_tmpdir_uses_current_pid(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+    )
+
+    assert _default_server_tmux_tmpdir() == (
+        tmp_path / f"openhands-agent-server-{os.getpid()}"
+    )
+
+
+def test_ensure_server_tmux_tmpdir_defaults_per_process_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+    )
+
+    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+
+    assert was_defaulted is True
+    assert tmux_tmpdir == tmp_path / f"openhands-agent-server-{os.getpid()}"
+    assert tmux_tmpdir.is_dir()
+    assert os.environ["TMUX_TMPDIR"] == str(tmux_tmpdir)
+
+
+def test_ensure_server_tmux_tmpdir_respects_existing_env(tmp_path, monkeypatch):
+    existing = tmp_path / "custom-tmux"
+    monkeypatch.setenv("TMUX_TMPDIR", str(existing))
+
+    tmux_tmpdir, was_defaulted = _ensure_server_tmux_tmpdir()
+
+    assert was_defaulted is False
+    assert tmux_tmpdir == existing
+    assert not existing.exists()
 
 
 class TestStaticFilesServing:
@@ -353,3 +402,250 @@ class TestServiceParallelization:
 
             # Verify conversation service was set up
             assert mock_app.state.conversation_service == mock_conversation_service
+
+    async def test_lifespan_defaults_and_restores_tmux_tmpdir(
+        self, tmp_path, monkeypatch
+    ):
+        """Test that lifespan defaults TMUX_TMPDIR per server instance."""
+        monkeypatch.setattr(
+            "openhands.agent_server.api.tempfile.gettempdir", lambda: str(tmp_path)
+        )
+        mock_conversation_service = AsyncMock()
+
+        with (
+            patch(
+                "openhands.agent_server.api.get_default_conversation_service",
+                return_value=mock_conversation_service,
+            ),
+            patch("openhands.agent_server.api.get_vscode_service", return_value=None),
+            patch("openhands.agent_server.api.get_desktop_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
+        ):
+            mock_app = AsyncMock()
+            mock_app.state = AsyncMock()
+            expected_tmux_tmpdir = tmp_path / f"openhands-agent-server-{os.getpid()}"
+
+            async with api_lifespan(mock_app):
+                assert os.environ["TMUX_TMPDIR"] == str(expected_tmux_tmpdir)
+
+            assert "TMUX_TMPDIR" not in os.environ
+
+
+class TestRootPath:
+    """Tests for _get_root_path function and root_path configuration."""
+
+    def test_get_root_path_returns_slash_when_web_url_is_none(self):
+        """Test that _get_root_path returns '' when web_url is not configured."""
+        config = Config(web_url=None)
+        assert _get_root_path(config) == ""
+
+    def test_get_root_path_extracts_path_from_url(self):
+        """Test that _get_root_path extracts the path component from web_url."""
+        config = Config(web_url="https://example.com/runtime/123")
+        assert _get_root_path(config) == "/runtime/123"
+
+    def test_get_root_path_returns_slash_for_root_url(self):
+        """Test that _get_root_path returns '/' for a URL without path."""
+        config = Config(web_url="https://example.com")
+        assert _get_root_path(config) == ""
+
+    def test_get_root_path_with_trailing_slash(self):
+        """Test that _get_root_path preserves trailing slash."""
+        config = Config(web_url="https://example.com/api/")
+        assert _get_root_path(config) == "/api"
+
+    def test_get_root_path_with_complex_path(self):
+        """Test _get_root_path with a complex nested path."""
+        config = Config(
+            web_url="https://work-1-abc123.prod-runtime.all-hands.dev/runtime/456/api"
+        )
+        assert _get_root_path(config) == "/runtime/456/api"
+
+    def test_fastapi_instance_uses_root_path(self):
+        """Test that FastAPI instance is created with correct root_path."""
+        config = Config(web_url="https://example.com/mypath")
+        app = create_app(config)
+        assert app.root_path == "/mypath"
+
+    def test_fastapi_instance_uses_default_root_path_when_no_web_url(self):
+        """Test that FastAPI instance uses '/' root_path when web_url is None."""
+        config = Config(web_url=None)
+        app = create_app(config)
+        assert app.root_path == ""
+
+
+class TestConfigWebUrl:
+    """Tests for web_url configuration field."""
+
+    def test_web_url_default_is_none_when_env_not_set(self):
+        """Test that web_url defaults to None when no env vars are set."""
+        with patch.dict("os.environ", {}, clear=True):
+            config = Config()
+            assert config.web_url is None
+
+    def test_web_url_reads_from_oh_web_url_env(self):
+        """Test that web_url reads from the canonical OH_WEB_URL env var."""
+        with patch.dict("os.environ", {"OH_WEB_URL": "https://test.example.com/path"}):
+            config = Config()
+            assert config.web_url == "https://test.example.com/path"
+
+    def test_web_url_ignores_legacy_runtime_url_env(self):
+        """Test that deprecated RUNTIME_URL no longer configures web_url."""
+        with patch.dict("os.environ", {"RUNTIME_URL": "https://test.example.com/path"}):
+            config = Config()
+
+        assert config.web_url is None
+
+    def test_web_url_reads_oh_web_url_when_runtime_url_is_also_set(self):
+        """Test that OH_WEB_URL remains authoritative."""
+        with patch.dict(
+            "os.environ",
+            {
+                "OH_WEB_URL": "https://preferred.example.com/path",
+                "RUNTIME_URL": "https://legacy.example.com/path",
+            },
+        ):
+            config = Config()
+
+        assert config.web_url == "https://preferred.example.com/path"
+
+    def test_web_url_can_be_set_explicitly(self):
+        """Test that web_url can be set explicitly, overriding env vars."""
+        with patch.dict(
+            "os.environ",
+            {
+                "OH_WEB_URL": "https://env.example.com/oh",
+                "RUNTIME_URL": "https://env.example.com/runtime",
+            },
+        ):
+            config = Config(web_url="https://explicit.example.com/custom")
+            assert config.web_url == "https://explicit.example.com/custom"
+
+
+@pytest.mark.parametrize(
+    "web_url,expected_root_path",
+    [
+        (None, ""),
+        ("https://example.com", ""),
+        ("https://example.com/", ""),
+        ("https://example.com/api", "/api"),
+        ("https://example.com/api/v1", "/api/v1"),
+        ("http://localhost:8000/test", "/test"),
+        ("https://work-1-xyz.prod-runtime.all-hands.dev/runtime/abc", "/runtime/abc"),
+    ],
+)
+def test_get_root_path_parametrized(web_url, expected_root_path):
+    """Parametrized test for _get_root_path with various URL patterns."""
+    config = Config(web_url=web_url)
+    assert _get_root_path(config) == expected_root_path
+
+
+class TestHttpExceptionLogging:
+    """5xx HTTPExceptions are intentionally-raised flow control.
+
+    They should be logged as a single ERROR line without a full stack
+    trace; only genuinely unhandled exceptions should get a traceback.
+    Otherwise routine upstream blips (e.g. a 502 from /api/cloud-proxy
+    when the cloud is unreachable) look indistinguishable from a process
+    crash in the logs.
+    """
+
+    def _build_app_with_failing_route(self, status_code: int):
+        from fastapi import HTTPException as FastAPIHTTPException
+
+        config = Config(static_files_path=None)
+        app = create_app(config)
+
+        @app.get(f"/__test__/raise_{status_code}")
+        def _raise():
+            raise FastAPIHTTPException(
+                status_code=status_code, detail="boom from upstream"
+            )
+
+        return app
+
+    def test_5xx_http_exception_logged_without_traceback_by_default(self, caplog):
+        import logging
+
+        app = self._build_app_with_failing_route(502)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.ERROR, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_502")
+
+        assert response.status_code == 502
+        # Client still sees the same sanitized 5xx envelope.
+        assert response.json()["detail"] == "Internal Server Error"
+
+        api_error_records = [
+            r
+            for r in caplog.records
+            if r.name == "openhands.agent_server.api" and r.levelno == logging.ERROR
+        ]
+        assert len(api_error_records) == 1, (
+            "Expected exactly one ERROR log line for a 5xx HTTPException, "
+            f"got: {[r.getMessage() for r in api_error_records]}"
+        )
+        record = api_error_records[0]
+        # The whole point of the fix: no stack trace attached for an
+        # intentionally-raised HTTPException.
+        assert record.exc_info is None, (
+            "5xx HTTPException should not log a traceback by default; "
+            f"got exc_info={record.exc_info!r}"
+        )
+        # Message must still carry status, method, path, and detail so
+        # the log is useful for monitoring.
+        message = record.getMessage()
+        assert "502" in message
+        assert "GET" in message
+        assert "/__test__/raise_502" in message
+        assert "boom from upstream" in message
+
+    def test_5xx_http_exception_includes_traceback_when_debug_enabled(
+        self, caplog, monkeypatch
+    ):
+        import logging
+
+        # DEBUG is read at module import time in api.py, so monkeypatch
+        # the bound name on the module rather than mutating the env.
+        monkeypatch.setattr("openhands.agent_server.api.DEBUG", True)
+
+        app = self._build_app_with_failing_route(503)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.ERROR, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_503")
+
+        assert response.status_code == 503
+        api_error_records = [
+            r
+            for r in caplog.records
+            if r.name == "openhands.agent_server.api" and r.levelno == logging.ERROR
+        ]
+        assert len(api_error_records) == 1
+        # In DEBUG mode the traceback is preserved as an opt-in debugging aid.
+        assert api_error_records[0].exc_info is not None
+
+    def test_4xx_http_exception_logged_at_info_without_traceback(self, caplog):
+        import logging
+
+        app = self._build_app_with_failing_route(404)
+        client = TestClient(app)
+
+        with caplog.at_level(logging.INFO, logger="openhands.agent_server.api"):
+            response = client.get("/__test__/raise_404")
+
+        assert response.status_code == 404
+        # 4xx path returns the raw detail (not the sanitized 5xx envelope).
+        assert response.json() == {"detail": "boom from upstream"}
+
+        api_records = [
+            r for r in caplog.records if r.name == "openhands.agent_server.api"
+        ]
+        # No ERROR-level noise for a routine 4xx.
+        assert not any(r.levelno >= logging.ERROR for r in api_records)
+        info_records = [r for r in api_records if r.levelno == logging.INFO]
+        assert info_records, "Expected an INFO log line for a 4xx HTTPException"
+        assert all(r.exc_info is None for r in info_records)

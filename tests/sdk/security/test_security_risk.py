@@ -82,3 +82,51 @@ def test_security_risk_get_color():
     assert SecurityRisk.MEDIUM.get_color() == "yellow"
     assert SecurityRisk.HIGH.get_color() == "red"
     assert SecurityRisk.UNKNOWN.get_color() == "white"
+
+
+def test_lt_ordering():
+    """Test that __lt__ follows LOW < MEDIUM < HIGH."""
+    assert SecurityRisk.LOW < SecurityRisk.MEDIUM
+    assert SecurityRisk.MEDIUM < SecurityRisk.HIGH
+    assert SecurityRisk.LOW < SecurityRisk.HIGH
+
+
+def test_lt_not_less_than_self():
+    """Test that no risk level is less than itself."""
+    assert not SecurityRisk.LOW < SecurityRisk.LOW
+    assert not SecurityRisk.MEDIUM < SecurityRisk.MEDIUM
+    assert not SecurityRisk.HIGH < SecurityRisk.HIGH
+
+
+def test_lt_reverse_ordering():
+    """Test that higher is not less than lower."""
+    assert not SecurityRisk.HIGH < SecurityRisk.LOW
+    assert not SecurityRisk.HIGH < SecurityRisk.MEDIUM
+    assert not SecurityRisk.MEDIUM < SecurityRisk.LOW
+
+
+def test_lt_unknown_raises():
+    """Test that comparing UNKNOWN raises ValueError, consistent with is_riskier."""
+    with pytest.raises(ValueError):
+        SecurityRisk.UNKNOWN < SecurityRisk.LOW
+    with pytest.raises(ValueError):
+        SecurityRisk.LOW < SecurityRisk.UNKNOWN
+    with pytest.raises(ValueError):
+        SecurityRisk.UNKNOWN < SecurityRisk.UNKNOWN
+
+
+def test_max_on_concrete_risks():
+    """Test that max() works on concrete risk lists.
+
+    SecurityRisk(str, Enum) inherits str.__gt__ via MRO, which gives
+    alphabetical ordering (HIGH < LOW < MEDIUM). All comparison methods
+    (__lt__, __gt__, __le__, __ge__) are explicitly defined to override
+    this. @total_ordering cannot help here -- it detects str's comparison
+    methods as already-defined and skips them.
+    """
+    assert (
+        max([SecurityRisk.LOW, SecurityRisk.MEDIUM, SecurityRisk.HIGH])
+        == SecurityRisk.HIGH
+    )
+    assert max([SecurityRisk.LOW, SecurityRisk.LOW]) == SecurityRisk.LOW
+    assert max([SecurityRisk.MEDIUM, SecurityRisk.HIGH]) == SecurityRisk.HIGH

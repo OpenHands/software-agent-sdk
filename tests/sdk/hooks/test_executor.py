@@ -1,12 +1,15 @@
 """Tests for hook executor."""
 
 import json
+import subprocess
+from unittest import mock
 
 import pytest
 
 from openhands.sdk.hooks.config import HookDefinition
 from openhands.sdk.hooks.executor import HookExecutor
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
+from tests.command_utils import python_command
 
 
 class TestHookExecutor:
@@ -38,11 +41,9 @@ class TestHookExecutor:
 
     def test_execute_receives_json_stdin(self, executor, sample_event, tmp_path):
         """Test that hook receives event data as JSON on stdin."""
-        script_path = tmp_path / "echo_stdin.sh"
-        script_path.write_text("#!/bin/bash\ncat")
-        script_path.chmod(0o755)
-
-        hook = HookDefinition(command=str(script_path))
+        hook = HookDefinition(
+            command=python_command("import sys; sys.stdout.write(sys.stdin.read())")
+        )
         result = executor.execute(hook, sample_event)
 
         assert result.success
@@ -52,7 +53,7 @@ class TestHookExecutor:
 
     def test_execute_blocking_exit_code(self, executor, sample_event):
         """Test that exit code 2 blocks the operation."""
-        hook = HookDefinition(command="exit 2")
+        hook = HookDefinition(command=python_command("import sys; sys.exit(2)"))
         result = executor.execute(hook, sample_event)
 
         assert not result.success
@@ -63,7 +64,10 @@ class TestHookExecutor:
     def test_execute_json_output_decision(self, executor, sample_event):
         """Test parsing JSON output with decision field."""
         hook = HookDefinition(
-            command='echo \'{"decision": "deny", "reason": "Not allowed"}\''
+            command=python_command(
+                "import json; print(json.dumps("
+                "{'decision': 'deny', 'reason': 'Not allowed'}))"
+            )
         )
         result = executor.execute(hook, sample_event)
 
@@ -73,15 +77,14 @@ class TestHookExecutor:
 
     def test_execute_environment_variables(self, executor, sample_event, tmp_path):
         """Test that environment variables are set correctly."""
-        script_path = tmp_path / "check_env.sh"
-        script_path.write_text(
-            "#!/bin/bash\n"
-            'echo "SESSION=$OPENHANDS_SESSION_ID"\n'
-            'echo "TOOL=$OPENHANDS_TOOL_NAME"\n'
+        hook = HookDefinition(
+            command=python_command(
+                "import os; "
+                "print(f\"SESSION={os.environ['OPENHANDS_SESSION_ID']}\"); "
+                "print(f\"TOOL={os.environ['OPENHANDS_TOOL_NAME']}\")"
+            )
         )
-        script_path.chmod(0o755)
 
-        hook = HookDefinition(command=str(script_path))
         result = executor.execute(hook, sample_event)
 
         assert result.success
@@ -90,7 +93,9 @@ class TestHookExecutor:
 
     def test_execute_timeout(self, executor, sample_event):
         """Test that timeout is enforced."""
-        hook = HookDefinition(command="sleep 10", timeout=1)
+        hook = HookDefinition(
+            command=python_command("import time; time.sleep(10)"), timeout=1
+        )
         result = executor.execute(hook, sample_event)
 
         assert not result.success
@@ -100,7 +105,7 @@ class TestHookExecutor:
         """Test that execute_all stops on blocking hook."""
         hooks = [
             HookDefinition(command="echo 'first'"),
-            HookDefinition(command="exit 2"),
+            HookDefinition(command=python_command("import sys; sys.exit(2)")),
             HookDefinition(command="echo 'third'"),
         ]
 
@@ -112,7 +117,11 @@ class TestHookExecutor:
 
     def test_execute_captures_stderr(self, executor, sample_event):
         """Test that stderr is captured."""
-        hook = HookDefinition(command="echo 'error message' >&2 && exit 2")
+        hook = HookDefinition(
+            command=python_command(
+                "import sys; sys.stderr.write('error message\\n'); sys.exit(2)"
+            )
+        )
         result = executor.execute(hook, sample_event)
 
         assert result.blocked
@@ -141,7 +150,9 @@ class TestAsyncHookExecution:
         """Test that async hooks return immediately without waiting."""
         import time
 
-        hook = HookDefinition.model_validate({"command": "sleep 5", "async": True})
+        hook = HookDefinition.model_validate(
+            {"command": python_command("import time; time.sleep(5)"), "async": True}
+        )
 
         start = time.time()
         result = executor.execute(hook, sample_event)
@@ -167,7 +178,16 @@ class TestAsyncHookExecution:
         """Test that async hooks track processes for cleanup."""
         marker = tmp_path / "async_marker.txt"
         hook = HookDefinition.model_validate(
-            {"command": f"sleep 0.3 && touch {marker}", "async": True, "timeout": 5}
+            {
+                "command": python_command(
+                    "import time; "
+                    "from pathlib import Path; "
+                    "time.sleep(0.3); "
+                    f"Path({str(marker)!r}).touch()"
+                ),
+                "async": True,
+                "timeout": 5,
+            }
         )
 
         result = executor.execute(hook, sample_event)
@@ -187,7 +207,15 @@ class TestAsyncHookExecution:
         output_file = tmp_path / "stdin_output.json"
         # Script that reads stdin and writes to file
         hook = HookDefinition.model_validate(
-            {"command": f"cat > {output_file}", "async": True, "timeout": 5}
+            {
+                "command": python_command(
+                    "import sys; "
+                    "from pathlib import Path; "
+                    f"Path({str(output_file)!r}).write_text(sys.stdin.read())"
+                ),
+                "async": True,
+                "timeout": 5,
+            }
         )
 
         result = executor.execute(hook, sample_event)
@@ -203,6 +231,33 @@ class TestAsyncHookExecution:
         content = json.loads(output_file.read_text())
         assert content["tool_name"] == "TestTool"
         assert content["event_type"] == "PostToolUse"
+
+    def test_execute_async_hook_uses_windows_process_group(
+        self, executor, sample_event, monkeypatch
+    ):
+        """Test Windows process-group kwargs by simulating win32 on any runner."""
+        import openhands.sdk.hooks.executor as executor_module
+
+        popen_kwargs: dict[str, object] = {}
+        stdin = mock.Mock()
+        process = mock.Mock()
+        process.stdin = stdin
+        process.poll.return_value = None
+
+        def fake_popen(*args, **kwargs):
+            popen_kwargs.update(kwargs)
+            return process
+
+        monkeypatch.setattr(executor_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512, raising=False)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        hook = HookDefinition.model_validate({"command": "echo test", "async": True})
+        result = executor.execute(hook, sample_event)
+
+        assert result.async_started is True
+        assert popen_kwargs["creationflags"] == 512
+        assert popen_kwargs["start_new_session"] is False
 
     def test_sync_hook_not_marked_async(self, executor, sample_event):
         """Test that synchronous hooks are not marked as async_started."""
@@ -221,7 +276,12 @@ class TestAsyncHookExecution:
         hooks = [
             HookDefinition(command="echo 'sync1'"),
             HookDefinition.model_validate(
-                {"command": f"touch {marker}", "async": True}
+                {
+                    "command": python_command(
+                        f"from pathlib import Path; Path({str(marker)!r}).touch()"
+                    ),
+                    "async": True,
+                }
             ),
             HookDefinition(command="echo 'sync2'"),
         ]
@@ -245,15 +305,13 @@ class TestAsyncProcessManager:
 
     def test_add_process_and_cleanup_all(self, tmp_path):
         """Test that processes can be added and cleaned up."""
-        import subprocess
-
         from openhands.sdk.hooks.executor import AsyncProcessManager
 
         manager = AsyncProcessManager()
 
         # Start a long-running process with new session for process group cleanup
         process = subprocess.Popen(
-            "sleep 60",
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,
@@ -277,7 +335,6 @@ class TestAsyncProcessManager:
 
     def test_cleanup_expired_terminates_old_processes(self, tmp_path):
         """Test that cleanup_expired terminates processes past their timeout."""
-        import subprocess
         import time
 
         from openhands.sdk.hooks.executor import AsyncProcessManager
@@ -286,7 +343,7 @@ class TestAsyncProcessManager:
 
         # Start a process with very short timeout that's already expired
         process = subprocess.Popen(
-            "sleep 60",
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,
@@ -307,16 +364,45 @@ class TestAsyncProcessManager:
         assert process.poll() is not None  # Terminated
         assert len(manager._processes) == 0
 
+    def test_async_process_manager_windows_kill_uses_bounded_wait(self, monkeypatch):
+        """Test that Windows cleanup does not wait indefinitely after kill."""
+        import openhands.sdk.hooks.executor as executor_module
+        from openhands.sdk.hooks.executor import AsyncProcessManager
+
+        process = mock.Mock()
+        process.pid = 123
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="cmd", timeout=1),
+            subprocess.TimeoutExpired(cmd="cmd", timeout=1),
+        ]
+
+        taskkill_calls: list[list[str]] = []
+
+        def fake_run(args, **kwargs):
+            taskkill_calls.append(args)
+            return mock.Mock()
+
+        monkeypatch.setattr(executor_module.os, "name", "nt", raising=False)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        manager = AsyncProcessManager()
+        manager._terminate_process(process)
+
+        assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", "123"]]
+        assert process.wait.call_args_list == [
+            mock.call(timeout=1),
+            mock.call(timeout=1),
+        ]
+        process.kill.assert_called_once_with()
+
     def test_cleanup_expired_keeps_active_processes(self, tmp_path):
         """Test that cleanup_expired keeps processes within their timeout."""
-        import subprocess
-
         from openhands.sdk.hooks.executor import AsyncProcessManager
 
         manager = AsyncProcessManager()
 
         process = subprocess.Popen(
-            "sleep 60",
+            python_command("import time; time.sleep(60)"),
             shell=True,
             cwd=str(tmp_path),
             stdin=subprocess.PIPE,

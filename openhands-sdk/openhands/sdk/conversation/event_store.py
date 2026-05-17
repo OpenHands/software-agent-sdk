@@ -1,6 +1,7 @@
 # state.py
 import operator
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, nullcontext
 from typing import SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -12,6 +13,7 @@ from openhands.sdk.conversation.persistence_const import (
 from openhands.sdk.event import Event, EventID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import posix_path_name
 
 
 logger = get_logger(__name__)
@@ -37,6 +39,7 @@ class EventLog(EventsListBase):
     _dir: str
     _length: int
     _lock_path: str
+    _write_guard: Callable[[], AbstractContextManager[None]] | None
 
     def __init__(self, fs: FileStore, dir_path: str = EVENTS_DIR) -> None:
         self._fs = fs
@@ -44,7 +47,14 @@ class EventLog(EventsListBase):
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
+        self._write_guard = None
         self._length = self._scan_and_build_index()
+
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
 
     def get_index(self, event_id: EventID) -> int:
         """Return the integer index for a given event_id."""
@@ -79,9 +89,19 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
-        txt = self._fs.read(self._path(i))
+        try:
+            path = self._path(i)
+        except KeyError:
+            # In-memory index is stale (e.g., external file modifications
+            # or concurrent writes).  Rebuild from disk and retry once.
+            logger.warning("Stale EventLog index at %d; rebuilding from disk.", i)
+            self._length = self._scan_and_build_index()
+            if i >= self._length:
+                raise IndexError("Event index out of range")
+            path = self._path(i)
+        txt = self._fs.read(path)
         if not txt:
-            raise FileNotFoundError(f"Missing event file: {self._path(i)}")
+            raise FileNotFoundError(f"Missing event file: {path}")
         return Event.model_validate_json(txt)
 
     def __iter__(self) -> Iterator[Event]:
@@ -119,8 +139,13 @@ class EventLog(EventsListBase):
                         f"{existing_idx}"
                     )
 
-                target_path = self._path(self._length, event_id=evt_id)
-                self._fs.write(target_path, event.model_dump_json(exclude_none=True))
+                payload = event.model_dump_json(exclude_none=True)
+                write_guard = (
+                    nullcontext() if self._write_guard is None else self._write_guard()
+                )
+                with write_guard:
+                    target_path = self._path(self._length, event_id=evt_id)
+                    self._fs.write(target_path, payload)
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
                 self._length += 1
@@ -144,7 +169,7 @@ class EventLog(EventsListBase):
         return sum(
             1
             for p in paths
-            if p.rsplit("/", 1)[-1].startswith("event-") and p.endswith(".json")
+            if posix_path_name(p).startswith("event-") and p.endswith(".json")
         )
 
     def _sync_from_disk(self, disk_length: int) -> None:
@@ -188,7 +213,7 @@ class EventLog(EventsListBase):
 
         by_idx: dict[int, EventID] = {}
         for p in paths:
-            name = p.rsplit("/", 1)[-1]
+            name = posix_path_name(p)
             m = EVENT_NAME_RE.match(name)
             if m:
                 idx = int(m.group("idx"))

@@ -26,7 +26,10 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
+    EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks",
+    EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
     EXAMPLES_ROOT / "01_standalone_sdk" / "43_mixed_marketplace_skills",
+    EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
 )
@@ -37,7 +40,7 @@ _LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
         "LLM_MODEL": "openhands/gpt-5.1",
     },
     "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
-        "LLM_MODEL": "openhands/gemini-3-pro-preview",
+        "LLM_MODEL": "openhands/gemini-3.1-pro-preview",
     },
 }
 
@@ -86,6 +89,16 @@ def _normalize_path(path: Path) -> str:
 EXAMPLES = tuple(_iter_examples())
 
 
+def test_directory_example_is_discovered() -> None:
+    assert (EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks" / "main.py") in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool" / "main.py"
+    ) in EXAMPLES
+
+
 @pytest.mark.parametrize("example_path", EXAMPLES, ids=_normalize_path)
 def test_example_scripts(
     example_path: Path,
@@ -104,6 +117,8 @@ def test_example_scripts(
     start = time.perf_counter()
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Windows pipes default to the active code page; examples may print model text.
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     # Apply model overrides for certain examples requiring provider-specific models
     overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
     if overrides:
@@ -116,6 +131,8 @@ def test_example_scripts(
             cwd=str(REPO_ROOT),
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
             timeout=EXAMPLE_TIMEOUT_SECONDS,

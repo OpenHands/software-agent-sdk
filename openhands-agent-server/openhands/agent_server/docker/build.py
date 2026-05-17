@@ -4,7 +4,7 @@ Single-entry build helper for agent-server images.
 
 - Targets: binary | binary-minimal | source | source-minimal
 - Multi-tagging via CUSTOM_TAGS (comma-separated)
-- Versioned tags for custom tags: {SDK_VERSION}-{CUSTOM_TAG}
+- Git tag- and semver-derived tags for custom tags
 - Branch-scoped cache keys
 - CI (push) vs local (load) behavior
 - sdist-based builds: Uses `uv build` to create clean build contexts
@@ -23,6 +23,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import tomllib
 from contextlib import chdir
 from pathlib import Path
@@ -35,7 +36,23 @@ from openhands.sdk.workspace import PlatformType, TargetType
 
 logger = get_logger(__name__)
 
-VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
+VALID_TARGETS = {
+    "binary",
+    "binary-minimal",
+    "source",
+    "source-minimal",
+    "base-image-minimal",
+    "base-image",
+    "builder",
+}
+_BUILDKIT_STEP_RE = re.compile(r"^#(?P<step>\d+)\s+(?P<message>.+)$")
+_BUILDKIT_DONE_RE = re.compile(r"^DONE\s+(?P<seconds>\d+(?:\.\d+)?)s$")
+_BUILDKIT_INLINE_DONE_RE = re.compile(
+    r"^(?P<description>.+?)\s+(?P<seconds>\d+(?:\.\d+)?)s done$"
+)
+_SEMVER_RELEASE_RE = re.compile(
+    r"^(?P<prefix>v)?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
 
 
 # --- helpers ---
@@ -204,6 +221,32 @@ def _sanitize_branch(ref: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
+def _sanitize_ref_tag(ref_name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", ref_name.strip())
+    sanitized = sanitized.strip(".-")
+    return sanitized or "unknown"
+
+
+def _release_tag_aliases(version: str) -> list[str]:
+    version = version.strip()
+    if not version:
+        return []
+
+    match = _SEMVER_RELEASE_RE.fullmatch(version)
+    if not match:
+        return [_sanitize_ref_tag(version)]
+
+    prefix = match.group("prefix") or ""
+    major = match.group("major")
+    minor = match.group("minor")
+    patch = match.group("patch")
+    return [
+        f"{prefix}{major}",
+        f"{prefix}{major}.{minor}",
+        f"{prefix}{major}.{minor}.{patch}",
+    ]
+
+
 def _truncate_ident(repo: str, tag: str, budget: int) -> str:
     """
     Truncate repo+tag to fit budget, prioritizing tag preservation.
@@ -309,7 +352,7 @@ def _git_info() -> tuple[str, str]:
 def _package_version() -> str:
     """
     Get the semantic version from the openhands-sdk package.
-    This is used for versioned tags during releases.
+    This is used as a fallback when git-tag-derived release tags are unavailable.
     """
     try:
         from importlib.metadata import version
@@ -335,7 +378,7 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 class BuildOptions(BaseModel):
     # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
     # with Python 3.13. See issue #1886 for details.
-    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
+    base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22-slim")
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
@@ -359,8 +402,9 @@ class BuildOptions(BaseModel):
     include_versioned_tag: bool = Field(
         default=False,
         description=(
-            "Whether to include the versioned tag (e.g., v1.0.0_...) in all_tags "
-            "output. Should only be True for release builds."
+            "Whether to include git tag-derived release tags (including semver "
+            "aliases like v1 and v1.2) in all_tags output. Should only be True "
+            "for release builds."
         ),
     )
     git_sha: str = Field(
@@ -371,6 +415,14 @@ class BuildOptions(BaseModel):
     sdk_project_root: Path = Field(
         default_factory=_default_sdk_project_root,
         description="Path to OpenHands SDK root. Auto if None.",
+    )
+    prebuilt_sdist: Path | None = Field(
+        default=None,
+        description=(
+            "Path to a pre-built SDK sdist tarball to reuse when creating the "
+            "clean Docker build context. If unset, the SDK will run "
+            "`uv build --sdist` itself."
+        ),
     )
     sdk_version: str = Field(
         default=_DEFAULT_PACKAGE_VERSION,
@@ -385,6 +437,10 @@ class BuildOptions(BaseModel):
     @property
     def short_sha(self) -> str:
         return self.git_sha[:7] if self.git_sha != "unknown" else "unknown"
+
+    @property
+    def long_sha(self) -> str:
+        return self.git_sha if self.git_sha != "unknown" else "unknown"
 
     @field_validator("target")
     @classmethod
@@ -402,12 +458,45 @@ class BuildOptions(BaseModel):
         return _base_slug(self.base_image)
 
     @property
+    def branch_tag(self) -> str | None:
+        if not self.git_ref or self.git_ref == "unknown":
+            return None
+        if self.git_ref.startswith("refs/tags/"):
+            return None
+        branch_ref = self.git_ref
+        if branch_ref.startswith("refs/heads/"):
+            branch_ref = branch_ref.removeprefix("refs/heads/")
+        elif branch_ref.startswith("refs/"):
+            return None
+        return _sanitize_branch(branch_ref)
+
+    @property
+    def release_tag_source(self) -> str | None:
+        if self.git_ref.startswith("refs/tags/"):
+            tag = self.git_ref.removeprefix("refs/tags/")
+            # For semver release tags (v1.2.3), use the SDK package version
+            # which follows PEP 440 (bare semver, no "v" prefix).
+            if _SEMVER_RELEASE_RE.fullmatch(tag):
+                if self.sdk_version != "unknown":
+                    return self.sdk_version
+                # Defensive: strip "v" if sdk_version is unavailable.
+                return tag.removeprefix("v")
+            # Non-semver tags (e.g. build-docker) are used as-is.
+            return tag
+        if self.sdk_version and self.sdk_version != "unknown":
+            return self.sdk_version
+        return None
+
+    @property
     def versioned_tags(self) -> list[str]:
-        """
-        Generate simple version tags for each custom tag variant.
-        Returns tags like: 1.2.0-python, 1.2.0-java, 1.2.0-golang
-        """
-        return [f"{self.sdk_version}-{t}" for t in self.custom_tag_list]
+        """Generate git tag-derived tags for each custom tag variant."""
+        if not self.release_tag_source:
+            return []
+        return [
+            f"{release_tag}-{custom_tag}"
+            for custom_tag in self.custom_tag_list
+            for release_tag in _release_tag_aliases(self.release_tag_source)
+        ]
 
     @property
     def base_tag(self) -> str:
@@ -428,13 +517,15 @@ class BuildOptions(BaseModel):
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
-        # Use git commit SHA for commit-based tags
-        for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
-
-        if self.git_ref in ("main", "refs/heads/main"):
-            for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+        for custom_tag in self.custom_tag_list:
+            tags.extend(
+                [
+                    f"{self.image}:{self.short_sha}-{custom_tag}{arch_suffix}",
+                    f"{self.image}:{self.long_sha}-{custom_tag}{arch_suffix}",
+                ]
+            )
+            if self.branch_tag:
+                tags.append(f"{self.image}:{self.branch_tag}-{custom_tag}{arch_suffix}")
 
         if self.include_base_tag:
             tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
@@ -445,7 +536,39 @@ class BuildOptions(BaseModel):
         # Append target suffix for clarity (binary is default, no suffix needed)
         if self.target != "binary":
             tags = [f"{t}-{self.target}" for t in tags]
-        return tags
+        return list(dict.fromkeys(tags))
+
+
+class BuildTelemetry(BaseModel):
+    build_context_seconds: float = 0.0
+    buildx_wall_clock_seconds: float = 0.0
+    cleanup_seconds: float = 0.0
+    cache_import_seconds: float = 0.0
+    cache_import_miss_count: int = 0
+    cache_export_seconds: float = 0.0
+    image_export_seconds: float = 0.0
+    push_layers_seconds: float = 0.0
+    export_manifest_seconds: float = 0.0
+    cached_step_count: int = 0
+
+
+class BuildResult(BaseModel):
+    tags: list[str]
+    telemetry: BuildTelemetry = Field(default_factory=BuildTelemetry)
+
+
+class BuildCommandError(subprocess.CalledProcessError):
+    def __init__(
+        self,
+        returncode: int,
+        cmd: list[str],
+        *,
+        output: str,
+        stderr: str,
+        telemetry: BuildTelemetry,
+    ) -> None:
+        super().__init__(returncode, cmd, output=output, stderr=stderr)
+        self.telemetry = telemetry
 
 
 # --- build helpers ---
@@ -465,26 +588,37 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
         tar.extractall(path=".", filter="data")
 
 
-def _make_build_context(sdk_project_root: Path) -> Path:
+def _make_build_context(
+    sdk_project_root: Path,
+    prebuilt_sdist: Path | None = None,
+) -> Path:
     dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
-    sdist_dir = Path(tempfile.mkdtemp(prefix="agent-sdist-", dir=None)).resolve()
+    sdist_dir: Path | None = None
     try:
-        # sdists = _build_sdists(sdk_project_root, sdist_dir)
-        _run(
-            ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
-            cwd=str(sdk_project_root.resolve()),
-        )
-        sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
-        logger.info(
-            f"[build] Built {len(sdists)} sdists for "
-            f"clean context: {', '.join(str(s) for s in sdists)}"
-        )
-        assert len(sdists) == 1, "Expected exactly one sdist"
-        logger.debug(
-            f"[build] Extracting sdist {sdists[0]} to clean context {tmp_root}"
-        )
-        _extract_tarball(sdists[0], tmp_root)
+        if prebuilt_sdist is None:
+            sdist_dir = Path(
+                tempfile.mkdtemp(prefix="agent-sdist-", dir=None)
+            ).resolve()
+            _run(
+                ["uv", "build", "--sdist", "--out-dir", str(sdist_dir.resolve())],
+                cwd=str(sdk_project_root.resolve()),
+            )
+            sdists = sorted(sdist_dir.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
+            logger.info(
+                f"[build] Built {len(sdists)} sdists for "
+                f"clean context: {', '.join(str(s) for s in sdists)}"
+            )
+            assert len(sdists) == 1, "Expected exactly one sdist"
+            sdist = sdists[0]
+        else:
+            sdist = Path(prebuilt_sdist).expanduser().resolve()
+            if not sdist.is_file():
+                raise FileNotFoundError(f"Pre-built sdist not found at {sdist}")
+            logger.info(f"[build] Reusing pre-built sdist for clean context: {sdist}")
+
+        logger.debug(f"[build] Extracting sdist {sdist} to clean context {tmp_root}")
+        _extract_tarball(sdist, tmp_root)
 
         # assert only one folder created
         entries = list(tmp_root.iterdir())
@@ -500,7 +634,8 @@ def _make_build_context(sdk_project_root: Path) -> Path:
         shutil.rmtree(tmp_root, ignore_errors=True)
         raise
     finally:
-        shutil.rmtree(sdist_dir, ignore_errors=True)
+        if sdist_dir is not None:
+            shutil.rmtree(sdist_dir, ignore_errors=True)
 
 
 def _active_buildx_driver() -> str | None:
@@ -538,11 +673,130 @@ def _get_dockerfile_path(sdk_project_root: Path) -> Path:
     return dockerfile_path
 
 
+def _round_seconds(value: float) -> float:
+    return round(value, 3)
+
+
+def _classify_buildkit_description(description: str) -> str | None:
+    normalized = description.strip().lower()
+    if normalized.startswith("importing cache manifest from "):
+        return "cache_import"
+    if normalized.startswith("exporting cache to "):
+        return "cache_export"
+    if normalized == "exporting to image":
+        return "image_export"
+    if normalized == "pushing layers":
+        return "push_layers"
+    if normalized.startswith("exporting manifest"):
+        return "export_manifest"
+    if normalized.startswith("exporting manifest list"):
+        return "export_manifest"
+    if normalized.startswith("exporting config"):
+        return "export_manifest"
+    return None
+
+
+def _add_buildkit_duration(
+    telemetry: BuildTelemetry, description: str, duration_seconds: float
+) -> None:
+    phase = _classify_buildkit_description(description)
+    if phase == "cache_import":
+        telemetry.cache_import_seconds += duration_seconds
+    elif phase == "cache_export":
+        telemetry.cache_export_seconds += duration_seconds
+    elif phase == "image_export":
+        telemetry.image_export_seconds += duration_seconds
+    elif phase == "push_layers":
+        telemetry.push_layers_seconds += duration_seconds
+    elif phase == "export_manifest":
+        telemetry.export_manifest_seconds += duration_seconds
+
+
+def _parse_buildkit_telemetry(stderr: str) -> BuildTelemetry:
+    telemetry = BuildTelemetry()
+    step_descriptions: dict[str, str] = {}
+
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        match = _BUILDKIT_STEP_RE.match(line)
+        if not match:
+            continue
+
+        step = match.group("step")
+        message = match.group("message").strip()
+
+        if message == "CACHED":
+            telemetry.cached_step_count += 1
+            continue
+
+        if message.startswith("ERROR:"):
+            description = step_descriptions.get(step, "")
+            if (
+                _classify_buildkit_description(description) == "cache_import"
+                and "not found" in message.lower()
+            ):
+                telemetry.cache_import_miss_count += 1
+            continue
+
+        if " ERROR:" in message:
+            description = message.split(" ERROR:", 1)[0].strip()
+            if (
+                _classify_buildkit_description(description) == "cache_import"
+                and "not found" in message.lower()
+            ):
+                telemetry.cache_import_miss_count += 1
+            step_descriptions[step] = description
+            continue
+
+        done_match = _BUILDKIT_DONE_RE.match(message)
+        if done_match:
+            description = step_descriptions.get(step)
+            if description:
+                _add_buildkit_duration(
+                    telemetry, description, float(done_match.group("seconds"))
+                )
+            continue
+
+        inline_done_match = _BUILDKIT_INLINE_DONE_RE.match(message)
+        if inline_done_match:
+            _add_buildkit_duration(
+                telemetry,
+                inline_done_match.group("description"),
+                float(inline_done_match.group("seconds")),
+            )
+            continue
+
+        # Only update step description if there isn't already a classified one.
+        # This prevents sub-operations (like "preparing build cache for export")
+        # from overwriting the main operation (like "exporting cache to registry").
+        new_desc = message.removesuffix(" ...").strip()
+        existing_desc = step_descriptions.get(step)
+        if (
+            existing_desc is None
+            or _classify_buildkit_description(existing_desc) is None
+        ):
+            step_descriptions[step] = new_desc
+
+    telemetry.build_context_seconds = _round_seconds(telemetry.build_context_seconds)
+    telemetry.buildx_wall_clock_seconds = _round_seconds(
+        telemetry.buildx_wall_clock_seconds
+    )
+    telemetry.cleanup_seconds = _round_seconds(telemetry.cleanup_seconds)
+    telemetry.cache_import_seconds = _round_seconds(telemetry.cache_import_seconds)
+    telemetry.cache_export_seconds = _round_seconds(telemetry.cache_export_seconds)
+    telemetry.image_export_seconds = _round_seconds(telemetry.image_export_seconds)
+    telemetry.push_layers_seconds = _round_seconds(telemetry.push_layers_seconds)
+    telemetry.export_manifest_seconds = _round_seconds(
+        telemetry.export_manifest_seconds
+    )
+    return telemetry
+
+
 # --- single entry point ---
 
 
-def build(opts: BuildOptions) -> list[str]:
-    """Single entry point for building the agent-server image."""
+def build_with_telemetry(opts: BuildOptions) -> BuildResult:
+    """Build the agent-server image and return tags plus phase telemetry."""
     dockerfile_path = _get_dockerfile_path(opts.sdk_project_root)
     push = opts.push
     if push is None:
@@ -551,8 +805,20 @@ def build(opts: BuildOptions) -> list[str]:
     tags = opts.all_tags
     cache_tag, cache_tag_base = opts.cache_tags
 
-    ctx = _make_build_context(opts.sdk_project_root)
-    logger.info(f"[build] Clean build context: {ctx}")
+    telemetry = BuildTelemetry()
+    build_context_started = time.monotonic()
+    # Base-image targets don't need SDK source (no COPY from build context),
+    # so use an empty temp dir instead of running the expensive uv build --sdist.
+    is_base_only = opts.target in ("base-image-minimal", "base-image")
+    if is_base_only:
+        ctx = Path(tempfile.mkdtemp(prefix="agent-base-ctx-"))
+        shutil.copy2(dockerfile_path, ctx / "Dockerfile")
+    else:
+        ctx = _make_build_context(opts.sdk_project_root, opts.prebuilt_sdist)
+    telemetry.build_context_seconds = _round_seconds(
+        time.monotonic() - build_context_started
+    )
+    logger.info(f"[build] {'Empty' if is_base_only else 'Clean'} build context: {ctx}")
 
     args = [
         "docker",
@@ -582,17 +848,36 @@ def build(opts: BuildOptions) -> list[str]:
     local_cache_dir = _default_local_cache_dir()
     cache_args: list[str] = []
 
+    # Cache export mode: "max" (default), "min", or "off"
+    # Default to "max" to preserve existing behavior; set to "off" in batch builds
+    # to avoid contention when building many images in parallel
+    cache_export_mode = os.environ.get("OPENHANDS_BUILDKIT_CACHE_MODE", "max").lower()
+    if cache_export_mode not in ("off", "max", "min"):
+        logger.warning(
+            f"[build] Invalid OPENHANDS_BUILDKIT_CACHE_MODE='{cache_export_mode}', "
+            "defaulting to 'max'"
+        )
+        cache_export_mode = "max"
+
     if push:
-        # Remote/CI builds: use registry cache + inline for maximum reuse.
+        # Remote/CI builds: always read from registry cache
         cache_args += [
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag}",
             "--cache-from",
             f"type=registry,ref={opts.image}:{cache_tag_base}-main",
-            "--cache-to",
-            f"type=registry,ref={opts.image}:{cache_tag},mode=max",
         ]
-        logger.info("[build] Cache: registry (remote/CI) + inline")
+        # Only export cache if explicitly enabled (avoids contention in batch builds)
+        if cache_export_mode in ("max", "min"):
+            cache_args += [
+                "--cache-to",
+                f"type=registry,ref={opts.image}:{cache_tag},mode={cache_export_mode}",
+            ]
+            logger.info(
+                f"[build] Cache: registry read + export mode={cache_export_mode}"
+            )
+        else:
+            logger.info("[build] Cache: registry read only (export disabled)")
     else:
         # Local/dev builds: prefer local dir cache if
         # driver supports it; otherwise inline-only.
@@ -634,23 +919,52 @@ def build(opts: BuildOptions) -> list[str]:
     )
     logger.info(f"[build] Cache tag: {cache_tag}")
 
+    buildx_started = time.monotonic()
     try:
         res = _run(args, cwd=str(ctx))
+        telemetry.buildx_wall_clock_seconds = _round_seconds(
+            time.monotonic() - buildx_started
+        )
+        parsed = _parse_buildkit_telemetry(res.stderr)
+        parsed.build_context_seconds = telemetry.build_context_seconds
+        parsed.buildx_wall_clock_seconds = telemetry.buildx_wall_clock_seconds
+        telemetry = parsed
         sys.stdout.write(res.stdout or "")
     except subprocess.CalledProcessError as e:
+        telemetry.buildx_wall_clock_seconds = _round_seconds(
+            time.monotonic() - buildx_started
+        )
+        parsed = _parse_buildkit_telemetry(e.stderr or "")
+        parsed.build_context_seconds = telemetry.build_context_seconds
+        parsed.buildx_wall_clock_seconds = telemetry.buildx_wall_clock_seconds
+        telemetry = parsed
         logger.error(f"[build] ERROR: Build failed with exit code {e.returncode}")
         logger.error(f"[build] Command: {' '.join(e.cmd)}")
         logger.error(f"[build] Full stdout:\n{e.output}")
         logger.error(f"[build] Full stderr:\n{e.stderr}")
-        raise
+        raise BuildCommandError(
+            e.returncode,
+            e.cmd,
+            output=e.output or "",
+            stderr=e.stderr or "",
+            telemetry=telemetry,
+        ) from e
     finally:
+        cleanup_started = time.monotonic()
         logger.info(f"[build] Cleaning {ctx}")
         shutil.rmtree(ctx, ignore_errors=True)
+        telemetry.cleanup_seconds = _round_seconds(time.monotonic() - cleanup_started)
 
     logger.info("[build] Done. Tags:")
     for t in tags:
         logger.info(f" - {t}")
-    return tags
+    logger.info("[build] Telemetry: %s", telemetry.model_dump_json())
+    return BuildResult(tags=tags, telemetry=telemetry)
+
+
+def build(opts: BuildOptions) -> list[str]:
+    """Single entry point for building the agent-server image."""
+    return build_with_telemetry(opts).tags
 
 
 # --- CLI shim ---
@@ -670,7 +984,7 @@ def main(argv: list[str]) -> int:
         "--base-image",
         # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
         # with Python 3.13. See issue #1886.
-        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22"),
+        default=_env("BASE_IMAGE", "nikolaik/python-nodejs:python3.12-nodejs22-slim"),
         help="Base image to use (default from $BASE_IMAGE).",
     )
     parser.add_argument(
@@ -719,6 +1033,12 @@ def main(argv: list[str]) -> int:
         help="Path to OpenHands SDK root (default: auto-detect).",
     )
     parser.add_argument(
+        "--prebuilt-sdist",
+        type=Path,
+        default=None,
+        help="Path to a pre-built SDK sdist tarball to reuse for the build context.",
+    )
+    parser.add_argument(
         "--build-ctx-only",
         action="store_true",
         help="Only create the clean build context directory and print its path.",
@@ -727,8 +1047,8 @@ def main(argv: list[str]) -> int:
         "--versioned-tag",
         action="store_true",
         help=(
-            "Include versioned tag (e.g., v1.0.0_...) in output. "
-            "Should only be used for release builds."
+            "Include git tag-derived release tags (including semver aliases such "
+            "as v1 and v1.2) in output. Should only be used for release builds."
         ),
     )
 
@@ -745,7 +1065,7 @@ def main(argv: list[str]) -> int:
 
     # ---- build-ctx-only path ----
     if args.build_ctx_only:
-        ctx = _make_build_context(sdk_project_root)
+        ctx = _make_build_context(sdk_project_root, args.prebuilt_sdist)
         logger.info(f"[build] Clean build context (kept for debugging): {ctx}")
 
         # Create BuildOptions to generate tags
@@ -757,6 +1077,7 @@ def main(argv: list[str]) -> int:
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
             sdk_project_root=sdk_project_root,
+            prebuilt_sdist=args.prebuilt_sdist,
             arch=args.arch or None,
             include_versioned_tag=args.versioned_tag,
         )
@@ -804,6 +1125,7 @@ def main(argv: list[str]) -> int:
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
         sdk_project_root=sdk_project_root,
+        prebuilt_sdist=args.prebuilt_sdist,
         arch=args.arch or None,
         include_versioned_tag=args.versioned_tag,
     )

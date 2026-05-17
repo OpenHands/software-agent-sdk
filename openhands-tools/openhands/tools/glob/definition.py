@@ -8,6 +8,7 @@ from pydantic import Field
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -63,6 +64,22 @@ Examples:
 
 class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
     """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:
+        """Declare resource usage based on the active backend.
+
+        With ripgrep, each call spawns an independent subprocess — safe for
+        lock-free parallel execution. The Python fallback uses process-global
+        os.chdir(), so concurrent calls must be serialized via the tool-wide mutex.
+        """
+        if not isinstance(action, GlobAction):
+            raise TypeError(f"Expected GlobAction, got {type(action).__name__}")
+        # Import here to avoid circular imports (definition ↔ impl)
+        from openhands.tools.glob.impl import GlobExecutor
+
+        if isinstance(self.executor, GlobExecutor) and self.executor.is_parallel_safe():
+            return DeclaredResources(keys=(), declared=True)
+        return DeclaredResources(keys=(), declared=False)
 
     @classmethod
     def create(

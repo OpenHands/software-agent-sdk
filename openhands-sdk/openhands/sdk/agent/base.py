@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import copy
+import json
 import os
 import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
+    SecretStr,
+    SerializationInfo,
+    ValidationInfo,
+    model_serializer,
+    model_validator,
 )
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -30,8 +37,9 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
-from openhands.sdk.utils.deprecation import deprecated
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.tool.builtins import InvokeSkillTool
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
 if TYPE_CHECKING:
@@ -42,6 +50,51 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
+    if not value.startswith(FERNET_TOKEN_PREFIX):
+        return value
+    decrypted = cipher.try_decrypt_str(value)
+    if decrypted is None:
+        logger.warning(
+            "MCP env/headers value looks encrypted but could not be decrypted "
+            "(cipher mismatch or corruption); leaving the ciphertext in place."
+        )
+        return value
+    return decrypted
+
+
+def _decrypt_mcp_secret_values(
+    config: dict[str, Any], cipher: Cipher
+) -> dict[str, Any]:
+    config = copy.deepcopy(config)
+    if "mcpServers" not in config:
+        return config
+    servers = config["mcpServers"]
+    if not isinstance(servers, dict):
+        raise ValueError("mcp_config.mcpServers must be a dictionary when provided")
+    for server_name, server in servers.items():
+        if not isinstance(server, dict):
+            raise ValueError(
+                f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
+            )
+        for key in ("env", "headers"):
+            if key not in server:
+                continue
+            mapping = server[key]
+            if not isinstance(mapping, dict):
+                raise ValueError(
+                    f"mcp_config.mcpServers[{server_name!r}].{key} must be "
+                    "a dictionary when provided"
+                )
+            server[key] = {
+                name: _decrypt_mcp_value_or_keep(cipher, value)
+                if isinstance(value, str)
+                else value
+                for name, value in mapping.items()
+            }
+    return config
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -136,6 +189,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
+    system_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Inline system prompt string.  When provided, the agent uses this "
+            "text verbatim as the system message instead of rendering from "
+            "`system_prompt_filename`.  Mutually exclusive with a non-default "
+            "`system_prompt_filename`.\n\n"
+            "**Warning**: This is not recommended unless you know what you are "
+            "doing (e.g. customising agent behaviour for a completely different "
+            "task).  Setting this will override OpenHands' built-in system "
+            "instructions that govern default agent behaviour."
+        ),
+    )
     system_prompt_filename: str = Field(
         default="system_prompt.j2",
         description=(
@@ -151,7 +217,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "Security policy template filename. Can be either:\n"
             "- A relative filename (e.g., 'security_policy.j2') loaded from the "
             "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- Empty string to disable security policy"
         ),
     )
     system_prompt_kwargs: dict[str, object] = Field(
@@ -159,6 +226,145 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_system_prompt_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if (
+            "security_policy_filename" in data
+            and data["security_policy_filename"] is None
+        ):
+            data["security_policy_filename"] = ""
+        has_inline = data.get("system_prompt") is not None
+        has_custom_filename = (
+            "system_prompt_filename" in data
+            and data["system_prompt_filename"] != "system_prompt.j2"
+        )
+        if has_inline and has_custom_filename:
+            raise ValueError(
+                "Cannot set both 'system_prompt' and a non-default "
+                "'system_prompt_filename'. Use one or the other."
+            )
+        return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _decrypt_mcp_config(cls, data: Any, info: ValidationInfo) -> Any:
+        """Decrypt encrypted_mcp_config if present and cipher is in context.
+
+        Handles backward compatibility:
+        - If encrypted_mcp_config exists and cipher is present: decrypt and
+          set mcp_config
+        - If mcp_config exists directly: use it as-is (plaintext or
+          expose_secrets case)
+        - If neither exists: default empty dict will be used
+        """
+        if not isinstance(data, dict):
+            return data
+        cipher: Cipher | None = info.context.get("cipher") if info.context else None
+        data = dict(data)
+        has_encrypted_mcp_config = "encrypted_mcp_config" in data
+        encrypted = data.pop("encrypted_mcp_config", None)
+        if not has_encrypted_mcp_config:
+            mcp_config = data.get("mcp_config")
+            if mcp_config is not None and not isinstance(mcp_config, dict):
+                raise ValueError("mcp_config must be a dictionary when provided")
+            if isinstance(mcp_config, dict) and cipher is not None:
+                data["mcp_config"] = _decrypt_mcp_secret_values(mcp_config, cipher)
+            return data
+
+        if not isinstance(encrypted, str):
+            raise ValueError("encrypted_mcp_config must be a string when provided")
+
+        # If no cipher in context, we can't decrypt - the encrypted value is lost
+        if cipher is None:
+            logger.warning(
+                "Found encrypted_mcp_config but no cipher in context - "
+                "MCP configuration will be lost. Provide a cipher to preserve it."
+            )
+            return data
+
+        decrypted = cipher.decrypt(encrypted)
+        if decrypted is None:
+            logger.warning(
+                "Failed to decrypt mcp_config (cipher mismatch or corruption) - "
+                "MCP configuration will be lost."
+            )
+            return data
+
+        try:
+            mcp_config = json.loads(decrypted.get_secret_value())
+        except json.JSONDecodeError as e:
+            raise ValueError("encrypted_mcp_config must decrypt to valid JSON") from e
+        if not isinstance(mcp_config, dict):
+            raise ValueError("encrypted_mcp_config must decrypt to a JSON object")
+        data["mcp_config"] = mcp_config
+
+        return data
+
+    @model_serializer(mode="wrap")
+    def _serialize_with_mcp_handling(self, handler, info: SerializationInfo):
+        """Serialize the agent, handling mcp_config encryption/redaction.
+
+        This serializer handles:
+        1. Polymorphic serialization for subclasses (e.g., ACPAgent)
+        2. mcp_config encryption when cipher is in context
+        3. mcp_config redaction (omission) when neither cipher nor expose_secrets
+
+        The mcp_config handling is done here (not in a field_serializer) to avoid
+        changing the field's schema type, which would break REST API compatibility.
+        """
+        if isinstance(self, dict):
+            # Sometimes pydantic passes a dict in here.
+            return self
+
+        # Check if handler is for the current (actual) class
+        # See get_handler_class_name() for details on the fragile string parsing
+        handler_class = get_handler_class_name(handler)
+
+        if handler_class != self.__class__.__name__:
+            # Handler is for a base class, delegate to model_dump for proper
+            # subclass serialization (e.g., ACPAgent fields)
+            result = self.model_dump(
+                mode=info.mode,
+                context=info.context,
+                by_alias=info.by_alias,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+                round_trip=info.round_trip,
+                serialize_as_any=info.serialize_as_any,
+            )
+        else:
+            result = handler(self)
+
+        # Handle mcp_config based on context:
+        # - Empty config: omit (nothing sensitive)
+        # - expose_secrets=True: keep as-is (explicitly requested)
+        # - cipher present: encrypt and store in encrypted_mcp_config, omit original
+        # - default: omit (redact sensitive data)
+        if not self.mcp_config:  # Only process non-empty configs
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("cipher"):
+            # Encrypt and add encrypted_mcp_config
+            cipher: Cipher = info.context["cipher"]
+            json_str = json.dumps(self.mcp_config)
+            encrypted = cipher.encrypt(SecretStr(json_str))
+            if encrypted:
+                result["encrypted_mcp_config"] = encrypted
+            # Remove plaintext mcp_config
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("expose_secrets"):
+            # Keep mcp_config as-is (already in result from handler)
+            return result
+        else:
+            # Default: redact by omitting
+            result.pop("mcp_config", None)
+            return result
 
     condenser: CondenserBase | None = Field(
         default=None,
@@ -187,6 +393,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[{"kind": "AgentFinishedCritic"}],
     )
 
+    tool_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of tool calls to execute concurrently within a single "
+            "agent step. Default is 1 (sequential). Values > 1 enable parallel "
+            "execution; concurrent tools share the conversation object, filesystem, "
+            "and working directory, so mutations to shared state may race."
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -213,10 +430,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
+        When ``system_prompt`` is set, that string is returned verbatim,
+        bypassing Jinja2 template rendering entirely.
+
         Returns:
             The rendered system prompt template without dynamic context.
         """
+        if self.system_prompt is not None:
+            return self.system_prompt
+
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Auto-detect browser tools from the tool spec list
+        template_kwargs.setdefault(
+            "enable_browser",
+            any(t.name == "browser_tool_set" for t in self.tools),
+        )
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
@@ -261,41 +489,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             llm_model_canonical=self.llm.model_canonical_name,
         )
 
-    @property
-    @deprecated(
-        deprecated_in="1.11.0",
-        removed_in="1.16.0",
-        details=(
-            "Use static_system_message for the cacheable system prompt and "
-            "dynamic_context for per-conversation content. Using system_message "
-            "DISABLES cross-conversation prompt caching because it combines static "
-            "and dynamic content into a single string."
-        ),
-    )
-    def system_message(self) -> str:
-        """Return the combined system message (static + dynamic).
-
-        .. deprecated:: 1.11.0
-            Use :attr:`static_system_message` for the cacheable system prompt and
-            :attr:`dynamic_context` for per-conversation content. This separation
-            enables cross-conversation prompt caching. Will be removed in 1.16.0.
-
-        .. warning::
-            Using this property DISABLES cross-conversation prompt caching because
-            it combines static and dynamic content into a single string. Use
-            :attr:`static_system_message` and :attr:`dynamic_context` separately
-            to enable caching.
-        """
-        logger.warning(
-            "Accessing system_message property disables cross-conversation prompt "
-            "caching. Use static_system_message and dynamic_context separately."
-        )
-        system_message = self.static_system_message
-        dynamic = self.dynamic_context
-        if dynamic:
-            system_message += "\n\n" + dynamic
-        return system_message
-
     def init_state(
         self,
         state: ConversationState,
@@ -338,20 +531,35 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 result = future.result()
                 tools.extend(result)
 
-        logger.info(
-            f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
-        )
+        logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            logger.info(
-                f"Filtered to {len(tools)} tools after applying regex filter: "
-                f"{[tool.name for tool in tools]}",
-            )
+            logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
-        for tool_name in self.include_default_tools:
+        # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
+        # directly invocable and the user hasn't already opted in explicitly.
+        has_invocable_agentskills = bool(
+            self.agent_context
+            and any(
+                s.is_agentskills_format and not s.disable_model_invocation
+                for s in self.agent_context.skills
+            )
+        )
+        default_tool_names = list(self.include_default_tools)
+        if (
+            has_invocable_agentskills
+            and InvokeSkillTool.__name__ not in default_tool_names
+        ):
+            default_tool_names.append(InvokeSkillTool.__name__)
+            logger.debug(
+                "Auto-attached %s (invocable AgentSkills-format skill present)",
+                InvokeSkillTool.__name__,
+            )
+
+        for tool_name in default_tool_names:
             tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
             if tool_class is None:
                 raise ValueError(
@@ -415,11 +623,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools must match exactly (same tool names).
+        - Tools may only be added, never removed.
 
-        Tools are part of the system prompt and cannot be changed mid-conversation.
-        To use different tools, start a new conversation or use conversation forking
-        (see https://github.com/OpenHands/OpenHands/issues/8560).
+        Removing tools breaks backward compatibility because the LLM may have
+        already been told about them.  Adding new tools is safe — the LLM
+        simply gains new capabilities on the next turn.
 
         All other configuration (LLM, agent_context, condenser, etc.) can be
         freely changed between sessions.
@@ -457,24 +665,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if tool_class is not None:
                 persisted_names.add(tool_class.name)
 
-        if runtime_names == persisted_names:
-            return self
-
-        # Tools don't match - this is not allowed
+        # Removing tools breaks backward compatibility because the LLM may
+        # have already been told about them.  Adding new tools is safe — the
+        # LLM simply gains new capabilities on the next turn.
         missing_in_runtime = persisted_names - runtime_names
-        added_in_runtime = runtime_names - persisted_names
-
-        details: list[str] = []
         if missing_in_runtime:
-            details.append(f"removed: {sorted(missing_in_runtime)}")
-        if added_in_runtime:
-            details.append(f"added: {sorted(added_in_runtime)}")
+            raise ValueError(
+                f"Cannot resume conversation: tools were removed mid-conversation "
+                f"(removed: {sorted(missing_in_runtime)}). "
+                f"To use different tools, start a new conversation."
+            )
 
-        raise ValueError(
-            f"Cannot resume conversation: tools cannot be changed mid-conversation "
-            f"({'; '.join(details)}). "
-            f"To use different tools, start a new conversation."
-        )
+        return self
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
@@ -566,6 +768,43 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools
 
+    # -- Capability helpers -----------------------------------------------
+    # Downstream code should branch on these properties rather than doing
+    # ``isinstance(agent, ACPAgent)`` checks.  That keeps the regular/ACP
+    # code paths decoupled from the concrete class hierarchy.
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``True`` if OpenHands can inject tools into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own toolset.
+        """
+        return True
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``True`` if OpenHands can inject MCP servers into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — MCP
+        configuration is owned by the ACP subprocess.
+        """
+        return True
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``True`` if OpenHands context condensing is supported for this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own context window.
+        """
+        return True
+
+    @property
+    def agent_kind(self) -> Literal["openhands", "acp"]:
+        """Agent kind, matching the ``agent_kind`` settings discriminator."""
+        return "openhands"
+
     def ask_agent(self, question: str) -> str | None:  # noqa: ARG002
         """Optional override for stateless question answering.
 
@@ -576,3 +815,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             Response string, or ``None`` to use the default LLM-based approach.
         """
         return None
+
+    def close(self) -> None:
+        """Clean up agent resources.
+
+        No-op by default; ACPAgent overrides to terminate subprocess.
+        """
+        pass

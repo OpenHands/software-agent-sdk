@@ -1,5 +1,6 @@
 """Tests for agent integration with secrets manager."""
 
+import sys
 from typing import cast
 from unittest.mock import patch
 
@@ -16,6 +17,12 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
 from openhands.tools.terminal.impl import TerminalExecutor
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="TerminalTool V1 backend is not supported on Windows.",
+)
 
 
 # -----------------------

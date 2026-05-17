@@ -1,0 +1,374 @@
+"""Extraction and normalization for action-boundary security analysis.
+
+Before an agent action can be classified as safe or dangerous, two
+things need to happen: the right content must be extracted from the
+ActionEvent (extraction), and encoding tricks that hide dangerous
+commands must be neutralized (normalization).
+
+Extraction controls the attack surface. Fields not extracted are
+invisible to every downstream layer. Two corpora are maintained:
+the *executable corpus* (what the agent will do) and the *text corpus*
+(what it thought about). Shell-destructive patterns only see the
+first; injection patterns see both.
+
+Normalization collapses invisible characters, control codes, and
+fullwidth substitutions so that ``r\\u200bm`` matches ``rm`` and
+``\\uff52\\uff4d`` matches ``rm`` before any pattern is tested.
+
+These are internal helpers (underscore-prefixed, not re-exported).
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import unicodedata
+from typing import Any
+
+from openhands.sdk.event import ActionEvent
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Maximum characters extracted from an ActionEvent before normalization and
+# pattern matching. Bounds regex runtime and memory, but content beyond this
+# limit is invisible to the analyzer.
+_EXTRACT_HARD_CAP = 30_000
+
+
+# ---------------------------------------------------------------------------
+# Extraction: whitelisted fields only
+# ---------------------------------------------------------------------------
+
+
+class _BoundedSegments:
+    """Append-only segment buffer with a joined-length cap.
+
+    Tracks the length of the eventual ``" ".join(segments)`` string and
+    silently drops or truncates appends that would exceed ``cap``. Each
+    ``add()`` call charges one char for the space separator that will
+    precede the segment in the joined output (except the first), so
+    ``len(" ".join(self.segments)) <= cap`` holds even when many short
+    segments are produced (a JSON object with single-char leaves would
+    otherwise inflate the joined length via separators).
+    """
+
+    def __init__(self, cap: int) -> None:
+        self.cap = cap
+        self.segments: list[str] = []
+        self._total = 0
+
+    def add(self, text: str) -> None:
+        """Append text, truncating to remaining budget; skip if full."""
+        separator_len = 1 if self.segments else 0
+        remaining = self.cap - self._total - separator_len
+        if remaining <= 0:
+            return
+        if len(text) > remaining:
+            text = text[:remaining]
+        self.segments.append(text)
+        self._total += len(text) + separator_len
+
+
+def _walk_json_strings(obj: Any) -> list[str]:
+    """Recursively collect leaf strings from a parsed JSON structure.
+
+    Walking to leaves and returning each as a separate segment preserves
+    field boundaries for segment-aware rail evaluation.
+
+    RecursionError is NOT caught here -- it propagates to
+    _extract_exec_segments() which falls back to scanning the raw
+    arguments string. Returning [] would silently drop all leaves,
+    creating a false-negative path for deeply nested payloads.
+    """
+    if isinstance(obj, str):
+        return [obj]
+    if isinstance(obj, dict):
+        parts: list[str] = []
+        for v in obj.values():
+            parts.extend(_walk_json_strings(v))
+        return parts
+    if isinstance(obj, list):
+        parts = []
+        for item in obj:
+            parts.extend(_walk_json_strings(item))
+        return parts
+    return []
+
+
+def _extract_exec_segments(action: ActionEvent) -> list[str]:
+    """Extract segments from fields that describe what the agent will *do*.
+
+    Only executable fields: tool_call.arguments (JSON leaf strings), tool_name,
+    tool_call.name. Shell/permission/exec patterns and policy rails scan this
+    corpus exclusively.
+
+    Arguments is extracted first because it is the primary attack surface for
+    indirect prompt injection payloads. Putting it ahead of tool_name and
+    tool_call.name guarantees arguments always receives scanning budget even
+    when an earlier field is adversarially large. tool_name has no length
+    validation anywhere in the SDK; a 30K hallucinated name would otherwise
+    consume the full budget and hide the arguments payload.
+    """
+    buf = _BoundedSegments(_EXTRACT_HARD_CAP)
+
+    # Arguments first: primary attack surface for prompt-injection payloads.
+    if action.tool_call and action.tool_call.arguments:
+        try:
+            parsed = json.loads(action.tool_call.arguments)
+            for leaf in _walk_json_strings(parsed):
+                buf.add(leaf)
+        except (json.JSONDecodeError, TypeError, RecursionError):
+            buf.add(action.tool_call.arguments)
+
+    if action.tool_name:
+        buf.add(action.tool_name)
+
+    if action.tool_call and action.tool_call.name:
+        buf.add(action.tool_call.name)
+
+    return buf.segments
+
+
+def _extract_text_segments(action: ActionEvent) -> list[str]:
+    """Extract segments from fields that describe what the agent *thought*.
+
+    Summary, reasoning_content, and thought are only scanned for injection
+    and social-engineering patterns, never for shell-destructive patterns.
+
+    Summary is extracted first because it describes the action the agent is
+    about to take. Putting it ahead of reasoning_content and thought
+    guarantees summary always receives scanning budget even when the agent
+    emits multiple long thoughts or a large reasoning trace. thought is a
+    list of TextContent; multiple 10K entries would otherwise collectively
+    exhaust the 30K budget and hide summary from the injection scanners.
+    """
+    buf = _BoundedSegments(_EXTRACT_HARD_CAP)
+
+    # Summary first: describes the action the agent is about to take.
+    if action.summary:
+        buf.add(action.summary)
+
+    if action.reasoning_content:
+        buf.add(action.reasoning_content)
+
+    for t in action.thought:
+        if t.text:
+            buf.add(t.text)
+
+    return buf.segments
+
+
+def _extract_segments(action: ActionEvent) -> list[str]:
+    """Extract all segments (executable + reasoning) from an ActionEvent."""
+    return _extract_exec_segments(action) + _extract_text_segments(action)
+
+
+def _extract_content(action: ActionEvent) -> str:
+    """Flat string from all fields -- the all-field scanning surface.
+
+    Length is bounded by ``2 * _EXTRACT_HARD_CAP + 1``: the per-corpus
+    caps in ``_extract_exec_segments`` and ``_extract_text_segments``
+    track joined length including separators, so each corpus's
+    ``" ".join(segments)`` is ≤ ``_EXTRACT_HARD_CAP``. The single space
+    between the two joined corpora adds 1. No outer slice is applied:
+    doing so would drop the text corpus when exec fills its budget,
+    defeating the summary-first guarantee in the composed analyzer path.
+    """
+    return " ".join(_extract_segments(action))
+
+
+def _extract_exec_content(action: ActionEvent) -> str:
+    """Flat string from executable fields only -- the shell-pattern surface.
+
+    Length is bounded by ``_EXTRACT_HARD_CAP``: the per-corpus cap in
+    ``_extract_exec_segments`` tracks joined length including separators.
+    """
+    return " ".join(_extract_exec_segments(action))
+
+
+# ---------------------------------------------------------------------------
+# Invisible character definitions
+#
+# Expanded from the original 14-codepoint set to cover ~200+ invisible
+# characters across 9 categories. Informed by navi-sanitize (_invisible.py,
+# MIT, Project-Navi/navi-sanitize) -- logic inlined, no dependency.
+#
+# Same defensive category as the original zero-width stripping, just more
+# complete. Compiled into a single regex for performance.
+# ---------------------------------------------------------------------------
+
+# Zero-width characters
+_ZERO_WIDTH: set[str] = {
+    "\u200b",  # zero-width space
+    "\u200c",  # zero-width non-joiner
+    "\u200d",  # zero-width joiner
+    "\u200e",  # left-to-right mark
+    "\u200f",  # right-to-left mark
+    "\u2060",  # word joiner
+    "\ufeff",  # BOM / zero-width no-break space
+    "\u180e",  # Mongolian vowel separator
+}
+
+# Format and control characters (invisible or near-invisible)
+_FORMAT_CHARS: set[str] = {
+    "\u00ad",  # soft hyphen
+    "\u034f",  # combining grapheme joiner
+    "\u2009",  # thin space
+    "\u200a",  # hair space
+    # U+2028 (line separator) and U+2029 (paragraph separator) are NOT
+    # stripped here -- they are whitespace-like and should be collapsed
+    # by the \s+ stage, not deleted. Deleting them merges tokens and
+    # can bypass word-boundary regex detectors.
+    "\ufff9",  # interlinear annotation anchor
+    "\ufffa",  # interlinear annotation separator
+    "\ufffb",  # interlinear annotation terminator
+    "\ufffc",  # object replacement character
+    "\u2061",  # function application (invisible)
+    "\u2062",  # invisible times
+    "\u2063",  # invisible separator
+    "\u2064",  # invisible plus
+    "\u206a",  # inhibit symmetric swapping (deprecated)
+    "\u206b",  # activate symmetric swapping (deprecated)
+    "\u206c",  # inhibit Arabic form shaping (deprecated)
+    "\u206d",  # activate Arabic form shaping (deprecated)
+    "\u206e",  # national digit shapes (deprecated)
+    "\u206f",  # nominal digit shapes (deprecated)
+    "\u2800",  # braille pattern blank
+    "\u1680",  # Ogham space mark
+    "\u115f",  # Hangul Choseong filler
+    "\u1160",  # Hangul Jungseong filler
+    "\u3164",  # Hangul filler
+    "\uffa0",  # Halfwidth Hangul filler
+    "\u061c",  # Arabic letter mark
+}
+
+# Bidirectional override/isolate characters
+_BIDI_CHARS: set[str] = {
+    "\u202a",  # LRE
+    "\u202b",  # RLE
+    "\u202c",  # PDF
+    "\u202d",  # LRO
+    "\u202e",  # RLO
+    "\u2066",  # LRI
+    "\u2067",  # RLI
+    "\u2068",  # FSI
+    "\u2069",  # PDI
+}
+
+# Mongolian Free Variation Selectors
+_MONGOLIAN_FVS: set[str] = {
+    "\u180b",
+    "\u180c",
+    "\u180d",
+    "\u180f",
+}
+
+# Ranges compiled into regex character classes
+_VARIATION_SELECTOR_RANGE = (0xFE00, 0xFE0F)  # VS1-VS16
+_VARIATION_SELECTOR_SUPP_RANGE = (0xE0100, 0xE01EF)  # VS17-VS256
+_TAG_BLOCK_RANGE = (0xE0000, 0xE007F)  # Unicode Tag block
+_C0_RANGES = [(0x0001, 0x0008), (0x000B, 0x000C), (0x000E, 0x001F)]
+_DEL = "\x7f"  # DEL character -- not in C0 or C1 but equally invisible
+_C1_RANGE = (0x0080, 0x009F)
+
+# Build single compiled regex for all invisible characters
+_INVISIBLE_PATTERN = (
+    # Individual char sets
+    "["
+    + "".join(sorted(_ZERO_WIDTH))
+    + "]"
+    + "|["
+    + "".join(sorted(_FORMAT_CHARS))
+    + "]"
+    + "|["
+    + "".join(sorted(_BIDI_CHARS))
+    + "]"
+    + "|["
+    + "".join(sorted(_MONGOLIAN_FVS))
+    + "]"
+    # Ranges
+    + "|["
+    + chr(_VARIATION_SELECTOR_RANGE[0])
+    + "-"
+    + chr(_VARIATION_SELECTOR_RANGE[1])
+    + "]"
+    + "|["
+    + chr(_TAG_BLOCK_RANGE[0])
+    + "-"
+    + chr(_TAG_BLOCK_RANGE[1])
+    + "]"
+    + "|["
+    + chr(_VARIATION_SELECTOR_SUPP_RANGE[0])
+    + "-"
+    + chr(_VARIATION_SELECTOR_SUPP_RANGE[1])
+    + "]"
+    # C0 controls (excl NUL/TAB/LF/CR)
+    + "|["
+    + chr(_C0_RANGES[0][0])
+    + "-"
+    + chr(_C0_RANGES[0][1])
+    + "]"
+    + "|["
+    + chr(_C0_RANGES[1][0])
+    + "-"
+    + chr(_C0_RANGES[1][1])
+    + "]"
+    + "|["
+    + chr(_C0_RANGES[2][0])
+    + "-"
+    + chr(_C0_RANGES[2][1])
+    + "]"
+    # C1 controls
+    + "|["
+    + chr(_C1_RANGE[0])
+    + "-"
+    + chr(_C1_RANGE[1])
+    + "]"
+    # DEL
+    + "|"
+    + re.escape(_DEL)
+)
+
+_INVISIBLE_RE: re.Pattern[str] = re.compile(_INVISIBLE_PATTERN)
+
+
+# ---------------------------------------------------------------------------
+# Normalization
+# ---------------------------------------------------------------------------
+
+
+def _normalize(text: str) -> str:
+    """Collapse encoding evasions so dangerous commands match their patterns.
+
+    An attacker can make ``rm`` not look like ``rm`` to a regex engine
+    while still looking like ``rm`` to a shell: zero-width characters,
+    fullwidth ASCII, bidi controls, and null bytes all achieve this.
+    This function neutralizes those techniques in four stages:
+
+    1. **Null bytes** -- prevent C-level string truncation.
+    2. **Invisible characters** -- strip ~200+ chars across zero-width,
+       format/control, bidi, variation selectors, tag block, C0, C1.
+       (Informed by navi-sanitize, MIT, inlined without dependency.)
+    3. **NFKC** -- fullwidth ``\\uff52\\uff4d`` becomes ASCII ``rm``.
+    4. **Whitespace collapse** -- NFKC may produce new whitespace.
+
+    Does NOT cover Cyrillic homoglyphs or combining-mark evasion
+    (documented as strict xfails, deferred to follow-up).
+    """
+    # Stage 1: Null bytes
+    text = text.replace("\x00", "")
+
+    # Stage 2: Invisible characters (compiled regex)
+    text = _INVISIBLE_RE.sub("", text)
+
+    # Stage 3: NFKC normalization
+    text = unicodedata.normalize("NFKC", text)
+
+    # Stage 4: Collapse whitespace
+    return re.sub(r"\s+", " ", text)

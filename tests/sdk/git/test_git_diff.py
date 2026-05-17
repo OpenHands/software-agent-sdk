@@ -284,3 +284,46 @@ def test_git_diff_large_file_error():
 
         with pytest.raises(GitPathError):
             run_in_directory(temp_dir, get_git_diff, "large_file.txt")
+
+
+def test_get_git_diff_ref_head_compares_against_latest_commit():
+    """``ref='HEAD'`` should diff against the latest commit, not the remote."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        target = Path(temp_dir) / "file.txt"
+
+        # First commit (this would be the empty-tree fallback's "original"
+        # in the default behavior).
+        target.write_text("v1\n")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'v1'", temp_dir)
+
+        # Second commit becomes HEAD.
+        target.write_text("v2\n")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'v2'", temp_dir)
+
+        # Working-tree edit (uncommitted).
+        target.write_text("v3\n")
+
+        diff = run_in_directory(temp_dir, get_git_diff, "file.txt", ref="HEAD")
+
+        assert isinstance(diff, GitDiff)
+        # original = HEAD's contents = v2 (NOT v1).
+        assert diff.original == "v2"
+        # modified = working-tree contents = v3.
+        assert diff.modified == "v3"
+
+
+def test_get_git_diff_invalid_ref_raises():
+    """An explicit ref that does not resolve should raise."""
+    from openhands.sdk.git.exceptions import GitCommandError
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            run_in_directory(temp_dir, get_git_diff, "f.txt", ref="not-a-real-ref")

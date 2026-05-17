@@ -9,6 +9,7 @@ from rich.text import Text
 
 from openhands.sdk.tool import (
     Action,
+    DeclaredResources,
     Observation,
     ToolAnnotations,
     ToolDefinition,
@@ -139,6 +140,15 @@ MAX_ENTRIES = 500
 
 class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObservation]):
     """Tool for listing directory contents with metadata."""
+
+    def declared_resources(self, action: Action) -> DeclaredResources:  # noqa: ARG002
+        """Declare resource usage for parallel execution.
+
+        Each call uses independent read-only filesystem operations
+        (os.walk / Path.iterdir) with no shared mutable state, so all
+        list_directory calls are safe to run lock-free in parallel.
+        """
+        return DeclaredResources(keys=(), declared=True)
 
     @classmethod
     def create(

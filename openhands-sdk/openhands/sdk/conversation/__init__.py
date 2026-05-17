@@ -5,6 +5,10 @@ from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import WebSocketConnectionError
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+from openhands.sdk.conversation.resource_lock_manager import (
+    ResourceLockManager,
+    ResourceLockTimeout,
+)
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
@@ -14,6 +18,7 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
+    ConversationTags,
     ConversationTokenCallbackType,
 )
 from openhands.sdk.conversation.visualizer import (
@@ -28,12 +33,15 @@ __all__ = [
     "ConversationState",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
+    "ConversationTags",
     "ConversationTokenCallbackType",
     "DefaultConversationVisualizer",
     "ConversationVisualizerBase",
     "SecretRegistry",
     "StuckDetector",
     "EventLog",
+    "ResourceLockManager",
+    "ResourceLockTimeout",
     "LocalConversation",
     "RemoteConversation",
     "EventsListBase",

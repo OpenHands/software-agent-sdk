@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ HOOK_EVENT_FIELDS: frozenset[str] = frozenset(
 )
 
 
-class HookType(str, Enum):
+class HookType(StrEnum):
     """Types of hooks that can be executed."""
 
     COMMAND = "command"  # Shell command executed via subprocess
@@ -48,12 +48,32 @@ class HookDefinition(BaseModel):
 
     type: HookType = HookType.COMMAND
     command: str
+    prompt: str | None = None
     timeout: int = 60
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {
         "populate_by_name": True,  # Allow both 'async' and 'async_' in input
     }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _set_command_for_prompt_hooks(cls, data: Any) -> Any:
+        if (
+            isinstance(data, dict)
+            and data.get("type") == "prompt"
+            and "command" not in data
+        ):
+            data["command"] = ""
+        return data
+
+    @model_validator(mode="after")
+    def _check_required_fields(self) -> "HookDefinition":
+        if self.type == HookType.COMMAND and not self.command:
+            raise ValueError("'command' is required when type is 'command'")
+        if self.type == HookType.PROMPT and not self.prompt:
+            raise ValueError("'prompt' is required when type is 'prompt'")
+        return self
 
 
 class HookMatcher(BaseModel):

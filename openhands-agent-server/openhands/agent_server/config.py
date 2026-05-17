@@ -46,6 +46,14 @@ def _default_secret_key() -> SecretStr | None:
     return None
 
 
+def _default_web_url() -> str | None:
+    web_url = os.getenv("OH_WEB_URL")
+    if web_url:
+        return web_url
+
+    return None
+
+
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
@@ -79,6 +87,17 @@ class WebhookSpec(BaseModel):
         description="The number of times to retry if the post operation fails",
     )
     retry_delay: int = Field(default=5, ge=0, description="The delay between retries")
+
+    # Backpressure parameters
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on the number of events buffered for delivery. When the "
+            "downstream is failing and events are re-queued for retry, the oldest "
+            "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
 
 
 class Config(BaseModel):
@@ -155,12 +174,27 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
+    max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Maximum number of conversations that can execute agent steps "
+            "concurrently.  Controls the size of the dedicated thread pool "
+            "used for conversation.run() calls."
+        ),
+    )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
         description=(
             "Secret key used for encrypting sensitive values in all serialized data. "
             "If missing, any sensitive data is redacted, meaning full state cannot"
             "be restored between restarts."
+        ),
+    )
+    web_url: str | None = Field(
+        default_factory=_default_web_url,
+        description=(
+            "The URL where this agent server instance is available externally"
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

@@ -3,7 +3,7 @@
 # NOTE: LC_ALL/LANG must be set to C.UTF-8 for libtmux to work correctly with
 # PyInstaller builds. Without proper locale, tmux converts UTF-8 separator
 # characters to underscores, breaking libtmux's format parsing.
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22
+ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22-slim
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -12,16 +12,33 @@ ARG PORT=8000
 ####################################################################################
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
+#
+# SELF-CONTAINED /agent-server CONTRACT:
+# uv installs python-build-standalone into /agent-server/uv-managed-python and
+# creates .venv against it. Both live under /agent-server, so downstream
+# consumers can COPY /agent-server onto any base image and the venv works.
+#
+# uv >= 0.11.5 pulls python-build-standalone >= 20260408, which ships
+# libpython without PT_GNU_STACK PF_X (executable stack). Earlier releases
+# had this flag set due to LLVM/BOLT bugs, causing glibc >= 2.41 and
+# DinD/sysbox/seccomp to reject dlopen() with "cannot enable executable
+# stack". No sanitizer or workaround is needed on fixed releases.
+# See OpenHands/software-agent-sdk#2761.
 ####################################################################################
 FROM python:3.13-bookworm AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+# uv 0.11.5+ embeds python-build-standalone 20260408 metadata, which is the
+# first release with the PT_GNU_STACK fix. Pin to 0.11.6 (latest at time of
+# writing) rather than :latest so builds are reproducible.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 RUN groupadd -g ${GID} ${USERNAME} \
- && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME}
+ && useradd -m -u ${UID} -g ${GID} -s /usr/sbin/nologin ${USERNAME} \
+ && mkdir -p /agent-server/uv-managed-python \
+ && chown -R ${USERNAME}:${USERNAME} /agent-server
 USER ${USERNAME}
 WORKDIR /agent-server
 # Cache-friendly: lockfiles first
@@ -31,7 +48,10 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python --extra boto3
+    uv python install 3.13 && \
+    uv venv --python-preference only-managed --python 3.13 .venv && \
+    uv sync --frozen --no-editable --managed-python --extra boto3 && \
+    readlink -f .venv/bin/python | grep -q '^/agent-server/uv-managed-python/'
 
 ####################################################################################
 # Binary Builder (binary mode)
@@ -66,28 +86,125 @@ ENV OPENHANDS_BUILD_GIT_REF=${OPENHANDS_BUILD_GIT_REF}
 
 # Install base packages and create user
 RUN set -eux; \
-    # Install base packages (works for both Debian-based images)
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
-        coreutils util-linux procps findutils grep sed \
-        # Docker dependencies
-        apt-transport-https gnupg lsb-release; \
-    \
-    # Create user and group
-    (getent group ${GID} || groupadd -g ${GID} ${USERNAME}); \
-    (id -u ${USERNAME} >/dev/null 2>&1 || useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USERNAME}); \
-    # Add user to sudo group
-    usermod -aG sudo ${USERNAME}; \
+    # Install base packages across the most common package managers, since
+    # benchmark base images aren't always Debian-based. `tini` is added on
+    # apt/apk where it's reliably available; on the other paths the kernel-
+    # reaping behaviour falls back to dumb-init's absence (the agent server
+    # is short-lived enough on non-Debian images that PID 1 zombie reaping
+    # has not been observed to matter — revisit if it does).
+    if command -v apt-get >/dev/null 2>&1; then \
+        apt-get -o Acquire::Retries=5 update; \
+        apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+            bash ca-certificates curl wget sudo apt-utils git jq tmux tar \
+            build-essential coreutils util-linux procps findutils grep sed \
+            tini apt-transport-https gnupg lsb-release xz-utils; \
+        rm -rf /var/lib/apt/lists/*; \
+    elif command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache \
+            bash ca-certificates curl wget sudo git jq tmux tar build-base \
+            coreutils util-linux procps findutils grep sed tini gnupg shadow xz; \
+    elif command -v microdnf >/dev/null 2>&1; then \
+        microdnf install -y \
+            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
+            coreutils util-linux procps-ng findutils grep sed shadow-utils \
+            gnupg2 xz; \
+        microdnf clean all; \
+    elif command -v dnf >/dev/null 2>&1; then \
+        dnf install -y \
+            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
+            coreutils util-linux procps-ng findutils grep sed shadow-utils \
+            gnupg2 xz; \
+        dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+        yum install -y \
+            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
+            coreutils util-linux procps-ng findutils grep sed shadow-utils \
+            gnupg2 xz; \
+        yum clean all; \
+    elif command -v zypper >/dev/null 2>&1; then \
+        zypper --non-interactive install --no-recommends \
+            bash ca-certificates curl wget sudo git jq tmux tar make gcc gcc-c++ \
+            coreutils util-linux procps findutils grep sed shadow gpg2 xz; \
+        zypper clean --all; \
+    else \
+        echo "Unsupported base image: no known package manager found" >&2; \
+        exit 1; \
+    fi; \
+    grep -Eq "^[^:]*:[^:]*:${GID}:" /etc/group || groupadd -g "${GID}" "${USERNAME}"; \
+    grep -Eq "^${USERNAME}:" /etc/passwd || \
+        useradd -m -u "${UID}" -g "${GID}" -s /bin/bash "${USERNAME}"; \
+    # Best-effort: add user to a sudo group when one exists (Debian-style
+    # `sudo` group). On Alpine/RHEL/SUSE there is no `sudo` group by default,
+    # and the NOPASSWD sudoers line below grants sudo regardless of group.
+    usermod -aG sudo "${USERNAME}" 2>/dev/null || true; \
     echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers; \
-    # Create workspace directory
     mkdir -p /workspace/project; \
-    chown -R ${USERNAME}:${USERNAME} /workspace; \
-    rm -rf /var/lib/apt/lists/*
+    chown -R "${USERNAME}:${USERNAME}" /workspace
 
-# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here, 
+# Pre-install ACP servers for ACPAgent support (Claude Code, Codex, Gemini CLI)
+# Install Node.js 22 to a dedicated prefix so ACP packages get a modern runtime
+# WITHOUT overwriting the repo-specific Node.js that test suites depend on.
+# SWE-bench images ship NVM/apt-managed Node 8-14 which cannot run ACP packages.
+#
+# This step is best-effort: SWE-Bench Pro base images come from many distros
+# and some have an old glibc (or use musl) that cannot run the upstream Node
+# 22 glibc tarball. When that happens we leave $ACP_NODE_DIR empty and skip
+# ACP setup so the rest of the build (and non-ACP agents) still work.
+ENV ACP_NODE_DIR=/opt/acp-node
+RUN set -ux; \
+    mkdir -p "$ACP_NODE_DIR"; \
+    ARCH=$(uname -m); \
+    NARCH=""; \
+    NODE_SHA256=""; \
+    case "$ARCH" in \
+      x86_64|amd64) NARCH=x64; NODE_SHA256=69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec;; \
+      aarch64|arm64) NARCH=arm64; NODE_SHA256=08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050;; \
+    esac; \
+    NODE_TARBALL=""; \
+    if [ -z "$NARCH" ]; then \
+      echo "Skipping ACP Node install: unsupported architecture '$ARCH'" >&2; \
+    else \
+      NODE_TARBALL="/tmp/node-v22.14.0-linux-${NARCH}.tar.xz"; \
+      if curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-${NARCH}.tar.xz" -o "$NODE_TARBALL" \
+         && echo "$NODE_SHA256  $NODE_TARBALL" | sha256sum -c - \
+         && tar -xJ --strip-components=1 -C "$ACP_NODE_DIR" -f "$NODE_TARBALL" \
+         && "$ACP_NODE_DIR/bin/node" --version; then \
+        PATH="$ACP_NODE_DIR/bin:$PATH"; \
+        if "$ACP_NODE_DIR/bin/npm" install -g \
+            @agentclientprotocol/claude-agent-acp@0.30.0 \
+            @zed-industries/codex-acp@0.11.1 \
+            @google/gemini-cli@0.38.0; then \
+          # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
+          # This ensures the ACP binary's #!/usr/bin/env node shebang resolves
+          # to Node 22, while the repo's own node (NVM/system) stays untouched
+          # for tests.
+          for bin in claude-agent-acp codex-acp gemini; do \
+            if [ -e "$ACP_NODE_DIR/bin/$bin" ]; then \
+              printf '#!/bin/sh\nPATH="%s/bin:$PATH" exec "%s/bin/%s" "$@"\n' \
+                "$ACP_NODE_DIR" "$ACP_NODE_DIR" "$bin" \
+                > /usr/local/bin/"$bin"; \
+              chmod +x /usr/local/bin/"$bin"; \
+            fi; \
+          done; \
+        else \
+          echo "Warning: ACP npm install failed; ACP agents will not be available on this image" >&2; \
+          rm -rf "$ACP_NODE_DIR"/*; \
+        fi; \
+      else \
+        echo "Warning: ACP Node 22 runtime is not compatible with this base image (likely older glibc or musl libc); ACP agents will not be available" >&2; \
+        rm -rf "$ACP_NODE_DIR"/*; \
+      fi; \
+    fi; \
+    rm -f "$NODE_TARBALL" 2>/dev/null || true
+
+# Configure Claude Code managed settings for headless operation:
+# Allow all tool permissions (no human in the loop to approve).
+RUN mkdir -p /etc/claude-code && \
+    echo '{"permissions":{"allow":["Edit","Read","Bash"]}}' > /etc/claude-code/managed-settings.json
+
+# NOTE: we should NOT include UV_PROJECT_ENVIRONMENT here,
 # since the agent might use it to perform other work (e.g. tools that use Python)
-COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /
@@ -223,15 +340,13 @@ EXPOSE ${PORT} ${NOVNC_PORT}
 ############################
 FROM base-image AS source
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
-ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
+ENTRYPOINT ["tini", "--", "/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 FROM base-image-minimal AS source-minimal
 ARG USERNAME
-ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
 COPY --chown=${USERNAME}:${USERNAME} --from=builder /agent-server /agent-server
-ENTRYPOINT ["/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
+ENTRYPOINT ["tini", "--", "/agent-server/.venv/bin/python", "-m", "openhands.agent_server"]
 
 ############################
 # Target B: binary-runtime
@@ -245,7 +360,7 @@ COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/op
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # Fix library path to use system GCC libraries instead of bundled ones
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/openhands-agent-server"]
 
 FROM base-image-minimal AS binary-minimal
 ARG USERNAME
@@ -253,4 +368,4 @@ COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/op
 RUN chmod +x /usr/local/bin/openhands-agent-server
 # Fix library path to use system GCC libraries instead of bundled ones
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]
+ENTRYPOINT ["tini", "--", "/usr/local/bin/openhands-agent-server"]
