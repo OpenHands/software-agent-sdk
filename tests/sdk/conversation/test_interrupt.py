@@ -5,6 +5,8 @@ Covers:
 - CancelledError not re-raised from arun()
 - interrupt() after natural completion (no-op)
 - Multiple rapid interrupt() calls
+- Cancellation token lifecycle (created per run, cleared on exit)
+- ParallelToolExecutor skips cancelled tools
 """
 
 import asyncio
@@ -15,10 +17,11 @@ from litellm.types.utils import ModelResponse
 from pydantic import PrivateAttr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import InterruptEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.event import AgentErrorEvent, InterruptEvent
+from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
@@ -241,3 +244,151 @@ async def test_multiple_rapid_interrupts(tmp_path):
 
     await asyncio.wait_for(task, timeout=2.0)
     assert conv.state.execution_status == ConversationExecutionStatus.PAUSED
+
+
+# ── CancellationToken unit tests ──────────────────────────────────────
+
+
+def test_cancellation_token_basic():
+    """CancellationToken starts uncancelled, becomes cancelled after cancel()."""
+    token = CancellationToken()
+    assert not token.is_cancelled
+    token.cancel()
+    assert token.is_cancelled
+    # Idempotent
+    token.cancel()
+    assert token.is_cancelled
+
+
+# ── Token lifecycle tests ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_token_created_and_cleared_during_arun(tmp_path):
+    """A fresh CancellationToken is created in arun() and cleared in finally."""
+
+    class InstantLLM(LLM):
+        def __init__(self):
+            super().__init__(model="test-instant", usage_id="test-i")
+
+        def completion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            return _make_response("test-instant")
+
+        async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            return _make_response("test-instant")
+
+    conv = _make_conversation(InstantLLM(), tmp_path)
+    assert conv._cancel_token is None  # Before any run
+
+    await conv.arun()
+
+    # After arun() completes, token should be cleared
+    assert conv._cancel_token is None
+
+
+@pytest.mark.asyncio
+async def test_interrupt_sets_cancel_token(tmp_path):
+    """interrupt() should set the cancel token before cancelling the task."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+
+    task = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+
+    # Token should exist while arun is active
+    assert conv._cancel_token is not None
+    assert not conv._cancel_token.is_cancelled
+
+    conv.interrupt()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # After arun finishes, token is cleared
+    assert conv._cancel_token is None
+
+
+# ── ParallelToolExecutor cancellation tests ───────────────────────────
+
+
+def _make_action_event(tool_name: str, call_id: str):
+    """Build a minimal ActionEvent for executor tests."""
+    from openhands.sdk.event import ActionEvent
+
+    return ActionEvent(
+        thought=[TextContent(text="test")],
+        tool_call=MessageToolCall(
+            id=call_id,
+            name=tool_name,
+            arguments="{}",
+            origin="completion",
+        ),
+        tool_name=tool_name,
+        tool_call_id=call_id,
+        llm_response_id="resp-1",
+    )
+
+
+def test_run_safe_skips_cancelled_tool():
+    """_run_safe should skip execution when token is already cancelled."""
+    from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+
+    executor = ParallelToolExecutor(max_workers=1)
+    token = CancellationToken()
+    token.cancel()
+
+    action = _make_action_event("my_tool", "tc1")
+    runner_called = False
+
+    def tool_runner(ae):
+        nonlocal runner_called
+        runner_called = True
+        return []
+
+    result = executor._run_safe(action, tool_runner, cancel_token=token)
+
+    assert not runner_called, "Tool should not have been executed"
+    assert len(result) == 1
+    assert isinstance(result[0], AgentErrorEvent)
+    assert "cancelled" in result[0].error.lower()
+
+
+def test_run_safe_runs_without_token():
+    """_run_safe should execute normally when no token is provided."""
+    from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+
+    executor = ParallelToolExecutor(max_workers=1)
+    action = _make_action_event("my_tool", "tc2")
+    runner_called = False
+
+    def tool_runner(ae):
+        nonlocal runner_called
+        runner_called = True
+        return []
+
+    executor._run_safe(action, tool_runner, cancel_token=None)
+    assert runner_called
+
+
+@pytest.mark.asyncio
+async def test_execute_batch_skips_all_on_pre_cancelled_token():
+    """execute_batch with a pre-cancelled token skips all tool calls."""
+    from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+
+    executor = ParallelToolExecutor(max_workers=2)
+    token = CancellationToken()
+    token.cancel()
+
+    actions = [_make_action_event(f"tool_{i}", f"tc-{i}") for i in range(3)]
+
+    runner_calls: list[str] = []
+
+    def tool_runner(ae):
+        runner_calls.append(ae.tool_name)
+        return []
+
+    results = executor.execute_batch(actions, tool_runner, cancel_token=token)
+
+    assert len(runner_calls) == 0, "No tools should have been called"
+    assert len(results) == 3
+    for r in results:
+        assert len(r) == 1
+        assert isinstance(r[0], AgentErrorEvent)
+        assert "cancelled" in r[0].error.lower()

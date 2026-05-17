@@ -10,6 +10,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -31,6 +32,7 @@ from openhands.sdk.conversation.visualizer import (
 )
 from openhands.sdk.event import (
     ActionEvent,
+    AgentErrorEvent,
     CondensationRequest,
     InterruptEvent,
     MessageEvent,
@@ -84,6 +86,7 @@ class LocalConversation(BaseConversation):
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
+    _cancel_token: CancellationToken | None
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -159,6 +162,7 @@ class LocalConversation(BaseConversation):
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
         self._arun_task = None
+        self._cancel_token = None
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -306,6 +310,19 @@ class LocalConversation(BaseConversation):
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
+
+    @property
+    def cancel_token(self) -> CancellationToken | None:
+        """Active cancellation token for the current run, or ``None``.
+
+        Tools that want cooperative cancellation can check this during
+        execution::
+
+            if conversation and conversation.cancel_token:
+                if conversation.cancel_token.is_cancelled:
+                    return Observation(output="Cancelled")
+        """
+        return self._cancel_token
 
     @property
     def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
@@ -762,6 +779,7 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        self._cancel_token = CancellationToken()
 
         with self._state:
             if self._state.execution_status in [
@@ -892,6 +910,8 @@ class LocalConversation(BaseConversation):
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        finally:
+            self._cancel_token = None
 
     async def arun(self) -> None:
         """Async variant of :meth:`run`.
@@ -904,9 +924,16 @@ class LocalConversation(BaseConversation):
         :meth:`interrupt` can cancel it mid-LLM-call.  On
         ``CancelledError`` the conversation transitions to ``PAUSED``
         and emits an :class:`InterruptEvent`.
+
+        A fresh :class:`CancellationToken` is created per run so that
+        ``interrupt()`` can signal in-flight tool calls to abort.  After
+        ``CancelledError`` any ``ActionEvent`` without a matching
+        observation is patched with a synthetic ``AgentErrorEvent`` so
+        the LLM conversation history stays consistent.
         """
         self._ensure_agent_ready()
         self._arun_task = asyncio.current_task()
+        self._cancel_token = CancellationToken()
 
         with self._state:
             if self._state.execution_status in [
@@ -1013,6 +1040,13 @@ class LocalConversation(BaseConversation):
             # PAUSED so the conversation can be resumed later.
             logger.info("arun() interrupted via task cancellation")
             with self._state:
+                # Emit synthetic error observations for any ActionEvents
+                # that were in-flight when the interrupt landed.  Without
+                # these the LLM history would contain tool-call requests
+                # with no tool-result, which causes provider errors on
+                # the next completion call.
+                self._emit_orphaned_action_errors()
+
                 self._state.execution_status = ConversationExecutionStatus.PAUSED
                 self._on_event(InterruptEvent())
         except Exception as e:
@@ -1029,6 +1063,7 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
         finally:
+            self._cancel_token = None
             self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
@@ -1068,6 +1103,35 @@ class LocalConversation(BaseConversation):
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
 
+    def _emit_orphaned_action_errors(self) -> None:
+        """Emit ``AgentErrorEvent`` for actions that have no observation.
+
+        After an interrupt, tool calls that were in-flight may have their
+        ``ActionEvent`` already in the history but no corresponding
+        ``ObservationEvent``.  LLM providers reject conversation
+        histories with orphaned tool-call requests, so we backfill
+        them with a synthetic error.
+
+        Must be called while holding ``self._state``.
+        """
+        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        for ae in orphans:
+            logger.info(
+                "Emitting synthetic error for orphaned action %s (%s)",
+                ae.id,
+                ae.tool_name,
+            )
+            self._on_event(
+                AgentErrorEvent(
+                    error=(
+                        "Tool call interrupted before completion. "
+                        "The conversation was paused."
+                    ),
+                    tool_name=ae.tool_name,
+                    tool_call_id=ae.tool_call_id,
+                )
+            )
+
     def pause(self) -> None:
         """Pause agent execution.
 
@@ -1101,12 +1165,22 @@ class LocalConversation(BaseConversation):
         execution status to ``PAUSED``, and emits an
         :class:`~openhands.sdk.event.InterruptEvent`.
 
+        The cancellation token is set *before* cancelling the task so
+        that :class:`ParallelToolExecutor` can skip pending tool calls
+        and individual tools can check for early exit.
+
         If no async task is tracked (e.g. the synchronous ``run()`` is active)
         the call falls back to :meth:`pause`.
 
         This method is safe to call from signal handlers and from other
         threads (the cancellation is scheduled on the task's event loop).
         """
+        # Set the cancellation token first so thread-pool workers see it
+        # before the asyncio task is cancelled.
+        token = self._cancel_token
+        if token is not None:
+            token.cancel()
+
         task = self._arun_task
         if task is not None and not task.done():
             task.cancel()

@@ -23,6 +23,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.resource_lock_manager import ResourceLockManager
 from openhands.sdk.event.llm_convertible import AgentErrorEvent
 from openhands.sdk.logger import get_logger
@@ -57,6 +58,7 @@ class ParallelToolExecutor:
         action_events: Sequence[ActionEvent],
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> list[list[Event]]:
         """Execute a batch of action events concurrently.
 
@@ -67,6 +69,8 @@ class ParallelToolExecutor:
             tools: Optional mapping of tool name to ToolDefinition used
                    to derive resource keys for locking. When *None*,
                    locking is skipped (backward-compatible).
+            cancel_token: If set and cancelled, pending tool calls are
+                          skipped and return a synthetic error event.
 
         Returns:
             List of event lists in the same order as the input action_events.
@@ -79,13 +83,19 @@ class ParallelToolExecutor:
 
         if len(action_events) == 1 or self._max_workers == 1:
             return [
-                self._run_safe(action, tool_runner, _resolve(action))
+                self._run_safe(action, tool_runner, _resolve(action), cancel_token)
                 for action in action_events
             ]
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = [
-                executor.submit(self._run_safe, action, tool_runner, _resolve(action))
+                executor.submit(
+                    self._run_safe,
+                    action,
+                    tool_runner,
+                    _resolve(action),
+                    cancel_token,
+                )
                 for action in action_events
             ]
 
@@ -96,6 +106,7 @@ class ParallelToolExecutor:
         action_events: Sequence[ActionEvent],
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> list[list[Event]]:
         """Async variant of :meth:`execute_batch`.
 
@@ -119,7 +130,9 @@ class ParallelToolExecutor:
 
         if len(action_events) == 1 or self._max_workers == 1:
             return [
-                await self._arun_safe(action, tool_runner, _resolve(action))
+                await self._arun_safe(
+                    action, tool_runner, _resolve(action), cancel_token
+                )
                 for action in action_events
             ]
 
@@ -127,7 +140,9 @@ class ParallelToolExecutor:
 
         async def _limited(action: ActionEvent) -> list[Event]:
             async with sem:
-                return await self._arun_safe(action, tool_runner, _resolve(action))
+                return await self._arun_safe(
+                    action, tool_runner, _resolve(action), cancel_token
+                )
 
         return list(await asyncio.gather(*[_limited(a) for a in action_events]))
 
@@ -136,6 +151,7 @@ class ParallelToolExecutor:
         action: ActionEvent,
         tool_runner: Callable[[ActionEvent], list[Event]],
         tool: ToolDefinition | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> list[Event]:
         """Run :meth:`_run_safe` in a thread via ``run_in_executor``.
 
@@ -146,18 +162,32 @@ class ParallelToolExecutor:
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, self._run_safe, action, tool_runner, tool
+            None, self._run_safe, action, tool_runner, tool, cancel_token
         )
+
+    @staticmethod
+    def _cancelled_error(action: ActionEvent) -> list[Event]:
+        """Return a synthetic error for a tool call skipped due to cancellation."""
+        return [
+            AgentErrorEvent(
+                error="Tool call cancelled by interrupt.",
+                tool_name=action.tool_name,
+                tool_call_id=action.tool_call_id,
+            )
+        ]
 
     def _run_safe(
         self,
         action: ActionEvent,
         tool_runner: Callable[[ActionEvent], list[Event]],
         tool: ToolDefinition | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> list[Event]:
         """Run tool_runner with resource locking.
 
         Converts exceptions to ``AgentErrorEvent``.
+        If *cancel_token* is set before the tool begins, the call is
+        skipped and a synthetic error is returned.
 
         Locking strategy:
 
@@ -165,6 +195,13 @@ class ParallelToolExecutor:
         - ``declared=True``, empty keys → no locking.
         - ``declared=True``, keys present → lock those resources.
         """
+        if cancel_token is not None and cancel_token.is_cancelled:
+            logger.info(
+                "Skipping tool '%s' — cancelled before execution",
+                action.tool_name,
+            )
+            return self._cancelled_error(action)
+
         try:
             if tool is None:
                 return tool_runner(action)

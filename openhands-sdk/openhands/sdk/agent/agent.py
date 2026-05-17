@@ -28,6 +28,7 @@ from openhands.sdk.agent.utils import (
     prepare_llm_messages,
 )
 from openhands.sdk.conversation import (
+    CancellationToken,
     ConversationCallbackType,
     ConversationState,
     ConversationTokenCallbackType,
@@ -162,6 +163,7 @@ class _ActionBatch:
         executor: ParallelToolExecutor,
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
@@ -175,7 +177,9 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = executor.execute_batch(executable, tool_runner, tools)
+        executed_results = executor.execute_batch(
+            executable, tool_runner, tools, cancel_token
+        )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -193,6 +197,7 @@ class _ActionBatch:
         executor: ParallelToolExecutor,
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> _ActionBatch:
         """Async variant of :meth:`prepare`.
 
@@ -211,7 +216,9 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = await executor.aexecute_batch(executable, tool_runner, tools)
+        executed_results = await executor.aexecute_batch(
+            executable, tool_runner, tools, cancel_token
+        )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -495,6 +502,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
+            cancel_token=conversation.cancel_token,
         )
         batch.emit(on_event)
         batch.finalize(
@@ -528,6 +536,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
+            cancel_token=conversation.cancel_token,
         )
         batch.emit(on_event)
         batch.finalize(
