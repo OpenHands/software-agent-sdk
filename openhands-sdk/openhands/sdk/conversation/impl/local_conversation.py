@@ -889,6 +889,124 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
 
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Uses ``agent.astep()`` for non-blocking LLM I/O while keeping the
+        same control-flow semantics (confirmation mode, stuck detection,
+        stop hooks, iteration cap).
+        """
+        self._ensure_agent_ready()
+
+        with self._state:
+            if self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
+            ]:
+                self._state.execution_status = ConversationExecutionStatus.RUNNING
+
+        iteration = 0
+        try:
+            while True:
+                logger.debug(f"Conversation arun iteration {iteration}")
+                with self._state:
+                    if self._state.execution_status in [
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
+                    ]:
+                        break
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    feedback_msg = MessageEvent(
+                                        source="environment",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        break
+
+                    if self._stuck_detector:
+                        is_stuck = self._stuck_detector.is_stuck()
+                        if is_stuck:
+                            logger.warning("Stuck pattern detected.")
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.STUCK
+                            )
+                            continue
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
+
+                    await self.agent.astep(
+                        self,
+                        on_event=self._on_event,
+                        on_token=self._on_token,
+                    )
+                    iteration += 1
+
+                    if (
+                        self.state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
+                        break
+        except Exception as e:
+            self._state.execution_status = ConversationExecutionStatus.ERROR
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code=e.__class__.__name__,
+                    detail=str(e),
+                )
+            )
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
+
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
         with self._state:

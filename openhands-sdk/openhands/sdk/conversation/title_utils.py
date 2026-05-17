@@ -202,3 +202,90 @@ def generate_conversation_title(
         raise ValueError("No user messages found in conversation events")
 
     return generate_title_from_message(first_user_message, llm, max_length)
+
+
+# ---------------------------------------------------------------------------
+# Async variants
+# ---------------------------------------------------------------------------
+
+
+async def agenerate_title_with_llm(
+    message: str, llm: LLM, max_length: int = 50
+) -> str | None:
+    """Async variant of :func:`generate_title_with_llm`."""
+    if len(message) > 1000:
+        truncated_message = message[:1000] + "...(truncated)"
+    else:
+        truncated_message = message
+
+    emojis_descriptions = "\n- ".join(
+        f"{c['emoji']} {c['name']}: {c['description']}" for c in categories
+    )
+
+    try:
+        messages = [
+            Message(
+                role="system",
+                content=[
+                    TextContent(
+                        text=(
+                            "You are a helpful assistant that generates concise, "
+                            "descriptive titles for conversations with OpenHands. "
+                            "OpenHands is a helpful AI agent that can interact "
+                            "with a computer to solve tasks using bash terminal, "
+                            "file editor, and browser. Given a user message "
+                            "(which may be truncated), generate a concise, "
+                            "descriptive title for the conversation. Return only "
+                            "the title, with no additional text, quotes, or "
+                            "explanations."
+                        )
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    TextContent(
+                        text=(
+                            f"Generate a title (maximum {max_length} characters) "
+                            f"for a conversation that starts with this message:\n\n"
+                            f"{truncated_message}."
+                            "Also make sure to include ONE most relevant emoji at "
+                            "the start of the title."
+                            f" Choose the emoji from this list:{emojis_descriptions} "
+                        )
+                    )
+                ],
+            ),
+        ]
+
+        response = await llm.acompletion(messages)
+
+        if response.message.content and isinstance(
+            response.message.content[0], TextContent
+        ):
+            title = response.message.content[0].text.strip()
+            if len(title) > max_length:
+                title = title[: max_length - 3] + "..."
+            return title
+        else:
+            logger.warning("LLM returned empty response for title generation")
+            return None
+
+    except Exception as e:
+        logger.warning(f"Error generating conversation title with LLM: {e}")
+        return None
+
+
+async def agenerate_title_from_message(
+    message: str, llm: LLM | None = None, max_length: int = 50
+) -> str:
+    """Async variant of :func:`generate_title_from_message`."""
+    llm_to_use = None if llm and llm.usage_id == "acp-managed" else llm
+
+    if llm_to_use:
+        llm_title = await agenerate_title_with_llm(message, llm_to_use, max_length)
+        if llm_title:
+            return llm_title
+
+    return generate_fallback_title(message, max_length)

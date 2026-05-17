@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 from tenacity import (
+    AsyncRetrying,
     RetryCallState,
     retry,
     retry_if_exception_type,
@@ -22,22 +23,14 @@ RetryListener = Callable[[int, int, BaseException | None], None]
 class RetryMixin:
     """Mixin class for retry logic."""
 
-    def retry_decorator(
+    def _build_before_sleep(
         self,
-        num_retries: int = 5,
-        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
-        retry_min_wait: int = 8,
-        retry_max_wait: int = 64,
-        retry_multiplier: float = 2.0,
-        retry_listener: RetryListener | None = None,
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """
-        Create a LLM retry decorator with customizable parameters.
-        This is used for 429 errors, and a few other exceptions in LLM classes.
-        """
+        num_retries: int,
+        retry_listener: RetryListener | None,
+    ) -> Callable[[RetryCallState], None]:
+        """Build a ``before_sleep`` callback shared by sync and async decorators."""
 
         def before_sleep(retry_state: RetryCallState) -> None:
-            # Log first (also validates outcome as part of logging)
             self.log_retry_attempt(retry_state)
 
             if retry_listener is not None:
@@ -48,7 +41,6 @@ class RetryMixin:
                 )
                 retry_listener(retry_state.attempt_number, num_retries, exc)
 
-            # If there is no outcome or no exception, nothing to tweak.
             if retry_state.outcome is None:
                 return
             exc = retry_state.outcome.exception()
@@ -72,6 +64,23 @@ class RetryMixin:
                             "keeping original temperature"
                         )
 
+        return before_sleep
+
+    def retry_decorator(
+        self,
+        num_retries: int = 5,
+        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
+        retry_min_wait: int = 8,
+        retry_max_wait: int = 64,
+        retry_multiplier: float = 2.0,
+        retry_listener: RetryListener | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """
+        Create a LLM retry decorator with customizable parameters.
+        This is used for 429 errors, and a few other exceptions in LLM classes.
+        """
+        before_sleep = self._build_before_sleep(num_retries, retry_listener)
+
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
             stop=stop_after_attempt(num_retries),
@@ -84,6 +93,37 @@ class RetryMixin:
             ),
         )
         return retry_decorator
+
+    def async_retry(
+        self,
+        num_retries: int = 5,
+        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
+        retry_min_wait: int = 8,
+        retry_max_wait: int = 64,
+        retry_multiplier: float = 2.0,
+        retry_listener: RetryListener | None = None,
+    ) -> AsyncRetrying:
+        """Return an ``AsyncRetrying`` instance for use in ``async for`` blocks.
+
+        Usage::
+
+            async for attempt in self.async_retry(...):
+                with attempt:
+                    result = await _do_work()
+        """
+        before_sleep = self._build_before_sleep(num_retries, retry_listener)
+
+        return AsyncRetrying(
+            before_sleep=before_sleep,
+            stop=stop_after_attempt(num_retries),
+            reraise=True,
+            retry=retry_if_exception_type(retry_exceptions),
+            wait=wait_exponential(
+                multiplier=retry_multiplier,
+                min=retry_min_wait,
+                max=retry_max_wait,
+            ),
+        )
 
     def log_retry_attempt(self, retry_state: RetryCallState) -> None:
         """Log retry attempts."""

@@ -185,6 +185,15 @@ class BaseConversation(ABC):
         """
         ...
 
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Default implementation delegates to the synchronous ``run()``.
+        Subclasses (e.g., :class:`LocalConversation`) should override this
+        to use async agent steps for non-blocking LLM I/O.
+        """
+        self.run()
+
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy for the conversation."""

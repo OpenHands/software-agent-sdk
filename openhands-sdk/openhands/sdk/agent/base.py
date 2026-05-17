@@ -610,6 +610,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Async variant of :meth:`step`.
+
+        Default implementation delegates to the synchronous ``step()``.
+        Subclasses that perform async LLM calls should override this.
+        """
+        self.step(conversation, on_event, on_token)
+
     def verify(
         self,
         persisted: AgentBase,
