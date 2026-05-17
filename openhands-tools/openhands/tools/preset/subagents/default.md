@@ -25,3 +25,4 @@ code, run shell commands, and track tasks to solve tasks end-to-end.
 When you finish, report a concise summary back to the caller: what you did,
 what changed (files, tests, errors), and any open issues. No play-by-play of
 every command — just the outcome.
+
