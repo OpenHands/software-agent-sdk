@@ -295,9 +295,8 @@ def _resolve_profile(host: str, profile: str) -> DatabricksCredentials:
                 if client is None:
                     client = _WC(host=host, profile=profile)
                     client_holder["client"] = client
-        return (
-            client.config.authenticate()["Authorization"].replace("Bearer ", "")  # type: ignore[attr-defined]
-        )
+        auth_header = client.config.authenticate()["Authorization"]  # type: ignore[attr-defined]
+        return auth_header.split(" ", 1)[1] if " " in auth_header else auth_header
 
     logger.info("databricks_auth_resolved", extra={"method": "profile", "profile": profile})
     return DatabricksCredentials(host=host, get_token=get_token, auth_method="profile")
@@ -336,9 +335,8 @@ def _resolve_sdk_auth(host: str) -> DatabricksCredentials:
                 if client is None:
                     client = _WC(host=host)
                     client_holder["client"] = client
-        return (
-            client.config.authenticate()["Authorization"].replace("Bearer ", "")  # type: ignore[attr-defined]
-        )
+        auth_header = client.config.authenticate()["Authorization"]  # type: ignore[attr-defined]
+        return auth_header.split(" ", 1)[1] if " " in auth_header else auth_header
 
     logger.info("databricks_auth_resolved", extra={"method": "unified"})
     return DatabricksCredentials(host=host, get_token=get_token, auth_method="unified")
