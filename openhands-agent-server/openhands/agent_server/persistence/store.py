@@ -329,7 +329,7 @@ class FileSettingsStore(SettingsStore):
             # Pass cipher in context for automatic decryption of all secret fields
             # This flows through to field validators using validate_secret()
             context = {"cipher": self.cipher} if self.cipher else None
-            return PersistedSettings.model_validate(data, context=context)
+            return PersistedSettings.from_persisted(data, context=context)
         except (PermissionError, OSError) as e:
             # Critical filesystem errors should be re-raised
             logger.error(f"Cannot access settings file: {e}")

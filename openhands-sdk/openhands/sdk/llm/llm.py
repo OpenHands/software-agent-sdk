@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -140,6 +141,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
     "aws_secret_access_key",
     "aws_session_token",
 )
+
+LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -454,6 +457,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
     _prompt_cache_key: str | None = PrivateAttr(default=None)
+    _effective_max_input_tokens: int | None = PrivateAttr(default=None)
+    _effective_max_output_tokens: int | None = PrivateAttr(default=None)
+    _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -502,24 +508,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return d
 
     @model_validator(mode="after")
-    def _set_env_side_effects(self):
-        if self.openrouter_site_url:
-            os.environ["OR_SITE_URL"] = self.openrouter_site_url
-        if self.openrouter_app_name:
-            os.environ["OR_APP_NAME"] = self.openrouter_app_name
-        if self.aws_access_key_id:
-            assert isinstance(self.aws_access_key_id, SecretStr)
-            os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
-        if self.aws_secret_access_key:
-            assert isinstance(self.aws_secret_access_key, SecretStr)
-            os.environ["AWS_SECRET_ACCESS_KEY"] = (
-                self.aws_secret_access_key.get_secret_value()
-            )
-        if self.aws_session_token:
-            assert isinstance(self.aws_session_token, SecretStr)
-            os.environ["AWS_SESSION_TOKEN"] = self.aws_session_token.get_secret_value()
-        if self.aws_region_name:
-            os.environ["AWS_REGION_NAME"] = self.aws_region_name
+    def _post_init(self):
+        # NOTE: AWS credentials and OpenRouter site/app identifiers are NOT
+        # written to ``os.environ`` here. Doing so in a multi-tenant agent
+        # server would let one conversation's credentials bleed into another
+        # via the shared process environment (see issue #3138). Instead,
+        # AWS credentials flow per-call through ``_aws_kwargs()`` and the
+        # OpenRouter ``HTTP-Referer`` / ``X-Title`` headers flow per-call
+        # through ``_openrouter_headers()``.
 
         # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
         # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
@@ -551,6 +547,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _openrouter_headers(self) -> dict[str, str]:
+        """Build OpenRouter HTTP-Referer / X-Title headers for per-call use.
+
+        Returns an empty dict when neither field is set. Passed via
+        ``extra_headers`` so litellm forwards them on the OpenRouter request
+        without us having to mutate ``os.environ`` (which would leak across
+        conversations in a multi-tenant server; see issue #3138).
+        """
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
 
     def _aws_kwargs(self) -> dict[str, str]:
         """Build kwargs dict for AWS params to pass to litellm calls."""
@@ -787,7 +798,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
         if self._telemetry.log_enabled:
             telemetry_ctx.update(
                 {
@@ -935,7 +948,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
         if self._telemetry.log_enabled:
             telemetry_ctx.update(
                 {
@@ -1198,12 +1213,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
-        old = getattr(litellm, "modify_params", None)
-        try:
-            litellm.modify_params = flag
-            yield
-        finally:
-            litellm.modify_params = old
+        with self._litellm_modify_params_lock:
+            old = getattr(litellm, "modify_params", None)
+            try:
+                litellm.modify_params = flag
+                yield
+            finally:
+                litellm.modify_params = old
 
     # =========================================================================
     # Capabilities, formatting, and info
@@ -1219,18 +1235,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=self._model_name_for_capabilities(),
         )
 
-        # Context window and max_output_tokens
+        self._effective_max_input_tokens = self.max_input_tokens
         if (
-            self.max_input_tokens is None
+            self._effective_max_input_tokens is None
             and self._model_info is not None
             and isinstance(self._model_info.get("max_input_tokens"), int)
         ):
-            self.max_input_tokens = self._model_info.get("max_input_tokens")
+            self._effective_max_input_tokens = self._model_info.get("max_input_tokens")
 
         # Validate context window size
         self._validate_context_window_size()
 
-        if self.max_output_tokens is None:
+        effective_max_output_tokens = self.max_output_tokens
+        if effective_max_output_tokens is None:
             if any(
                 m in self.model
                 for m in [
@@ -1239,16 +1256,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "kimi-k2-thinking",
                 ]
             ):
-                self.max_output_tokens = (
+                effective_max_output_tokens = (
                     64000  # practical cap (litellm may allow 128k with header)
                 )
                 logger.debug(
-                    f"Setting max_output_tokens to {self.max_output_tokens} "
+                    f"Setting effective max_output_tokens to "
+                    f"{effective_max_output_tokens} "
                     f"for {self.model}"
                 )
             elif self._model_info is not None:
                 if isinstance(self._model_info.get("max_output_tokens"), int):
-                    self.max_output_tokens = self._model_info.get("max_output_tokens")
+                    effective_max_output_tokens = self._model_info.get(
+                        "max_output_tokens"
+                    )
                     # Guard: if max_output_tokens >= the context window,
                     # requesting that many output tokens would leave zero
                     # room for input and strict providers (e.g. AWS Bedrock)
@@ -1256,32 +1276,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     # headroom. We check both max_input_tokens and
                     # max_tokens since either may represent the context
                     # window depending on the provider.
-                    context_window = self.max_input_tokens or self._model_info.get(
-                        "max_tokens"
+                    context_window = (
+                        self.effective_max_input_tokens
+                        or self._model_info.get("max_tokens")
                     )
                     if (
                         context_window is not None
-                        and self.max_output_tokens is not None
-                        and self.max_output_tokens >= context_window
+                        and effective_max_output_tokens is not None
+                        and effective_max_output_tokens >= context_window
                     ):
-                        capped = self.max_output_tokens // 2
+                        capped = effective_max_output_tokens // 2
                         logger.debug(
                             "Capping max_output_tokens from %s to %s "
                             "for %s (max_output_tokens >= context "
                             "window %s)",
-                            self.max_output_tokens,
+                            effective_max_output_tokens,
                             capped,
                             self.model,
                             context_window,
                         )
-                        self.max_output_tokens = capped
+                        effective_max_output_tokens = capped
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting
                     # output that exceeds the context window.
                     max_tokens_value = self._model_info.get("max_tokens")
                     assert isinstance(max_tokens_value, int)  # for type checker
-                    self.max_output_tokens = min(
+                    effective_max_output_tokens = min(
                         max_tokens_value, DEFAULT_MAX_OUTPUT_TOKENS_CAP
                     )
                     if max_tokens_value > DEFAULT_MAX_OUTPUT_TOKENS_CAP:
@@ -1289,19 +1310,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             "Capping max_output_tokens from %s to %s for %s "
                             "(max_tokens may be context window, not output)",
                             max_tokens_value,
-                            self.max_output_tokens,
+                            effective_max_output_tokens,
                             self.model,
                         )
 
         if "o3" in self.model:
             o3_limit = 100000
-            if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
-                self.max_output_tokens = o3_limit
+            if (
+                effective_max_output_tokens is None
+                or effective_max_output_tokens > o3_limit
+            ):
+                effective_max_output_tokens = o3_limit
                 logger.debug(
-                    "Clamping max_output_tokens to %s for %s",
-                    self.max_output_tokens,
+                    "Clamping effective max_output_tokens to %s for %s",
+                    effective_max_output_tokens,
                     self.model,
                 )
+
+        self._effective_max_output_tokens = effective_max_output_tokens
 
     def _validate_context_window_size(self) -> None:
         """Validate that the context window is large enough for OpenHands."""
@@ -1314,13 +1340,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return
 
         # Unknown context window - cannot validate
-        if self.max_input_tokens is None:
+        if self.effective_max_input_tokens is None:
             return
 
         # Check minimum requirement
-        if self.max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
+        if self.effective_max_input_tokens < MIN_CONTEXT_WINDOW_TOKENS:
             raise LLMContextWindowTooSmallError(
-                self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
+                self.effective_max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
             )
 
     def vision_is_active(self) -> bool:
@@ -1377,6 +1403,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def model_info(self) -> dict | None:
         """Returns the model info dictionary."""
         return self._model_info
+
+    @property
+    def effective_max_input_tokens(self) -> int | None:
+        """Resolved context window used at runtime.
+
+        ``max_input_tokens`` remains the user-configured value. When it is
+        unset, this property reflects the value discovered from model metadata.
+        """
+        return self.max_input_tokens or self._effective_max_input_tokens
+
+    @property
+    def effective_max_output_tokens(self) -> int | None:
+        """Resolved output token limit used at runtime.
+
+        ``max_output_tokens`` remains the user-configured value. When it is
+        unset, this property reflects provider/model defaults and safety caps.
+        """
+        return self.max_output_tokens or self._effective_max_output_tokens
 
     # =========================================================================
     # Utilities preserved from previous class
@@ -1521,6 +1565,32 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             return 0
 
+    @classmethod
+    def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
+        """Load a persisted LLM profile payload, applying schema migrations."""
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("LLM profile schema_version must be an integer")
+        if version > LLM_PROFILE_SCHEMA_VERSION:
+            raise ValueError(
+                "LLM profile schema_version "
+                f"{version} is newer than supported version "
+                f"{LLM_PROFILE_SCHEMA_VERSION}"
+            )
+
+        payload.pop("schema_version", None)
+        return cls.model_validate(payload, context=context)
+
+    def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Serialize this LLM for profile persistence."""
+        data = self.model_dump(mode="json", exclude_none=True, context=context)
+        data["schema_version"] = LLM_PROFILE_SCHEMA_VERSION
+        return data
+
     # =========================================================================
     # Serialization helpers
     # =========================================================================
@@ -1540,7 +1610,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         with open(json_path) as f:
             data = json.load(f)
-        return cls.model_validate(data, context=context)
+        return cls.from_persisted(data, context=context)
 
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:

@@ -38,7 +38,7 @@ import sys
 import tomllib
 import urllib.request
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from packaging import version as pkg_version
@@ -74,7 +74,16 @@ class DeprecatedSymbols:
     metadata: dict[str, DeprecationMetadata] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class FieldDefaultChange:
+    package: str
+    object_path: str
+    old_default: str
+    new_default: str
+
+
 DEPRECATION_RUNWAY_MINOR_RELEASES = 5
+FIELD_DEFAULT_CHANGE_REPORT_ENV = "SDK_API_BREAKAGE_REPORT_PATH"
 
 
 PACKAGES: tuple[PackageConfig, ...] = (
@@ -459,6 +468,70 @@ def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
     )
 
 
+def _field_default_node(call: ast.Call) -> ast.AST | None:
+    """Return the AST node representing a ``Field`` default value."""
+    for kw in call.keywords:
+        if kw.arg == "default":
+            return kw.value
+    if call.args:
+        return call.args[0]
+    return None
+
+
+def _remove_field_default(call: ast.Call) -> ast.Call:
+    """Return a copy of a ``Field(...)`` call without its default value."""
+    args = list(call.args)
+    if args:
+        args = args[1:]
+    return ast.Call(
+        func=call.func,
+        args=args,
+        keywords=[kw for kw in call.keywords if kw.arg != "default"],
+    )
+
+
+def _field_default_repr(value: object) -> str | None:
+    """Return the string form of a ``Field`` default value, if present."""
+    call = _parse_field_call(value)
+    if call is None:
+        return None
+    default_node = _field_default_node(call)
+    if default_node is None:
+        return None
+    return ast.unparse(default_node)
+
+
+def _is_field_default_only_change(old_val: object, new_val: object) -> bool:
+    """Check whether only the ``Field`` default value changed.
+
+    Metadata-only kwargs are ignored, but any other semantic ``Field`` argument
+    changes still count as real API breakage.
+    """
+    old_call = _parse_field_call(old_val)
+    new_call = _parse_field_call(new_val)
+    if old_call is None or new_call is None:
+        return False
+
+    old_default = _field_default_node(old_call)
+    new_default = _field_default_node(new_call)
+    if old_default is None or new_default is None:
+        return False
+
+    if ast.dump(old_default, include_attributes=False) == ast.dump(
+        new_default,
+        include_attributes=False,
+    ):
+        return False
+
+    return ast.dump(
+        _remove_field_default(_filter_field_metadata_kwargs(old_call)),
+        include_attributes=False,
+    ) == ast.dump(
+        _remove_field_default(_filter_field_metadata_kwargs(new_call)),
+        include_attributes=False,
+    )
+
+
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     """Check if the change is only in Field metadata (description, title, etc.).
 
@@ -480,6 +553,33 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     ) == ast.dump(
         _filter_field_metadata_kwargs(new_call),
         include_attributes=False,
+    )
+
+
+def _object_path(obj: object | None) -> str:
+    """Return the most specific path available for a griffe object."""
+    if obj is None:
+        return "<unknown>"
+    return str(
+        getattr(obj, "path", None)
+        or getattr(obj, "canonical_path", None)
+        or getattr(obj, "name", None)
+        or "<unknown>"
+    )
+
+
+def _write_field_default_change_report(changes: list[FieldDefaultChange]) -> None:
+    """Write detected public Field default changes to a JSON report file."""
+    report_path = os.environ.get(FIELD_DEFAULT_CHANGE_REPORT_ENV, "").strip()
+    if not report_path:
+        return
+
+    Path(report_path).write_text(
+        json.dumps(
+            {"field_default_changes": [asdict(change) for change in changes]},
+            indent=2,
+        )
+        + "\n"
     )
 
 
@@ -526,6 +626,8 @@ def _collect_breakages_pairs(
     deprecated: DeprecatedSymbols,
     current_version: str,
     title: str,
+    package: str,
+    field_default_changes: list[FieldDefaultChange] | None = None,
 ) -> tuple[list[object], int]:
     """Find breaking changes between pairs of old/new API objects.
 
@@ -548,8 +650,6 @@ def _collect_breakages_pairs(
                 if not getattr(obj, "is_public", True):
                     continue
 
-                # Skip ATTRIBUTE_CHANGED_VALUE when it's just Field metadata changes
-                # (description, title, examples, etc.) - these don't affect runtime
                 if br.kind == BreakageKind.ATTRIBUTE_CHANGED_VALUE:
                     old_value = getattr(br, "old_value", None)
                     new_value = getattr(br, "new_value", None)
@@ -558,6 +658,25 @@ def _collect_breakages_pairs(
                             f"::notice title={title}::Ignoring Field metadata-only "
                             f"change (non-breaking): {obj.name if obj else 'unknown'}"
                         )
+                        continue
+                    if _is_field_default_only_change(old_value, new_value):
+                        object_path = _object_path(obj)
+                        old_default = _field_default_repr(old_value) or "<unknown>"
+                        new_default = _field_default_repr(new_value) or "<unknown>"
+                        print(
+                            f"::warning title={title}::Public Field default changed "
+                            f"(release-note-required): {object_path} "
+                            f"{old_default} -> {new_default}"
+                        )
+                        if field_default_changes is not None:
+                            field_default_changes.append(
+                                FieldDefaultChange(
+                                    package=package,
+                                    object_path=object_path,
+                                    old_default=old_default,
+                                    new_default=new_default,
+                                )
+                            )
                         continue
 
                 print(br.explain(style=ExplanationStyle.GITHUB))
@@ -902,6 +1021,7 @@ def _compute_breakages(
     cfg: PackageConfig,
     *,
     current_version: str = "9999.0.0",
+    field_default_changes: list[FieldDefaultChange] | None = None,
 ) -> tuple[int, int]:
     """Detect breaking changes between old and new package versions.
 
@@ -980,6 +1100,8 @@ def _compute_breakages(
         deprecated=deprecated,
         current_version=current_version,
         title=title,
+        package=cfg.package,
+        field_default_changes=field_default_changes,
     )
     total_breaks += len(breakages)
     removal_policy_errors += member_policy_errors
@@ -987,7 +1109,13 @@ def _compute_breakages(
     return total_breaks, removal_policy_errors
 
 
-def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
+def _check_package(
+    griffe_module,
+    repo_root: str,
+    cfg: PackageConfig,
+    *,
+    field_default_changes: list[FieldDefaultChange] | None = None,
+) -> int:
     """Run breakage checks for a single package. Returns 0 on success."""
     pyproj = os.path.join(repo_root, cfg.source_dir, "pyproject.toml")
     new_version = read_version_from_pyproject(pyproj)
@@ -1017,6 +1145,7 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
             new_root,
             cfg,
             current_version=new_version,
+            field_default_changes=field_default_changes,
         )
     except Exception as e:
         print(f"::error title={title}::Failed to compute breakages: {e}")
@@ -1041,12 +1170,19 @@ def main() -> int:
     ensure_griffe()
     import griffe
 
+    field_default_changes: list[FieldDefaultChange] = []
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")
         print(f"{'=' * 60}")
-        rc |= _check_package(griffe, repo_root, cfg)
+        rc |= _check_package(
+            griffe,
+            repo_root,
+            cfg,
+            field_default_changes=field_default_changes,
+        )
 
+    _write_field_default_change_report(field_default_changes)
     return rc
 
 

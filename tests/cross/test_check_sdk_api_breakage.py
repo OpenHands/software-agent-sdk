@@ -32,9 +32,12 @@ _prod = _load_prod_module()
 PackageConfig = _prod.PackageConfig
 DeprecationMetadata = _prod.DeprecationMetadata
 DeprecatedSymbols = _prod.DeprecatedSymbols
+FieldDefaultChange = _prod.FieldDefaultChange
 _parse_version = _prod._parse_version
 _check_version_bump = _prod._check_version_bump
 _find_deprecated_symbols = _prod._find_deprecated_symbols
+_field_default_repr = _prod._field_default_repr
+_is_field_default_only_change = _prod._is_field_default_only_change
 _is_field_metadata_only_change = _prod._is_field_metadata_only_change
 _was_deprecated = _prod._was_deprecated
 get_pypi_baseline_version = _prod.get_pypi_baseline_version
@@ -535,6 +538,30 @@ def test_is_field_metadata_only_change_default_changed():
     assert _is_field_metadata_only_change(old, new) is False
 
 
+def test_is_field_default_only_change_detects_keyword_default_change():
+    """Changing only Field default value is classified separately."""
+    old = "Field(default='claude-sonnet-4-20250514', description='desc')"
+    new = "Field(default='gpt-5.5', description='desc')"
+
+    assert _is_field_default_only_change(old, new) is True
+
+
+def test_is_field_default_only_change_ignores_other_runtime_changes():
+    """Changing non-default runtime kwargs is not a default-only change."""
+    old = "Field(default='claude-sonnet-4-20250514', alias='model')"
+    new = "Field(default='gpt-5.5', alias='llm_model')"
+
+    assert _is_field_default_only_change(old, new) is False
+
+
+def test_field_default_repr_supports_positional_default():
+    """Positional Field defaults are normalized for reporting."""
+    assert (
+        _field_default_repr("Field('gpt-5.5', description='Model name.')")
+        == "'gpt-5.5'"
+    )
+
+
 def test_is_field_metadata_only_change_not_field():
     """Non-Field values return False."""
     old = "SomeClass(value=1)"
@@ -784,6 +811,50 @@ def test_field_multiline_description_with_quotes_is_not_breaking(tmp_path):
     )
     assert total_breaks == 0
     assert undeprecated == 0
+
+
+def test_field_default_change_is_reported_but_not_breaking(tmp_path):
+    """Public Field default changes should be collected for release notes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(default='claude-sonnet-4-20250514')\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    model: str = Field(default='gpt-5.5')\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    field_default_changes: list[FieldDefaultChange] = []
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        field_default_changes=field_default_changes,
+    )
+
+    assert total_breaks == 0
+    assert undeprecated == 0
+    assert field_default_changes == [
+        _prod.FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.model",
+            old_default="'claude-sonnet-4-20250514'",
+            new_default="'gpt-5.5'",
+        )
+    ]
 
 
 def test_field_json_schema_extra_dict_is_not_breaking(tmp_path):

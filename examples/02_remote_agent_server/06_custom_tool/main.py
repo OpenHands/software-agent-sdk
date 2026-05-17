@@ -1,11 +1,12 @@
 """Example: Using custom tools with remote agent server.
 
 This example demonstrates how to use custom tools with a remote agent server
-by building a custom base image that includes the tool implementation.
+by building a custom base image that includes the tool implementation and
+exposes it to the binary agent server through ``OH_EXTRA_PYTHON_PATH``.
 
 Prerequisites:
     1. Build the custom base image first:
-       cd examples/02_remote_agent_server/05_custom_tool
+       cd examples/02_remote_agent_server/06_custom_tool
        ./build_custom_image.sh
 
     2. Set LLM_API_KEY environment variable
@@ -13,12 +14,14 @@ Prerequisites:
 The workflow is:
 1. Define a custom tool (LogDataTool for logging structured data to JSON)
 2. Create a simple Dockerfile that copies the tool into the base image
-3. Build the custom base image
-4. Use DockerDevWorkspace with base_image pointing to the custom image
-5. DockerDevWorkspace builds the agent server on top of the custom base image
-6. The server dynamically registers tools when the client creates a conversation
-7. The agent can use the custom tool during execution
-8. Verify the logged data by reading the JSON file from the workspace
+3. Set OH_EXTRA_PYTHON_PATH so the binary server can import the custom tool
+4. Build the custom base image
+5. Use DockerDevWorkspace with base_image pointing to the custom image
+6. DockerDevWorkspace builds the binary agent server on top of the custom
+   base image
+7. The server dynamically registers tools when the client creates a conversation
+8. The agent can use the custom tool during execution
+9. Verify the logged data by reading the JSON file from the workspace
 
 This pattern is useful for:
 - Collecting structured data during agent runs (logs, metrics, events)
@@ -101,15 +104,18 @@ else:
     logger.info(f"✅ Custom base image found: {CUSTOM_BASE_IMAGE_TAG}")
 
 # 3) Create a DockerDevWorkspace with the custom base image
-#    DockerDevWorkspace will build the agent server on top of this base image
-logger.info("🚀 Building and starting agent server with custom tools...")
+#    DockerDevWorkspace will build the binary agent server on top of this
+#    base image
+logger.info("🚀 Building and starting binary agent server with custom tools...")
 logger.info("📦 This may take a few minutes on first run...")
 
 with DockerDevWorkspace(
     base_image=CUSTOM_BASE_IMAGE_TAG,
     host_port=8011,
     platform=detect_platform(),
-    target="source",  # NOTE: "binary" target does not work with custom tools
+    # The custom base image sets OH_EXTRA_PYTHON_PATH=/app so the binary
+    # agent server can import custom_tools.log_data from outside the bundle.
+    target="binary",
 ) as workspace:
     logger.info("✅ Custom agent server started!")
 
@@ -244,8 +250,8 @@ with DockerDevWorkspace(
 logger.info("\n✅ Example completed successfully!")
 logger.info("\nThis example demonstrated how to:")
 logger.info("1. Create a custom tool that logs structured data to JSON")
-logger.info("2. Build a simple base image with the custom tool")
-logger.info("3. Use DockerDevWorkspace with base_image to build agent server on top")
+logger.info("2. Build a base image with the custom tool and OH_EXTRA_PYTHON_PATH")
+logger.info("3. Use DockerDevWorkspace to build the binary agent server")
 logger.info("4. Enable dynamic tool registration on the server")
 logger.info("5. Use the custom tool during agent execution")
 logger.info("6. Read the logged data back from the workspace")

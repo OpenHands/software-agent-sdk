@@ -5,10 +5,7 @@ import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.agent_server.models import (
-    StartACPConversationRequest,
-    StartConversationRequest,
-)
+from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
     LLM,
     ACPAgentSettings,
@@ -93,6 +90,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
 
     assert llm_fields["llm.model"].value_type == "string"
     assert llm_fields["llm.model"].prominence is SettingProminence.CRITICAL
+    assert llm_fields["llm.max_input_tokens"].default is None
+    assert llm_fields["llm.max_output_tokens"].default is None
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
@@ -224,7 +223,7 @@ def test_conversation_settings_create_request() -> None:
     assert overridden_request.security_analyzer is None
 
 
-def test_conversation_settings_create_request_for_acp() -> None:
+def test_conversation_settings_create_request_with_acp_agent() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -234,12 +233,12 @@ def test_conversation_settings_create_request_for_acp() -> None:
     agent = ACPAgent(acp_command=["echo", "test"])
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -335,7 +334,7 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
         {"agent_kind": "llm", "llm": {"model": "legacy-model"}}
     )
     assert isinstance(legacy_llm, OpenHandsAgentSettings)
-    assert legacy_llm.agent_kind == "llm"
+    assert legacy_llm.agent_kind == "openhands"
     assert legacy_llm.llm.model == "legacy-model"
 
     acp = validate_agent_settings(
@@ -349,8 +348,8 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
     assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
-    settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
+def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
+    settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == 3
@@ -358,8 +357,8 @@ def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
     assert settings.llm.model == "test-model"
 
 
-def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
-    settings = AgentSettings.from_persisted(
+def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "acp",
@@ -374,10 +373,10 @@ def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
+def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
     the canonical ``'openhands'`` discriminator on read."""
-    settings = AgentSettings.from_persisted(
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "llm",
@@ -391,8 +390,8 @@ def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
     assert settings.llm.model == "legacy-model"
 
 
-def test_agent_settings_from_persisted_drops_legacy_verification_fields() -> None:
-    settings = AgentSettings.from_persisted(
+def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
+    settings = validate_agent_settings(
         {
             "schema_version": 2,
             "agent_kind": "openhands",
@@ -412,9 +411,9 @@ def test_agent_settings_from_persisted_drops_legacy_verification_fields() -> Non
     assert "security_analyzer" not in verification
 
 
-def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
+def test_validate_agent_settings_rejects_newer_schema_version() -> None:
     with pytest.raises(ValueError, match="newer than supported version 3"):
-        AgentSettings.from_persisted({"schema_version": 4, "llm": {"model": "m"}})
+        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
@@ -757,7 +756,7 @@ def test_conversation_settings_create_request_for_llm_variant() -> None:
     assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
 
 
-def test_conversation_settings_create_request_for_acp_variant() -> None:
+def test_conversation_settings_create_request_with_acp_agent_variant() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -767,12 +766,12 @@ def test_conversation_settings_create_request_for_acp_variant() -> None:
     agent = ACPAgentSettings(acp_command=["echo", "test"]).create_agent()
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -811,6 +810,46 @@ def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
 
     exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
     assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
+
+
+def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
+    """ACP env persistence should mirror other secret-bearing settings.
+
+    The on-disk path encrypts values with a cipher, and loading with the same
+    cipher must recover plaintext so ACP agents receive usable environment
+    variables after settings are read back.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
+
+    assert encrypted_value.startswith("gAAAA")
+    assert "sk-real-secret" not in json.dumps(dumped)
+
+    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    restored_from_persisted = validate_agent_settings(
+        dumped, context={"cipher": cipher}
+    )
+    assert isinstance(restored_from_persisted, ACPAgentSettings)
+    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    legacy_plaintext = ACPAgentSettings.model_validate(
+        {
+            "acp_command": ["echo", "test"],
+            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
+        },
+        context={"cipher": cipher},
+    )
+    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:

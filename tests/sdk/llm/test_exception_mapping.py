@@ -1,4 +1,9 @@
-from litellm.exceptions import BadRequestError
+import httpx
+from litellm.exceptions import (
+    AuthenticationError,
+    BadRequestError,
+    PermissionDeniedError,
+)
 
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -23,6 +28,24 @@ def test_map_auth_error_from_openai_error():
     # auth-like message instead, as providers commonly route auth issues
     # through BadRequestError in LiteLLM
     e = BadRequestError("status 401 Unauthorized: missing API key", MODEL, PROVIDER)
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMAuthenticationError)
+
+
+def test_map_typed_authentication_error_without_pattern_match():
+    # Typed 401 from litellm whose message text doesn't contain any of the
+    # auth heuristic patterns — should still map via the isinstance check.
+    e = AuthenticationError("Bearer token expired", PROVIDER, MODEL)
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMAuthenticationError)
+
+
+def test_map_typed_permission_denied_error():
+    response = httpx.Response(
+        status_code=403,
+        request=httpx.Request("POST", "https://example.test"),
+    )
+    e = PermissionDeniedError("Region not allowed", PROVIDER, MODEL, response)
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMAuthenticationError)
 

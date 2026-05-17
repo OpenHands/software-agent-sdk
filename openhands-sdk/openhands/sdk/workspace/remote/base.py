@@ -345,12 +345,11 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         Uses ``X-Expose-Secrets: plaintext`` so secret fields (e.g. LLM
         api_key) are returned as plain strings.  The outer response is
         validated via :class:`SettingsResponse`, then the ``agent_settings``
-        dict is validated through :func:`validate_agent_settings` which
-        picks the correct discriminated-union variant
+        dict is validated through :meth:`SettingsResponse.get_agent_settings`,
+        which applies the persisted settings migration entry point before
+        picking the correct discriminated-union variant
         (``OpenHandsAgentSettings`` or ``ACPAgentSettings``).
         """
-        from openhands.sdk.settings import validate_agent_settings
-
         headers = dict(self._headers)
         headers["X-Expose-Secrets"] = "plaintext"
 
@@ -358,7 +357,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         response.raise_for_status()
 
         data = SettingsResponse.model_validate(response.json())
-        return validate_agent_settings(data.agent_settings)
+        return data.get_agent_settings()
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),

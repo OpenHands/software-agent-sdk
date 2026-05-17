@@ -124,6 +124,7 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
+- **Directory Example Entrypoints**: PRs that add or modify folder-based runnable examples under `examples/` should use `main.py` as the entrypoint and add the directory to `_TARGET_DIRECTORIES` in `tests/examples/test_examples.py`; see [Directory-Based Examples](#directory-based-examples)
 - **Event Type Deprecation**: Changes to event types (Pydantic models used in serialization) must handle deprecated fields properly
 - **Thread Safety**: New methods in `LocalConversation` that read or write `self._state` must use `with self._state:` — see the [Concurrency](#concurrency---localconversation-state-lock) section below
 - **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
@@ -131,6 +132,18 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
 - **Secret Serialization**: Fields that carry secrets must use `serialize_secret()` from `openhands.sdk.utils.pydantic_secrets`. For `dict[str, str]` secret fields, wrap each value in `SecretStr` and call `serialize_secret` per value. Do not hand-roll redaction logic (e.g. custom sentinels or inline `expose_secrets` checks) in field serializers
 - **Info-Log Payloads**: `logger.info(...)` must not dump objects, dicts, or variable-length lists — see [Logging Hygiene](#logging-hygiene)
+
+## Directory-Based Examples
+
+When a PR adds or modifies a runnable example represented by a directory under `examples/`, verify that:
+
+1. The runnable entrypoint is named `main.py`.
+2. Helper modules inside that directory are not accidentally treated as standalone examples.
+3. `tests/examples/test_examples.py` includes the example directory in `_TARGET_DIRECTORIES` when the example should run in the `test-examples` workflow.
+4. The example prints an `EXAMPLE_COST: ...` marker when run by the workflow.
+
+Do not ask for this convention on support scripts that are intentionally named for GitHub workflow consumption (for example reusable automation scripts under `examples/03_github_workflows/`) unless they are presented as a directory-based runnable example.
+
 
 ## Event Type Deprecation - Critical Review Checkpoint
 

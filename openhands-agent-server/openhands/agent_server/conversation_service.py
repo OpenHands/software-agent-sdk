@@ -1,6 +1,8 @@
 import asyncio
 import importlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -11,14 +13,14 @@ from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    LEASE_RENEW_INTERVAL_SECONDS,
+    EventService,
+)
 from openhands.agent_server.models import (
-    ACPConversationInfo,
-    ACPConversationPage,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    StartACPConversationRequest,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -26,7 +28,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Agent, AgentContext, Event, Message
+from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -212,9 +214,9 @@ def _create_conversation_worktree(
 
 
 def _prepare_request_workspace(
-    request: StartConversationRequest | StartACPConversationRequest,
+    request: StartConversationRequest,
     conversation_id: UUID,
-) -> StartConversationRequest | StartACPConversationRequest:
+) -> StartConversationRequest:
     if not request.worktree:
         return request
 
@@ -223,6 +225,7 @@ def _prepare_request_workspace(
         return request
 
     new_workspace, source_workspace, worktree_root, branch = worktree
+    assert request.agent is not None
     agent = _append_worktree_guidance(
         request.agent,
         source_workspace=source_workspace,
@@ -236,22 +239,9 @@ def _prepare_request_workspace(
 logger = logging.getLogger(__name__)
 
 
-class ConversationContractMismatchError(ValueError):
-    """Raised when a conversation ID exists under a different REST contract."""
-
-
-def _conversation_contract_mismatch_message(conversation_id: UUID) -> str:
-    return (
-        f"Conversation {conversation_id} exists but is only available through the "
-        "ACP conversation contract. Use /api/acp/conversations or attach with "
-        "ACPAgent."
-    )
-
-
-def _compose_conversation_info_v1(
+def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    assert isinstance(stored.agent, Agent)
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
@@ -264,28 +254,10 @@ def _compose_conversation_info_v1(
     )
 
 
-def _compose_acp_conversation_info(
-    stored: StoredConversation, state: ConversationState
-) -> ACPConversationInfo:
-    return ACPConversationInfo(
-        **state.model_dump(mode="json"),
-        title=stored.title,
-        metrics=stored.metrics,
-        created_at=stored.created_at,
-        updated_at=stored.updated_at,
-    )
-
-
-def _is_v1_conversation(stored: StoredConversation) -> bool:
-    return isinstance(stored.agent, Agent)
-
-
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
-) -> ConversationInfo | ACPConversationInfo:
-    if _is_v1_conversation(stored):
-        return _compose_conversation_info_v1(stored, state)
-    return _compose_acp_conversation_info(stored, state)
+) -> ConversationInfo:
+    return _compose_conversation_info(stored, state)
 
 
 def _update_state_tags_sync(
@@ -298,7 +270,7 @@ def _update_state_tags_sync(
 
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
-) -> ConversationInfo | ACPConversationInfo:
+) -> ConversationInfo:
     with state:
         return _compose_webhook_conversation_info(stored, state)
 
@@ -350,10 +322,13 @@ class ConversationService:
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
+    max_concurrent_runs: int = 10
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
+    _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -361,21 +336,19 @@ class ConversationService:
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
-        if not _is_v1_conversation(event_service.stored):
-            return None
         state = await event_service.get_state()
-        return _compose_conversation_info_v1(event_service.stored, state)
+        return _compose_conversation_info(event_service.stored, state)
 
     async def get_acp_conversation(
         self, conversation_id: UUID
-    ) -> ACPConversationInfo | None:
+    ) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
         state = await event_service.get_state()
-        return _compose_acp_conversation_info(event_service.stored, state)
+        return _compose_conversation_info(event_service.stored, state)
 
     async def search_conversations(
         self,
@@ -389,10 +362,9 @@ class ConversationService:
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_acp=False,
         )
         return ConversationPage(
-            items=cast(list[ConversationInfo], items),
+            items=items,
             next_page_id=next_page_id,
         )
 
@@ -402,16 +374,15 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
-    ) -> ACPConversationPage:
+    ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_acp=True,
         )
-        return ACPConversationPage(
-            items=cast(list[ACPConversationInfo], items),
+        return ConversationPage(
+            items=items,
             next_page_id=next_page_id,
         )
 
@@ -421,23 +392,15 @@ class ConversationService:
         limit: int,
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
-        *,
-        include_acp: bool,
-    ) -> tuple[list[ConversationInfo | ACPConversationInfo], str | None]:
+    ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
         # Collect all conversations with their info
         all_conversations = []
         for id, event_service in self._event_services.items():
-            if not include_acp and not _is_v1_conversation(event_service.stored):
-                continue
             state = await event_service.get_state()
-            conversation_info = (
-                _compose_acp_conversation_info(event_service.stored, state)
-                if include_acp
-                else _compose_conversation_info_v1(event_service.stored, state)
-            )
+            conversation_info = _compose_conversation_info(event_service.stored, state)
             # Apply status filter if provided
             if (
                 execution_status is not None
@@ -484,25 +447,11 @@ class ConversationService:
         self,
         execution_status: ConversationExecutionStatus | None = None,
     ) -> int:
-        return await self._count_conversations(
-            execution_status=execution_status,
-            include_acp=False,
-        )
-
-    async def count_acp_conversations(
-        self,
-        execution_status: ConversationExecutionStatus | None = None,
-    ) -> int:
-        return await self._count_conversations(
-            execution_status=execution_status,
-            include_acp=True,
-        )
+        return await self._count_conversations(execution_status=execution_status)
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
-        *,
-        include_acp: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -510,8 +459,6 @@ class ConversationService:
 
         count = 0
         for event_service in self._event_services.values():
-            if not include_acp and not _is_v1_conversation(event_service.stored):
-                continue
             state = await event_service.get_state()
 
             # Apply status filter if provided
@@ -540,10 +487,10 @@ class ConversationService:
 
     async def batch_get_acp_conversations(
         self, conversation_ids: list[UUID]
-    ) -> list[ACPConversationInfo | None]:
+    ) -> list[ConversationInfo | None]:
         results = await asyncio.gather(
             *[
-                self.get_acp_conversation(conversation_id)
+                self.get_conversation(conversation_id)
                 for conversation_id in conversation_ids
             ]
         )
@@ -584,41 +531,26 @@ class ConversationService:
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
-        conversation_info, is_new = await self._start_conversation(request)
-        assert isinstance(conversation_info, ConversationInfo)
-        return conversation_info, is_new
+        return await self._start_conversation(request)
 
     async def start_acp_conversation(
-        self, request: StartACPConversationRequest
-    ) -> tuple[ACPConversationInfo, bool]:
-        conversation_info, is_new = await self._start_conversation(request)
-        assert isinstance(conversation_info, ACPConversationInfo)
-        return conversation_info, is_new
+        self, request: StartConversationRequest
+    ) -> tuple[ConversationInfo, bool]:
+        return await self._start_conversation(request)
 
     async def _start_conversation(
-        self, request: StartConversationRequest | StartACPConversationRequest
-    ) -> tuple[ConversationInfo | ACPConversationInfo, bool]:
+        self,
+        request: StartConversationRequest,
+    ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        use_acp_contract = isinstance(request, StartACPConversationRequest)
-
         existing_event_service = self._event_services.get(conversation_id)
-        if (
-            existing_event_service is not None
-            and not use_acp_contract
-            and not _is_v1_conversation(existing_event_service.stored)
-        ):
-            raise ConversationContractMismatchError(
-                _conversation_contract_mismatch_message(conversation_id)
-            )
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
-            conversation_info = (
-                _compose_acp_conversation_info(existing_event_service.stored, state)
-                if use_acp_contract
-                else _compose_conversation_info_v1(existing_event_service.stored, state)
+            conversation_info = _compose_conversation_info(
+                existing_event_service.stored, state
             )
             return conversation_info, False
 
@@ -694,11 +626,7 @@ class ConversationService:
             await event_service.send_message(message, True)
 
         state = await event_service.get_state()
-        conversation_info = (
-            _compose_acp_conversation_info(event_service.stored, state)
-            if use_acp_contract
-            else _compose_conversation_info_v1(event_service.stored, state)
-        )
+        conversation_info = _compose_conversation_info(event_service.stored, state)
 
         # Notify conversation webhooks about the started conversation
         await self._notify_conversation_webhooks(
@@ -910,7 +838,7 @@ class ConversationService:
         )
         # Extract the persisted data, then discard the temporary conversation.
         fork_conv_id = fork_conv.id
-        fork_agent = cast(Agent, fork_conv.agent)
+        fork_agent = cast(AgentBase, fork_conv.agent)
         fork_workspace = fork_conv.workspace
         fork_conv.delete_on_close = False
         fork_conv.close()
@@ -931,10 +859,14 @@ class ConversationService:
             raise
 
         state = await fork_event_service.get_state()
-        return _compose_conversation_info_v1(fork_event_service.stored, state)
+        return _compose_conversation_info(fork_event_service.stored, state)
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
+        self._run_executor = ThreadPoolExecutor(
+            max_workers=self.max_concurrent_runs,
+            thread_name_prefix="conversation-run",
+        )
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
             stored: StoredConversation | None = None
@@ -1008,9 +940,36 @@ class ConversationService:
             for webhook_spec in self.webhook_specs
         ]
 
+        self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
+
         return self
 
+    async def _renew_all_leases_loop(self) -> None:
+        """Single background task that renews leases for all active conversations.
+
+        Replaces N per-conversation renewal tasks with one centralized loop,
+        reducing asyncio task overhead.  Each renewal involves synchronous
+        file I/O (FileLock + read + write), so individual calls are offloaded
+        via ``asyncio.to_thread`` to avoid blocking the event loop.
+        """
+        try:
+            while True:
+                await asyncio.sleep(LEASE_RENEW_INTERVAL_SECONDS)
+                event_services = self._event_services
+                if event_services is None:
+                    return
+                for event_service in list(event_services.values()):
+                    await asyncio.to_thread(event_service.renew_lease)
+        except asyncio.CancelledError:
+            raise
+
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._lease_renewal_task is not None:
+            self._lease_renewal_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._lease_renewal_task
+            self._lease_renewal_task = None
+
         event_services = self._event_services
         if event_services is None:
             return
@@ -1022,6 +981,9 @@ class ConversationService:
                 for event_service in event_services.values()
             ]
         )
+        if self._run_executor is not None:
+            self._run_executor.shutdown(wait=False)
+            self._run_executor = None
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -1032,6 +994,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            max_concurrent_runs=config.max_concurrent_runs,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -1045,6 +1008,10 @@ class ConversationService:
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
         )
+        # Lease renewal is handled by the centralized
+        # _renew_all_leases_loop task on ConversationService.
+        event_service._external_lease_renewal = True
+        event_service._run_executor = self._run_executor
 
         try:
             await event_service.start()

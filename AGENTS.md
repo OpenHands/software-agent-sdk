@@ -114,7 +114,9 @@ When reviewing code, provide constructive feedback:
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- Directory-based runnable examples under `examples/` should expose their entrypoint as `main.py`, and `tests/examples/test_examples.py` should explicitly list the example directory in `_TARGET_DIRECTORIES` so the non-recursive example workflow collects it without accidentally running helper modules.
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
+
 - `agent-server` now defaults `TMUX_TMPDIR` to a per-process directory under the system temp dir (`openhands-agent-server-<pid>`) when the environment variable is unset. This isolates tmux sockets/cleanup across concurrent server instances while still respecting an explicit `TMUX_TMPDIR` override.
 - Conversation worktrees for git-backed local workspaces live under `/tmp/conversation-worktrees/<conversation_id>/<repo_root.name>`, and if the original workspace points at a subdirectory inside the repo, the active workspace should preserve that relative path inside the worktree.
 
@@ -160,6 +162,8 @@ consult each relevant package-level AGENTS.md.
   Pydantic `Field(...)` declarations as non-breaking, including adding,
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
+- Public SDK `Field(default=...)` changes are treated separately from removals/structural API breakages: the API breakage workflow should surface them as behavioral compatibility changes, auto-apply the green `release-note-required` label on PRs, and the release workflow should prepend those labeled PRs to generated GitHub release notes.
+
 - The SDK API breakage checker compares stringified `Field(...)` values by
   parsing them as Python expressions after escaping literal newlines inside
   quoted strings; this avoids false positives on multiline descriptions that

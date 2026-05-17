@@ -752,6 +752,12 @@ class ACPAgent(AgentBase):
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
+    # Suffix rendered once at session start from agent_context + secret_registry.
+    # "unused"               — no agent_context or empty suffix
+    # "pending_first_prompt" — new session; inject into first user message
+    # "installed"            — already in subprocess history; skip further injection
+    _suffix_install_state: str = PrivateAttr(default="unused")
+    _installed_suffix: str | None = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
 
@@ -874,22 +880,6 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Spawn the ACP server and initialize a session."""
-        # Emit a placeholder system prompt so the visualizer shows a section
-        # even though the real system prompt is managed by the ACP server.
-        on_event(
-            SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(
-                    text=(
-                        "This conversation is powered by an ACP server. "
-                        "The system prompt and tools are managed by the "
-                        "ACP server and are not available for display."
-                    )
-                ),
-                tools=[],
-            )
-        )
-
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
         # server tools, MCP configuration, and context-window management remain
@@ -915,6 +905,14 @@ class ACPAgent(AgentBase):
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         self._executor = AsyncExecutor()
+
+        # Render the suffix once, pulling secrets from the conversation's
+        # secret_registry to match the regular Agent's get_dynamic_context().
+        self._installed_suffix = self._render_suffix(state)
+        # A prior session id in agent_state means we are resuming; the suffix
+        # is already in the subprocess's persisted history from the original
+        # session, so no re-injection is needed.
+        resumed = state.agent_state.get("acp_session_id") is not None
 
         try:
             self._start_acp_server(state)
@@ -942,6 +940,41 @@ class ACPAgent(AgentBase):
             "acp_session_id": self._session_id,
             "acp_session_cwd": self._working_dir,
         }
+
+        if self._installed_suffix:
+            self._suffix_install_state = (
+                "installed" if resumed else "pending_first_prompt"
+            )
+
+        # Emit a placeholder system prompt so the visualizer shows a section
+        # even though the real system prompt is managed by the ACP server.
+        # dynamic_context mirrors agent.py's SystemPromptEvent so that tooling
+        # (UI, tests) can inspect what suffix was installed.
+        on_event(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(
+                    text=(
+                        "This conversation is powered by an ACP server. "
+                        "The system prompt and tools are managed by the "
+                        "ACP server and are not available for display."
+                    )
+                ),
+                dynamic_context=TextContent(text=self._installed_suffix)
+                if self._installed_suffix
+                else None,
+                tools=[],
+            )
+        )
+
+    def _render_suffix(self, state: ConversationState) -> str | None:
+        """Render the system suffix once, including secrets from the registry."""
+        if not self.agent_context:
+            return None
+        secret_infos = state.secret_registry.get_secret_infos()
+        return self.agent_context.to_acp_prompt_context(
+            additional_secret_infos=secret_infos
+        )
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
@@ -1223,10 +1256,12 @@ class ACPAgent(AgentBase):
                     acp_block = _image_url_to_acp_block(url)
                     if acp_block is not None:
                         blocks.append(acp_block)
-        if self.agent_context:
-            acp_prompt_context = self.agent_context.to_acp_prompt_context()
-            if acp_prompt_context:
-                blocks.append(text_block(acp_prompt_context))
+        if (
+            self._suffix_install_state == "pending_first_prompt"
+            and self._installed_suffix
+        ):
+            blocks.append(text_block(self._installed_suffix))
+            self._suffix_install_state = "installed"
         if not blocks:
             return None
         return blocks
