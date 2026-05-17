@@ -211,7 +211,13 @@ class TestLLM(LLM):
         on_token: AnyTokenCallbackType | None = None,  # noqa: ARG002
         **kwargs: Any,
     ) -> LLMResponse:
-        """Async variant that delegates to the synchronous :meth:`completion`."""
+        """Async variant that delegates to the synchronous :meth:`completion`.
+
+        ``on_token`` is accepted for API compatibility but not forwarded
+        because :meth:`completion` ignores it and the type union
+        (sync | async callback) is not assignable to the sync-only
+        signature.
+        """
         return self.completion(
             messages=messages,
             tools=tools,

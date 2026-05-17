@@ -727,18 +727,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> LLMResponse:
         """Async variant of :meth:`_handle_error`.
 
-        Fallback is still synchronous (fallback LLMs are expected to be rare);
-        the primary purpose of the async path is to avoid blocking on the happy
-        path.
+        The *fallback_call_fn* is synchronous (it calls the fallback LLM's
+        sync ``completion``/``responses``), so the fallback attempt is
+        offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
+        avoid blocking the event loop.
         """
+        import asyncio
+
         assert self._telemetry is not None
         self._telemetry.on_error(error)
         if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
-            result = self.fallback_strategy.try_fallback(
-                primary_model=self.model,
-                primary_error=error,
-                primary_metrics=self.metrics,
-                call_fn=fallback_call_fn,
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                self.fallback_strategy.try_fallback,
+                self.model,
+                error,
+                self.metrics,
+                fallback_call_fn,
             )
             if result is not None:
                 return result
@@ -1033,6 +1039,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=resp
             )
         except Exception as e:
+            # Fallback is synchronous; cast the token callback since the
+            # fallback LLM's sync path accepts TokenCallbackType.
+            _fb_token = cast("TokenCallbackType | None", on_token)
             return await self._ahandle_error(
                 e,
                 lambda fb: fb.completion(
@@ -1040,6 +1049,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     _return_metrics,
                     add_security_risk_prediction,
+                    _fb_token,
                 ),
             )
 
@@ -1447,6 +1457,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 message=message, metrics=metrics_snapshot, raw_response=completed
             )
         except Exception as e:
+            _fb_token = cast("TokenCallbackType | None", on_token)
             return await self._ahandle_error(
                 e,
                 lambda fb: fb.responses(
@@ -1456,6 +1467,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     _return_metrics,
                     add_security_risk_prediction,
+                    _fb_token,
                 ),
             )
 

@@ -1,4 +1,11 @@
-"""Tests for conversation.interrupt() — instant cancellation of arun()."""
+"""Tests for conversation.interrupt() — instant cancellation of arun().
+
+Covers:
+- Async path verification (acompletion is actually called, not sync fallback)
+- CancelledError not re-raised from arun()
+- interrupt() after natural completion (no-op)
+- Multiple rapid interrupt() calls
+"""
 
 import asyncio
 from unittest.mock import MagicMock
@@ -128,6 +135,12 @@ async def test_interrupt_is_resumable(tmp_path):
         def __init__(self):
             super().__init__(model="test-counting", usage_id="test-c")
 
+        def completion(  # type: ignore[override]
+            self, messages, tools=None, **kw
+        ) -> LLMResponse:
+            self._call_count += 1
+            return _make_response("test-counting")
+
         async def acompletion(  # type: ignore[override]
             self, messages, tools=None, **kw
         ) -> LLMResponse:
@@ -146,3 +159,85 @@ async def test_interrupt_is_resumable(tmp_path):
     conv.send_message("continue")
     await conv.arun()
     assert llm._call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_arun_calls_acompletion_not_completion(tmp_path):
+    """Verify that arun() exercises the async path (acompletion)."""
+
+    class TrackingLLM(LLM):
+        _sync_calls: int = PrivateAttr(default=0)
+        _async_calls: int = PrivateAttr(default=0)
+
+        def __init__(self):
+            super().__init__(model="test-track", usage_id="test-t")
+
+        def completion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            self._sync_calls += 1
+            return _make_response("test-track")
+
+        async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            self._async_calls += 1
+            return _make_response("test-track")
+
+    llm = TrackingLLM()
+    conv = _make_conversation(llm, tmp_path)
+    await conv.arun()
+
+    assert llm._async_calls == 1, "arun() should call acompletion"
+    assert llm._sync_calls == 0, "arun() should NOT call sync completion"
+
+
+@pytest.mark.asyncio
+async def test_arun_does_not_raise_cancelled_error(tmp_path):
+    """CancelledError must NOT propagate out of arun()."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+
+    task = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+    conv.interrupt()
+
+    # If CancelledError propagated, wait_for would raise it.
+    # arun() should return cleanly with no exception.
+    await asyncio.wait_for(task, timeout=2.0)
+    # If we reach here, no CancelledError was raised — test passes.
+
+
+@pytest.mark.asyncio
+async def test_interrupt_after_natural_completion_is_noop(tmp_path):
+    """interrupt() after arun() completes naturally should be a safe no-op."""
+
+    class InstantLLM(LLM):
+        def __init__(self):
+            super().__init__(model="test-instant", usage_id="test-i")
+
+        def completion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            return _make_response("test-instant")
+
+        async def acompletion(self, messages, tools=None, **kw) -> LLMResponse:  # type: ignore[override]
+            return _make_response("test-instant")
+
+    conv = _make_conversation(InstantLLM(), tmp_path)
+    await conv.arun()
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+
+    # interrupt() after completion — should not crash or change status
+    conv.interrupt()
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_multiple_rapid_interrupts(tmp_path):
+    """Multiple rapid interrupt() calls should not crash."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+
+    task = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+
+    # Fire multiple interrupts rapidly
+    conv.interrupt()
+    conv.interrupt()
+    conv.interrupt()
+
+    await asyncio.wait_for(task, timeout=2.0)
+    assert conv.state.execution_status == ConversationExecutionStatus.PAUSED

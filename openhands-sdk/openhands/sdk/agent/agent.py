@@ -744,24 +744,35 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             on_event(error_message)
             return
         except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as
+            # structurally invalid (for example, broken
+            # tool_use/tool_result pairing).  Route this into
+            # condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream
+            # bugs remain visible.
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()
             ):
                 logger.warning(
                     "LLM raised malformed conversation history error, "
-                    "triggering condensation retry: %s",
+                    "triggering condensation retry with condensed "
+                    "history: %s",
                     e,
                 )
                 on_event(CondensationRequest())
                 return
             logger.warning(
-                "LLM raised malformed conversation history error but no "
-                "condenser can handle condensation requests: %s",
+                "LLM raised malformed conversation history error but "
+                "no condenser can handle condensation requests. This "
+                "usually indicates an upstream event-stream or resume "
+                "bug: %s",
                 e,
             )
             raise e
         except LLMContextWindowExceedError as e:
+            # If condenser is available and handles requests, trigger
+            # condensation
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()
@@ -771,6 +782,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 )
                 on_event(CondensationRequest())
                 return
+            # No condenser available; log helpful warning
             self._log_context_window_exceeded_warning()
             raise e
 

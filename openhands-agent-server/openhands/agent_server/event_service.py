@@ -811,7 +811,12 @@ class EventService:
             if self._run_task is not None and not self._run_task.done():
                 with suppress(Exception):
                     await asyncio.wait_for(self._run_task, timeout=5.0)
-                self._run_task = None
+                # Only clear _run_task if it actually finished; if
+                # wait_for timed out the task may still be running and
+                # clearing prematurely would allow a second run() to
+                # start while the first is still in progress.
+                if self._run_task is not None and self._run_task.done():
+                    self._run_task = None
             await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):

@@ -1005,20 +1005,26 @@ class LocalConversation(BaseConversation):
                         )
                         break
         except asyncio.CancelledError:
+            # CancelledError is intentionally NOT re-raised.  ``interrupt()``
+            # uses ``asyncio.Task.cancel()`` to break out of ``arun()`` and
+            # expects the task to terminate cleanly.  Re-raising would
+            # propagate the cancellation to EventService/caller which would
+            # surface it as an unexpected error.  Instead we transition to
+            # PAUSED so the conversation can be resumed later.
             logger.info("arun() interrupted via task cancellation")
-            self._state.execution_status = ConversationExecutionStatus.PAUSED
-            self._on_event(InterruptEvent())
-            # Do NOT re-raise: the caller (interrupt / EventService) expects
-            # a clean return, not CancelledError propagation.
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._on_event(InterruptEvent())
         except Exception as e:
-            self._state.execution_status = ConversationExecutionStatus.ERROR
-            self._on_event(
-                ConversationErrorEvent(
-                    source="environment",
-                    code=e.__class__.__name__,
-                    detail=str(e),
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
+                    )
                 )
-            )
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
