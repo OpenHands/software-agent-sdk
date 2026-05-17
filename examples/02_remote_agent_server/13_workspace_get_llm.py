@@ -23,7 +23,7 @@ This pattern enables:
 import os
 
 import httpx
-from _utils import ManagedAPIServer
+from scripts.utils import ManagedAPIServer
 
 from openhands.sdk import Conversation, get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
