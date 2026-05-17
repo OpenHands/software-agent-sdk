@@ -47,9 +47,8 @@ Routing is metadata-first
 `external_model.provider`) with a name-pattern fallback (see `models.py`).
 Results are cached in-process with a 5-minute TTL.
 
-See `_local/skills/databricks-ai-gateway-fm-apis/SKILL.md` for the
-authoritative routing table, example payloads per family, and a runnable
-`probe.py` that self-verifies every native path.
+See `models.py` for the authoritative routing table and `native.py` for
+the per-family request/response adapters.
 
 ## Authentication
 
