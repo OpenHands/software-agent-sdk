@@ -159,11 +159,35 @@ class ParallelToolExecutor:
         executes and ensures that ``ResourceLockManager``'s threading
         locks are acquired on the worker thread, not the event-loop
         thread.
+
+        If the asyncio task is cancelled while the thread is running
+        (e.g. via ``conversation.interrupt()``), we call
+        ``tool.executor.interrupt()`` to signal the tool to abort
+        (e.g. send Ctrl+C to a terminal subprocess).  The thread
+        still runs to completion, but the interrupted command
+        finishes quickly rather than blocking until its original
+        timeout.
         """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
+        fut = loop.run_in_executor(
             None, self._run_safe, action, tool_runner, tool, cancel_token
         )
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            # The asyncio task was cancelled (interrupt), but the
+            # thread-pool worker is still running.  Signal the tool
+            # to abort its in-flight work so the thread exits quickly.
+            if tool is not None and tool.executor is not None:
+                try:
+                    tool.executor.interrupt()
+                except Exception:
+                    logger.debug(
+                        "executor.interrupt() failed for '%s'",
+                        action.tool_name,
+                        exc_info=True,
+                    )
+            raise
 
     @staticmethod
     def _cancelled_error(action: ActionEvent) -> list[Event]:
