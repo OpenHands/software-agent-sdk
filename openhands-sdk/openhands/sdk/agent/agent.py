@@ -185,6 +185,42 @@ class _ActionBatch:
             results_by_id=results_by_id,
         )
 
+    @classmethod
+    async def aprepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> _ActionBatch:
+        """Async variant of :meth:`prepare`.
+
+        Uses :meth:`ParallelToolExecutor.aexecute_batch` so that each
+        tool call runs in its own thread and multiple calls are
+        dispatched concurrently via :func:`asyncio.gather`.
+        """
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = await executor.aexecute_batch(executable, tool_runner, tools)
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
+
     def emit(self, on_event: ConversationCallbackType) -> None:
         """Emit all events in original action order."""
         for ae in self.action_events:
@@ -473,6 +509,39 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             ),
         )
 
+    async def _aexecute_actions(
+        self,
+        conversation: LocalConversation,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Async variant of :meth:`_execute_actions`.
+
+        Each tool call runs in its own thread via
+        :meth:`ParallelToolExecutor.aexecute_batch`, giving the event
+        loop an ``await`` boundary between every tool invocation.
+        """
+        state = conversation.state
+        batch = await _ActionBatch.aprepare(
+            action_events,
+            state=state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+        )
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
+
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
         self,
@@ -612,9 +681,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """Async variant of :meth:`step`.
 
         The LLM completion is performed asynchronously via
-        :func:`amake_llm_completion`; post-LLM processing (tool dispatch,
-        event emission) remains synchronous because tool execution involves
-        filesystem / process I/O that is inherently blocking.
+        :func:`amake_llm_completion`.  Tool dispatch uses
+        :meth:`_aexecute_actions` which runs each tool call in its own
+        thread via :func:`asyncio.loop.run_in_executor` and schedules
+        parallel calls with :func:`asyncio.gather`, keeping the event
+        loop responsive during blocking tool I/O.
         """
         state = conversation.state
         # Check for pending actions (implicit confirmation)
@@ -624,7 +695,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "Confirmation mode: Executing %d pending action(s)",
                 len(pending_actions),
             )
-            self._execute_actions(conversation, pending_actions, on_event)
+            await self._aexecute_actions(conversation, pending_actions, on_event)
             return
 
         if state.last_user_message_id is not None:
@@ -708,7 +779,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         match response_type:
             case LLMResponseType.TOOL_CALLS:
-                self._handle_tool_calls(
+                await self._ahandle_tool_calls(
                     message, llm_response, conversation, state, on_event
                 )
             case LLMResponseType.CONTENT:

@@ -618,10 +618,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     ) -> None:
         """Async variant of :meth:`step`.
 
-        Default implementation delegates to the synchronous ``step()``.
+        Default implementation runs the synchronous ``step()`` in a
+        thread via :func:`asyncio.loop.run_in_executor` so that
+        blocking tool I/O does not starve the event loop.
         Subclasses that perform async LLM calls should override this.
         """
-        self.step(conversation, on_event, on_token)
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.step, conversation, on_event, on_token)
 
     def verify(
         self,

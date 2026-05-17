@@ -18,6 +18,7 @@ while tools touching *different* resources can run concurrently.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
@@ -89,6 +90,64 @@ class ParallelToolExecutor:
             ]
 
         return [future.result() for future in futures]
+
+    async def aexecute_batch(
+        self,
+        action_events: Sequence[ActionEvent],
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+    ) -> list[list[Event]]:
+        """Async variant of :meth:`execute_batch`.
+
+        Each tool call is dispatched to a thread pool worker via
+        :func:`asyncio.loop.run_in_executor` and scheduled
+        concurrently with :func:`asyncio.gather`.  A
+        :class:`asyncio.Semaphore` enforces the same concurrency
+        limit as the sync path's :class:`ThreadPoolExecutor`.
+
+        The *tool_runner* is the same **synchronous** callable used by
+        :meth:`execute_batch` (i.e. ``_execute_action_event``).
+        Resource locking via :class:`ResourceLockManager` (threading
+        locks) works correctly because each tool call runs in its own
+        thread.
+        """
+        if not action_events:
+            return []
+
+        def _resolve(ae: ActionEvent) -> ToolDefinition | None:
+            return tools.get(ae.tool_name) if tools else None
+
+        if len(action_events) == 1 or self._max_workers == 1:
+            return [
+                await self._arun_safe(action, tool_runner, _resolve(action))
+                for action in action_events
+            ]
+
+        sem = asyncio.Semaphore(self._max_workers)
+
+        async def _limited(action: ActionEvent) -> list[Event]:
+            async with sem:
+                return await self._arun_safe(action, tool_runner, _resolve(action))
+
+        return list(await asyncio.gather(*[_limited(a) for a in action_events]))
+
+    async def _arun_safe(
+        self,
+        action: ActionEvent,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tool: ToolDefinition | None = None,
+    ) -> list[Event]:
+        """Run :meth:`_run_safe` in a thread via ``run_in_executor``.
+
+        This keeps the event loop free while the (blocking) tool
+        executes and ensures that ``ResourceLockManager``'s threading
+        locks are acquired on the worker thread, not the event-loop
+        thread.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._run_safe, action, tool_runner, tool
+        )
 
     def _run_safe(
         self,
