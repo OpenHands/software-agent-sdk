@@ -569,15 +569,17 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_llm(self, **llm_kwargs: Any) -> LLM:
+    def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> LLM:
         """Fetch LLM settings from the user's SaaS account and return an LLM.
 
         Calls ``GET /api/v1/users/me?expose_secrets=true`` to retrieve the
-        user's LLM configuration (model, api_key, base_url) and returns a
+        user's default LLM configuration or a named LLM profile and returns a
         fully usable ``LLM`` instance.  Retries up to 3 times on transient
         errors (network issues, server 5xx).
 
         Args:
+            profile_name: Optional saved LLM profile name to load instead of the
+                currently active/default user LLM settings.
             **llm_kwargs: Additional keyword arguments passed to the LLM
                 constructor, allowing overrides of any LLM parameter
                 (e.g. ``model``, ``temperature``).
@@ -586,12 +588,13 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             An LLM instance configured with the user's SaaS credentials.
 
         Raises:
+            FileNotFoundError: If ``profile_name`` is provided and not found.
             httpx.HTTPStatusError: If the API request fails.
             RuntimeError: If the sandbox is not running.
 
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:
-            ...     llm = workspace.get_llm()
+            ...     llm = workspace.get_llm(profile_name="fast")
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
@@ -608,12 +611,31 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         data = resp.json()
 
         kwargs: dict[str, Any] = {}
-        if data.get("llm_model"):
-            kwargs["model"] = data["llm_model"]
-        if data.get("llm_api_key"):
-            kwargs["api_key"] = data["llm_api_key"]
-        if data.get("llm_base_url"):
-            kwargs["base_url"] = data["llm_base_url"]
+        if profile_name:
+            llm_profiles = data.get("llm_profiles") or {}
+            profiles = (
+                llm_profiles.get("profiles") if isinstance(llm_profiles, dict) else None
+            )
+            profile_config = (
+                profiles.get(profile_name) if isinstance(profiles, dict) else None
+            )
+            if profile_config is None:
+                available = sorted(profiles) if isinstance(profiles, dict) else []
+                raise FileNotFoundError(
+                    f"LLM profile `{profile_name}` not found. "
+                    f"Available profiles: {', '.join(available) or 'none'}"
+                )
+            if not isinstance(profile_config, dict):
+                raise ValueError(f"LLM profile `{profile_name}` has invalid config")
+            kwargs.update(profile_config)
+            kwargs.setdefault("usage_id", f"profile:{profile_name}")
+        else:
+            if data.get("llm_model"):
+                kwargs["model"] = data["llm_model"]
+            if data.get("llm_api_key"):
+                kwargs["api_key"] = data["llm_api_key"]
+            if data.get("llm_base_url"):
+                kwargs["base_url"] = data["llm_base_url"]
 
         # User-provided kwargs take precedence
         kwargs.update(llm_kwargs)

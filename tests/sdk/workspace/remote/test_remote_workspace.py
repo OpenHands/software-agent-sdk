@@ -494,6 +494,46 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         assert llm.api_key == "sk-persisted-key"
 
 
+def test_get_llm_loads_named_profile(monkeypatch):
+    """Test get_llm can load a named profile from the agent-server."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "name": "fast-profile",
+        "config": {
+            "model": "anthropic/claude-3-5-haiku-latest",
+            "api_key": "sk-profile-key",
+            "base_url": "https://litellm.example.com",
+        },
+        "api_key_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm(profile_name="fast-profile", temperature=0.2)
+
+    assert llm.model == "anthropic/claude-3-5-haiku-latest"
+    assert llm.base_url == "https://litellm.example.com"
+    assert llm.temperature == 0.2
+    assert llm.usage_id == "profile:fast-profile"
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-profile-key"
+
+    mock_client.get.assert_called_once_with(
+        "/api/profiles/fast-profile",
+        headers={"X-Session-API-Key": "test-key", "X-Expose-Secrets": "plaintext"},
+    )
+
+
 def test_get_llm_raises_on_undefined_host():
     """Test get_llm raises RuntimeError when host is undefined."""
     workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")

@@ -2,6 +2,7 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 from urllib.request import urlopen
 
 import httpx
@@ -365,20 +366,23 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_llm(self, **llm_kwargs: Any) -> "LLM":
+    def get_llm(self, profile_name: str | None = None, **llm_kwargs: Any) -> "LLM":
         """Fetch LLM settings from the agent-server's persisted settings.
 
-        Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` header
-        to retrieve the full LLM configuration and returns a fully usable
-        ``LLM`` instance.  All persisted LLM fields (model, api_key,
-        base_url, temperature, max_output_tokens, …) are preserved.
+        Calls ``GET /api/settings`` with ``X-Expose-Secrets: plaintext`` by
+        default, or ``GET /api/profiles/{profile_name}`` when a named profile is
+        requested, and returns a fully usable ``LLM`` instance. All persisted
+        LLM fields (model, api_key, base_url, temperature, max_output_tokens,
+        …) are preserved.
 
         Args:
+            profile_name: Optional saved LLM profile name to load instead of the
+                currently active/default persisted LLM settings.
             **llm_kwargs: Additional keyword arguments that override
                 persisted values (e.g., ``model``, ``temperature``).
 
         Returns:
-            An LLM instance configured with the persisted settings.
+            An LLM instance configured with the persisted settings or profile.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -386,7 +390,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         Example:
             >>> with DockerWorkspace(...) as workspace:
-            ...     llm = workspace.get_llm()
+            ...     llm = workspace.get_llm(profile_name="fast")
             ...     agent = Agent(llm=llm, tools=get_default_tools())
         """
         from openhands.sdk.llm.llm import LLM
@@ -394,14 +398,21 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if not self.host or self.host == "undefined":
             raise RuntimeError("Workspace host is not set")
 
-        settings = self._fetch_agent_settings()
+        if profile_name:
+            headers = dict(self._headers)
+            headers["X-Expose-Secrets"] = "plaintext"
+            response = self.client.get(
+                f"/api/profiles/{quote(profile_name, safe='')}", headers=headers
+            )
+            response.raise_for_status()
+            llm_data = dict(response.json()["config"])
+            llm_data.setdefault("usage_id", f"profile:{profile_name}")
+        else:
+            settings = self._fetch_agent_settings()
+            if not llm_kwargs:
+                return settings.llm
+            llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
 
-        if not llm_kwargs:
-            return settings.llm
-
-        # Dump persisted LLM config and merge overrides, then
-        # reconstruct so Pydantic validators run on the merged values
-        llm_data = settings.llm.model_dump(context={"expose_secrets": "plaintext"})
         llm_data.update(llm_kwargs)
         return LLM(**llm_data)
 
