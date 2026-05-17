@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import PrivateAttr, SecretStr, field_validator, model_validator
+from pydantic import PrivateAttr, SecretStr, field_serializer, field_validator, model_validator
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.providers.databricks.auth import (
@@ -245,6 +245,31 @@ class DatabricksLLM(LLM):
                 f"or fragment. Got: {v!r}"
             )
         return v.rstrip("/")
+
+    @field_serializer("databricks_client_secret", when_used="always")
+    def _serialize_databricks_secret(
+        self, v: SecretStr | None, info
+    ) -> str | None:
+        """Serialize databricks_client_secret respecting the expose_secrets context.
+
+        DatabricksLLM-specific secret fields are not in the base LLM_SECRET_FIELDS
+        tuple so they don't benefit from the base _serialize_secrets serializer.
+        This serializer mirrors the same logic so save/load round-trips work:
+          - expose_secrets=True  → plaintext (AgentStore.save path)
+          - default              → redacted string "**********"
+        Always returns str | None (never SecretStr) to avoid Pydantic warnings.
+        """
+        if v is None:
+            return None
+        from openhands.sdk.utils.pydantic_secrets import (
+            REDACTED_SECRET_VALUE,
+            serialize_secret,
+        )
+        result = serialize_secret(v, info)
+        # serialize_secret returns the SecretStr object in redact mode; convert to str.
+        if isinstance(result, SecretStr):
+            return REDACTED_SECRET_VALUE
+        return result
 
     @model_validator(mode="after")
     def _init_databricks(self) -> "DatabricksLLM":

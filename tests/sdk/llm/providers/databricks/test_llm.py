@@ -296,6 +296,47 @@ def test_pydantic_json_roundtrip_preserves_provider_field() -> None:
     assert '"provider":"databricks"' in json_str or '"provider": "databricks"' in json_str
 
 
+def test_m2m_client_secret_serialized_as_plaintext_with_expose_secrets() -> None:
+    """databricks_client_secret must be written as plaintext when serialized
+    with context={'expose_secrets': True} (the path used by AgentStore.save()).
+
+    Without this, the saved agent_settings.json contains '**********' and the
+    M2M OIDC token request always returns 401 after a restart.
+    """
+    secret_value = "my-real-client-secret"
+    llm = DatabricksLLM(
+        model=_MODEL_CLAUDE,
+        databricks_host=_HOST,
+        databricks_client_id="app-id-123",
+        databricks_client_secret=SecretStr(secret_value),
+        api_key=None,
+    )
+
+    import json
+
+    # Default JSON serialization — must be redacted (what users see / screen output)
+    default_json = llm.model_dump_json()
+    default = json.loads(default_json)
+    assert default.get("databricks_client_secret") == "**********", (
+        "secret must be redacted in default model_dump_json()"
+    )
+
+    # With expose_secrets=True (AgentStore.save path) — must be plaintext string
+    exposed_json = llm.model_dump_json(context={"expose_secrets": True})
+    exposed = json.loads(exposed_json)
+    assert exposed.get("databricks_client_secret") == secret_value, (
+        "secret must be plaintext when expose_secrets=True so agent_settings.json "
+        "contains the real value and M2M auth doesn't send '**********' to OIDC"
+    )
+
+    # Round-trip: reload from the exposed JSON and confirm secret survived
+    reloaded = DatabricksLLM.model_validate_json(exposed_json)
+    assert reloaded.databricks_client_secret is not None
+    assert reloaded.databricks_client_secret.get_secret_value() == secret_value, (
+        "secret must survive a model_dump_json → model_validate_json round-trip"
+    )
+
+
 # ---------------------------------------------------------------------------
 # create_llm factory
 # ---------------------------------------------------------------------------
