@@ -224,6 +224,11 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
 
 def test_preloaded_custom_tool_resolves_in_live_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -752,6 +757,11 @@ def test_conversation_stats_with_live_server(
     # Patch LLM.completion with our cost-tracking version
     monkeypatch.setattr(LLM, "completion", fake_completion_with_cost, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_cost(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     # Create an Agent with a real LLM object
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
@@ -893,6 +903,11 @@ def test_events_not_lost_during_client_disconnection(
     monkeypatch.setattr(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish_tool(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     # Create an Agent with empty tools list (finish is a built-in tool)
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1054,6 +1069,11 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     monkeypatch.setattr(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish_tool(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
@@ -1233,6 +1253,11 @@ def test_security_risk_field_with_live_server(
         LLM, "completion", fake_completion_with_tool_calls, raising=True
     )
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_tool_calls(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     # Create an Agent (security analyzer functionality has been deprecated and removed)
     # Using empty tools list since tools need to be registered in the server
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1387,6 +1412,11 @@ def test_hook_config_sent_to_server(
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     # Create an Agent
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1602,6 +1632,11 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
     workspace = RemoteWorkspace(
@@ -1729,6 +1764,11 @@ def test_remote_state_exposes_invoked_skills(
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     skill = Skill(
         name="frobnitz-converter",
