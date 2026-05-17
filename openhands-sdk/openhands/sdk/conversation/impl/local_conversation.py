@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import contextlib
 import copy
@@ -31,6 +32,7 @@ from openhands.sdk.conversation.visualizer import (
 from openhands.sdk.event import (
     ActionEvent,
     CondensationRequest,
+    InterruptEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -81,6 +83,7 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
+    _arun_task: asyncio.Task[None] | None
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -155,6 +158,7 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._arun_task = None
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -895,8 +899,14 @@ class LocalConversation(BaseConversation):
         Uses ``agent.astep()`` for non-blocking LLM I/O while keeping the
         same control-flow semantics (confirmation mode, stuck detection,
         stop hooks, iteration cap).
+
+        The running task is tracked in ``_arun_task`` so that
+        :meth:`interrupt` can cancel it mid-LLM-call.  On
+        ``CancelledError`` the conversation transitions to ``PAUSED``
+        and emits an :class:`InterruptEvent`.
         """
         self._ensure_agent_ready()
+        self._arun_task = asyncio.current_task()
 
         with self._state:
             if self._state.execution_status in [
@@ -994,6 +1004,12 @@ class LocalConversation(BaseConversation):
                             )
                         )
                         break
+        except asyncio.CancelledError:
+            logger.info("arun() interrupted via task cancellation")
+            self._state.execution_status = ConversationExecutionStatus.PAUSED
+            self._on_event(InterruptEvent())
+            # Do NOT re-raise: the caller (interrupt / EventService) expects
+            # a clean return, not CancelledError propagation.
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
             self._on_event(
@@ -1006,6 +1022,8 @@ class LocalConversation(BaseConversation):
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        finally:
+            self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -1068,6 +1086,27 @@ class LocalConversation(BaseConversation):
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
+
+        If an async run is in progress the underlying ``asyncio.Task`` is
+        cancelled; ``arun()`` catches the resulting ``CancelledError``, sets
+        execution status to ``PAUSED``, and emits an
+        :class:`~openhands.sdk.event.InterruptEvent`.
+
+        If no async task is tracked (e.g. the synchronous ``run()`` is active)
+        the call falls back to :meth:`pause`.
+
+        This method is safe to call from signal handlers and from other
+        threads (the cancellation is scheduled on the task's event loop).
+        """
+        task = self._arun_task
+        if task is not None and not task.done():
+            task.cancel()
+            logger.info("interrupt(): cancelled in-flight arun() task")
+        else:
+            self.pause()
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.

@@ -797,6 +797,23 @@ class EventService:
             # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
 
+    async def interrupt(self):
+        """Immediately cancel an in-flight async LLM call.
+
+        Delegates to :meth:`LocalConversation.interrupt` which cancels the
+        ``arun()`` task.  If no async run is in progress the call falls
+        back to :meth:`pause`.
+        """
+        if self._conversation:
+            self._conversation.interrupt()
+            # Wait for the run task to finish so we can publish the final
+            # state update (PAUSED + InterruptEvent) cleanly.
+            if self._run_task is not None and not self._run_task.done():
+                with suppress(Exception):
+                    await asyncio.wait_for(self._run_task, timeout=5.0)
+                self._run_task = None
+            await self._publish_state_update()
+
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
         if not self._conversation:

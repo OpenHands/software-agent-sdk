@@ -1,23 +1,19 @@
 """
 Async LLM cancellation — instant interrupt of in-flight completions.
 
-Demonstrates that with async, we can cancel an LLM call *while the model is
-still generating tokens*.  The cancellation is instant because the event loop
-regains control at the ``await`` boundary inside ``_atransport_call`` (or the
-async-for that consumes the stream).
+Demonstrates ``conversation.interrupt()``, which cancels an LLM call
+*while the model is still generating tokens*.  The cancellation is
+instant because the asyncio task driving ``arun()`` is cancelled at
+the very next ``await`` boundary — typically inside the streaming
+HTTP read.
 
-Contrast with the synchronous path where ``pause()`` cannot take effect until
-the current blocking HTTP call finishes — see the ``pause()`` docstring:
-
-    "If called during an LLM completion, the pause will not take effect
-     until the current LLM call completes."
-
-With ``arun()`` + ``task.cancel()``, there is no such limitation.
+Contrast with ``conversation.pause()`` where the pause cannot take
+effect until the current blocking LLM call finishes.
 
 Usage:
     LLM_API_KEY=... python examples/01_standalone_sdk/50_async_cancellation.py
 
-    # Press Ctrl-C at any time to cancel, or wait for the auto-cancel timer.
+    # Press Ctrl-C at any time to interrupt, or wait for the auto timer.
 """
 
 import asyncio
@@ -84,7 +80,7 @@ conversation = Conversation(
 )
 
 # Give the model a task that requires extended reasoning and generation
-# so the LLM call is visibly in-flight when we cancel.
+# so the LLM call is visibly in-flight when we interrupt.
 conversation.send_message(
     "Write a thorough, multi-page technical deep-dive (at least 2000 words) "
     "comparing every major sorting algorithm: bubble sort, selection sort, "
@@ -99,84 +95,67 @@ conversation.send_message(
 )
 
 
-# ── Cancellation machinery ───────────────────────────────────────────
+# ── Interruption machinery ──────────────────────────────────────────
 AUTO_CANCEL_SECONDS = float(os.getenv("AUTO_CANCEL_SECONDS", "5"))
 
-# Global handle so SIGINT and the timer can both reach it
-run_task: asyncio.Task[None] | None = None
+
+def _request_interrupt(source: str) -> None:
+    """Interrupt the conversation from any context."""
+    print(f"\n\n{'=' * 60}")
+    print(f"⚡ Interrupt requested ({source})")
+    print(f"   Tokens received before interrupt: {token_count}")
+    print(f"{'=' * 60}\n")
+    conversation.interrupt()
 
 
-def _request_cancel(source: str) -> None:
-    """Cancel the arun() task from any context."""
-    if run_task and not run_task.done():
-        print(f"\n\n{'=' * 60}")
-        print(f"⚡ Cancel requested ({source})")
-        print(f"   Tokens received before cancel: {token_count}")
-        print(f"{'=' * 60}\n")
-        run_task.cancel()
-
-
-async def _auto_cancel_timer() -> None:
-    """Fire after AUTO_CANCEL_SECONDS to show programmatic cancellation."""
+async def _auto_interrupt_timer() -> None:
+    """Fire after AUTO_CANCEL_SECONDS to show programmatic interruption."""
     await asyncio.sleep(AUTO_CANCEL_SECONDS)
-    _request_cancel(f"auto-timer after {AUTO_CANCEL_SECONDS}s")
+    _request_interrupt(f"auto-timer after {AUTO_CANCEL_SECONDS}s")
 
 
 async def main() -> None:
-    global run_task
-
     loop = asyncio.get_running_loop()
 
-    # Wire Ctrl-C to cancel the task instead of killing the process.
-    # On non-Unix (Windows) this gracefully degrades to KeyboardInterrupt.
+    # Wire Ctrl-C to interrupt instead of killing the process.
     try:
         loop.add_signal_handler(
             signal.SIGINT,
-            lambda: _request_cancel("Ctrl-C"),
+            lambda: _request_interrupt("Ctrl-C"),
         )
     except NotImplementedError:
         pass  # Windows — KeyboardInterrupt will still work
 
     print("=" * 60)
-    print("Async LLM Cancellation Demo")
+    print("Async LLM Interrupt Demo")
     print("=" * 60)
     print(f"Model          : {model}")
-    print(f"Auto-cancel in : {AUTO_CANCEL_SECONDS}s  (or press Ctrl-C)")
+    print(f"Auto-interrupt : {AUTO_CANCEL_SECONDS}s  (or press Ctrl-C)")
     print("=" * 60)
     print()
 
-    # ── Launch arun() as a cancellable task ──────────────────────────
-    run_task = asyncio.create_task(conversation.arun())
-    timer_task = asyncio.create_task(_auto_cancel_timer())
-
+    # ── Launch arun() alongside the interrupt timer ──────────────────
+    timer_task = asyncio.create_task(_auto_interrupt_timer())
     wall_start = time.monotonic()
 
-    try:
-        await run_task
-        # If we get here the LLM finished before the cancel fired
-        timer_task.cancel()
-        print("\n\nAgent finished before cancel timer fired.")
-    except asyncio.CancelledError:
-        cancel_latency_ms = (time.monotonic() - wall_start) * 1000
-        timer_task.cancel()
+    # arun() catches CancelledError internally and returns cleanly
+    # with status=PAUSED, so no CancelledError propagates here.
+    await conversation.arun()
 
-        print()
-        print("─" * 60)
-        print("✅ arun() cancelled successfully!")
-        print(f"   Wall time until cancel took effect : {cancel_latency_ms:.0f} ms")
-        print(f"   Tokens streamed before cancellation: {token_count}")
-        print(
-            f"   Conversation status                : "
-            f"{conversation.state.execution_status}"
-        )
-        print()
-        print("With the synchronous path, pause() would have had to wait")
-        print("for the entire LLM HTTP response to finish before it could")
-        print("take effect.  With async, the cancellation interrupted the")
-        print("in-flight request at the next `await` boundary — instantly.")
-        print("─" * 60)
+    timer_task.cancel()
+    elapsed_ms = (time.monotonic() - wall_start) * 1000
 
-    # Report cost (partial — only tokens consumed before cancel)
+    print()
+    print("─" * 60)
+    print(f"Conversation status : {conversation.state.execution_status}")
+    print(f"Wall time           : {elapsed_ms:.0f} ms")
+    print(f"Tokens streamed     : {token_count}")
+    print()
+    print("With pause(), the LLM HTTP call must finish before the")
+    print("pause takes effect.  With interrupt(), the asyncio task")
+    print("is cancelled at the next await boundary — instantly.")
+    print("─" * 60)
+
     cost = llm.metrics.accumulated_cost
     print(f"\nEXAMPLE_COST: {cost}")
 
