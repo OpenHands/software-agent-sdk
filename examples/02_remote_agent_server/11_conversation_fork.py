@@ -12,95 +12,13 @@ Scenarios covered:
 """
 
 import os
-import subprocess
-import sys
 import tempfile
-import threading
-import time
 
 from pydantic import SecretStr
+from scripts.utils import ManagedAPIServer
 
 from openhands.sdk import LLM, Agent, Conversation, RemoteConversation, Tool, Workspace
 from openhands.tools.terminal import TerminalTool
-
-
-# -----------------------------------------------------------------
-# Managed server helper (reused from example 01)
-# -----------------------------------------------------------------
-def _stream_output(stream, prefix, target_stream):
-    try:
-        for line in iter(stream.readline, ""):
-            if line:
-                target_stream.write(f"[{prefix}] {line}")
-                target_stream.flush()
-    except Exception as e:
-        print(f"Error streaming {prefix}: {e}", file=sys.stderr)
-    finally:
-        stream.close()
-
-
-class ManagedAPIServer:
-    """Context manager that starts and stops a local agent-server."""
-
-    def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
-        self.port = port
-        self.host = host
-        self.process: subprocess.Popen[str] | None = None
-        self.base_url = f"http://{host}:{port}"
-
-    def __enter__(self):
-        print(f"Starting agent-server on {self.base_url} ...")
-        self.process = subprocess.Popen(
-            [
-                "python",
-                "-m",
-                "openhands.agent_server",
-                "--port",
-                str(self.port),
-                "--host",
-                self.host,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={"LOG_JSON": "true", **os.environ},
-        )
-        assert self.process.stdout is not None
-        assert self.process.stderr is not None
-        threading.Thread(
-            target=_stream_output,
-            args=(self.process.stdout, "SERVER", sys.stdout),
-            daemon=True,
-        ).start()
-        threading.Thread(
-            target=_stream_output,
-            args=(self.process.stderr, "SERVER", sys.stderr),
-            daemon=True,
-        ).start()
-
-        import httpx
-
-        for _ in range(30):
-            try:
-                if httpx.get(f"{self.base_url}/health", timeout=1.0).status_code == 200:
-                    print(f"Agent-server ready at {self.base_url}")
-                    return self
-            except Exception:
-                pass
-            assert self.process.poll() is None, "Server exited unexpectedly"
-            time.sleep(1)
-        raise RuntimeError("Server failed to start in 30 s")
-
-    def __exit__(self, *args):
-        if self.process:
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-            time.sleep(0.5)
-            print("Agent-server stopped.")
 
 
 # -----------------------------------------------------------------

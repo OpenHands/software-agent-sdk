@@ -90,6 +90,11 @@ def find_agent_sdk_examples(agent_sdk_path: Path) -> set[str]:
                 if file == "__init__.py":
                     continue
 
+                # Skip support scripts that back examples but are not
+                # standalone examples themselves.
+                if "/scripts/" in relative_path_str:
+                    continue
+
                 examples.add(relative_path_str)
 
     return examples

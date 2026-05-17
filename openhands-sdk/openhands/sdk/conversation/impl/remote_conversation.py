@@ -912,7 +912,7 @@ class RemoteConversation(BaseConversation):
                 log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
-                with open(log_path, "w") as f:
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write(event.log_data)
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:

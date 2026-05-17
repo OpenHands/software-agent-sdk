@@ -21,13 +21,9 @@ This pattern enables:
 """
 
 import os
-import secrets
-import subprocess
-import sys
-import threading
-import time
 
 import httpx
+from scripts.utils import ManagedAPIServer
 
 from openhands.sdk import Conversation, get_logger
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
@@ -37,120 +33,24 @@ from openhands.tools.preset.default import get_default_agent
 logger = get_logger(__name__)
 
 
-def _stream_output(stream, prefix, target_stream):
-    """Stream output from subprocess to target stream with prefix."""
-    try:
-        for line in iter(stream.readline, ""):
-            if line:
-                target_stream.write(f"[{prefix}] {line}")
-                target_stream.flush()
-    except Exception as e:
-        print(f"Error streaming {prefix}: {e}", file=sys.stderr)
-    finally:
-        stream.close()
-
-
-class ManagedAPIServer:
-    """Context manager for subprocess-managed OpenHands API server.
-
-    Launches an agent-server with a randomly generated session API key
-    for secure access. All API requests must include this key.
-    """
-
-    def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
-        self.port: int = port
-        self.host: str = host
-        self.process: subprocess.Popen[str] | None = None
-        self.base_url: str = f"http://{host}:{port}"
-        # Generate a random session API key for this server instance
-        self.session_api_key: str = secrets.token_urlsafe(32)
-        self.stdout_thread: threading.Thread | None = None
-        self.stderr_thread: threading.Thread | None = None
-
-    def __enter__(self):
-        """Start the API server subprocess with session API key auth."""
-        print(f"Starting OpenHands API server on {self.base_url}...")
-        print("🔐 Session API key configured (required for all requests)")
-
-        # Configure server with security:
-        # - OH_SECRET_KEY: enables encrypted storage of secrets
-        # - SESSION_API_KEY: requires all requests to be authenticated
-        env = {
-            "LOG_JSON": "true",
-            "OH_SECRET_KEY": "example-secret-key-for-demo-only-32b",
-            "SESSION_API_KEY": self.session_api_key,  # Enable auth!
-            "TMUX_TMPDIR": "/tmp/oh-tmux",
-            **os.environ,
-        }
-
-        self.process = subprocess.Popen(
-            [
-                "python",
-                "-m",
-                "openhands.agent_server",
-                "--port",
-                str(self.port),
-                "--host",
-                self.host,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-
-        assert self.process is not None
-        assert self.process.stdout is not None
-        assert self.process.stderr is not None
-        self.stdout_thread = threading.Thread(
-            target=_stream_output,
-            args=(self.process.stdout, "SERVER", sys.stdout),
-            daemon=True,
-        )
-        self.stderr_thread = threading.Thread(
-            target=_stream_output,
-            args=(self.process.stderr, "SERVER", sys.stderr),
-            daemon=True,
-        )
-        self.stdout_thread.start()
-        self.stderr_thread.start()
-
-        # Wait for server to be ready
-        max_retries = 30
-        for i in range(max_retries):
-            try:
-                response = httpx.get(f"{self.base_url}/health", timeout=2.0)
-                if response.status_code == 200:
-                    print(f"✅ Server ready after {i + 1} attempts")
-                    return self
-            except httpx.RequestError:
-                pass
-            time.sleep(1)
-
-        raise RuntimeError(f"Server failed to start after {max_retries} seconds")
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Stop the API server subprocess."""
-        if self.process:
-            print("Stopping API server...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
-            print("✅ Server stopped")
-
-
 # Get LLM configuration from environment
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 llm_model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm_base_url = os.getenv("LLM_BASE_URL")  # Optional custom base URL
 
-with ManagedAPIServer(port=8766) as server:
+with ManagedAPIServer(
+    port=8766,
+    extra_env={
+        "OH_SECRET_KEY": "example-secret-key-for-demo-only-32b",
+        "TMUX_TMPDIR": "/tmp/oh-tmux",
+    },
+    use_session_api_key=True,
+    health_request_timeout=2.0,
+) as server:
     # Create HTTP client for settings API - MUST include session API key!
     # The X-Session-API-Key header authenticates all requests
+    assert server.session_api_key is not None  # set via use_session_api_key=True
     client = httpx.Client(
         base_url=server.base_url,
         timeout=120.0,
