@@ -54,6 +54,27 @@ def _default_web_url() -> str | None:
     return None
 
 
+def _default_deferred_init() -> bool:
+    """Read OH_DEFERRED_INIT, accepting the same truthy values as BoolEnvParser.
+
+    The env parser pipeline reads this from ``OH_DEFERRED_INIT`` once
+    ``deferred_init`` is registered on ``Config``. This factory is just a
+    safety fallback for direct ``Config()`` construction outside the env
+    parser flow (e.g. tests that import ``os.environ`` directly).
+    """
+    raw = os.getenv("OH_DEFERRED_INIT")
+    if raw is None:
+        return False
+    return raw.upper() in ("1", "TRUE")
+
+
+def _default_init_api_key() -> SecretStr | None:
+    raw = os.getenv("OH_INIT_API_KEY")
+    if raw:
+        return SecretStr(raw)
+    return None
+
+
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
@@ -195,6 +216,29 @@ class Config(BaseModel):
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
+        ),
+    )
+    deferred_init: bool = Field(
+        default_factory=_default_deferred_init,
+        description=(
+            "When True, the server starts in dormant mode. Stateless services "
+            "(VSCode, tool preload, etc.) start as usual, but the conversation, "
+            "event, and bash routers return 503 until POST /init is called with "
+            "the runtime configuration. This is intended for warm-pool deployments "
+            "where pods are pre-warmed before a user is matched and per-user "
+            "configuration is delivered later."
+        ),
+    )
+    init_api_key: SecretStr | None = Field(
+        default_factory=_default_init_api_key,
+        description=(
+            "API key required to call POST /init when ``deferred_init`` is True. "
+            "Sent via the ``X-Init-API-Key`` header. Distinct from "
+            "``session_api_keys`` because the session key is part of the per-user "
+            "config that arrives at /init time; the init key is the pool-bootstrap "
+            "credential held by the orchestrator. When unset, /init is "
+            "unauthenticated, which is acceptable for development but not for "
+            "production warm pools."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
