@@ -158,6 +158,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     API authentication, retry logic, tool calling capabilities, and async
     cancellation support.
 
+    Note:
+        In long-running applications that create/destroy many LLM instances,
+        call ``close()`` when done to clean up the background event loop
+        thread. The LLM can still be used after ``close()`` — the loop
+        will be recreated lazily on the next call.
+
     Attributes:
         model: Model name (e.g., "claude-sonnet-4-20250514").
         api_key: API key for authentication.
@@ -751,8 +757,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         the LLM can be used for new calls.
 
         Example:
-            >>> # In another thread:
-            >>> llm.cancel()  # Cancels the current LLM call
+            ```python
+            # In another thread:
+            llm.cancel()  # Cancels the current LLM call
+            ```
         """
         if self._async_runner is not None:
             self._async_runner.cancel()
@@ -778,11 +786,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         will be lazily recreated on the next LLM call.
 
         Example:
-            >>> llm = LLM(model="gpt-4o")
-            >>> try:
-            ...     response = llm.completion(messages=[...])
-            ... finally:
-            ...     llm.close()  # Clean up background thread
+            ```python
+            llm = LLM(model="gpt-4o")
+            try:
+                response = llm.completion(messages=[...])
+            finally:
+                llm.close()  # Clean up background thread
+            ```
         """
         if self._async_runner is not None:
             self._async_runner.close()

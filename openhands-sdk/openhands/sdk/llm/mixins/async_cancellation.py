@@ -33,10 +33,12 @@ class AsyncRunner:
     loop will be lazily recreated.
 
     Example:
-        >>> runner = AsyncRunner(owner_id="my-llm")
-        >>> result = runner.run(some_async_func(), "Call cancelled")
-        >>> # From another thread:
-        >>> runner.cancel()
+        ```python
+        runner = AsyncRunner(owner_id="my-llm")
+        result = runner.run(some_async_func(), "Call cancelled")
+        # From another thread:
+        runner.cancel()
+        ```
     """
 
     def __init__(self, owner_id: str) -> None:
@@ -59,14 +61,17 @@ class AsyncRunner:
         while supporting immediate cancellation.
         """
         if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            self._thread = threading.Thread(
-                target=self._loop.run_forever,
-                daemon=True,
-                name=f"async-runner-{self._owner_id}",
-            )
-            self._thread.start()
-            logger.debug(f"Started async runner thread for {self._owner_id}")
+            with self._lock:
+                if self._loop is None:
+                    loop = asyncio.new_event_loop()
+                    self._thread = threading.Thread(
+                        target=loop.run_forever,
+                        daemon=True,
+                        name=f"async-runner-{self._owner_id}",
+                    )
+                    self._thread.start()
+                    logger.debug(f"Started async runner thread for {self._owner_id}")
+                    self._loop = loop
         return self._loop
 
     def run(self, coro: Coroutine[Any, Any, T], cancel_message: str) -> T:
