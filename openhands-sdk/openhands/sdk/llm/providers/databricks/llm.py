@@ -347,6 +347,17 @@ class DatabricksLLM(LLM):
         """Override: return a fresh Databricks token rather than the static api_key."""
         return self._db_credentials.get_token()
 
+    def close(self) -> None:
+        """Release the underlying HTTP connection pool.
+
+        Call this when discarding a DatabricksLLM instance to avoid leaking
+        file descriptors. Safe to call multiple times.
+        """
+        try:
+            self._db_client.close()
+        except Exception:
+            pass
+
     def _transport_call(
         self,
         *,

@@ -84,6 +84,9 @@ UserInfoAliases: dict[str, tuple[str, ...]] = {
     "model": ("llm_model",),
     "api_key": ("llm_api_key",),
     "base_url": ("llm_base_url",),
+    # OpenHands web app stores the Databricks workspace URL in llm_base_url.
+    # Fall back to it when databricks_host is not set as a dedicated field.
+    "databricks_host": ("llm_base_url",),
 }
 
 

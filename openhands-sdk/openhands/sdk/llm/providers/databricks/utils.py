@@ -42,20 +42,17 @@ def _get_version() -> str:
         return "unknown"
 
 
-USER_AGENT: str = f"openhands_oss/{_get_version()}"
-"""PWAF User-Agent for the OpenHands OSS Databricks connector.
+USER_AGENT: str = f"OpenHandsOSS/{_get_version()}"
+"""User-Agent for the OpenHands OSS Databricks connector.
 
-Format (per Partner AI Dev Kit / PWAF telemetry skill):
-    <isv>_<product>/<version>
+Format:  OpenHandsOSS/<version>
 
-- ISV:      openhands
-- Product:  oss   (this is the OSS OpenHands product; non-OSS distributions
-                   may ship their own build with a different product string)
+- Product:  OpenHandsOSS  (matches the runtime plugin and env vars;
+                           one consistent identity across all Databricks calls)
 - Version:  resolved from the installed `openhands-sdk` package metadata.
 
-Applied to every Databricks HTTP call (AI Gateway `/invocations`, OAuth
-token endpoint, serving-endpoints discovery). Never exposed as a user
-config knob — connector-level constant per PWAF rules.
+Applied to every Databricks HTTP call (AI Gateway, OAuth token endpoint,
+serving-endpoints discovery). Never exposed as a user config knob.
 """
 
 
