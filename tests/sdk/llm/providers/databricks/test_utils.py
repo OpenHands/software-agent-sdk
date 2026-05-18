@@ -37,9 +37,8 @@ from openhands.sdk.llm.providers.databricks.auth import AuthStrategy
 # ---------------------------------------------------------------------------
 
 def test_user_agent_format() -> None:
-    """PWAF: USER_AGENT must be '<partner>_<product>/<version>' and set to the
-    OpenHands OSS product id (``openhands_oss``)."""
-    assert USER_AGENT.startswith("openhands_oss/"), (
+    """PWAF: USER_AGENT must be '<product>/<version>' and identify as OpenHandsOSS."""
+    assert USER_AGENT.startswith("OpenHandsOSS/"), (
         f"PWAF non-compliant User-Agent: {USER_AGENT!r}"
     )
     # Version portion must be non-empty

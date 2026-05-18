@@ -561,7 +561,7 @@ def test_get_picker_entries_include_discovered_false_skips_http() -> None:
 
 def test_get_picker_entries_user_agent_propagates_through_discovery() -> None:
     """PWAF: every Databricks HTTP call (including discovery triggered by the
-    picker) must carry the ``openhands_oss/<ver>`` User-Agent."""
+    picker) must carry the ``OpenHandsOSS/<ver>`` User-Agent."""
     payload = _make_endpoints_payload([_fmapi_ep("anything")])
     with patch(
         "httpx.get", return_value=_discovery_response(200, payload)
