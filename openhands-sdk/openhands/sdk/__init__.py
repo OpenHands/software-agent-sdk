@@ -49,9 +49,13 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     ACP_PROVIDERS,
+    ACP_SUBSCRIPTION_AUTH_SECRETS,
     ACPAgentSettings,
     ACPProviderInfo,
+    ACPSubscriptionAuthSecretInfo,
     AgentSettings,
     AgentSettingsBase,
     AgentSettingsConfig,
@@ -192,8 +196,12 @@ __all__ = [
     "ConversationSettings",
     "VerificationSettings",
     "ACP_PROVIDERS",
+    "ACP_CODEX_SUBSCRIPTION_AUTH_SECRET",
+    "ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET",
+    "ACP_SUBSCRIPTION_AUTH_SECRETS",
     "ACPAgentSettings",
     "ACPProviderInfo",
+    "ACPSubscriptionAuthSecretInfo",
     "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",

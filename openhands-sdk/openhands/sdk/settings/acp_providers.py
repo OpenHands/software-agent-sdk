@@ -13,6 +13,8 @@ Each record captures the static properties that are known at configuration time
                             used by ``ACPAgent`` to auto-detect mode / protocol
 - ``supports_set_session_model``  whether to use the ``set_session_model``
                                   protocol call (vs ``_meta``) for model selection
+- ``subscription_auth_secret`` UX metadata for providers that can authenticate
+                               from a custom secret
 
 Callers outside the SDK (e.g. ``openhands-agent-server``, the ``OpenHands``
 frontend) can import :data:`ACP_PROVIDERS` and :func:`get_acp_provider` instead
@@ -25,6 +27,26 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ACPSubscriptionAuthSecretInfo:
+    """Instructions for configuring subscription-style ACP authentication."""
+
+    secret_name: str
+    """Name of the custom secret users should create."""
+
+    label: str
+    """Human-readable label for the secret."""
+
+    description: str
+    """Short explanation suitable for settings UIs."""
+
+    value_description: str
+    """Description of the expected secret value."""
+
+    setup_steps: tuple[str, ...] = ()
+    """Ordered setup instructions for users."""
 
 
 @dataclass(frozen=True)
@@ -91,6 +113,39 @@ class ACPProviderInfo:
     - ``None``         — codex-acp, gemini-cli
     """
 
+    subscription_auth_secret: ACPSubscriptionAuthSecretInfo | None = None
+    """Custom-secret instructions for subscription-style auth, if supported."""
+
+
+ACP_CODEX_SUBSCRIPTION_AUTH_SECRET = ACPSubscriptionAuthSecretInfo(
+    secret_name="CODEX_AUTH_JSON",
+    label="Codex ChatGPT subscription auth",
+    description=(
+        "Paste the contents of the Codex CLI auth.json file. The SDK writes it "
+        "to auth.json and sets CODEX_HOME for the Codex ACP subprocess."
+    ),
+    value_description="The full JSON contents of ~/.codex/auth.json.",
+    setup_steps=(
+        "Sign in with the Codex CLI on a trusted machine.",
+        "Copy the full contents of ~/.codex/auth.json into this secret.",
+    ),
+)
+
+ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET = ACPSubscriptionAuthSecretInfo(
+    secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+    label="Gemini CLI service account credentials",
+    description=(
+        "Paste a Google service account credentials JSON document. The SDK "
+        "writes it to a credentials file and sets GOOGLE_APPLICATION_CREDENTIALS "
+        "for the Gemini CLI ACP subprocess."
+    ),
+    value_description="The full JSON contents of a Google service account key file.",
+    setup_steps=(
+        "Create or choose a Google service account with access to the target project.",
+        "Copy the full service account key JSON into this secret.",
+    ),
+)
+
 
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
     {
@@ -115,6 +170,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             agent_name_patterns=("codex-acp",),
             supports_set_session_model=True,
             session_meta_key=None,
+            subscription_auth_secret=ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -126,10 +182,22 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             agent_name_patterns=("gemini-cli",),
             supports_set_session_model=True,
             session_meta_key=None,
+            subscription_auth_secret=ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
         ),
     }
 )
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
+
+ACP_SUBSCRIPTION_AUTH_SECRETS: Mapping[str, ACPSubscriptionAuthSecretInfo] = (
+    MappingProxyType(
+        {
+            key: info.subscription_auth_secret
+            for key, info in ACP_PROVIDERS.items()
+            if info.subscription_auth_secret is not None
+        }
+    )
+)
+"""Built-in ACP subscription-auth secret instructions keyed by provider."""
 
 
 def get_acp_provider(key: str) -> ACPProviderInfo | None:
