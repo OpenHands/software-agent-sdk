@@ -46,6 +46,9 @@ class TestACPProviderInfo:
             ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
             == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
         )
+        gemini_steps = "\n".join(ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.setup_steps)
+        assert "GOOGLE_CLOUD_PROJECT" in gemini_steps
+        assert "GOOGLE_CLOUD_LOCATION" in gemini_steps
 
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]

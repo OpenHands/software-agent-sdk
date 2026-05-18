@@ -179,6 +179,10 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 _CODEX_AUTH_JSON_SECRET = ACP_CODEX_SUBSCRIPTION_AUTH_SECRET.secret_name
 _GEMINI_CREDENTIALS_JSON_SECRET = ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
+_VERTEX_AI_AUTH_METHOD = "vertex-ai"
+_VERTEX_AI_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+_VERTEX_AI_LOCATION_ENV = "GOOGLE_CLOUD_LOCATION"
+_VERTEX_AI_PROJECT_ENV_VARS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID")
 
 
 def _has_chatgpt_auth_file(env: dict[str, str]) -> bool:
@@ -187,6 +191,20 @@ def _has_chatgpt_auth_file(env: dict[str, str]) -> bool:
     if codex_home:
         return (Path(codex_home) / "auth.json").is_file()
     return (Path.home() / _CHATGPT_AUTH_PATH).is_file()
+
+
+def _has_vertex_ai_credentials_file(env: dict[str, str]) -> bool:
+    """Return whether Vertex AI service-account credentials are on disk."""
+    credentials_path = env.get(_VERTEX_AI_CREDENTIALS_ENV)
+    return bool(credentials_path and Path(credentials_path).is_file())
+
+
+def _has_vertex_ai_project_location(env: dict[str, str]) -> bool:
+    """Return whether Gemini CLI has the required Vertex AI routing env."""
+    return bool(
+        env.get(_VERTEX_AI_LOCATION_ENV)
+        and any(env.get(name) for name in _VERTEX_AI_PROJECT_ENV_VARS)
+    )
 
 
 def _write_secret_file(path: Path, value: str) -> None:
@@ -208,6 +226,8 @@ def _write_secret_file(path: Path, value: str) -> None:
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
+    *,
+    prefer_vertex_ai: bool = False,
 ) -> str | None:
     """Pick an auth method whose required credentials are present.
 
@@ -222,6 +242,12 @@ def _select_auth_method(
     # Prefer ChatGPT subscription login when the auth file is present.
     if "chatgpt" in method_ids and _has_chatgpt_auth_file(env):
         return "chatgpt"
+    if (
+        prefer_vertex_ai
+        and _VERTEX_AI_AUTH_METHOD in method_ids
+        and _has_vertex_ai_credentials_file(env)
+    ):
+        return _VERTEX_AI_AUTH_METHOD
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
@@ -1095,11 +1121,19 @@ class ACPAgent(AgentBase):
                     self._file_auth_base_dir() / "gemini" / "gcloud-credentials.json"
                 )
                 _write_secret_file(credentials_path, value)
-                env["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials_path)
+                env[_VERTEX_AI_CREDENTIALS_ENV] = str(credentials_path)
             else:
                 logger.info(
                     "Preserving configured GOOGLE_APPLICATION_CREDENTIALS over %s",
                     _GEMINI_CREDENTIALS_JSON_SECRET,
+                )
+            if not _has_vertex_ai_project_location(env):
+                logger.warning(
+                    "%s also requires %s and one of %s for Gemini CLI Vertex AI "
+                    "authentication",
+                    _GEMINI_CREDENTIALS_JSON_SECRET,
+                    _VERTEX_AI_LOCATION_ENV,
+                    ", ".join(_VERTEX_AI_PROJECT_ENV_VARS),
                 )
 
         return consumed
@@ -1114,6 +1148,8 @@ class ACPAgent(AgentBase):
         env.update(os.environ)
         env.update(self.acp_env)
         file_secret_names = self._materialize_provider_auth_files(env)
+        for name in self._provider_file_secret_names():
+            env.pop(name, None)
         # Inject regular secrets from agent_context. acp_env entries take
         # precedence, but runtime secrets intentionally override inherited
         # os.environ values.
@@ -1215,7 +1251,12 @@ class ACPAgent(AgentBase):
             # the env vars that are available to the process.
             auth_methods = init_response.auth_methods or []
             if auth_methods:
-                method_id = _select_auth_method(auth_methods, env)
+                method_id = _select_auth_method(
+                    auth_methods,
+                    env,
+                    prefer_vertex_ai=_GEMINI_CREDENTIALS_JSON_SECRET
+                    in file_secret_names,
+                )
                 if method_id is not None:
                     logger.info("Authenticating with ACP method: %s", method_id)
                     auth_kwargs: dict[str, Any] = {}

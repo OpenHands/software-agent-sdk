@@ -2772,6 +2772,38 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    def test_vertex_ai_credentials_file_selected_when_preferred(self, tmp_path):
+        methods = [
+            self._make_auth_method("gemini-api-key"),
+            self._make_auth_method("vertex-ai"),
+        ]
+        credentials_path = tmp_path / "gcloud-credentials.json"
+        credentials_path.write_text("{}", encoding="utf-8")
+        env = {
+            "GEMINI_API_KEY": "gemini-api-key",
+            "GOOGLE_APPLICATION_CREDENTIALS": str(credentials_path),
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        }
+
+        assert _select_auth_method(methods, env, prefer_vertex_ai=True) == "vertex-ai"
+
+    def test_vertex_ai_credentials_file_not_selected_without_preference(self, tmp_path):
+        methods = [
+            self._make_auth_method("gemini-api-key"),
+            self._make_auth_method("vertex-ai"),
+        ]
+        credentials_path = tmp_path / "gcloud-credentials.json"
+        credentials_path.write_text("{}", encoding="utf-8")
+        env = {
+            "GEMINI_API_KEY": "gemini-api-key",
+            "GOOGLE_APPLICATION_CREDENTIALS": str(credentials_path),
+            "GOOGLE_CLOUD_PROJECT": "test-project",
+            "GOOGLE_CLOUD_LOCATION": "us-central1",
+        }
+
+        assert _select_auth_method(methods, env) == "gemini-api-key"
+
 
 # ---------------------------------------------------------------------------
 # ACP model overrides
@@ -3580,13 +3612,19 @@ class TestACPSecretsEnvInjection:
     """
 
     @staticmethod
-    def _make_conn():
+    def _make_conn(
+        *,
+        agent_name: str = "claude-agent-acp",
+        auth_methods: list[str] | None = None,
+    ):
         conn = MagicMock()
         init_response = MagicMock()
         init_response.agent_info = MagicMock()
-        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.name = agent_name
         init_response.agent_info.version = "1.0"
-        init_response.auth_methods = []
+        init_response.auth_methods = [
+            MagicMock(id=method_id) for method_id in auth_methods or []
+        ]
         conn.initialize = AsyncMock(return_value=init_response)
         new_response = MagicMock()
         new_response.session_id = "sess-1"
@@ -3603,6 +3641,7 @@ class TestACPSecretsEnvInjection:
         agent,
         tmp_path,
         extra_os_env: dict[str, str] | None = None,
+        conn: Any = None,
     ) -> dict:
         """Run _start_acp_server and return the env dict passed to the subprocess."""
         from contextlib import ExitStack
@@ -3610,7 +3649,7 @@ class TestACPSecretsEnvInjection:
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
         captured: dict = {}
-        conn = TestACPSecretsEnvInjection._make_conn()
+        conn = conn or TestACPSecretsEnvInjection._make_conn()
 
         mock_process = MagicMock()
         mock_process.stdin = MagicMock()
@@ -3743,11 +3782,14 @@ class TestACPProviderFileAuth:
     """Codex/Gemini JSON auth secrets are written to provider-native files."""
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path, *, extra_os_env=None) -> dict:
+    def _run_start_capturing_env(
+        agent, tmp_path, *, extra_os_env=None, conn: Any = None
+    ) -> dict:
         return TestACPSecretsEnvInjection._run_start_capturing_env(
             agent,
             tmp_path,
             extra_os_env=extra_os_env,
+            conn=conn,
         )
 
     def test_codex_auth_json_materialised_with_codex_home(self, tmp_path):
@@ -3795,6 +3837,71 @@ class TestACPProviderFileAuth:
         assert credentials_path.is_file()
         assert credentials_path.read_text() == payload
         assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_google_credentials_authenticates_with_vertex_ai(self, tmp_path):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        conn = TestACPSecretsEnvInjection._make_conn(
+            agent_name="gemini-cli",
+            auth_methods=["gemini-api-key", "vertex-ai"],
+        )
+        agent = ACPAgent(
+            acp_command=["npx", "-y", "@google/gemini-cli", "--acp"],
+            agent_context=AgentContext(
+                secrets={
+                    "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                        value=SecretStr('{"type":"service_account"}')
+                    )
+                }
+            ),
+        )
+
+        self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={
+                "GEMINI_API_KEY": "inherited-gemini-api-key",
+                "GOOGLE_CLOUD_PROJECT": "test-project",
+                "GOOGLE_CLOUD_LOCATION": "us-central1",
+            },
+            conn=conn,
+        )
+
+        conn.authenticate.assert_awaited_once_with(method_id="vertex-ai")
+
+    @pytest.mark.parametrize(
+        ("command", "secret_name"),
+        [
+            (["npx", "-y", "@zed-industries/codex-acp"], "CODEX_AUTH_JSON"),
+            (
+                ["npx", "-y", "@google/gemini-cli", "--acp"],
+                "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+            ),
+        ],
+    )
+    def test_inherited_provider_file_secret_removed_from_env(
+        self, tmp_path, command, secret_name
+    ):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = ACPAgent(
+            acp_command=command,
+            agent_context=AgentContext(
+                secrets={secret_name: StaticSecret(value=SecretStr("{}"))}
+            ),
+        )
+
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={secret_name: "inherited-raw-json"},
+        )
+
+        assert secret_name not in env
 
     def test_provider_auth_file_is_readable_only_by_owner(self, tmp_path):
         import stat as stat_mod

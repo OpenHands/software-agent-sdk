@@ -137,12 +137,16 @@ ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET = ACPSubscriptionAuthSecretInfo(
     description=(
         "Paste a Google service account credentials JSON document. The SDK "
         "writes it to a credentials file and sets GOOGLE_APPLICATION_CREDENTIALS "
-        "for the Gemini CLI ACP subprocess."
+        "for the Gemini CLI ACP subprocess. Gemini CLI uses this secret with "
+        "Vertex AI, so the subprocess also needs GOOGLE_CLOUD_PROJECT and "
+        "GOOGLE_CLOUD_LOCATION configured."
     ),
     value_description="The full JSON contents of a Google service account key file.",
     setup_steps=(
-        "Create or choose a Google service account with access to the target project.",
+        "Create or choose a Google service account with the Vertex AI User role.",
         "Copy the full service account key JSON into this secret.",
+        "Set GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION for the Gemini CLI "
+        "ACP subprocess.",
     ),
 )
 
