@@ -42,6 +42,8 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
+from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -307,6 +309,39 @@ def _register_agent_definitions(
             )
     logger.debug(
         f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
+    )
+
+
+def _register_client_tools(
+    client_tools: list[ClientToolSpec],
+    *,
+    context: str,
+) -> None:
+    """Register client-defined tools in the global tool registry.
+
+    Each ``ClientToolSpec`` is converted to a ``ClientTool`` instance
+    and registered so the agent's ``_initialize()`` can resolve it by
+    name.  Used both when creating new conversations and when resuming
+    persisted ones.
+    """
+    registered = 0
+    for spec in client_tools:
+        try:
+            tool = ClientTool.from_spec(spec)
+            register_tool(spec.name, tool)
+            registered += 1
+        except Exception as e:
+            logger.warning(
+                "Failed to register client tool '%s' (%s): %s",
+                spec.name,
+                context,
+                e,
+            )
+    logger.debug(
+        "Registered %d/%d client tool(s) (%s)",
+        registered,
+        len(client_tools),
+        context,
     )
 
 
@@ -581,6 +616,24 @@ class ConversationService:
                     len(request.tool_module_qualnames),
                     conversation_id,
                 )
+
+        # Register client-defined tools (JSON specs, no Python code)
+        if request.client_tools:
+            _register_client_tools(
+                request.client_tools,
+                context=f"conversation {conversation_id}",
+            )
+            # Inject Tool specs into the agent so _initialize() resolves them
+            from openhands.sdk.tool.spec import Tool as ToolSpec
+
+            existing_names = {t.name for t in request.agent.tools}
+            new_tools = [
+                ToolSpec(name=spec.name)
+                for spec in request.client_tools
+                if spec.name not in existing_names
+            ]
+            if new_tools:
+                request.agent.tools = [*request.agent.tools, *new_tools]
 
         # Register subagent definitions forwarded from the client
         if request.agent_definitions:
@@ -928,6 +981,12 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Re-register client-defined tools when resuming
+                if stored.client_tools:
+                    _register_client_tools(
+                        stored.client_tools,
+                        context=f"resuming conversation {stored.id}",
+                    )
                 # Register agent definitions when resuming
                 if stored.agent_definitions:
                     _register_agent_definitions(

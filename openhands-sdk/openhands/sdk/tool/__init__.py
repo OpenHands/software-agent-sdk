@@ -4,6 +4,10 @@ from openhands.sdk.tool.builtins import (
     FinishTool,
     ThinkTool,
 )
+from openhands.sdk.tool.client_tool import (
+    ClientTool,
+    ClientToolSpec,
+)
 from openhands.sdk.tool.registry import (
     list_registered_tools,
     register_tool,
@@ -24,6 +28,8 @@ from openhands.sdk.tool.tool import (
 
 
 __all__ = [
+    "ClientTool",
+    "ClientToolSpec",
     "DeclaredResources",
     "Tool",
     "ToolDefinition",
