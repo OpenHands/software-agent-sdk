@@ -305,6 +305,86 @@ class TestAutoLoadedSkillsSerialization:
             "newer skill content from ~/.openhands/skills"
         )
 
+    def test_in_place_skill_mutation_preserves_customisation_on_wire(self):
+        """Regression for the mutable-snapshot bug.
+
+        ``_auto_loaded_skills`` used to store the same ``Skill``
+        reference that landed in ``self.skills``. An in-place edit
+        like ``ctx.skills[0].content = "custom"`` mutated both copies,
+        the equality check still succeeded, and the customised skill
+        silently vanished from ``model_dump`` output. Deep-copying the
+        snapshot at auto-load time keeps the two references
+        independent so the equality check correctly reports the
+        in-memory skill as "modified" and keeps it on the wire.
+        """
+        auto = {"editable": _make_skill("editable", "original content")}
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value=auto,
+        ):
+            ctx = AgentContext(load_public_skills=True)
+
+        # Caller mutates the skill in-place after the auto-load.
+        ctx.skills[0].content = "user customised content"
+
+        dumped = ctx.model_dump()
+        assert len(dumped["skills"]) == 1
+        assert dumped["skills"][0]["content"] == "user customised content"
+
+    def test_model_copy_toggling_load_flag_off_keeps_skills_on_wire(self):
+        """Regression for the config-drift bug.
+
+        ``ctx.model_copy(update={"load_public_skills": False})`` keeps
+        the runtime auto-loaded skills (the validator doesn't re-run
+        on model_copy) but used to serialize them as ``[]`` because
+        the snapshot still matched the in-memory names. On
+        ``model_validate(...)`` the receiver wouldn't auto-reload them
+        (flag is False), losing them entirely.
+
+        With the config-drift check, the serializer detects that the
+        current config doesn't match the snapshot config and emits
+        the full skill list, preserving the round-trip.
+        """
+        auto = {f"auto-{i}": _make_skill(f"auto-{i}") for i in range(3)}
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value=auto,
+        ):
+            ctx = AgentContext(load_public_skills=True)
+
+        # Flip the flag off via model_copy — does NOT re-run the
+        # validator, so ctx.skills still has the 3 auto-loaded skills.
+        flipped = ctx.model_copy(update={"load_public_skills": False})
+        assert len(flipped.skills) == 3
+
+        # Serializer must NOT trim — the config drifted. Round-trip
+        # would otherwise lose them (flag is False on the receiver).
+        dumped = flipped.model_dump()
+        assert {s["name"] for s in dumped["skills"]} == set(auto.keys())
+
+        # And the round-trip preserves them in-memory.
+        roundtripped = AgentContext.model_validate(dumped)
+        assert {s.name for s in roundtripped.skills} == set(auto.keys())
+
+    def test_model_copy_changing_marketplace_path_keeps_skills_on_wire(self):
+        """Same config-drift concern as above but for ``marketplace_path``.
+
+        If the snapshot was taken with ``marketplace_path="A"`` and a
+        copy bumps it to ``"B"``, the receiver would auto-load from
+        ``"B"`` and get a *different* catalog. Preserve the original
+        list on the wire so the receiver can't silently swap.
+        """
+        auto = {"marketplace-skill": _make_skill("marketplace-skill")}
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value=auto,
+        ):
+            ctx = AgentContext(load_public_skills=True, marketplace_path="path-A")
+
+        bumped = ctx.model_copy(update={"marketplace_path": "path-B"})
+        dumped = bumped.model_dump()
+        assert {s["name"] for s in dumped["skills"]} == {"marketplace-skill"}
+
     def test_payload_shrinks_to_explicit_only(self):
         """Concrete byte-count assertion: a 40-skill auto-load with a single
         explicit skill should serialize approximately the size of the

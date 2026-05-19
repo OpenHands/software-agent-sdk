@@ -132,7 +132,21 @@ class AgentContext(BaseModel):
     # ``~/.openhands/skills``) the resolved list is ~260 KB per
     # ``AgentContext`` — every ``GET`` on a stored conversation carried
     # that. See software-agent-sdk#3301.
+    #
+    # Values are deep-copied so an in-place caller mutation
+    # (``ctx.skills[0].content = "custom"``) doesn't also mutate the
+    # snapshot — without that, the equality check would still succeed
+    # and the customised skill would silently disappear from the wire.
     _auto_loaded_skills: dict[str, Skill] = PrivateAttr(default_factory=dict)
+    # The auto-load config that produced ``_auto_loaded_skills``.
+    # Tracked so the serializer can no-op the trim when the config
+    # changed after validation — e.g. ``model_copy(update={
+    # "load_public_skills": False})``. Without this, a copy with the
+    # flag flipped off would drop the auto-loaded skills on the wire
+    # AND fail to re-load them on the next ``model_validate`` (the
+    # flag is now off), losing them entirely. ``None`` when
+    # ``_load_auto_skills`` has not run yet.
+    _auto_load_config: tuple[bool, bool, str | None] | None = PrivateAttr(default=None)
 
     @field_serializer("skills", when_used="always", mode="wrap")
     def _serialize_skills(self, value: list[Skill], handler, info) -> Any:
@@ -163,12 +177,30 @@ class AgentContext(BaseModel):
         skill content via ``_load_auto_skills``. The API-response path
         skips the flag and gets the byte-size win.
 
+        Config-drift safety: if the auto-load config
+        (``load_user_skills`` / ``load_public_skills`` /
+        ``marketplace_path``) changed since the snapshot was taken —
+        typically via ``model_copy(update=...)`` flipping one of those
+        flags — the trim is skipped. Otherwise the receiver would
+        either re-load a *different* skill catalog (changed
+        ``marketplace_path``) or fail to re-load at all (flag turned
+        off), losing the auto-loaded skills entirely.
+
         ``mode="wrap"`` + ``handler`` delegation preserves caller
         options like ``exclude_none``, ``exclude_defaults``, and
         nested ``include`` / ``exclude`` for the surviving skills —
         manual ``s.model_dump(...)`` would have ignored them.
         """
         if info.context and info.context.get("preserve_full_skills"):
+            return handler(value)
+        # Auto-load config drifted (or never ran) → can't trust the
+        # snapshot to round-trip. Serialize everything as explicit.
+        current_config = (
+            self.load_user_skills,
+            self.load_public_skills,
+            self.marketplace_path,
+        )
+        if self._auto_load_config != current_config:
             return handler(value)
         auto = self._auto_loaded_skills
         kept = [s for s in value if auto.get(s.name) != s]
@@ -234,16 +266,31 @@ class AgentContext(BaseModel):
             marketplace_path=self.marketplace_path,
         )
 
+        # Record the config that produced this snapshot so the
+        # serializer can detect drift (e.g. ``model_copy(update={
+        # "load_public_skills": False})``) and degrade to full
+        # serialization.
+        self._auto_load_config = (
+            self.load_user_skills,
+            self.load_public_skills,
+            self.marketplace_path,
+        )
+
         existing_by_name = {skill.name: skill for skill in self.skills}
         for name, skill in auto_skills.items():
             existing = existing_by_name.get(name)
             if existing is None:
                 self.skills.append(skill)
-                self._auto_loaded_skills[name] = skill
+                # Deep-copy so an in-place caller mutation
+                # (``ctx.skills[0].content = "custom"``) doesn't also
+                # mutate the snapshot — without it the equality check
+                # would still succeed and the customised skill would
+                # silently disappear from the wire.
+                self._auto_loaded_skills[name] = skill.model_copy(deep=True)
             elif existing == skill:
                 # Migration path for conversations stored before the
                 # serializer change — see the docstring.
-                self._auto_loaded_skills[name] = skill
+                self._auto_loaded_skills[name] = skill.model_copy(deep=True)
             else:
                 logger.debug(
                     f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
