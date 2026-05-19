@@ -202,6 +202,109 @@ class TestAutoLoadedSkillsSerialization:
         assert len(dumped["skills"]) == 1
         assert dumped["skills"][0]["content"] == "OpenHands custom version"
 
+    def test_preserve_full_skills_context_flag_keeps_snapshot(self):
+        """``context={"preserve_full_skills": True}`` opts out of the trim.
+
+        This is the persistence path: ``ConversationState._save_base_state``
+        passes this flag so the snapshot of auto-loaded skills is frozen
+        at conversation-create time. Without it, a paused conversation
+        resumed after the skill source updates would silently pick up
+        the *new* content via ``_load_auto_skills``, breaking the
+        guarantee that the agent runs the same skills it started with.
+        """
+        auto = {f"auto-{i}": _make_skill(f"auto-{i}") for i in range(5)}
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value=auto,
+        ):
+            ctx = AgentContext(load_public_skills=True)
+
+        # Default: trim.
+        dumped_default = ctx.model_dump()
+        assert dumped_default["skills"] == []
+
+        # Persistence opt-out: full snapshot.
+        dumped_persist = ctx.model_dump(context={"preserve_full_skills": True})
+        assert len(dumped_persist["skills"]) == 5
+        assert {s["name"] for s in dumped_persist["skills"]} == set(auto.keys())
+
+    def test_wrap_serializer_propagates_exclude_none(self):
+        """Caller-supplied ``exclude_none`` reaches nested ``Skill`` fields.
+
+        ``Skill`` has several optional fields that default to ``None``
+        (``trigger``, ``source``, ``mcp_tools``, …). A manual
+        ``s.model_dump(...)`` inside the serializer would have dropped
+        the caller's ``exclude_none`` setting. ``mode="wrap"`` +
+        ``handler`` delegation preserves it.
+        """
+        explicit = Skill(name="x", content="hello")  # trigger / mcp_tools / etc. → None
+        ctx = AgentContext(skills=[explicit])
+
+        # Without exclude_none, None fields appear.
+        dumped_keep_nones = ctx.model_dump()
+        skill_dict = dumped_keep_nones["skills"][0]
+        # ``trigger`` is one of the always-present None defaults; pick
+        # it as the canary.
+        assert "trigger" in skill_dict
+        assert skill_dict["trigger"] is None
+
+        # With exclude_none, the field is omitted from the nested skill.
+        dumped_drop_nones = ctx.model_dump(exclude_none=True)
+        skill_dict_pruned = dumped_drop_nones["skills"][0]
+        assert "trigger" not in skill_dict_pruned
+
+    def test_save_base_state_persists_full_skill_snapshot(self):
+        """End-to-end: ``ConversationState._save_base_state`` writes the
+        full skill list to disk, even though the in-memory ``model_dump``
+        default trims them.
+        """
+        import json
+        import uuid
+
+        from openhands.sdk.conversation.state import ConversationState
+        from openhands.sdk.io import InMemoryFileStore
+        from openhands.sdk.workspace.local import LocalWorkspace
+
+        auto = {f"auto-{i}": _make_skill(f"auto-{i}") for i in range(3)}
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills",
+            return_value=auto,
+        ):
+            agent_context = AgentContext(load_public_skills=True)
+            # Use a real lightweight agent to satisfy ConversationState.
+            from openhands.sdk.agent import Agent
+            from openhands.sdk.llm import LLM
+
+            agent = Agent(
+                llm=LLM(model="test", usage_id="test"),
+                agent_context=agent_context,
+            )
+
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmp:
+                state = ConversationState.create(
+                    id=uuid.uuid4(),
+                    agent=agent,
+                    workspace=LocalWorkspace(working_dir=tmp),
+                )
+                fs = InMemoryFileStore()
+                state._save_base_state(fs)
+
+                persisted = json.loads(fs.read("base_state.json"))
+
+        # The persisted snapshot must include the auto-loaded skills so
+        # a resumed conversation gets the same content even if the
+        # skill source changed in the meantime.
+        persisted_skill_names = [
+            s["name"] for s in persisted["agent"]["agent_context"]["skills"]
+        ]
+        assert set(persisted_skill_names) == set(auto.keys()), (
+            "persistence path lost the auto-loaded skill snapshot — "
+            "without it, a resumed conversation could silently pick up "
+            "newer skill content from ~/.openhands/skills"
+        )
+
     def test_payload_shrinks_to_explicit_only(self):
         """Concrete byte-count assertion: a 40-skill auto-load with a single
         explicit skill should serialize approximately the size of the

@@ -255,8 +255,18 @@ class ConversationState(OpenHandsModel):
 
         If a cipher is configured, secrets will be encrypted. Otherwise, they
         will be redacted (serialized as '**********').
+
+        ``preserve_full_skills`` is set so the persisted snapshot
+        includes auto-loaded skills inline — without this the conversation
+        would silently pick up *new* skill content from
+        ``~/.openhands/skills`` / the public marketplace on resume, since
+        ``AgentContext._load_auto_skills`` re-runs on deserialization.
+        Persistence needs the freeze-at-create-time snapshot; only the
+        API-response path opts into the trim. See software-agent-sdk#3301.
         """
-        context = {"cipher": self._cipher} if self._cipher else None
+        context: dict[str, Any] = {"preserve_full_skills": True}
+        if self._cipher:
+            context["cipher"] = self._cipher
         # Warn if secrets exist but no cipher is configured
         if not self._cipher and self.secret_registry.secret_sources:
             logger.warning(

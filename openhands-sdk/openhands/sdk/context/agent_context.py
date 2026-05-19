@@ -134,8 +134,8 @@ class AgentContext(BaseModel):
     # that. See software-agent-sdk#3301.
     _auto_loaded_skills: dict[str, Skill] = PrivateAttr(default_factory=dict)
 
-    @field_serializer("skills", when_used="always")
-    def _serialize_skills(self, value: list[Skill], info) -> list[Any]:
+    @field_serializer("skills", when_used="always", mode="wrap")
+    def _serialize_skills(self, value: list[Skill], handler, info) -> Any:
         """Drop unmodified auto-loaded skills from the serialized output.
 
         The runtime keeps the full resolved list on ``self.skills`` so
@@ -152,10 +152,27 @@ class AgentContext(BaseModel):
         same name. A name-only filter would silently drop those
         replacements and the receiver would auto-reload the stock
         version on the next deserialization.
+
+        Opt-out via ``context={"preserve_full_skills": True}``: paths
+        that need a stable snapshot of the resolved skill catalog (the
+        most important one being ``ConversationState._save_base_state``
+        — persistence of the conversation to disk) pass this flag so
+        the serializer is a no-op. Without it, a paused conversation
+        resumed after the ``~/.openhands/skills`` directory or the
+        public marketplace updated would silently pick up the *new*
+        skill content via ``_load_auto_skills``. The API-response path
+        skips the flag and gets the byte-size win.
+
+        ``mode="wrap"`` + ``handler`` delegation preserves caller
+        options like ``exclude_none``, ``exclude_defaults``, and
+        nested ``include`` / ``exclude`` for the surviving skills —
+        manual ``s.model_dump(...)`` would have ignored them.
         """
+        if info.context and info.context.get("preserve_full_skills"):
+            return handler(value)
         auto = self._auto_loaded_skills
         kept = [s for s in value if auto.get(s.name) != s]
-        return [s.model_dump(mode=info.mode, context=info.context) for s in kept]
+        return handler(kept)
 
     @field_serializer("secrets", when_used="always")
     def _serialize_secrets(
