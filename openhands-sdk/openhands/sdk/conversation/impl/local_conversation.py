@@ -42,9 +42,9 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.laminar import observe
 from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.mcp.project_config import load_project_mcp_config
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,

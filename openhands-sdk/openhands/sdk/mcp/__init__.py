@@ -3,11 +3,11 @@
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
 )
-from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.mcp.utils import (
     create_mcp_tools,
 )

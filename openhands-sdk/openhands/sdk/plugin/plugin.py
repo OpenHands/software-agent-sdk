@@ -10,11 +10,18 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.merge import merge_mcp_configs
 from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     CommandDefinition,
     PluginAuthor,
     PluginManifest,
+)
+from openhands.sdk.skills import Skill
+from openhands.sdk.skills.utils import (
+    discover_skill_resources,
+    find_skill_md,
+    load_mcp_config,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
 

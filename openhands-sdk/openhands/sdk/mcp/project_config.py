@@ -3,9 +3,10 @@
 from pathlib import Path
 from typing import Any, Final
 
-from openhands.sdk.context.skills.exceptions import SkillValidationError
-from openhands.sdk.context.skills.utils import load_mcp_config
 from openhands.sdk.logger import get_logger
+from openhands.sdk.skills.exceptions import SkillValidationError
+from openhands.sdk.skills.utils import load_mcp_config
+
 
 logger = get_logger(__name__)
 
