@@ -102,6 +102,7 @@ class TestGetLLM:
                         "model": "openai/gpt-4o",
                         "api_key": "sk-profile-key",
                         "base_url": "https://litellm.example.com",
+                        "usage_id": "default",
                     }
                 },
                 "active_profile": "fast",
@@ -125,6 +126,16 @@ class TestGetLLM:
         assert isinstance(llm.api_key, SecretStr)
         assert llm.api_key.get_secret_value() == "sk-profile-key"
         assert llm.base_url == "https://litellm.example.com"
+        assert llm.usage_id == "profile:fast"
+
+        with patch.object(
+            mock_workspace, "_send_api_request", return_value=mock_response
+        ):
+            llm_with_override = mock_workspace.get_llm(
+                profile_name="fast", usage_id="custom-usage"
+            )
+
+        assert llm_with_override.usage_id == "custom-usage"
 
     def test_get_llm_missing_profile_raises(self, mock_workspace):
         """get_llm raises FileNotFoundError for unknown SaaS profiles."""

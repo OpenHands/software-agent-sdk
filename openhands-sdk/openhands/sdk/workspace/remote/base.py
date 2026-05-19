@@ -413,6 +413,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
         if profile_name:
             llm_data = self._fetch_llm_profile_config(profile_name)
+            llm_data["usage_id"] = f"profile:{profile_name}"
         else:
             settings = self._fetch_agent_settings()
             if not llm_kwargs:

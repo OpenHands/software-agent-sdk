@@ -513,6 +513,7 @@ def test_get_llm_with_profile_name(monkeypatch):
             "model": "openai/gpt-4o",
             "api_key": "sk-profile-key",
             "base_url": "https://litellm.example.com",
+            "usage_id": "default",
         },
         "api_key_set": True,
     }
@@ -527,12 +528,19 @@ def test_get_llm_with_profile_name(monkeypatch):
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "sk-profile-key"
     assert llm.base_url == "https://litellm.example.com"
+    assert llm.usage_id == "profile:fast/model"
 
     mock_client.get.assert_called_once()
     call_args = mock_client.get.call_args
     assert call_args[0][0] == "/api/profiles/fast%2Fmodel"
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
     assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+    llm_with_override = workspace.get_llm(
+        profile_name="fast/model", usage_id="custom-usage"
+    )
+
+    assert llm_with_override.usage_id == "custom-usage"
 
 
 def test_get_llm_with_missing_profile_raises(monkeypatch):

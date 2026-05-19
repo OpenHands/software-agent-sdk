@@ -623,6 +623,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             if not isinstance(profile_config, dict):
                 raise FileNotFoundError(f"LLM profile '{profile_name}' not found")
             kwargs = dict(profile_config)
+            kwargs["usage_id"] = f"profile:{profile_name}"
         else:
             kwargs = {}
             if data.get("llm_model"):
