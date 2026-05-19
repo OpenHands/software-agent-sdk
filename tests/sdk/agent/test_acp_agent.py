@@ -3686,6 +3686,180 @@ class TestACPSecretsEnvInjection:
         assert "EMPTY_SECRET" not in env
 
 
+class TestACPSecretRegistryEnvInjection:
+    """Tests for secret injection from the conversation's secret_registry.
+
+    Secrets registered via ``Conversation.update_secrets()`` — or the
+    equivalent ``payload.secrets`` channel that app-server callers
+    (agent-canvas, the OpenHands cloud app server) use — must land in the
+    ACP subprocess env without each caller having to also build an
+    ``AgentContext(secrets=...)`` shim around the same data.
+
+    Precedence is preserved as: ``acp_env > provider env >
+    agent_context.secrets > secret_registry`` — registry entries fill
+    only genuine gaps.
+    """
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path, *, registry_secrets=None) -> dict:
+        """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
+        state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
+
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPSecretsEnvInjection._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_registry_string_secret_injected_into_subprocess_env(self, tmp_path):
+        """A string secret in secret_registry lands in the subprocess env.
+
+        The canvas / OpenHands ``payload.secrets`` channel ends up here
+        via ``Conversation.update_secrets()`` → ``SecretRegistry.update_secrets``;
+        without this injection the secret is invisible to the ACP CLI.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "sk-from-registry"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "sk-from-registry"
+
+    def test_registry_lookup_secret_injected_into_subprocess_env(self, tmp_path):
+        """A LookupSecret (callable) in secret_registry resolves and injects.
+
+        This is the wire shape canvas actually sends: a ``LookupSecret``
+        whose ``get_value()`` fetches over HTTP from the agent-server's
+        ``/api/settings/secrets/{name}`` endpoint.
+        """
+        from openhands.sdk.secret import SecretSource
+
+        class _FakeLookupSecret(SecretSource):
+            stored_value: str
+
+            def get_value(self) -> str | None:
+                return self.stored_value
+
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "OPENAI_API_KEY": _FakeLookupSecret(stored_value="sk-fake-openai")
+            },
+        )
+        assert env.get("OPENAI_API_KEY") == "sk-fake-openai"
+
+    def test_acp_env_takes_precedence_over_registry_secret(self, tmp_path):
+        """An explicit ``acp_env`` entry wins over the same key in the registry."""
+        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-acp-env"
+
+    def test_agent_context_secret_takes_precedence_over_registry_secret(self, tmp_path):
+        """``agent_context.secrets`` wins over the same key in the registry.
+
+        The full precedence ladder is
+        ``acp_env > provider env > agent_context.secrets > secret_registry``;
+        the registry is the last-resort fill so callers that explicitly
+        set ``agent_context.secrets`` keep control over the value.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-context"
+
+    def test_empty_registry_does_not_change_behaviour(self, tmp_path):
+        """An empty secret_registry must not raise or alter the spawn env."""
+        agent = _make_agent(acp_env={"FOO": "bar"})
+        env = self._run_start_capturing_env(agent, tmp_path, registry_secrets=None)
+        assert env.get("FOO") == "bar"
+
+    def test_failing_registry_lookup_swallowed(self, tmp_path):
+        """A secret source that raises is dropped, not propagated.
+
+        ``SecretRegistry.get_secret_value`` already catches lookup
+        errors and returns ``None``; the spawn-env loop must treat
+        that ``None`` as "skip", so a transient secret-source failure
+        (network blip, expired token) doesn't take the whole ACP
+        subprocess down.
+        """
+        from openhands.sdk.secret import SecretSource
+
+        class _BrokenSecret(SecretSource):
+            def get_value(self) -> str | None:
+                raise OSError("network down")
+
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"BROKEN": _BrokenSecret()},
+        )
+        assert "BROKEN" not in env
+
+
 class TestACPEnvConflictSuppression:
     """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
 

@@ -999,6 +999,23 @@ class ACPAgent(AgentBase):
                     )
                     if value:
                         env[name] = value
+        # Fill any remaining gaps from the conversation's secret registry —
+        # secrets sent via ``Conversation.update_secrets()`` (or the
+        # equivalent ``payload.secrets`` channel that app-server callers
+        # like agent-canvas use) belong in the ACP subprocess env too,
+        # without each caller having to also build an
+        # ``AgentContext(secrets=...)`` shim around the same data.
+        # ``get_secret_value`` swallows lookup errors and returns ``None``;
+        # the ``if value`` guard skips those so a transient secret-source
+        # failure doesn't crash the spawn.
+        # Precedence stays: ``acp_env > provider env > agent_context.secrets
+        # > secret_registry`` — registry entries only fill genuine gaps.
+        for name in state.secret_registry.secret_sources.keys():
+            if name in env:
+                continue
+            value = state.secret_registry.get_secret_value(name)
+            if value:
+                env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
