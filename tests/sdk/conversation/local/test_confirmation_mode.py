@@ -159,7 +159,7 @@ class TestConfirmationMode:
         self.conversation.set_confirmation_policy(AlwaysConfirm())
         mock_completion = self._mock_action_once()
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             return_value=mock_completion.return_value,
         ):
             self.conversation.send_message(
@@ -434,7 +434,7 @@ class TestConfirmationMode:
         self.conversation.set_confirmation_policy(AlwaysConfirm())
         mock_completion = self._mock_message_only("Hello, how can I help you?")
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             return_value=mock_completion.return_value,
         ):
             self.conversation.send_message(
@@ -470,7 +470,7 @@ class TestConfirmationMode:
             # Confirm path per your instruction: call run() to execute pending action
             mock_completion = self._mock_message_only("Task completed successfully!")
             with patch(
-                "openhands.sdk.llm.llm.litellm_completion",
+                "openhands.sdk.llm.llm.litellm_acompletion",
                 return_value=mock_completion.return_value,
             ):
                 self.conversation.run()
@@ -520,7 +520,7 @@ class TestConfirmationMode:
 
         # Send a message that should trigger the finish action
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             return_value=mock_completion.return_value,
         ):
             self.conversation.send_message(
@@ -565,7 +565,7 @@ class TestConfirmationMode:
         mock_finish = self._mock_finish_action("Analysis complete")
 
         with patch(
-            "openhands.sdk.llm.llm.litellm_completion",
+            "openhands.sdk.llm.llm.litellm_acompletion",
             side_effect=[mock_think.return_value, mock_finish.return_value],
         ):
             # Kick things off (LLM returns ThinkAction; should execute immediately)

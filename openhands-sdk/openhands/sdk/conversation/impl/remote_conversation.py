@@ -1228,6 +1228,18 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/pause",
         )
 
+    def interrupt(self) -> None:
+        """Interrupt the conversation immediately, cancelling any in-flight LLM calls.
+
+        For remote conversations, this sends an interrupt request to the server.
+        The server will cancel the current operation and set the status to paused.
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/interrupt",
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 

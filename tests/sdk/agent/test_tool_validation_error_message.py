@@ -126,7 +126,7 @@ def test_validation_error_shows_keys_not_values():
     conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(role="user", content=[TextContent(text="Do something")])
@@ -191,7 +191,7 @@ def test_unparseable_json_error_message():
     conversation = Conversation(agent=agent, callbacks=[collected_events.append])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(role="user", content=[TextContent(text="Do something")])
@@ -258,7 +258,7 @@ def test_tool_call_without_security_risk_succeeds():
     conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
+        "openhands.sdk.llm.llm.litellm_acompletion",
         side_effect=_mock_llm_response_factory(tool_args),
     ):
         conversation.send_message(
@@ -299,7 +299,7 @@ def test_omitted_security_risk_still_requires_confirmation():
     conversation.set_confirmation_policy(ConfirmRisky())
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
+        "openhands.sdk.llm.llm.litellm_acompletion",
         side_effect=_mock_llm_response_factory(tool_args),
     ):
         conversation.send_message(

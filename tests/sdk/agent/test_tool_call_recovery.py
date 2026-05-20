@@ -147,7 +147,7 @@ def test_newline_whitespace_in_arguments_parses_ok():
     )
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",
@@ -194,7 +194,7 @@ def test_control_chars_in_string_values_still_sanitized():
     )
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",
@@ -223,7 +223,7 @@ def test_reasoning_only_response_injects_nudge():
     )
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",
@@ -253,7 +253,7 @@ def test_content_response_does_not_inject_nudge():
     resp = _model_response(content="Here is my analysis of the bug...")
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",
@@ -276,7 +276,7 @@ def test_completely_empty_response_injects_nudge():
     resp = _model_response(content="")
 
     events: list[object] = []
-    with patch("openhands.sdk.llm.llm.litellm_completion", return_value=resp):
+    with patch("openhands.sdk.llm.llm.litellm_acompletion", return_value=resp):
         conv.send_message(
             Message(
                 role="user",

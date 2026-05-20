@@ -113,7 +113,7 @@ def test_tool_execution_valueerror_returns_error_event():
     conversation = Conversation(agent=agent, callbacks=[event_callback])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(
@@ -229,7 +229,7 @@ def test_conversation_continues_after_tool_execution_error():
     conversation = Conversation(agent=agent, callbacks=[event_callback])
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
+        "openhands.sdk.llm.llm.litellm_acompletion", side_effect=mock_llm_response
     ):
         conversation.send_message(
             Message(

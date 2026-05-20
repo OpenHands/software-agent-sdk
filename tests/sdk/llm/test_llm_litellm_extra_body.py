@@ -23,7 +23,7 @@ def test_completion_forwards_extra_body_for_proxy_models():
     )
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:
+    with patch("openhands.sdk.llm.llm.litellm_acompletion") as mock_completion:
         mock_response = ModelResponse(
             id="test-id",
             choices=[
@@ -66,7 +66,7 @@ def test_responses_forwards_extra_body_for_all_models():
     )
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    with patch("openhands.sdk.llm.llm.litellm_responses") as mock_responses:
+    with patch("openhands.sdk.llm.llm.litellm_aresponses") as mock_responses:
         mock_response = MagicMock(spec=ResponsesAPIResponse)
         mock_response.id = "test-id"
         mock_response.created_at = 1234567890

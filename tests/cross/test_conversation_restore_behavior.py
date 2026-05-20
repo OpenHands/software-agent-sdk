@@ -185,7 +185,7 @@ def _tool_call_response(
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_lifecycle_happy_path(mock_completion):
     """Baseline: restore should load prior events and allow further execution."""
 
@@ -247,7 +247,7 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
             restored.close()
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_preserves_security_risk_and_summary(mock_completion):
     """Restore should preserve action metadata derived from tool call arguments."""
 
@@ -351,7 +351,7 @@ def test_conversation_restore_preserves_security_risk_and_summary(mock_completio
             restored.close()
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_fails_when_removing_tools(mock_completion):
     """Restore must fail when runtime tools remove a persisted tool."""
 
@@ -395,7 +395,7 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
         assert "FileEditorTool" in str(exc.value)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_succeeds_when_adding_tools(mock_completion):
     """Restore must succeed when runtime tools add a new tool.
 
@@ -437,7 +437,7 @@ def test_conversation_restore_succeeds_when_adding_tools(mock_completion):
         assert conversation is not None
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
     """Restore must fail when persisted and runtime agent types differ."""
 
@@ -480,7 +480,7 @@ def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
         assert "self is of type" in str(exc.value)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
     """Restore must fail if include_default_tools removes a built-in tool."""
 
@@ -526,7 +526,7 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
         assert "think" in str(exc.value)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_succeeds_when_default_tools_added(mock_completion):
     """Restore must succeed if include_default_tools adds a built-in tool.
 
@@ -570,7 +570,7 @@ def test_conversation_restore_succeeds_when_default_tools_added(mock_completion)
         assert conversation is not None
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
     mock_completion,
 ):
@@ -629,7 +629,7 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
             restored.close()
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
     """Reasoning models should accept reasoning_effort and ignore temperature/top_p."""
 

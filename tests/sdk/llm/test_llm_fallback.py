@@ -55,7 +55,7 @@ def _patch_resolve(primary: LLM, fallback_instances: list[LLM]):
     primary.fallback_strategy._resolved = fallback_instances
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_primary_succeeds_fallback_not_tried(mock_comp):
     mock_comp.return_value = _get_mock_response("primary ok")
 
@@ -72,7 +72,7 @@ def test_primary_succeeds_fallback_not_tried(mock_comp):
     assert mock_comp.call_count == 1
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_fallback_succeeds_after_primary_transient_failure(mock_comp):
     primary_error = APIConnectionError(
         message="connection reset", llm_provider="openai", model="gpt-4o"
@@ -96,7 +96,7 @@ def test_fallback_succeeds_after_primary_transient_failure(mock_comp):
     assert content.text == "fallback ok"
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_all_fallbacks_fail_raises_primary_error(mock_comp):
     mock_comp.side_effect = APIConnectionError(
         message="down", llm_provider="openai", model="gpt-4o"
@@ -114,7 +114,7 @@ def test_all_fallbacks_fail_raises_primary_error(mock_comp):
         _ = primary.completion(_MSGS)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_non_transient_error_skips_fallback(mock_comp):
     """A plain Exception is NOT in LLM_FALLBACK_EXCEPTIONS, so fallback
     should be skipped."""
@@ -132,7 +132,7 @@ def test_non_transient_error_skips_fallback(mock_comp):
     assert mock_comp.call_count == 1
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_no_fallbacks_configured_normal_error(mock_comp):
     mock_comp.side_effect = APIConnectionError(
         message="down", llm_provider="openai", model="gpt-4o"
@@ -145,7 +145,7 @@ def test_no_fallbacks_configured_normal_error(mock_comp):
         _ = primary.completion(_MSGS)
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_metrics_merged_from_fallback(mock_comp):
     primary_error = RateLimitError(
         message="rate limited", llm_provider="openai", model="gpt-4o"
@@ -183,7 +183,7 @@ def test_metrics_merged_from_fallback(mock_comp):
     )
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_second_fallback_succeeds(mock_comp):
     # Second fallback succeeds after first fallback fails
     call_count = {"n": 0}
@@ -211,7 +211,7 @@ def test_second_fallback_succeeds(mock_comp):
     assert call_count["n"] == 3
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_responses_fallback_succeeds(mock_resp):
     """Ensure fallback works through the responses() code path too."""
     from litellm.types.llms.openai import ResponsesAPIResponse
@@ -260,7 +260,7 @@ def test_responses_fallback_succeeds(mock_resp):
     assert content.text == "fb ok"
 
 
-@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses")
 def test_responses_non_transient_skips_fallback(mock_resp):
     mock_resp.side_effect = Exception("not transient")
 
@@ -275,7 +275,7 @@ def test_responses_non_transient_skips_fallback(mock_resp):
     assert mock_resp.call_count == 1
 
 
-@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion")
 def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     """Verify that fallback profile names are resolved through LLMProfileStore."""
     from openhands.sdk.llm.llm_profile_store import LLMProfileStore

@@ -219,7 +219,7 @@ def test_aws_bedrock_params_forwarded_to_litellm():
         aws_bedrock_runtime_endpoint="https://my-proxy.example.com",
     )
 
-    with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:
+    with patch("openhands.sdk.llm.llm.litellm_acompletion") as mock_completion:
         mock_completion.return_value = ModelResponse(
             id="test-id",
             choices=[

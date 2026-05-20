@@ -14,7 +14,7 @@ def test_llm_pricing_passthrough_custom_rates():
     litellm.cost_calculator.completion_cost.
     """
     with (
-        patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion,
+        patch("openhands.sdk.llm.llm.litellm_acompletion") as mock_completion,
         patch("openhands.sdk.llm.utils.telemetry.litellm_completion_cost") as mock_cost,
     ):
         mock_completion.return_value = create_mock_litellm_response("ok")

@@ -179,7 +179,7 @@ def _run_tool_call(
     events: list[object] = []
 
     with patch(
-        "openhands.sdk.llm.llm.litellm_completion",
+        "openhands.sdk.llm.llm.litellm_acompletion",
         return_value=_model_response(tool_name, arguments),
     ):
         conversation.send_message(

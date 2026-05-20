@@ -10,6 +10,7 @@ from .types import (
     FunctionCallValidationError,
     LLMAuthenticationError,
     LLMBadRequestError,
+    LLMCancelledError,
     LLMContextWindowExceedError,
     LLMContextWindowTooSmallError,
     LLMError,
@@ -44,6 +45,7 @@ __all__ = [
     "LLMTimeoutError",
     "LLMServiceUnavailableError",
     "LLMBadRequestError",
+    "LLMCancelledError",
     "UserCancelledError",
     "OperationCancelled",
     # Helpers

@@ -21,7 +21,7 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.event.streaming_delta import StreamingDeltaEvent
 from openhands.sdk.event.token import TokenEvent
 from openhands.sdk.event.types import EventID, ToolCallID
-from openhands.sdk.event.user_action import PauseEvent
+from openhands.sdk.event.user_action import InterruptEvent, PauseEvent
 
 
 __all__ = [
@@ -38,6 +38,7 @@ __all__ = [
     "UserRejectObservation",
     "RejectionSource",
     "PauseEvent",
+    "InterruptEvent",
     "StreamingDeltaEvent",
     "Condensation",
     "CondensationRequest",
