@@ -46,6 +46,7 @@ class EventLog(EventsListBase):
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
+        self._event_cache: dict[int, Event] = {}
         self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._write_guard = None
         self._length = self._scan_and_build_index()
@@ -89,6 +90,11 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
+
+        cached = self._event_cache.get(i)
+        if cached is not None:
+            return cached
+
         try:
             path = self._path(i)
         except KeyError:
@@ -102,10 +108,16 @@ class EventLog(EventsListBase):
         txt = self._fs.read(path)
         if not txt:
             raise FileNotFoundError(f"Missing event file: {path}")
-        return Event.model_validate_json(txt)
+        evt = Event.model_validate_json(txt)
+        self._event_cache[i] = evt
+        return evt
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
+            cached = self._event_cache.get(i)
+            if cached is not None:
+                yield cached
+                continue
             txt = self._fs.read(self._path(i))
             if not txt:
                 continue
@@ -114,6 +126,7 @@ class EventLog(EventsListBase):
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id
                 self._id_to_idx.setdefault(evt_id, i)
+            self._event_cache[i] = evt
             yield evt
 
     def append(self, event: Event) -> None:
@@ -148,6 +161,7 @@ class EventLog(EventsListBase):
                     self._fs.write(target_path, payload)
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
+                self._event_cache[self._length] = event
                 self._length += 1
         except TimeoutError:
             logger.error(
@@ -209,6 +223,7 @@ class EventLog(EventsListBase):
         except Exception:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         by_idx: dict[int, EventID] = {}
@@ -225,6 +240,7 @@ class EventLog(EventsListBase):
         if not by_idx:
             self._id_to_idx.clear()
             self._idx_to_id.clear()
+            self._event_cache.clear()
             return 0
 
         n = 0
@@ -240,6 +256,7 @@ class EventLog(EventsListBase):
 
         self._id_to_idx.clear()
         self._idx_to_id.clear()
+        self._event_cache.clear()
         for i in range(n):
             evt_id = by_idx[i]
             self._idx_to_id[i] = evt_id
