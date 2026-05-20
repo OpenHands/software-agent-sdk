@@ -149,6 +149,27 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def create_llm(model: str = "", **kwargs) -> LLM:
+    """Factory function that routes to the correct LLM subclass.
+
+    Routes models with the "databricks/" prefix to DatabricksLLM (native FMAPI
+    provider, bypassing LiteLLM).  All other models use the base LLM class.
+
+    Uses lazy import for DatabricksLLM to avoid circular import and to keep
+    Databricks dependencies optional (install via: pip install openhands-sdk[databricks]).
+
+    Example:
+        llm = create_llm("databricks/databricks-meta-llama-3-3-70b-instruct",
+                         databricks_host="https://adb-xxx.azuredatabricks.net",
+                         api_key=SecretStr("dapi..."))
+        llm = create_llm("claude-sonnet-4-20250514", api_key=SecretStr("sk-ant-..."))
+    """
+    if model.startswith("databricks/"):
+        from openhands.sdk.llm.providers.databricks.llm import DatabricksLLM
+
+        return DatabricksLLM(model=model, **kwargs)
+    return LLM(model=model, **kwargs)
+
 __all__ = [
     "LLM",
     "LLM_PROFILE_SCHEMA_VERSION",
@@ -234,4 +255,5 @@ __all__ = [
     "load_user_skills",
     "page_iterator",
     "__version__",
+    "create_llm",
 ]

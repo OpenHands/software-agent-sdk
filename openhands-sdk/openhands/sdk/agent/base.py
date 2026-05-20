@@ -8,7 +8,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -17,6 +17,7 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     SerializationInfo,
+    SerializeAsAny,
     ValidationInfo,
     model_serializer,
     model_validator,
@@ -110,7 +111,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         arbitrary_types_allowed=True,
     )
 
-    llm: LLM = Field(
+    llm: Annotated[LLM, SerializeAsAny()] = Field(
         ...,
         description="LLM configuration for the agent.",
         examples=[

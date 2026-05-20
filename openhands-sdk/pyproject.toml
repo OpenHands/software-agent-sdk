@@ -30,6 +30,9 @@ Documentation = "https://docs.openhands.dev/sdk"
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+# Optional dependency for PROFILE and UNIFIED auth strategies only.
+# U2M (browser PKCE), M2M (client credentials), and PAT have zero extra dependencies.
+databricks = ["databricks-sdk>=0.20.0"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

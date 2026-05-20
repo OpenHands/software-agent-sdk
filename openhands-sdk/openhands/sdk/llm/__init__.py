@@ -28,6 +28,16 @@ from openhands.sdk.llm.utils.unverified_models import (
 )
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
+# Eagerly import DatabricksLLM so it registers with LLM.__subclasses__() at
+# module-load time.  This ensures that LLM._dispatch_to_provider_subclass can
+# reconstruct a DatabricksLLM when deserializing persisted agent JSON that
+# carries provider="databricks" — even in processes (e.g. the agent server)
+# that never explicitly import the Databricks provider.
+try:
+    from openhands.sdk.llm.providers.databricks.llm import DatabricksLLM  # noqa: F401
+except Exception:  # pragma: no cover — optional dependency
+    pass
+
 
 __all__ = [
     # Auth

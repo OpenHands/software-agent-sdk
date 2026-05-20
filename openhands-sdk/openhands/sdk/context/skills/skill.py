@@ -1,9 +1,4 @@
-"""Backward-compatible re-exports from openhands.sdk.skills.
-
-The canonical location is ``openhands.sdk.skills``. These aliases are
-kept so that the installed ``openhands.agent_server`` package (which
-may be pinned to an older release) can still import from the old path.
-"""
+"""Backward-compatible re-exports. Canonical location: openhands.sdk.skills.skill"""
 from openhands.sdk.skills.skill import (  # noqa: F401
     DEFAULT_MARKETPLACE_PATH,
     PUBLIC_SKILLS_BRANCH,

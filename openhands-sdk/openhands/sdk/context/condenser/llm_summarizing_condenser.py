@@ -1,8 +1,9 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
+from typing import Annotated
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -43,7 +44,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     it is the same as the one defined in this condenser.
     """
 
-    llm: LLM
+    llm: Annotated[LLM, SerializeAsAny()]
     max_size: int = Field(default=240, gt=0)
     max_tokens: int | None = None
 
