@@ -5,6 +5,9 @@ from rich.text import Text
 
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
+from openhands.sdk.event.llm_convertible._reasoning import (
+    append_visible_responses_reasoning,
+)
 from openhands.sdk.event.types import SourceType, ToolCallID
 from openhands.sdk.llm import (
     Message,
@@ -113,15 +116,7 @@ class ActionEvent(LLMConvertibleEvent):
             content.append("\n\n")
 
         # Responses API reasoning (plaintext only; never render encrypted_content)
-        reasoning_item = self.responses_reasoning_item
-        if reasoning_item is not None:
-            content.append("Reasoning:\n", style="bold")
-            if reasoning_item.summary:
-                for s in reasoning_item.summary:
-                    content.append(f"- {s}\n")
-            if reasoning_item.content:
-                for b in reasoning_item.content:
-                    content.append(f"{b}\n")
+        append_visible_responses_reasoning(content, self.responses_reasoning_item)
 
         # Display action information using action's visualize method
         if self.action:
