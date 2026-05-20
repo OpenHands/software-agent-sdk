@@ -743,13 +743,19 @@ class EventService:
                     # loop is free during LLM I/O.  Fall back to thread-pool
                     # execution for backward compatibility.
                     #
-                    # BaseConversation defines a default ``async def arun()``
-                    # that simply delegates to the synchronous ``run()``, so
-                    # ``iscoroutinefunction`` alone would always be True.
-                    # Detect an *actual* override to avoid running a
-                    # sync-only subclass on the event loop.
+                    # Both guards are required:
+                    #  • iscoroutinefunction – filters out non-async objects
+                    #    (e.g. MagicMock in tests).
+                    #  • override check – BaseConversation defines a default
+                    #    ``async def arun()`` that delegates to sync ``run()``,
+                    #    so iscoroutinefunction alone is always True for real
+                    #    subclasses.  We detect an *actual* override to avoid
+                    #    running a sync-only subclass on the event loop.
+                    arun = getattr(conversation, "arun", None)
                     has_native_arun = (
-                        type(conversation).arun is not BaseConversation.arun
+                        arun is not None
+                        and asyncio.iscoroutinefunction(arun)
+                        and type(conversation).arun is not BaseConversation.arun
                     )
                     if has_native_arun:
                         await conversation.arun()
