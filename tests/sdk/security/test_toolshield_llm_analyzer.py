@@ -193,6 +193,16 @@ class TestParseRisk:
             ToolShieldLLMSecurityAnalyzer._parse_risk(text) == SecurityRisk.HIGH
         )
 
+    def test_parse_risk_handles_crlf_line_endings(self):
+        """``re.MULTILINE`` only anchors at ``\\n``; a guardrail emitting
+        CRLF (Windows or some legacy proxies) would otherwise hide an
+        otherwise-standalone label. Normalization in ``_parse_risk``
+        rewrites CRLF / lone CR to LF before matching."""
+        text = "RISK: HIGH\r\nThis command is destructive.\r\n"
+        assert (
+            ToolShieldLLMSecurityAnalyzer._parse_risk(text) == SecurityRisk.HIGH
+        )
+
     def test_no_label_falls_back_to_unknown(self):
         """Parse failure returns UNKNOWN, consistent with the
         infrastructure-error path and with GraySwanAnalyzer.

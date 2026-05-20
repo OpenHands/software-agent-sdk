@@ -218,6 +218,14 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
     experiences via the ``safety_experiences`` field -- typically via
     one of the helpers (``default_safety_experiences()``,
     ``load_safety_experiences(...)``, ``auto_detect_safety_experiences()``).
+    Tested against ``toolshield>=0.1.1,<0.2``.
+
+    Note: ``reasoning_content`` and ``thinking_blocks`` from extended-
+    thinking models are deliberately excluded from the guardrail
+    context. The risk signal lives in the tool call's name and
+    arguments; including reasoning text would inflate the prompt
+    without proportional safety gain. Subclasses needing reasoning
+    visibility should override :func:`_format_action_for_guardrail`.
 
     Lifecycle: instances maintain a per-conversation deque of recent
     actions (``history_window`` items) for guardrail context. Each
@@ -354,6 +362,13 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
         preserved without distorting ensemble fusion that takes
         ``max(concrete)``.
         """
+        # Normalize legacy / Windows line endings so the MULTILINE anchor
+        # in ``_RISK_RE`` fires consistently. ``re.MULTILINE`` only anchors
+        # at ``\n``; CR-only and CRLF outputs would otherwise hide an
+        # otherwise-standalone label. (Unicode line separators U+2028 /
+        # U+0085 are not normalized here -- no real LLM emits them in
+        # our experience; revisit if a guardrail model does.)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         # Strip attacker-controllable spans so an echoed RISK label inside
         # them can't be parsed as the verdict.
         sanitized = _UNTRUSTED_TAG_RE.sub("", text)
