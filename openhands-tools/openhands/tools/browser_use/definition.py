@@ -787,6 +787,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     # and subagents to avoid CDP port conflicts in sandbox containers.
     _shared_executor: ClassVar["BrowserToolExecutor | None"] = None
     _shared_executor_lock: ClassVar[threading.Lock] = threading.Lock()
+    _shared_executor_creation_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def is_usable(cls) -> bool:
@@ -819,21 +820,23 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             cls._warn_config_ignored(executor_config)
             return executor
 
-        from openhands.tools.browser_use.impl import BrowserToolExecutor
+        with cls._shared_executor_creation_lock:
+            with cls._shared_executor_lock:
+                executor = cls._shared_executor
 
-        candidate = BrowserToolExecutor(
-            full_output_save_dir=conv_state.env_observation_persistence_dir,
-            **executor_config,
-        )
-        with cls._shared_executor_lock:
-            if cls._shared_executor is None:
-                cls._shared_executor = candidate
-                return candidate
-            executor = cls._shared_executor
+            if executor is not None:
+                cls._warn_config_ignored(executor_config)
+                return executor
 
-        cls._warn_config_ignored(executor_config)
-        candidate.close()
-        return executor
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+            with cls._shared_executor_lock:
+                cls._shared_executor = executor
+            return executor
 
     @classmethod
     def create(

@@ -1,6 +1,7 @@
 """Test BrowserToolSet functionality."""
 
 import tempfile
+import threading
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -217,6 +218,74 @@ def test_browser_toolset_does_not_hold_shared_lock_while_constructing():
             tools = BrowserToolSet.create(conv_state=conv_state)
 
     assert tools[0].executor is BrowserToolSet._shared_executor
+
+
+def test_browser_toolset_initial_create_serializes_candidate_construction():
+    """Concurrent subagent creation should not replace the first configured executor."""
+    configured_init_started = threading.Event()
+    release_configured_init = threading.Event()
+    init_configs: list[dict[str, object]] = []
+    executors: dict[str, BrowserToolExecutor] = {}
+    errors: list[BaseException] = []
+
+    def fake_init(self, **kwargs):
+        init_configs.append(kwargs.copy())
+        self.full_output_save_dir = kwargs.get("full_output_save_dir")
+        self.headless = kwargs.get("headless")
+        self.allowed_domains = kwargs.get("allowed_domains")
+        self._initialized = False
+        self._cleanup_initiated = True
+        self._action_timeout_seconds = 30.0
+        self._async_executor = MagicMock()
+        self._async_executor.close = MagicMock()
+
+        if kwargs.get("headless") is False:
+            configured_init_started.set()
+            assert release_configured_init.wait(timeout=2.0)
+
+    def create_tools(
+        name: str,
+        conv_state: ConversationState,
+        **executor_config: object,
+    ) -> None:
+        try:
+            tools = BrowserToolSet.create(conv_state=conv_state, **executor_config)
+            executor = tools[0].executor
+            assert isinstance(executor, BrowserToolExecutor)
+            executors[name] = executor
+        except BaseException as error:
+            errors.append(error)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        parent_state = _create_test_conv_state(temp_dir)
+        subagent_state = _create_test_conv_state(temp_dir)
+        with patch.object(BrowserToolExecutor, "__init__", fake_init):
+            parent_thread = threading.Thread(
+                target=create_tools,
+                args=("parent", parent_state),
+                kwargs={"headless": False, "allowed_domains": ["example.com"]},
+            )
+            parent_thread.start()
+            assert configured_init_started.wait(timeout=2.0)
+
+            subagent_thread = threading.Thread(
+                target=create_tools,
+                args=("subagent", subagent_state),
+            )
+            subagent_thread.start()
+
+            release_configured_init.set()
+            parent_thread.join(timeout=2.0)
+            subagent_thread.join(timeout=2.0)
+
+    assert not parent_thread.is_alive()
+    assert not subagent_thread.is_alive()
+    assert not errors
+    assert len(init_configs) == 1
+    assert init_configs[0]["headless"] is False
+    assert init_configs[0]["allowed_domains"] == ["example.com"]
+    assert executors["parent"] is executors["subagent"]
+    assert executors["parent"] is BrowserToolSet._shared_executor
 
 
 def test_browser_toolset_warns_when_config_ignored(caplog):
