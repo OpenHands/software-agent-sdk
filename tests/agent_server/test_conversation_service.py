@@ -984,6 +984,87 @@ class TestConversationServiceCountConversations:
         assert await conversation_service.count_conversations() == 2
 
 
+class TestConversationServiceSearchCountPerf:
+    """Verify search/count avoid scanning state on every conversation.
+
+    Regression test for the O(N) full scan called out in
+    https://github.com/OpenHands/software-agent-sdk/issues/3142.
+    """
+
+    def _add_mock(
+        self,
+        conversation_service,
+        *,
+        created_at: datetime,
+        updated_at: datetime | None = None,
+        execution_status: ConversationExecutionStatus = (
+            ConversationExecutionStatus.IDLE
+        ),
+    ) -> AsyncMock:
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=created_at,
+            updated_at=updated_at or created_at,
+        )
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.stored = stored
+        mock_service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            execution_status=execution_status,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        conversation_service._event_services[stored.id] = mock_service
+        return mock_service
+
+    @pytest.mark.asyncio
+    async def test_count_no_filter_skips_state_loads(self, conversation_service):
+        """Counting with no filter must not hit state on each conversation."""
+        services = [
+            self._add_mock(
+                conversation_service,
+                created_at=datetime(2025, 1, 1, 12, i, 0, tzinfo=UTC),
+            )
+            for i in range(5)
+        ]
+
+        assert await conversation_service.count_conversations() == 5
+        for mock_service in services:
+            mock_service.get_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_search_skips_state_for_non_page_items(self, conversation_service):
+        """``search_conversations`` only composes full info for the page slice."""
+        # 5 conversations, all IDLE, ascending created_at.
+        services = [
+            self._add_mock(
+                conversation_service,
+                created_at=datetime(2025, 1, 1, 12, i, 0, tzinfo=UTC),
+            )
+            for i in range(5)
+        ]
+
+        result = await conversation_service.search_conversations(
+            limit=2, sort_order=ConversationSortOrder.CREATED_AT
+        )
+        assert len(result.items) == 2
+        assert result.next_page_id is not None
+
+        # Sorted by stored.created_at ascending, so the first two items belong
+        # to services[0] and services[1]. Those are the only ones whose state
+        # we needed to read.
+        services[0].get_state.assert_awaited_once()
+        services[1].get_state.assert_awaited_once()
+        for mock_service in services[2:]:
+            mock_service.get_state.assert_not_awaited()
+
+
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
 

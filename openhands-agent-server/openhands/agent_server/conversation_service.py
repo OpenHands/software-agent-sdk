@@ -396,51 +396,52 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
-        # Collect all conversations with their info
-        all_conversations = []
+        # ``created_at`` / ``updated_at`` live on the ``StoredConversation``
+        # metadata, so sorting does not require loading or composing the full
+        # ``ConversationInfo`` for every conversation. We only pay the
+        # composition cost (which serializes the full state via ``model_dump``)
+        # for the page slice that's actually returned.
+        use_updated_at = sort_order in (
+            ConversationSortOrder.UPDATED_AT,
+            ConversationSortOrder.UPDATED_AT_DESC,
+        )
+        reverse = sort_order in (
+            ConversationSortOrder.CREATED_AT_DESC,
+            ConversationSortOrder.UPDATED_AT_DESC,
+        )
+
+        candidates: list[tuple[UUID, EventService]] = []
         for id, event_service in self._event_services.items():
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
-            # Apply status filter if provided
-            if (
-                execution_status is not None
-                and conversation_info.execution_status != execution_status
-            ):
-                continue
+            if execution_status is not None:
+                state = await event_service.get_state()
+                if state.execution_status != execution_status:
+                    continue
+            candidates.append((id, event_service))
 
-            all_conversations.append((id, conversation_info))
+        def _sort_key(entry: tuple[UUID, EventService]):
+            stored = entry[1].stored
+            return stored.updated_at if use_updated_at else stored.created_at
 
-        # Sort conversations based on sort_order
-        if sort_order == ConversationSortOrder.CREATED_AT:
-            all_conversations.sort(key=lambda x: x[1].created_at)
-        elif sort_order == ConversationSortOrder.CREATED_AT_DESC:
-            all_conversations.sort(key=lambda x: x[1].created_at, reverse=True)
-        elif sort_order == ConversationSortOrder.UPDATED_AT:
-            all_conversations.sort(key=lambda x: x[1].updated_at)
-        elif sort_order == ConversationSortOrder.UPDATED_AT_DESC:
-            all_conversations.sort(key=lambda x: x[1].updated_at, reverse=True)
+        candidates.sort(key=_sort_key, reverse=reverse)
 
-        # Handle pagination
-        items = []
+        # Find the starting point if page_id is provided.
         start_index = 0
-
-        # Find the starting point if page_id is provided
         if page_id:
-            for i, (id, _) in enumerate(all_conversations):
+            for i, (id, _) in enumerate(candidates):
                 if id.hex == page_id:
                     start_index = i
                     break
 
-        # Collect items for this page
-        next_page_id = None
-        for i in range(start_index, len(all_conversations)):
-            if len(items) >= limit:
-                # We have more items, set next_page_id
-                if i < len(all_conversations):
-                    next_page_id = all_conversations[i][0].hex
-                break
-            items.append(all_conversations[i][1])
+        page_end = min(start_index + limit, len(candidates))
+        items: list[ConversationInfo] = []
+        for i in range(start_index, page_end):
+            _, event_service = candidates[i]
+            state = await event_service.get_state()
+            items.append(_compose_conversation_info(event_service.stored, state))
 
+        next_page_id = (
+            candidates[page_end][0].hex if page_end < len(candidates) else None
+        )
         return items, next_page_id
 
     async def count_conversations(
@@ -457,19 +458,16 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
+        # Fast path: with no filter the total is just the size of the in-memory
+        # index, so we can skip touching per-conversation state entirely.
+        if execution_status is None:
+            return len(self._event_services)
+
         count = 0
         for event_service in self._event_services.values():
             state = await event_service.get_state()
-
-            # Apply status filter if provided
-            if (
-                execution_status is not None
-                and state.execution_status != execution_status
-            ):
-                continue
-
-            count += 1
-
+            if state.execution_status == execution_status:
+                count += 1
         return count
 
     async def batch_get_conversations(
