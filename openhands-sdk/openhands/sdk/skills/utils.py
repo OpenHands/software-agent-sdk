@@ -7,7 +7,7 @@ import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastmcp.mcp_config import MCPConfig
 
@@ -24,6 +24,99 @@ if TYPE_CHECKING:
 SecretLookup = Callable[[str], str | None]
 
 logger = get_logger(__name__)
+
+# Regex patterns for variable expansion
+# Braced only: ${VAR} or ${VAR:-default}
+_BRACED_VAR_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+# Braced and unbraced: $VAR, ${VAR}, or ${VAR:-default}
+_ALL_VAR_PATTERN = re.compile(
+    r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}|\$([a-zA-Z_][a-zA-Z0-9_]*)"
+)
+
+
+def expand_variable_references(
+    data: Any,
+    *,
+    variables: dict[str, str] | None = None,
+    get_secret: SecretLookup | None = None,
+    check_env: bool = False,
+    expand_defaults: bool = True,
+    support_unbraced: bool = False,
+) -> Any:
+    """Expand variable references in data structures.
+
+    This is the core expansion function used by both MCP config expansion
+    and runtime tool parameter expansion.
+
+    Supports variable expansion patterns:
+    - ${VAR} - Braced variable reference (always supported)
+    - ${VAR:-default} - With default value (always supported)
+    - $VAR - Unbraced variable reference (only if support_unbraced=True)
+
+    Resolution order (each source is checked only if provided/enabled):
+    1. Provided variables dict
+    2. Secrets (via get_secret callback)
+    3. Environment variables (only if check_env=True)
+    4. Default value (only if expand_defaults=True)
+
+    Args:
+        data: Data to expand (string, dict, list, or other).
+        variables: Dictionary of variable names to values.
+        get_secret: Callback to look up a secret by name.
+        check_env: If True, check os.environ for unresolved variables.
+        expand_defaults: If True, apply default values for unresolved variables.
+        support_unbraced: If True, support $VAR syntax in addition to ${VAR}.
+
+    Returns:
+        Data with variable references expanded.
+    """
+    pattern = _ALL_VAR_PATTERN if support_unbraced else _BRACED_VAR_PATTERN
+
+    def replace_var(match: re.Match) -> str:
+        # For braced pattern: group(1) = var_name, group(2) = default
+        # For all pattern: group(1)=braced, group(2)=default, group(3)=unbraced
+        if support_unbraced:
+            braced_var = match.group(1)
+            default_value = match.group(2)
+            unbraced_var = match.group(3)
+            var_name = braced_var or unbraced_var
+        else:
+            var_name = match.group(1)
+            default_value = match.group(2)
+
+        # Resolution order: variables -> secrets -> env -> default
+        if variables is not None and var_name in variables:
+            return variables[var_name]
+
+        if get_secret is not None:
+            secret_value = get_secret(var_name)
+            if secret_value is not None:
+                return secret_value
+
+        if check_env and var_name in os.environ:
+            return os.environ[var_name]
+
+        # Apply default only if expand_defaults is True and we have a default
+        if expand_defaults and default_value is not None:
+            return default_value
+
+        # Return original if not found (preserves placeholder)
+        return match.group(0)
+
+    def expand_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return pattern.sub(replace_var, value)
+        if isinstance(value, dict):
+            return {
+                expand_value(k) if isinstance(k, str) else k: expand_value(v)
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            return [expand_value(item) for item in value]
+        return value
+
+    return expand_value(data)
+
 
 # Standard resource directory names per AgentSkills spec
 RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
@@ -124,41 +217,18 @@ def expand_mcp_variables(
     # Convert Pydantic models to plain containers before variable expansion.
     serializable_config = _serialize_for_json(config)
 
-    # Pattern for ${VAR} or ${VAR:-default}
-    var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+    # Use the shared expansion function with MCP config settings:
+    # - check_env=True (check environment variables)
+    # - support_unbraced=False (only ${VAR} syntax for config files)
+    expanded_config = expand_variable_references(
+        serializable_config,
+        variables=variables,
+        get_secret=get_secret,
+        check_env=True,
+        expand_defaults=expand_defaults,
+        support_unbraced=False,
+    )
 
-    def replace_var(match: re.Match) -> str:
-        var_name = match.group(1)
-        default_value = match.group(2)
-
-        # Check provided variables first, then secrets, then environment
-        if var_name in variables:
-            return variables[var_name]
-        if get_secret is not None:
-            secret_value = get_secret(var_name)
-            if secret_value is not None:
-                return secret_value
-        if var_name in os.environ:
-            return os.environ[var_name]
-        # Apply default only if expand_defaults is True
-        if expand_defaults and default_value is not None:
-            return default_value
-        # Return original if not found (preserves placeholder for later expansion)
-        return match.group(0)
-
-    def expand_value(value: object) -> object:
-        if isinstance(value, str):
-            return var_pattern.sub(replace_var, value)
-        if isinstance(value, dict):
-            return {
-                expand_value(key) if isinstance(key, str) else key: expand_value(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [expand_value(item) for item in value]
-        return value
-
-    expanded_config = expand_value(serializable_config)
     if not isinstance(expanded_config, dict):
         raise TypeError("expanded MCP config must be a dictionary")
     return expanded_config
