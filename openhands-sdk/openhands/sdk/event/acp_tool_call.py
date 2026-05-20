@@ -35,6 +35,29 @@ class ACPToolCallEvent(Event):
     is_error: bool = False
 
     @property
+    def is_patch_edit(self) -> bool:
+        """True if this event represents a patch/diff edit (not a full-file write).
+
+        ACP-spec edit tools emit a ``diff`` content block whose ``old_text``
+        field distinguishes the two cases:
+          * patch edit (e.g. ``Edit``): ``old_text`` is set
+          * full-file create (e.g. ``Write``): ``old_text`` is ``None``
+
+        This check is provider-agnostic across Claude Code, Codex, and Gemini
+        servers that follow the ACP spec. For providers that omit the
+        structured content block but still expose the diff intent through
+        raw input keys (``old_string`` / ``new_string``), the check falls
+        back to inspecting ``raw_input``.
+        """
+        content = self.content or []
+        if content:
+            first = content[0]
+            if getattr(first, "type", None) == "diff":
+                return getattr(first, "old_text", None) is not None
+        raw = self.raw_input if isinstance(self.raw_input, dict) else {}
+        return bool({"old_string", "new_string"} & raw.keys())
+
+    @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this tool call event."""
         content = Text()
