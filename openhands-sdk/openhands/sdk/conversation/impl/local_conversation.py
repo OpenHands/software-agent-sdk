@@ -109,6 +109,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -275,7 +276,7 @@ class LocalConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         atexit.register(self.close)
-        self._start_observability_span(str(desired_id))
+        self._start_observability_span(str(desired_id), user_id=user_id)
         self.delete_on_close = delete_on_close
 
     @property

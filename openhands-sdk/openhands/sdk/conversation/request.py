@@ -171,6 +171,14 @@ class StartConversationRequest(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional user ID to associate with observability traces. "
+            "When set, this is passed to Laminar.set_trace_user_id() so "
+            "traces can be queried by user."
+        ),
+    )
     autotitle: bool = Field(
         default=True,
         description=(
