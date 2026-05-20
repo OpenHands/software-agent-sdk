@@ -27,6 +27,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -136,6 +137,16 @@ class StartConversationRequest(BaseModel):
             "Mapping of tool names to their module qualnames from the client's "
             "registry. These modules will be dynamically imported on the server "
             "to register the tools for this conversation."
+        ),
+    )
+    client_tools: list[ClientToolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Tools defined by the client via JSON spec. These tools have "
+            "no server-side executor — when the agent calls them, an "
+            "ActionEvent is emitted over the WebSocket and the client "
+            "handles execution. The SDK returns an acknowledgment "
+            "observation immediately."
         ),
     )
     agent_definitions: list[AgentDefinition] = Field(
