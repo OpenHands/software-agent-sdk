@@ -323,11 +323,14 @@ class ConversationService:
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
+    idle_timeout_seconds: int | None = None
+    max_loaded_conversations: int | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
+    _eviction_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
@@ -942,6 +945,13 @@ class ConversationService:
 
         self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
 
+        # Start eviction task if either eviction policy is enabled
+        if (
+            self.idle_timeout_seconds is not None
+            or self.max_loaded_conversations is not None
+        ):
+            self._eviction_task = asyncio.create_task(self._eviction_loop())
+
         return self
 
     async def _renew_all_leases_loop(self) -> None:
@@ -963,12 +973,128 @@ class ConversationService:
         except asyncio.CancelledError:
             raise
 
+    async def _eviction_loop(self) -> None:
+        """Background task that evicts idle finished conversations from memory.
+
+        Conversations are evicted (closed and removed from _event_services) when:
+        1. They are in a terminal state (FINISHED, ERROR, STUCK) AND have been
+           idle longer than idle_timeout_seconds, OR
+        2. The number of loaded conversations exceeds max_loaded_conversations
+           (in which case the least recently active finished conversations are
+           evicted first).
+
+        Evicted conversations can be re-hydrated from disk on next access.
+        The eviction check runs every 60 seconds.
+        """
+        eviction_interval = 60  # Check every minute
+        try:
+            while True:
+                await asyncio.sleep(eviction_interval)
+                await self._run_eviction_cycle()
+        except asyncio.CancelledError:
+            raise
+
+    async def _run_eviction_cycle(self) -> None:
+        """Execute a single eviction cycle."""
+        event_services = self._event_services
+        if event_services is None:
+            return
+
+        now = utc_now()
+        candidates: list[tuple[UUID, EventService, float]] = []
+
+        # Collect eviction candidates: finished conversations with their idle time
+        for conv_id, event_service in list(event_services.items()):
+            state = await event_service.get_state()
+            if not state.execution_status.is_terminal():
+                continue
+
+            # Calculate idle time in seconds
+            idle_seconds = (now - event_service.stored.updated_at).total_seconds()
+            candidates.append((conv_id, event_service, idle_seconds))
+
+        if not candidates:
+            return
+
+        # Sort by idle time descending (most idle first)
+        candidates.sort(key=lambda x: x[2], reverse=True)
+
+        evicted_count = 0
+        evicted_ids: list[UUID] = []
+
+        # Evict based on idle timeout
+        if self.idle_timeout_seconds is not None:
+            for conv_id, event_service, idle_seconds in candidates:
+                if idle_seconds >= self.idle_timeout_seconds:
+                    await self._evict_conversation(conv_id, event_service)
+                    evicted_ids.append(conv_id)
+                    evicted_count += 1
+
+        # Remove evicted conversations from candidates list
+        candidates = [c for c in candidates if c[0] not in evicted_ids]
+
+        # Evict based on max_loaded_conversations limit
+        if self.max_loaded_conversations is not None:
+            # Re-check current count after idle-timeout evictions
+            current_count = len(event_services)
+            overflow = current_count - self.max_loaded_conversations
+
+            if overflow > 0:
+                # Evict the most idle finished conversations first
+                for conv_id, event_service, _ in candidates[:overflow]:
+                    if conv_id in evicted_ids:
+                        continue
+                    await self._evict_conversation(conv_id, event_service)
+                    evicted_count += 1
+
+        if evicted_count > 0:
+            logger.info(
+                "Evicted %d idle conversation(s) from memory; %d remaining",
+                evicted_count,
+                len(event_services),
+            )
+
+    async def _evict_conversation(
+        self, conversation_id: UUID, event_service: EventService
+    ) -> None:
+        """Evict a single conversation from memory.
+
+        The conversation is saved to disk and removed from _event_services.
+        It can be re-hydrated on next access.
+        """
+        event_services = self._event_services
+        if event_services is None:
+            return
+
+        try:
+            # Save state before evicting
+            await event_service.save_meta()
+            await event_service.close()
+            event_services.pop(conversation_id, None)
+            logger.debug(
+                "Evicted conversation %s (idle for %.1f seconds)",
+                conversation_id,
+                (utc_now() - event_service.stored.updated_at).total_seconds(),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to evict conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
+
     async def __aexit__(self, exc_type, exc_value, traceback):
         if self._lease_renewal_task is not None:
             self._lease_renewal_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._lease_renewal_task
             self._lease_renewal_task = None
+
+        if self._eviction_task is not None:
+            self._eviction_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._eviction_task
+            self._eviction_task = None
 
         event_services = self._event_services
         if event_services is None:
@@ -995,6 +1121,8 @@ class ConversationService:
             ),
             cipher=config.cipher,
             max_concurrent_runs=config.max_concurrent_runs,
+            idle_timeout_seconds=config.idle_timeout_seconds,
+            max_loaded_conversations=config.max_loaded_conversations,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:

@@ -183,6 +183,25 @@ class Config(BaseModel):
             "used for conversation.run() calls."
         ),
     )
+    idle_timeout_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        description=(
+            "Time in seconds after which a finished/idle conversation will be "
+            "evicted from memory.  Evicted conversations are re-hydrated from "
+            "disk on next access.  Set to None to disable eviction (default). "
+            "Minimum value is 60 seconds."
+        ),
+    )
+    max_loaded_conversations: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum number of conversations to keep loaded in memory. When "
+            "exceeded, the least recently active finished conversations are "
+            "evicted first.  Set to None to disable this limit (default)."
+        ),
+    )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
         description=(
