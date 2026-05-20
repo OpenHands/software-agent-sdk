@@ -28,6 +28,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.git.utils import redact_url_credentials
 from openhands.sdk.event import (
     ActionEvent,
     CondensationRequest,
@@ -463,7 +464,8 @@ class LocalConversation(BaseConversation):
                 # Load the plugin
                 plugin = Plugin.load(path)
                 logger.debug(
-                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    f"Loaded plugin '{plugin.manifest.name}' from "
+                    f"{redact_url_credentials(spec.source)}"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
 

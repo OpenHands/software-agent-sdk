@@ -23,6 +23,7 @@ from openhands.sdk.conversation import (
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.event import Event, HookExecutionEvent, LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.git.utils import redact_url_credentials
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
@@ -233,5 +234,6 @@ __all__ = [
     "load_skills_from_dir",
     "load_user_skills",
     "page_iterator",
+    "redact_url_credentials",
     "__version__",
 ]
