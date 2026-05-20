@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import threading
 import time
 import uuid
@@ -59,6 +60,8 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
 )
@@ -174,11 +177,57 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "gemini-api-key": "GEMINI_API_KEY",
 }
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
+_CODEX_AUTH_JSON_SECRET = ACP_CODEX_SUBSCRIPTION_AUTH_SECRET.secret_name
+_GEMINI_CREDENTIALS_JSON_SECRET = ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
+_VERTEX_AI_AUTH_METHOD = "vertex-ai"
+_VERTEX_AI_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS"
+_VERTEX_AI_LOCATION_ENV = "GOOGLE_CLOUD_LOCATION"
+_VERTEX_AI_PROJECT_ENV_VARS = ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID")
+
+
+def _has_chatgpt_auth_file(env: dict[str, str]) -> bool:
+    """Return whether Codex ChatGPT auth is available on disk."""
+    codex_home = env.get("CODEX_HOME")
+    if codex_home:
+        return (Path(codex_home) / "auth.json").is_file()
+    return (Path.home() / _CHATGPT_AUTH_PATH).is_file()
+
+
+def _has_vertex_ai_credentials_file(env: dict[str, str]) -> bool:
+    """Return whether Vertex AI service-account credentials are on disk."""
+    credentials_path = env.get(_VERTEX_AI_CREDENTIALS_ENV)
+    return bool(credentials_path and Path(credentials_path).is_file())
+
+
+def _has_vertex_ai_project_location(env: dict[str, str]) -> bool:
+    """Return whether Gemini CLI has the required Vertex AI routing env."""
+    return bool(
+        env.get(_VERTEX_AI_LOCATION_ENV)
+        and any(env.get(name) for name in _VERTEX_AI_PROJECT_ENV_VARS)
+    )
+
+
+def _write_secret_file(path: Path, value: str) -> None:
+    """Create or replace a secret file without a world-readable intermediate."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(value)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    path.chmod(0o600)
 
 
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
+    *,
+    prefer_vertex_ai: bool = False,
 ) -> str | None:
     """Pick an auth method whose required credentials are present.
 
@@ -191,9 +240,14 @@ def _select_auth_method(
     """
     method_ids = {m.id for m in auth_methods}
     # Prefer ChatGPT subscription login when the auth file is present.
-    if "chatgpt" in method_ids:
-        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
-            return "chatgpt"
+    if "chatgpt" in method_ids and _has_chatgpt_auth_file(env):
+        return "chatgpt"
+    if (
+        prefer_vertex_ai
+        and _VERTEX_AI_AUTH_METHOD in method_ids
+        and _has_vertex_ai_credentials_file(env)
+    ):
+        return _VERTEX_AI_AUTH_METHOD
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
@@ -758,6 +812,7 @@ class ACPAgent(AgentBase):
     # "installed"            — already in subprocess history; skip further injection
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
+    _file_auth_tempdir: Any = PrivateAttr(default=None)
 
     # -- Helpers -----------------------------------------------------------
 
@@ -972,9 +1027,116 @@ class ACPAgent(AgentBase):
         if not self.agent_context:
             return None
         secret_infos = state.secret_registry.get_secret_infos()
-        return self.agent_context.to_acp_prompt_context(
+        prompt_context = self.agent_context
+        file_secret_names = self._provider_file_secret_names()
+        if file_secret_names and self.agent_context.secrets:
+            prompt_context = self.agent_context.model_copy(
+                update={
+                    "secrets": {
+                        name: secret
+                        for name, secret in self.agent_context.secrets.items()
+                        if name not in file_secret_names
+                    }
+                }
+            )
+            secret_infos = [
+                info
+                for info in secret_infos
+                if info.get("name") not in file_secret_names
+            ]
+        return prompt_context.to_acp_prompt_context(
             additional_secret_infos=secret_infos
         )
+
+    def _uses_codex_auth_file(self) -> bool:
+        return any("codex-acp" in part for part in self.acp_command)
+
+    def _uses_gemini_credentials_file(self) -> bool:
+        return any("gemini-cli" in part for part in self.acp_command)
+
+    def _provider_file_secret_names(self) -> set[str]:
+        names: set[str] = set()
+        if self._uses_codex_auth_file():
+            names.add(_CODEX_AUTH_JSON_SECRET)
+        if self._uses_gemini_credentials_file():
+            names.add(_GEMINI_CREDENTIALS_JSON_SECRET)
+        return names
+
+    def _get_agent_secret_value(self, name: str) -> str | None:
+        if not self.agent_context or not self.agent_context.secrets:
+            return None
+        secret = self.agent_context.secrets.get(name)
+        if secret is None:
+            return None
+        if isinstance(secret, SecretSource):
+            return secret.get_value()
+        return str(secret)
+
+    def _file_auth_base_dir(self) -> Path:
+        if self._file_auth_tempdir is None:
+            self._file_auth_tempdir = tempfile.TemporaryDirectory(
+                prefix="acp-provider-auth-"
+            )
+            Path(self._file_auth_tempdir.name).chmod(0o700)
+        return Path(self._file_auth_tempdir.name)
+
+    def _materialize_provider_auth_files(self, env: dict[str, str]) -> set[str]:
+        """Write Codex/Gemini auth secrets to the files their CLIs expect."""
+        if not self.agent_context or not self.agent_context.secrets:
+            return set()
+
+        consumed: set[str] = set()
+        if (
+            self._uses_codex_auth_file()
+            and _CODEX_AUTH_JSON_SECRET in self.agent_context.secrets
+        ):
+            consumed.add(_CODEX_AUTH_JSON_SECRET)
+            value = self._get_agent_secret_value(_CODEX_AUTH_JSON_SECRET)
+            if not value:
+                logger.warning(
+                    "Configured %s is empty; skipping", _CODEX_AUTH_JSON_SECRET
+                )
+            elif "CODEX_HOME" not in self.acp_env:
+                codex_home = self._file_auth_base_dir() / "codex"
+                _write_secret_file(codex_home / "auth.json", value)
+                env["CODEX_HOME"] = str(codex_home)
+            else:
+                logger.info(
+                    "Preserving configured CODEX_HOME over %s", _CODEX_AUTH_JSON_SECRET
+                )
+
+        if (
+            self._uses_gemini_credentials_file()
+            and _GEMINI_CREDENTIALS_JSON_SECRET in self.agent_context.secrets
+        ):
+            consumed.add(_GEMINI_CREDENTIALS_JSON_SECRET)
+            value = self._get_agent_secret_value(_GEMINI_CREDENTIALS_JSON_SECRET)
+            if not value:
+                logger.warning(
+                    "Configured %s is empty; skipping",
+                    _GEMINI_CREDENTIALS_JSON_SECRET,
+                )
+            elif "GOOGLE_APPLICATION_CREDENTIALS" not in self.acp_env:
+                credentials_path = (
+                    self._file_auth_base_dir() / "gemini" / "gcloud-credentials.json"
+                )
+                _write_secret_file(credentials_path, value)
+                env[_VERTEX_AI_CREDENTIALS_ENV] = str(credentials_path)
+            else:
+                logger.info(
+                    "Preserving configured GOOGLE_APPLICATION_CREDENTIALS over %s",
+                    _GEMINI_CREDENTIALS_JSON_SECRET,
+                )
+            if not _has_vertex_ai_project_location(env):
+                logger.warning(
+                    "%s also requires %s and one of %s for Gemini CLI Vertex AI "
+                    "authentication",
+                    _GEMINI_CREDENTIALS_JSON_SECRET,
+                    _VERTEX_AI_LOCATION_ENV,
+                    ", ".join(_VERTEX_AI_PROJECT_ENV_VARS),
+                )
+
+        return consumed
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
@@ -985,13 +1147,17 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
-        # Inject secrets from agent_context. acp_env entries take precedence
-        # (already set above), so we only fill keys not already present.
+        file_secret_names = self._materialize_provider_auth_files(env)
+        for name in self._provider_file_secret_names():
+            env.pop(name, None)
+        # Inject regular secrets from agent_context. acp_env entries take
+        # precedence, but runtime secrets intentionally override inherited
+        # os.environ values.
         # SecretSource.get_value() is synchronous; calling it here is safe
         # because _start_acp_server is a regular (non-async) method.
         if self.agent_context and self.agent_context.secrets:
             for name, secret in self.agent_context.secrets.items():
-                if name not in env:
+                if name not in file_secret_names and name not in self.acp_env:
                     value = (
                         secret.get_value()
                         if isinstance(secret, SecretSource)
@@ -1085,7 +1251,12 @@ class ACPAgent(AgentBase):
             # the env vars that are available to the process.
             auth_methods = init_response.auth_methods or []
             if auth_methods:
-                method_id = _select_auth_method(auth_methods, env)
+                method_id = _select_auth_method(
+                    auth_methods,
+                    env,
+                    prefer_vertex_ai=_GEMINI_CREDENTIALS_JSON_SECRET
+                    in file_secret_names,
+                )
                 if method_id is not None:
                     logger.info("Authenticating with ACP method: %s", method_id)
                     auth_kwargs: dict[str, Any] = {}
@@ -1602,6 +1773,13 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error closing executor: %s", e)
             self._executor = None
+
+        if self._file_auth_tempdir is not None:
+            try:
+                self._file_auth_tempdir.cleanup()
+            except Exception as e:
+                logger.debug("Error cleaning ACP auth files: %s", e)
+            self._file_auth_tempdir = None
 
     def __del__(self) -> None:
         try:

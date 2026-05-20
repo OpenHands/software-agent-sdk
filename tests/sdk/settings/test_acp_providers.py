@@ -7,8 +7,12 @@ from types import MappingProxyType
 import pytest
 
 from openhands.sdk.settings.acp_providers import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     ACP_PROVIDERS,
+    ACP_SUBSCRIPTION_AUTH_SECRETS,
     ACPProviderInfo,
+    ACPSubscriptionAuthSecretInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
     get_acp_provider,
@@ -23,6 +27,29 @@ class TestACPProviderInfo:
         for info in ACP_PROVIDERS.values():
             assert isinstance(info, ACPProviderInfo)
 
+    def test_subscription_auth_metadata_is_exported_for_codex_and_gemini(self):
+        assert set(ACP_SUBSCRIPTION_AUTH_SECRETS) == {"codex", "gemini-cli"}
+        assert isinstance(
+            ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+            ACPSubscriptionAuthSecretInfo,
+        )
+        assert (
+            ACP_CODEX_SUBSCRIPTION_AUTH_SECRET
+            is ACP_PROVIDERS["codex"].subscription_auth_secret
+        )
+        assert (
+            ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET
+            is ACP_PROVIDERS["gemini-cli"].subscription_auth_secret
+        )
+        assert ACP_CODEX_SUBSCRIPTION_AUTH_SECRET.secret_name == "CODEX_AUTH_JSON"
+        assert (
+            ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
+            == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        )
+        gemini_steps = "\n".join(ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.setup_steps)
+        assert "GOOGLE_CLOUD_PROJECT" in gemini_steps
+        assert "GOOGLE_CLOUD_LOCATION" in gemini_steps
+
     def test_claude_code_metadata(self):
         info = ACP_PROVIDERS["claude-code"]
         assert info.key == "claude-code"
@@ -35,6 +62,7 @@ class TestACPProviderInfo:
         assert "claude-agent" in info.agent_name_patterns
         assert info.supports_set_session_model is False
         assert info.session_meta_key == "claudeCode"
+        assert info.subscription_auth_secret is None
 
     def test_codex_metadata(self):
         info = ACP_PROVIDERS["codex"]
@@ -47,6 +75,7 @@ class TestACPProviderInfo:
         assert "codex-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.session_meta_key is None
+        assert info.subscription_auth_secret is ACP_CODEX_SUBSCRIPTION_AUTH_SECRET
 
     def test_gemini_cli_metadata(self):
         info = ACP_PROVIDERS["gemini-cli"]
@@ -59,6 +88,7 @@ class TestACPProviderInfo:
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.session_meta_key is None
+        assert info.subscription_auth_secret is ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]

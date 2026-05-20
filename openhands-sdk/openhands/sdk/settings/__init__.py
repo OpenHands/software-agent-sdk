@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .acp_providers import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     ACP_PROVIDERS,
+    ACP_SUBSCRIPTION_AUTH_SECRETS,
     ACPProviderInfo,
+    ACPSubscriptionAuthSecretInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
     get_acp_provider,
@@ -76,7 +80,11 @@ _MODEL_EXPORTS = {
 
 __all__ = [
     "ACP_PROVIDERS",
+    "ACP_CODEX_SUBSCRIPTION_AUTH_SECRET",
+    "ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET",
+    "ACP_SUBSCRIPTION_AUTH_SECRETS",
     "ACPProviderInfo",
+    "ACPSubscriptionAuthSecretInfo",
     "build_session_model_meta",
     "AGENT_SETTINGS_SCHEMA_VERSION",
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",

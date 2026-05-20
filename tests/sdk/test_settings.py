@@ -7,6 +7,9 @@ from pydantic import SecretStr
 
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
+    ACP_SUBSCRIPTION_AUTH_SECRETS,
     LLM,
     ACPAgentSettings,
     Agent,
@@ -29,6 +32,7 @@ from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRis
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
+    ACPSubscriptionAuthSecretInfo,
     CondenserSettings,
     VerificationSettings,
 )
@@ -37,6 +41,23 @@ from openhands.sdk.workspace import LocalWorkspace
 
 # Fields on LLM that have ``exclude=True`` and should not appear in the schema.
 _LLM_EXCLUDED_FIELDS = {name for name, fi in LLM.model_fields.items() if fi.exclude}
+
+
+def test_acp_subscription_auth_secret_infos_are_exported_package_level() -> None:
+    assert isinstance(
+        ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+        ACPSubscriptionAuthSecretInfo,
+    )
+    assert ACP_CODEX_SUBSCRIPTION_AUTH_SECRET.secret_name == "CODEX_AUTH_JSON"
+    assert (
+        ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
+        == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+    )
+    assert ACP_SUBSCRIPTION_AUTH_SECRETS["codex"] is ACP_CODEX_SUBSCRIPTION_AUTH_SECRET
+    assert (
+        ACP_SUBSCRIPTION_AUTH_SECRETS["gemini-cli"]
+        is ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET
+    )
 
 
 # ---------------------------------------------------------------------------
