@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
@@ -121,6 +122,42 @@ class TestBrowserCleanup:
         mock_executor._async_executor.close = MagicMock()
 
         mock_executor.close()
+
+        mock_executor._async_executor.close.assert_called_once()
+
+    def test_close_method_releases_shared_executor(self, mock_executor):
+        """Test that closing the shared executor clears the singleton reference."""
+        BrowserToolSet._shared_executor = mock_executor
+
+        try:
+            mock_executor.close()
+            assert BrowserToolSet._shared_executor is None
+        finally:
+            BrowserToolSet._shared_executor = None
+
+    def test_close_method_stale_executor_does_not_acquire_shared_lock(
+        self,
+        mock_executor,
+        monkeypatch,
+    ):
+        """Stale executor finalizers should not contend with create()'s lock."""
+
+        class FailOnEnterLock:
+            def __enter__(self):
+                raise AssertionError("stale executor tried to acquire shared lock")
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        BrowserToolSet._shared_executor = None
+        monkeypatch.setattr(
+            BrowserToolSet,
+            "_shared_executor_lock",
+            FailOnEnterLock(),
+        )
+
+        mock_executor.close()
+        assert BrowserToolSet._shared_executor is None
 
         mock_executor._async_executor.close.assert_called_once()
 

@@ -705,7 +705,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
+        shared_close_lock_acquired = self._detach_shared_executor_for_close()
         if self._cleanup_initiated:
+            if shared_close_lock_acquired:
+                self._release_shared_executor_creation_lock()
             return
         self._cleanup_initiated = True
         try:
@@ -714,15 +717,48 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         except Exception as e:
             logger.warning(f"Error during browser cleanup: {e}")
         finally:
-            # Always close the async executor
-            self._async_executor.close()
-            # Release the shared executor reference so the class variable
-            # doesn't keep a stale reference that could prevent process exit.
-            from openhands.tools.browser_use.definition import BrowserToolSet
+            try:
+                # Always close the async executor
+                self._async_executor.close()
+            finally:
+                if shared_close_lock_acquired:
+                    self._release_shared_executor_creation_lock()
+                else:
+                    self._release_shared_executor_reference()
 
-            with BrowserToolSet._shared_executor_lock:
-                if BrowserToolSet._shared_executor is self:
-                    BrowserToolSet._shared_executor = None
+    def _detach_shared_executor_for_close(self) -> bool:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
+            return False
+
+        BrowserToolSet._shared_executor_creation_lock.acquire()
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
+                return True
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+        return False
+
+    @staticmethod
+    def _release_shared_executor_creation_lock() -> None:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+
+    def _release_shared_executor_reference(self):
+        # Avoid taking the shared executor lock for ordinary/stale executors.
+        # __del__ can run while BrowserToolSet.create() is creating a new shared
+        # executor; a stale executor finalizer trying to acquire the same lock can
+        # deadlock that create path, especially on Windows.
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
+            return
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
 
     def __del__(self):
         """Cleanup on deletion."""
