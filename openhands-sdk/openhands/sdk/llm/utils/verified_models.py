@@ -82,7 +82,7 @@ VERIFIED_GLM_MODELS = [
 
 VERIFIED_NVIDIA_MODELS = [
     "nemotron-3-nano",
-    "nemotron-3-super",
+    "nemotron-3-super-120b-a12b",
 ]
 
 VERIFIED_QWEN_MODELS = [
@@ -122,7 +122,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "glm-5",
     "glm-5.1",
     "nemotron-3-nano",
-    "nemotron-3-super",
+    "nemotron-3-super-120b-a12b",
     "qwen3-6-plus",
     "qwen3-coder-480b",
     "trinity-large-thinking",
