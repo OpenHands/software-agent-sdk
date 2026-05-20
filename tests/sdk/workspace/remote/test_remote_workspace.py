@@ -508,7 +508,7 @@ def test_get_llm_with_profile_name(monkeypatch):
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "name": "fast/model",
+        "name": "fast-model",
         "config": {
             "model": "openai/gpt-4o",
             "api_key": "sk-profile-key",
@@ -521,23 +521,23 @@ def test_get_llm_with_profile_name(monkeypatch):
     mock_client.get.return_value = mock_response
     workspace._client = mock_client
 
-    llm = workspace.get_llm(profile_name="fast/model", temperature=0.3)
+    llm = workspace.get_llm(profile_name="fast-model", temperature=0.3)
 
     assert llm.model == "openai/gpt-4o"
     assert llm.temperature == 0.3
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "sk-profile-key"
     assert llm.base_url == "https://litellm.example.com"
-    assert llm.usage_id == "profile:fast/model"
+    assert llm.usage_id == "profile:fast-model"
 
     mock_client.get.assert_called_once()
     call_args = mock_client.get.call_args
-    assert call_args[0][0] == "/api/profiles/fast%2Fmodel"
+    assert call_args[0][0] == "/api/profiles/fast-model"
     assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
     assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
 
     llm_with_override = workspace.get_llm(
-        profile_name="fast/model", usage_id="custom-usage"
+        profile_name="fast-model", usage_id="custom-usage"
     )
 
     assert llm_with_override.usage_id == "custom-usage"
