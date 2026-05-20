@@ -320,6 +320,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "nemotron-3-ultra-550b-a55b": {
+        "id": "nemotron-3-ultra-550b-a55b",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B",
+        "llm_config": {
+            "model": "litellm_proxy/private/nvidia/nemotron-3-ultra-550b-a55b",
+            "temperature": 0.0,
+        },
+    },
     "converse-nemotron-super-3-120b": {
         "id": "converse-nemotron-super-3-120b",
         "display_name": "NVIDIA Converse Nemotron Super 3 120B",
