@@ -24,6 +24,7 @@ from pydantic import SecretStr
 from openhands.agent_server.persistence.models import (
     CustomSecret,
     PersistedSettings,
+    PersistedWorkspaces,
     Secrets,
 )
 from openhands.sdk.logger import get_logger
@@ -597,10 +598,92 @@ class FileSecretsStore(SecretsStore):
             return True
 
 
+class WorkspacesStore(ABC):
+    """Abstract base class for workspaces storage."""
+
+    @abstractmethod
+    def load(self) -> PersistedWorkspaces | None:
+        """Load workspaces from storage."""
+
+    @abstractmethod
+    def save(self, workspaces: PersistedWorkspaces) -> None:
+        """Save workspaces to storage."""
+
+    @abstractmethod
+    def update(
+        self,
+        update_fn: Callable[[PersistedWorkspaces], PersistedWorkspaces],
+    ) -> PersistedWorkspaces:
+        """Atomically update workspaces with file locking."""
+
+
+class FileWorkspacesStore(WorkspacesStore):
+    """File-based storage for the user's saved workspaces / workspace parents.
+
+    Persists a single JSON document at ``<persistence_dir>/workspaces.json``
+    using the same atomic-write + file-lock primitives as ``FileSettingsStore``.
+    Workspace paths are not secret, so no cipher is used.
+    """
+
+    def __init__(
+        self,
+        persistence_dir: Path | str,
+        filename: str = "workspaces.json",
+    ):
+        _validate_filename(filename)
+        self.persistence_dir = Path(persistence_dir)
+        self.filename = filename
+        self._path = self.persistence_dir / filename
+        self._lock_path = self.persistence_dir / ".workspaces.lock"
+
+    def load(self) -> PersistedWorkspaces | None:
+        if not self._path.exists():
+            return None
+
+        try:
+            with self._path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return PersistedWorkspaces.from_persisted(data)
+        except (PermissionError, OSError) as e:
+            logger.error(f"Cannot access workspaces file: {e}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Workspaces file is corrupted: {e}")
+            return None
+        except Exception:
+            logger.error("Failed to load workspaces", exc_info=True)
+            return None
+
+    def save(self, workspaces: PersistedWorkspaces) -> None:
+        _ensure_secure_directory(self.persistence_dir)
+        data = workspaces.model_dump(mode="json", by_alias=True)
+        _atomic_write_json(self._path, data)
+        logger.debug(f"Workspaces saved to {self._path}")
+
+    def update(
+        self,
+        update_fn: Callable[[PersistedWorkspaces], PersistedWorkspaces],
+    ) -> PersistedWorkspaces:
+        with _file_lock(self._lock_path):
+            workspaces = self.load()
+            if workspaces is None:
+                if self._path.exists():
+                    raise RuntimeError(
+                        f"Cannot load workspaces from {self._path}. "
+                        "File may be corrupted. "
+                        "Refusing to overwrite with defaults to prevent data loss."
+                    )
+                workspaces = PersistedWorkspaces()
+            updated = update_fn(workspaces)
+            self.save(updated)
+            return updated
+
+
 # ── Global Store Access ──────────────────────────────────────────────────
 
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
+_workspaces_store: FileWorkspacesStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -689,9 +772,29 @@ def get_secrets_store(config: Config | None = None) -> FileSecretsStore:
         return _secrets_store
 
 
+def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
+    """Get the global workspaces store instance (thread-safe).
+
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+    """
+    global _workspaces_store
+    if _workspaces_store is not None:
+        return _workspaces_store
+
+    with _store_lock:
+        if _workspaces_store is None:
+            _workspaces_store = FileWorkspacesStore(
+                persistence_dir=_get_persistence_dir(config),
+            )
+        return _workspaces_store
+
+
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
-    global _settings_store, _secrets_store
+    global _settings_store, _secrets_store, _workspaces_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
+        _workspaces_store = None
