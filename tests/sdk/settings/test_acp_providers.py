@@ -7,7 +7,10 @@ from types import MappingProxyType
 import pytest
 
 from openhands.sdk.settings.acp_providers import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     ACP_PROVIDERS,
+    ACP_SUBSCRIPTION_AUTH_SECRETS,
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
@@ -152,6 +155,32 @@ class TestProviderRegistryConsistency:
                 assert detected.key == key, (
                     f"pattern {pattern!r} matched {detected.key!r}, expected {key!r}"
                 )
+
+    def test_subscription_auth_secret_registry_exports_codex_and_gemini(self):
+        assert set(ACP_SUBSCRIPTION_AUTH_SECRETS) == {"codex", "gemini-cli"}
+        assert (
+            ACP_CODEX_SUBSCRIPTION_AUTH_SECRET is ACP_SUBSCRIPTION_AUTH_SECRETS["codex"]
+        )
+        assert (
+            ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET
+            is ACP_SUBSCRIPTION_AUTH_SECRETS["gemini-cli"]
+        )
+
+    def test_codex_subscription_auth_secret_metadata(self):
+        auth = ACP_PROVIDERS["codex"].subscription_auth_secret
+        assert auth is not None
+        assert auth.secret_name == "CODEX_AUTH_JSON"
+        assert "ChatGPT" in auth.description
+        assert auth.file_secret is not None
+        assert auth.file_secret.env == {"CODEX_HOME": "{dir}"}
+
+    def test_gemini_subscription_auth_secret_metadata(self):
+        auth = ACP_PROVIDERS["gemini-cli"].subscription_auth_secret
+        assert auth is not None
+        assert auth.secret_name == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        assert "Google" in auth.description
+        assert auth.file_secret is not None
+        assert auth.file_secret.env == {"GOOGLE_APPLICATION_CREDENTIALS": "{file}"}
 
 
 class TestBuildSessionModelMeta:

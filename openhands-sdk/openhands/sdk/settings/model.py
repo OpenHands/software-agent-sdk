@@ -48,7 +48,7 @@ from openhands.sdk.utils.pydantic_secrets import (
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
-from .acp_providers import ACPProviderInfo, get_acp_provider
+from .acp_providers import ACPFileSecretSpec, ACPProviderInfo, get_acp_provider
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -311,7 +311,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 3
+AGENT_SETTINGS_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -458,6 +458,18 @@ def _migrate_agent_settings_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    """Bump for persisted ACP file-secret settings.
+
+    The field itself validates without structural migration, but the schema
+    version must advance so older SDKs reject payloads that may contain
+    ``acp_file_secrets`` instead of silently dropping them.
+    """
+    migrated = dict(payload)
+    migrated["schema_version"] = 4
+    return migrated
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -470,6 +482,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_agent_settings_v0_to_v1,
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
+    3: _migrate_agent_settings_v3_to_v4,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1054,6 +1067,25 @@ class ACPAgentSettings(AgentSettingsBase):
         """Mask ``acp_env`` values via :func:`serialize_secret`."""
         return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
 
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=list,
+        description=(
+            "Custom AgentContext secrets to write as files before launching "
+            "the ACP subprocess. Built-in providers may add their own defaults."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="ACP file secrets",
+                prominence=SettingProminence.MINOR,
+            ).model_dump(),
+            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
+                key="acp",
+                label="ACP (Agent Client Protocol)",
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+
     acp_model: str | None = Field(
         default=None,
         description=(
@@ -1127,7 +1159,8 @@ class ACPAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Prompt-only context for the ACP server. Secrets are injected into "
-            "the subprocess environment by ACPAgent."
+            "the subprocess environment or configured credential files by "
+            "ACPAgent."
         ),
     )
 
@@ -1200,6 +1233,20 @@ class ACPAgentSettings(AgentSettingsBase):
             **dict(self.acp_env),
         }
 
+    def resolve_acp_file_secrets(self) -> list[ACPFileSecretSpec]:
+        """Return file-secret mappings for the effective ACP server.
+
+        Built-in providers contribute their credential-file conventions from
+        the provider registry. User-supplied entries are appended so custom ACP
+        servers can define their own file handling, and known providers can add
+        extra credential files without changing SDK code.
+        """
+        specs: list[ACPFileSecretSpec] = []
+        if self.provider_info is not None:
+            specs.extend(self.provider_info.file_secrets)
+        specs.extend(self.acp_file_secrets)
+        return specs
+
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
 
@@ -1236,6 +1283,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
             acp_env=self.resolve_acp_env(),
+            acp_file_secrets=self.resolve_acp_file_secrets(),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,

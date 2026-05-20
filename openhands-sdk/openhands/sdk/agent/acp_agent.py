@@ -19,10 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -59,6 +61,8 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
+    ACP_PROVIDERS,
+    ACPFileSecretSpec,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
 )
@@ -122,6 +126,60 @@ _ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
     "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
 }
 
+
+def _safe_file_secret_dir_name(index: int, secret_name: str) -> str:
+    """Return a stable tempdir child name for one materialised secret."""
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", secret_name).strip("._")
+    return f"{index:02d}-{safe_name or 'secret'}"
+
+
+def _render_file_secret_template(
+    template: str,
+    *,
+    root: Path,
+    directory: Path,
+    file: Path,
+) -> str:
+    """Expand supported placeholders in an ACP file-secret env var or arg."""
+    return (
+        template.replace("{root}", str(root))
+        .replace("{dir}", str(directory))
+        .replace("{file}", str(file))
+    )
+
+
+def _write_secret_file(path: Path, value: str) -> None:
+    """Create or replace a secret file without a world-readable intermediate."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            fd = -1
+            f.write(value)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    path.chmod(0o600)
+
+
+def _default_acp_file_secret_specs() -> list[ACPFileSecretSpec]:
+    """Return built-in ACP file-secret mappings for direct ``ACPAgent`` use."""
+    return [
+        spec for provider in ACP_PROVIDERS.values() for spec in provider.file_secrets
+    ]
+
+
+def _matching_file_secret_names(
+    secrets: Mapping[str, Any] | None,
+    specs: list[ACPFileSecretSpec],
+) -> set[str]:
+    """Return AgentContext secret names consumed by ACP file-secret specs."""
+    if not secrets or not specs:
+        return set()
+    configured_names = {spec.secret_name for spec in specs}
+    return set(secrets) & configured_names
+
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -176,6 +234,14 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 
 
+def _has_chatgpt_auth_file(env: dict[str, str]) -> bool:
+    """Return whether Codex ChatGPT auth is available on disk."""
+    codex_home = env.get("CODEX_HOME")
+    if codex_home:
+        return (Path(codex_home) / "auth.json").is_file()
+    return (Path.home() / _CHATGPT_AUTH_PATH).is_file()
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -191,9 +257,8 @@ def _select_auth_method(
     """
     method_ids = {m.id for m in auth_methods}
     # Prefer ChatGPT subscription login when the auth file is present.
-    if "chatgpt" in method_ids:
-        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
-            return "chatgpt"
+    if "chatgpt" in method_ids and _has_chatgpt_auth_file(env):
+        return "chatgpt"
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
@@ -690,6 +755,13 @@ class ACPAgent(AgentBase):
         default_factory=dict,
         description="Additional environment variables for the ACP server process",
     )
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=_default_acp_file_secret_specs,
+        description=(
+            "AgentContext secret values to materialise as credential files for "
+            "the ACP server process."
+        ),
+    )
 
     @field_serializer("acp_env", when_used="always")
     def _serialize_acp_env(self, value: dict[str, str], info):
@@ -758,6 +830,13 @@ class ACPAgent(AgentBase):
     # "installed"            — already in subprocess history; skip further injection
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
+
+    # Per-agent temp directory holding any file-content secrets materialised
+    # from ``AgentContext.secrets`` via ``acp_file_secrets``. Created lazily
+    # on the first secret that needs it; cleaned up in :meth:`close`.
+    _file_secrets_tempdir: Any = PrivateAttr(
+        default=None
+    )  # tempfile.TemporaryDirectory | None
 
     # -- Helpers -----------------------------------------------------------
 
@@ -972,9 +1051,140 @@ class ACPAgent(AgentBase):
         if not self.agent_context:
             return None
         secret_infos = state.secret_registry.get_secret_infos()
-        return self.agent_context.to_acp_prompt_context(
+        prompt_context = self.agent_context
+        file_secret_names = _matching_file_secret_names(
+            self.agent_context.secrets,
+            self.acp_file_secrets,
+        )
+        if file_secret_names:
+            prompt_context = self.agent_context.model_copy(
+                update={
+                    "secrets": {
+                        name: secret
+                        for name, secret in (self.agent_context.secrets or {}).items()
+                        if name not in file_secret_names
+                    }
+                }
+            )
+            secret_infos = [
+                info
+                for info in secret_infos
+                if info.get("name") not in file_secret_names
+            ]
+        return prompt_context.to_acp_prompt_context(
             additional_secret_infos=secret_infos
         )
+
+    def _materialise_file_secrets(
+        self,
+        env: dict[str, str],
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Materialise configured file-content secrets onto the filesystem.
+
+        Walks ``self.agent_context.secrets`` for names matched by
+        ``self.acp_file_secrets``. Each matching secret has its value written
+        into ``self._file_secrets_tempdir``. The generated file path can then
+        be exposed to the subprocess through templated env vars or appended
+        command args from the matching :class:`ACPFileSecretSpec`.
+
+        File-secrets are dropped from the returned dict so the regular env-var
+        injection loop does not also export their potentially large payloads.
+
+        Returns ``(remaining_secrets, extra_args)``. ``remaining_secrets`` is
+        the subset of ``agent_context.secrets`` that should still flow through
+        the standard env-var injection path; ``extra_args`` should be appended
+        to the ACP subprocess command.
+        """
+        if not self.agent_context or not self.agent_context.secrets:
+            return {}, []
+        if not self.acp_file_secrets:
+            return dict(self.agent_context.secrets), []
+
+        remaining: dict[str, Any] = {}
+        specs_by_name: dict[str, list[ACPFileSecretSpec]] = {}
+        for spec in self.acp_file_secrets:
+            specs_by_name.setdefault(spec.secret_name, []).append(spec)
+
+        pending: list[tuple[str, ACPFileSecretSpec, str]] = []
+        for name, secret in self.agent_context.secrets.items():
+            specs = specs_by_name.get(name)
+            if not specs:
+                remaining[name] = secret
+                continue
+            value = (
+                secret.get_value() if isinstance(secret, SecretSource) else str(secret)
+            )
+            if not value:
+                logger.warning(
+                    "Configured ACP file-secret %r has an empty value; "
+                    "skipping materialisation",
+                    name,
+                )
+                continue
+            for spec in specs:
+                pending.append((name, spec, value))
+
+        if not pending:
+            return remaining, []
+
+        if self._file_secrets_tempdir is None:
+            self._file_secrets_tempdir = tempfile.TemporaryDirectory(
+                prefix="acp-file-secrets-"
+            )
+        base = Path(self._file_secrets_tempdir.name)
+        extra_args: list[str] = []
+
+        for index, (name, spec, value) in enumerate(pending):
+            # Each file-secret gets its own subdirectory so env-var-to-dir
+            # handlers (e.g. CODEX_HOME) don't inadvertently expose other
+            # file-secrets' files as siblings.
+            target_dir = base / _safe_file_secret_dir_name(index, name)
+            target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target_dir.chmod(0o700)
+            target_path = target_dir / spec.relative_path
+            target_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            for parent in (target_path.parent, *target_path.parent.parents):
+                if parent == target_dir.parent:
+                    break
+                parent.chmod(0o700)
+            _write_secret_file(target_path, value)
+
+            for env_name, template in spec.env.items():
+                if env_name in self.acp_env:
+                    logger.info(
+                        "Preserving configured ACP env var %r over file-secret %r",
+                        env_name,
+                        name,
+                    )
+                    continue
+                if env_name in env and not spec.overwrite_env:
+                    raise ValueError(
+                        f"ACP file-secret {name!r} would overwrite existing "
+                        f"environment variable {env_name!r}"
+                    )
+                env[env_name] = _render_file_secret_template(
+                    template,
+                    root=base,
+                    directory=target_dir,
+                    file=target_path,
+                )
+
+            extra_args.extend(
+                _render_file_secret_template(
+                    arg,
+                    root=base,
+                    directory=target_dir,
+                    file=target_path,
+                )
+                for arg in spec.args
+            )
+            logger.info(
+                "Materialised ACP file-secret %r → %s",
+                name,
+                target_path,
+            )
+
+        return remaining, extra_args
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
@@ -985,20 +1195,26 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
-        # Inject secrets from agent_context. acp_env entries take precedence
-        # (already set above), so we only fill keys not already present.
+        # Materialise configured file-secrets (e.g. Codex auth.json, Gemini
+        # GAC JSON, or custom ACP server credentials) to local files and set
+        # their controlling env vars on ``env``. Returned dict is
+        # ``agent_context.secrets`` minus the file-secrets, which we now feed
+        # through the regular env-var injection loop below.
+        regular_secrets, file_secret_args = self._materialise_file_secrets(env)
+        # Inject the remaining (plain) secrets from agent_context. acp_env
+        # entries take precedence (already set above), but agent_context
+        # secrets intentionally override inherited os.environ values.
         # SecretSource.get_value() is synchronous; calling it here is safe
         # because _start_acp_server is a regular (non-async) method.
-        if self.agent_context and self.agent_context.secrets:
-            for name, secret in self.agent_context.secrets.items():
-                if name not in env:
-                    value = (
-                        secret.get_value()
-                        if isinstance(secret, SecretSource)
-                        else str(secret)
-                    )
-                    if value:
-                        env[name] = value
+        for name, secret in regular_secrets.items():
+            if name not in self.acp_env:
+                value = (
+                    secret.get_value()
+                    if isinstance(secret, SecretSource)
+                    else str(secret)
+                )
+                if value:
+                    env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -1011,7 +1227,7 @@ class ACPAgent(AgentBase):
                     env.pop(conflict, None)
 
         command = self.acp_command[0]
-        args = list(self.acp_command[1:]) + list(self.acp_args)
+        args = list(self.acp_command[1:]) + list(self.acp_args) + file_secret_args
 
         working_dir = str(state.workspace.working_dir)
 
@@ -1602,6 +1818,16 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error closing executor: %s", e)
             self._executor = None
+
+        # Remove any file-secrets we materialised for this agent. Done after
+        # subprocess + executor teardown so we don't yank credential files
+        # out from under a still-running child.
+        if self._file_secrets_tempdir is not None:
+            try:
+                self._file_secrets_tempdir.cleanup()
+            except Exception as e:
+                logger.debug("Error cleaning up ACP file-secrets tempdir: %s", e)
+            self._file_secrets_tempdir = None
 
     def __del__(self) -> None:
         try:

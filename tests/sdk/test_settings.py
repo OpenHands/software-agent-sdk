@@ -7,8 +7,11 @@ from pydantic import SecretStr
 
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
+    ACP_CODEX_SUBSCRIPTION_AUTH_SECRET,
+    ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET,
     LLM,
     ACPAgentSettings,
+    ACPFileSecretSpec,
     Agent,
     AgentContext,
     AgentSettings,
@@ -137,6 +140,7 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_command",
         "acp_args",
         "acp_env",
+        "acp_file_secrets",
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
@@ -146,6 +150,14 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     assert acp_fields["acp_server"].prominence is SettingProminence.CRITICAL
     assert acp_fields["acp_model"].prominence is SettingProminence.CRITICAL
     assert acp_fields["acp_command"].prominence is SettingProminence.MINOR
+
+
+def test_acp_subscription_auth_secret_infos_are_exported_package_level() -> None:
+    assert ACP_CODEX_SUBSCRIPTION_AUTH_SECRET.secret_name == "CODEX_AUTH_JSON"
+    assert (
+        ACP_GEMINI_CLI_SUBSCRIPTION_AUTH_SECRET.secret_name
+        == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+    )
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -352,7 +364,7 @@ def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
     settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
@@ -368,8 +380,8 @@ def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    # v1 → v2 → v3 keeps ACP payloads intact while bumping schema_version.
-    assert settings.schema_version == 3
+    # v1 → v2 → v3 → v4 keeps ACP payloads intact while bumping schema_version.
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
@@ -385,7 +397,7 @@ def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "legacy-model"
 
@@ -404,16 +416,38 @@ def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     verification = settings.verification.model_dump(mode="json")
     assert verification["critic_enabled"] is True
     assert "confirmation_mode" not in verification
     assert "security_analyzer" not in verification
 
 
+def test_validate_agent_settings_migrates_v3_to_v4_for_acp_file_secrets() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 3,
+            "agent_kind": "acp",
+            "acp_server": "custom",
+            "acp_command": ["custom-acp"],
+            "acp_file_secrets": [
+                {
+                    "secret_name": "CUSTOM_AUTH_JSON",
+                    "relative_path": "auth.json",
+                    "env": {"CUSTOM_AUTH_FILE": "{file}"},
+                }
+            ],
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.acp_file_secrets[0].secret_name == "CUSTOM_AUTH_JSON"
+
+
 def test_validate_agent_settings_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 3"):
-        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
+    with pytest.raises(ValueError, match="newer than supported version 4"):
+        validate_agent_settings({"schema_version": 5, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
@@ -634,6 +668,35 @@ def test_acp_resolve_provider_env_custom_server_empty() -> None:
     assert settings.resolve_provider_env() == {}
 
 
+def test_acp_resolve_file_secrets_from_known_provider_defaults() -> None:
+    codex = ACPAgentSettings(acp_server="codex")
+    codex_specs = codex.resolve_acp_file_secrets()
+    assert [spec.secret_name for spec in codex_specs] == ["CODEX_AUTH_JSON"]
+    assert codex_specs[0].env == {"CODEX_HOME": "{dir}"}
+
+    gemini = ACPAgentSettings(acp_server="gemini-cli")
+    gemini_specs = gemini.resolve_acp_file_secrets()
+    assert [spec.secret_name for spec in gemini_specs] == [
+        "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+    ]
+    assert gemini_specs[0].env == {"GOOGLE_APPLICATION_CREDENTIALS": "{file}"}
+
+
+def test_acp_resolve_file_secrets_custom_server_uses_custom_specs_only() -> None:
+    spec = ACPFileSecretSpec(
+        secret_name="CUSTOM_AUTH_JSON",
+        relative_path="auth.json",
+        env={"CUSTOM_AUTH_FILE": "{file}"},
+    )
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["custom-acp"],
+        acp_file_secrets=[spec],
+    )
+
+    assert settings.resolve_acp_file_secrets() == [spec]
+
+
 def test_acp_resolve_acp_env_explicit_entries_override_provider_env() -> None:
     settings = ACPAgentSettings(
         acp_server="claude-code",
@@ -655,7 +718,25 @@ def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
     agent = settings.create_agent()
 
     assert agent.acp_env == {"OPENAI_API_KEY": "sk-openai"}
+    assert [spec.secret_name for spec in agent.acp_file_secrets] == ["CODEX_AUTH_JSON"]
     assert agent.agent_context == context
+
+
+def test_acp_create_agent_passes_custom_file_secrets() -> None:
+    spec = ACPFileSecretSpec(
+        secret_name="CUSTOM_AUTH_JSON",
+        relative_path="auth.json",
+        env={"CUSTOM_AUTH_FILE": "{file}"},
+    )
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["custom-acp"],
+        acp_file_secrets=[spec],
+    )
+
+    agent = settings.create_agent()
+
+    assert agent.acp_file_secrets == [spec]
 
 
 # ---------------------------------------------------------------------------
