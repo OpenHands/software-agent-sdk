@@ -312,6 +312,18 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    # https://openai.com/index/introducing-gpt-oss/
+    # https://models.litellm.ai/ (fireworks_ai provider)
+    "gpt-oss-120b": {
+        "id": "gpt-oss-120b",
+        "display_name": "GPT OSS 120B",
+        "llm_config": {
+            "model": (
+                "litellm_proxy/openai/gpt-oss-120b"
+            ),
+            "temperature": 0.0,
+        },
+    },
     "nemotron-3-super-120b-a12b": {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
