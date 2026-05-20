@@ -46,6 +46,20 @@ npm run test:integration
 - Keep the root SDK surface ergonomic; lower-level endpoint clients belong in
   `@openhands/typescript-client/clients`.
 
+## ACP provider registry
+
+The data in `src/models/acp-providers.json` mirrors
+`openhands.sdk.settings.acp_providers.ACP_PROVIDERS` in
+[software-agent-sdk](https://github.com/OpenHands/software-agent-sdk). The
+Python module is the canonical source — edit `acp-providers.json` here when
+it changes upstream. The `validate-acp-providers` CI job diffs the two on
+every PR; to run it locally:
+
+```bash
+pip install -r scripts/requirements-acp-check.txt
+python scripts/check-acp-drift.py
+```
+
 ## Pull requests
 
 - Open focused PRs with a clear description of what changed and why.

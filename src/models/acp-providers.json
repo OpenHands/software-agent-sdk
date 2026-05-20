@@ -1,0 +1,35 @@
+{
+  "claude-code": {
+    "key": "claude-code",
+    "display_name": "Claude Code",
+    "default_command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+    "api_key_env_var": "ANTHROPIC_API_KEY",
+    "base_url_env_var": "ANTHROPIC_BASE_URL",
+    "default_session_mode": "bypassPermissions",
+    "agent_name_patterns": ["claude-agent"],
+    "supports_set_session_model": false,
+    "session_meta_key": "claudeCode"
+  },
+  "codex": {
+    "key": "codex",
+    "display_name": "Codex",
+    "default_command": ["npx", "-y", "@zed-industries/codex-acp"],
+    "api_key_env_var": "OPENAI_API_KEY",
+    "base_url_env_var": "OPENAI_BASE_URL",
+    "default_session_mode": "full-access",
+    "agent_name_patterns": ["codex-acp"],
+    "supports_set_session_model": true,
+    "session_meta_key": null
+  },
+  "gemini-cli": {
+    "key": "gemini-cli",
+    "display_name": "Gemini CLI",
+    "default_command": ["npx", "-y", "@google/gemini-cli", "--acp"],
+    "api_key_env_var": "GEMINI_API_KEY",
+    "base_url_env_var": "GEMINI_BASE_URL",
+    "default_session_mode": "yolo",
+    "agent_name_patterns": ["gemini-cli"],
+    "supports_set_session_model": true,
+    "session_meta_key": null
+  }
+}

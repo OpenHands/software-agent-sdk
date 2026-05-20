@@ -201,6 +201,10 @@ export type {
   ConversationType,
 } from './conversation/base';
 
+// ACP provider registry (mirrors openhands-sdk; see scripts/validate-acp-providers.mjs)
+export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
+export type { ACPProviderInfo, ACPProviderKey } from './models/acp';
+
 // Conversation models
 export type {
   ConversationInfo,
