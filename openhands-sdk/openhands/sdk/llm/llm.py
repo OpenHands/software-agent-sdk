@@ -94,6 +94,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.image_inline import maybe_inline_image_urls
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
@@ -366,6 +367,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "If None (default), auto-detect based on model. "
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
+        ),
+    )
+    inline_image_urls: bool | None = Field(
+        default=None,
+        description=(
+            "If True, fetch any http(s) image URL in outgoing messages and "
+            "inline it as a base64 ``data:`` URL before sending. If None "
+            "(default), auto-detect based on model (some APIs such as "
+            "Moonshot's public Kimi endpoint reject URL-formatted images "
+            "and require base64). Set this explicitly when the model is "
+            "reached through a proxy alias that hides the underlying "
+            "provider (e.g. litellm_proxy/<custom-alias>)."
         ),
     )
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
@@ -1471,7 +1484,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+        inline_required = (
+            self.inline_image_urls
+            if self.inline_image_urls is not None
+            else model_features.requires_inline_image_data
+        )
 
+        # Inline first (URL → data:), then resize (data: → smaller data:).
+        # The resize pass only operates on ``data:image/*`` URLs, so chaining
+        # gives us "free" large-image protection for inlined images.
+        messages = maybe_inline_image_urls(
+            messages,
+            inline_required=inline_required,
+            vision_enabled=vision_enabled,
+        )
         messages = maybe_resize_messages_for_provider(
             messages,
             provider=self._infer_model_info_provider(),
