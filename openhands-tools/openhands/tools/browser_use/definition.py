@@ -7,7 +7,7 @@ import os
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
 from pydantic import Field
 
@@ -795,30 +795,47 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         return BrowserToolExecutor.check_chromium_available() is not None
 
     @classmethod
+    def _log_ignored_executor_config(cls, executor_config: dict[str, Any]) -> None:
+        if not executor_config:
+            return
+        _logger.warning(
+            "BrowserToolSet.create() called with executor_config but a "
+            "shared executor already exists. The config %s will be "
+            "ignored. This typically happens when a subagent requests "
+            "browser tools — it reuses the parent's browser session.",
+            list(executor_config.keys()),
+        )
+
+    @classmethod
     def create(
         cls,
         conv_state: "ConversationState",
-        **executor_config,
+        **executor_config: Any,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         with cls._shared_executor_lock:
-            if cls._shared_executor is not None:
-                if executor_config:
-                    _logger.warning(
-                        "BrowserToolSet.create() called with executor_config but a "
-                        "shared executor already exists. The config %s will be "
-                        "ignored. This typically happens when a subagent requests "
-                        "browser tools — it reuses the parent's browser session.",
-                        list(executor_config.keys()),
-                    )
-                executor = cls._shared_executor
-            else:
-                from openhands.tools.browser_use.impl import BrowserToolExecutor
+            executor = cls._shared_executor
+            if executor is not None:
+                cls._log_ignored_executor_config(executor_config)
 
-                executor = BrowserToolExecutor(
-                    full_output_save_dir=conv_state.env_observation_persistence_dir,
-                    **executor_config,
-                )
-                cls._shared_executor = executor
+        if executor is None:
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            new_executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+            with cls._shared_executor_lock:
+                if cls._shared_executor is None:
+                    cls._shared_executor = new_executor
+                    executor = new_executor
+                    new_executor = None
+                else:
+                    cls._log_ignored_executor_config(executor_config)
+                    executor = cls._shared_executor
+            if new_executor is not None:
+                new_executor.close()
+
+        assert executor is not None
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
