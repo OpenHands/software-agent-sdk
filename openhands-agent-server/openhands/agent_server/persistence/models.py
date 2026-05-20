@@ -378,6 +378,55 @@ class Secrets(BaseModel):
         return data
 
 
+# ── Workspaces ───────────────────────────────────────────────────────────
+
+WORKSPACES_SCHEMA_VERSION = 1
+
+
+class WorkspaceItem(BaseModel):
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+    parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkspaceParentItem(BaseModel):
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+class PersistedWorkspaces(BaseModel):
+    schema_version: int = Field(default=WORKSPACES_SCHEMA_VERSION)
+    workspaces: list[WorkspaceItem] = Field(default_factory=list)
+    workspace_parents: list[WorkspaceParentItem] = Field(
+        default_factory=list, alias="workspaceParents"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedWorkspaces:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", WORKSPACES_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedWorkspaces schema_version must be an integer")
+        if version > WORKSPACES_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedWorkspaces schema_version {version} is newer than "
+                f"supported {WORKSPACES_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
+        return cls.model_validate(payload)
+
+
 # ── Helper Functions ─────────────────────────────────────────────────────
 #
 # Note: API request/response models have been moved to the SDK to enable
