@@ -37,7 +37,9 @@ def mock_workspace():
     # Simulate a running sandbox
     workspace._sandbox_id = SANDBOX_ID
     workspace._session_api_key = SESSION_KEY
-    return workspace
+    yield workspace
+    workspace._sandbox_id = None
+    workspace._session_api_key = None
 
 
 class TestGetLLM:
