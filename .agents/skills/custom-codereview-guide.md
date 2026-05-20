@@ -36,10 +36,9 @@ benchmark validation for this repository.
 
 ### Review decision policy (release PR workflow validation)
 
-For release PRs (for example titles like `Release v1.23.0`, descriptions that say
-this is a release, or diffs that bump package versions across the distributable
-packages), do **NOT** approve until you have checked the latest PR-specific results
-for all three of these workflows:
+For release PRs (for example branches like `rel-1.23.0`, or diffs that bump package versions
+across the distributable packages), do **NOT** approve until you have checked the latest PR-specific
+results for all three of these workflows:
 
 - `Run tests`
 - `Run Examples Scripts`
@@ -68,9 +67,6 @@ If any of the three workflows is missing, skipped, stale, ambiguous, or failing,
 do **NOT** approve. Leave a **COMMENT** review that names the missing/failing
 validation and explicitly asks for human maintainer review instead.
 
-Do not treat unrelated scheduled runs, `main` branch runs, or follow-up PR
-comments explaining an older failure as sufficient approval evidence unless there
-is also a newer successful run for the current PR head.
 
 ### Default approval policy
 
