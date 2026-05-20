@@ -150,8 +150,8 @@ class HookManager:
         return results
 
     def cleanup_async_processes(self) -> None:
-        """Cleanup all background hook processes."""
-        self.executor.async_process_manager.cleanup_all()
+        """Cleanup all background hook processes and the persistent runner."""
+        self.executor.close()
 
     def run_stop(
         self,
