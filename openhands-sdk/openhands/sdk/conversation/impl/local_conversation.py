@@ -76,6 +76,7 @@ class LocalConversation(BaseConversation):
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
     max_iteration_per_run: int
+    max_consecutive_stop_denials: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
@@ -109,6 +110,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        max_consecutive_stop_denials: int = 5,
         **_: object,
     ):
         """Initialize the conversation.
@@ -133,6 +135,8 @@ class LocalConversation(BaseConversation):
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
+            max_consecutive_stop_denials: Abort the run loop after this many
+                consecutive Stop-hook denials with no ActionEvent in between.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -245,6 +249,7 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
+        self.max_consecutive_stop_denials = max_consecutive_stop_denials
 
         # Initialize stuck detector
         if stuck_detection:
@@ -376,6 +381,7 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_consecutive_stop_denials=self.max_consecutive_stop_denials,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
@@ -743,6 +749,50 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def _handle_stop_denial(
+        self,
+        consecutive_stop_denials: int,
+        events_count_at_last_deny: int,
+        feedback: str | None,
+    ) -> tuple[bool, int, int]:
+        if consecutive_stop_denials > 0:
+            recent_events = self._state.events[events_count_at_last_deny:]
+            if any(isinstance(e, ActionEvent) for e in recent_events):
+                consecutive_stop_denials = 0
+        consecutive_stop_denials += 1
+
+        if consecutive_stop_denials >= self.max_consecutive_stop_denials:
+            error_msg = (
+                f"Stop hook denied {consecutive_stop_denials}"
+                f" times without progress (limit "
+                f"{self.max_consecutive_stop_denials}). "
+                f"Last feedback: {feedback or '(none)'}"
+            )
+            logger.error(error_msg)
+            self._state.execution_status = ConversationExecutionStatus.ERROR
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code="StopHookLoopDetected",
+                    detail=error_msg,
+                )
+            )
+            return True, consecutive_stop_denials, events_count_at_last_deny
+
+        if feedback:
+            prefixed = f"[Stop hook feedback] {feedback}"
+            feedback_msg = MessageEvent(
+                source="environment",
+                llm_message=Message(
+                    role="user",
+                    content=[TextContent(text=prefixed)],
+                ),
+            )
+            self._on_event(feedback_msg)
+        events_count_at_last_deny = len(self._state.events)
+        self._state.execution_status = ConversationExecutionStatus.RUNNING
+        return False, consecutive_stop_denials, events_count_at_last_deny
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
@@ -769,6 +819,8 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
+        consecutive_stop_denials = 0
+        events_count_at_last_deny = 0
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -793,19 +845,17 @@ class LocalConversation(BaseConversation):
                             )
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
-                                if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
-                                    feedback_msg = MessageEvent(
-                                        source="environment",
-                                        llm_message=Message(
-                                            role="user",
-                                            content=[TextContent(text=prefixed)],
-                                        ),
-                                    )
-                                    self._on_event(feedback_msg)
-                                self._state.execution_status = (
-                                    ConversationExecutionStatus.RUNNING
+                                (
+                                    should_break,
+                                    consecutive_stop_denials,
+                                    events_count_at_last_deny,
+                                ) = self._handle_stop_denial(
+                                    consecutive_stop_denials,
+                                    events_count_at_last_deny,
+                                    feedback,
                                 )
+                                if should_break:
+                                    break
                                 continue
                         # No hooks or hooks allowed stopping
                         break

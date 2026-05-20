@@ -1,16 +1,26 @@
 """Integration tests for hooks blocking in Agent and Conversation."""
 
-import pytest
+from unittest.mock import patch
 
-from openhands.sdk.conversation.state import ConversationState
+import pytest
+from pydantic import SecretStr
+
+from openhands.sdk.agent import Agent
+from openhands.sdk.conversation import LocalConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, HookExecutionEvent, MessageEvent
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
     create_hook_callback,
 )
 from openhands.sdk.hooks.manager import HookManager
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.message import MessageToolCall
 from tests.command_utils import python_command
 
 
@@ -911,6 +921,117 @@ class TestStopHookConversationIntegration:
             )
         ]
         assert len(feedback_messages) == 1, "Feedback message should be injected once"
+
+    def test_consecutive_stop_hook_denials_abort_with_error(self, tmp_path):
+        command = _json_command({"decision": "deny", "reason": "always denying"}, 2)
+        hook_config = HookConfig.from_dict(
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
+        )
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+
+        events_captured: list = []
+
+        def mock_step(self, conversation, on_event, on_token=None):
+            conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        max_denials = 3
+        with patch.object(Agent, "step", mock_step):
+            conversation = LocalConversation(
+                agent=agent,
+                workspace=tmp_path,
+                hook_config=hook_config,
+                callbacks=[events_captured.append],
+                visualizer=None,
+                max_iteration_per_run=100,
+                max_consecutive_stop_denials=max_denials,
+            )
+            conversation.send_message("Hello")
+            conversation.run()
+            conversation.close()
+
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+        error_events = [
+            e for e in events_captured if isinstance(e, ConversationErrorEvent)
+        ]
+        assert len(error_events) == 1
+        assert error_events[0].code == "StopHookLoopDetected"
+        assert "always denying" in error_events[0].detail
+
+        deny_events = [
+            e
+            for e in events_captured
+            if isinstance(e, HookExecutionEvent)
+            and e.hook_event_type == "Stop"
+            and e.blocked
+        ]
+        assert len(deny_events) == max_denials
+
+    def test_stop_hook_deny_streak_resets_on_action_progress(self, tmp_path):
+        # Streak limit 3; hook denies 4 times then allows. An ActionEvent
+        # between denials 2 and 3 must reset the streak so we don't abort.
+        stop_count_file = tmp_path / "stop_count"
+        stop_count_file.write_text("0")
+        command = python_command(
+            "import json, sys; "
+            "from pathlib import Path; "
+            f"path = Path({str(stop_count_file)!r}); "
+            "count = int(path.read_text()); "
+            "path.write_text(str(count + 1)); "
+            "denied = count < 4; "
+            "payload = ({'decision': 'deny', 'reason': 'nope'} "
+            "if denied else {'decision': 'allow'}); "
+            "print(json.dumps(payload)); "
+            "sys.exit(2 if denied else 0)"
+        )
+        hook_config = HookConfig.from_dict(
+            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}}
+        )
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+
+        events_captured: list = []
+        step_count = 0
+
+        def mock_step(self, conversation, on_event, on_token=None):
+            nonlocal step_count
+            step_count += 1
+            if step_count == 3:
+                on_event(
+                    ActionEvent(
+                        source="agent",
+                        tool_name="noop",
+                        tool_call_id="call-1",
+                        tool_call=MessageToolCall(
+                            id="call-1",
+                            name="noop",
+                            arguments="{}",
+                            origin="completion",
+                        ),
+                        thought=[TextContent(text="progress")],
+                        llm_response_id="resp-1",
+                    )
+                )
+            conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with patch.object(Agent, "step", mock_step):
+            conversation = LocalConversation(
+                agent=agent,
+                workspace=tmp_path,
+                hook_config=hook_config,
+                callbacks=[events_captured.append],
+                visualizer=None,
+                max_iteration_per_run=100,
+                max_consecutive_stop_denials=3,
+            )
+            conversation.send_message("Hello")
+            conversation.run()
+            conversation.close()
+
+        assert not [e for e in events_captured if isinstance(e, ConversationErrorEvent)]
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
 
 
 class TestHookExecutionEventEmission:
