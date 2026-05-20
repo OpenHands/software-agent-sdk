@@ -15,10 +15,11 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+from openhands.sdk.tool.schema import Observation
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.tool.schema import Action, Observation
+    from openhands.sdk.tool.schema import Action
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -60,6 +61,12 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
+
+
+class _RemoteObservation(Observation):
+    """Concrete Observation subclass for client-side deserialization."""
+
+    pass
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -1396,24 +1403,54 @@ class RemoteConversation(BaseConversation):
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.
 
-        Note: This method is not yet supported for RemoteConversation.
-        Tool execution for remote conversations happens on the server side
-        during the normal agent loop.
+        This sends the tool execution request to the agent server, which
+        executes it through the conversation's tool executor. This is useful
+        for pre-run setup operations like running setup scripts through the
+        agent's terminal tool so environment changes persist in the agent's
+        session.
+
+        Note: This is intended for **pre-run** setup only. Calling it
+        concurrently with ``run()`` may produce undefined behavior because
+        the underlying tool executor (e.g. terminal session) is not designed
+        for concurrent access.
+
+        Note: The returned observation is a lightweight wrapper that only
+        preserves the text content and ``is_error`` flag.  Tool-specific
+        fields (e.g. ``exit_code`` on terminal observations) are not
+        available on the client side.
 
         Args:
             tool_name: The name of the tool to execute
             action: The action to pass to the tool executor
 
+        Returns:
+            The observation returned by the tool execution
+
         Raises:
-            NotImplementedError: Always, as this feature is not yet supported
-                for remote conversations.
+            RuntimeError: If the tool execution fails on the server
         """
-        raise NotImplementedError(
-            "execute_tool is not yet supported for RemoteConversation. "
-            "Tool execution for remote conversations happens on the server side "
-            "during the normal agent loop. Use LocalConversation for direct "
-            "tool execution."
+        payload = {
+            "tool_name": tool_name,
+            "action": action.model_dump(mode="json"),
+        }
+        response = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/execute_tool",
+            json=payload,
         )
+        result = response.json()
+        observation_data = result.get("observation", {})
+        is_error = result.get("is_error", False)
+
+        # Server returns observation.model_dump(mode="json") which has:
+        #   {"content": [{"text": "...", "kind": "text"}, ...], "is_error": bool}
+        # Concatenate all text content items.
+        content = observation_data.get("content", [])
+        parts = [item.get("text", "") for item in content if isinstance(item, dict)]
+        text = "\n".join(parts) if parts else ""
+
+        return _RemoteObservation.from_text(text=text, is_error=is_error)
 
     def close(self) -> None:
         """Close the conversation and clean up resources.
