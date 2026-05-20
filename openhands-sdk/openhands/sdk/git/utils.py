@@ -262,14 +262,10 @@ def validate_git_repository(repo_dir: str | Path) -> Path:
     if not repo_path.is_dir():
         raise GitRepositoryError(f"Path is not a directory: {repo_path}")
 
-    # Check if it's a git repository by looking for .git directory or file
-    git_dir = repo_path / ".git"
-    if not git_dir.exists():
-        # Maybe we're in a subdirectory, try to find the git root
-        try:
-            run_git_command(["git", "rev-parse", "--git-dir"], repo_path)
-        except GitCommandError as e:
-            raise GitRepositoryError(f"Not a git repository: {repo_path}") from e
+    try:
+        run_git_command(["git", "rev-parse", "--git-dir"], repo_path)
+    except GitCommandError as e:
+        raise GitRepositoryError(f"Not a git repository: {repo_path}") from e
 
     return repo_path
 
