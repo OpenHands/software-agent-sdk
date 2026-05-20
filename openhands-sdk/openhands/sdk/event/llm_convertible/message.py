@@ -7,7 +7,7 @@ from rich.text import Text
 
 from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
-from openhands.sdk.event.llm_convertible._reasoning import (
+from openhands.sdk.event.llm_convertible.reasoning_utils import (
     append_visible_responses_reasoning,
     has_visible_responses_reasoning,
 )
