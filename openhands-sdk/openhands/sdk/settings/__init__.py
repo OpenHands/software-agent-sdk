@@ -50,6 +50,18 @@ if TYPE_CHECKING:
         export_settings_schema,
         validate_agent_settings,
     )
+    from .update_models import (
+        ACPAgentSettingsUpdate,
+        AgentSettingsUpdate,
+        CondenserSettingsUpdate,
+        ConversationSettingsUpdate,
+        LLMUpdate,
+        OpenHandsAgentSettingsUpdate,
+        VerificationSettingsUpdate,
+        apply_agent_update,
+        apply_conversation_update,
+        validate_agent_settings_update,
+    )
 
 _MODEL_EXPORTS = {
     "AGENT_SETTINGS_SCHEMA_VERSION",
@@ -72,6 +84,23 @@ _MODEL_EXPORTS = {
     "export_agent_settings_schema",
     "export_settings_schema",
     "validate_agent_settings",
+}
+
+# Lazy-loaded to avoid a circular import: ``update_models`` imports ``LLM`` and
+# ``AgentContext`` which themselves import ``settings.metadata`` during module
+# initialisation. Loading these eagerly here would re-enter
+# ``settings/__init__.py`` while it's still being constructed.
+_UPDATE_MODEL_EXPORTS = {
+    "ACPAgentSettingsUpdate",
+    "AgentSettingsUpdate",
+    "CondenserSettingsUpdate",
+    "ConversationSettingsUpdate",
+    "LLMUpdate",
+    "OpenHandsAgentSettingsUpdate",
+    "VerificationSettingsUpdate",
+    "apply_agent_update",
+    "apply_conversation_update",
+    "validate_agent_settings_update",
 }
 
 __all__ = [
@@ -105,6 +134,17 @@ __all__ = [
     "SettingsSectionSchema",
     "SettingsUpdateRequest",
     "VerificationSettings",
+    # Typed partial-update models (new endpoints)
+    "ACPAgentSettingsUpdate",
+    "AgentSettingsUpdate",
+    "CondenserSettingsUpdate",
+    "ConversationSettingsUpdate",
+    "LLMUpdate",
+    "OpenHandsAgentSettingsUpdate",
+    "VerificationSettingsUpdate",
+    "apply_agent_update",
+    "apply_conversation_update",
+    "validate_agent_settings_update",
     "create_agent_from_settings",
     "default_agent_settings",
     "detect_acp_provider_by_agent_name",
@@ -137,4 +177,8 @@ def __getattr__(name: str) -> Any:
         from . import model
 
         return getattr(model, name)
+    if name in _UPDATE_MODEL_EXPORTS:
+        from . import update_models
+
+        return getattr(update_models, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
