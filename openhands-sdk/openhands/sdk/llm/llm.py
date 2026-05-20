@@ -1314,6 +1314,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             self.model,
                         )
 
+            # For providers where litellm model metadata may be inaccurate
+            # (e.g., moonshot/deepseek models through custom base_url), apply
+            # a universal safety cap to prevent BadRequestError from exceeding
+            # the model's actual API limit.
+            if (
+                effective_max_output_tokens is not None
+                and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
+            ):
+                effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                logger.debug(
+                    "Capping max_output_tokens to %s for %s "
+                    "(litellm metadata may be inaccurate for this provider)",
+                    effective_max_output_tokens,
+                    self.model,
+                )
+
         if "o3" in self.model:
             o3_limit = 100000
             if (
