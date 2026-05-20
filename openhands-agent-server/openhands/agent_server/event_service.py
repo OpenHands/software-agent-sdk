@@ -864,6 +864,11 @@ class EventService:
                     logger.warning(
                         "Failed to pause conversation during close", exc_info=True
                     )
+            # Cancel the run task so arun()'s CancelledError handler can
+            # transition to PAUSED cleanly.  For the legacy thread-pool
+            # path the underlying thread keeps running but the wrapper
+            # task still settles, unblocking the wait below.
+            self._run_task.cancel()
             try:
                 await asyncio.wait_for(self._run_task, timeout=10.0)
             except Exception as exc:
