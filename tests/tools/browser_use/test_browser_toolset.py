@@ -1,6 +1,7 @@
 """Test BrowserToolSet functionality."""
 
 import tempfile
+import threading
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -197,6 +198,70 @@ def test_browser_toolset_shared_executor_reset():
 
         # After reset, a new executor should be created
         assert executor1 is not executor2
+
+
+def test_browser_toolset_create_constructs_executor_outside_shared_lock(monkeypatch):
+    """Creating the shared executor must not hold the singleton lock."""
+
+    class RecordingLock:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __enter__(self) -> "RecordingLock":
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self._lock.release()
+
+        def locked(self) -> bool:
+            return self._lock.locked()
+
+    recording_lock = RecordingLock()
+    constructed_while_locked: list[bool] = []
+
+    def fake_init(self, **_kwargs):
+        constructed_while_locked.append(recording_lock.locked())
+        self.full_output_save_dir = None
+        self._initialized = False
+        self._cleanup_initiated = True
+        self._action_timeout_seconds = 30.0
+        self._async_executor = MagicMock()
+        self._async_executor.close = MagicMock()
+
+    monkeypatch.setattr(BrowserToolSet, "_shared_executor_lock", recording_lock)
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conv_state = _create_test_conv_state(temp_dir)
+        with patch.object(BrowserToolExecutor, "__init__", fake_init):
+            BrowserToolSet.create(conv_state=conv_state)
+
+    assert constructed_while_locked == [False]
+
+
+def test_browser_executor_close_skips_lock_when_not_shared(monkeypatch):
+    """Non-shared executor cleanup must not contend on the shared lock."""
+
+    class FailingLock:
+        def __enter__(self):
+            raise AssertionError("non-shared executor cleanup acquired shared lock")
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    executor = BrowserToolExecutor()
+    executor._cleanup_initiated = False
+    BrowserToolSet._shared_executor = None
+    monkeypatch.setattr(BrowserToolSet, "_shared_executor_lock", FailingLock())
+
+    executor.close()
+
+    run_async = executor._async_executor.run_async
+    close = executor._async_executor.close
+    assert isinstance(run_async, MagicMock)
+    assert isinstance(close, MagicMock)
+    run_async.assert_called_once_with(executor.cleanup, timeout=30.0)
+    close.assert_called_once_with()
 
 
 def test_browser_toolset_warns_when_config_ignored(caplog):
