@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import contextlib
 import copy
@@ -9,6 +10,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -30,7 +32,9 @@ from openhands.sdk.conversation.visualizer import (
 )
 from openhands.sdk.event import (
     ActionEvent,
+    AgentErrorEvent,
     CondensationRequest,
+    InterruptEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -81,6 +85,8 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
+    _arun_task: asyncio.Task[None] | None
+    _cancel_token: CancellationToken | None
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -155,6 +161,8 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._arun_task = None
+        self._cancel_token = None
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -302,6 +310,19 @@ class LocalConversation(BaseConversation):
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
+
+    @property
+    def cancel_token(self) -> CancellationToken | None:
+        """Active cancellation token for the current run, or ``None``.
+
+        Tools that want cooperative cancellation can check this during
+        execution::
+
+            if conversation and conversation.cancel_token:
+                if conversation.cancel_token.is_cancelled:
+                    return Observation(output="Cancelled")
+        """
+        return self._cancel_token
 
     @property
     def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
@@ -758,6 +779,7 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        self._cancel_token = CancellationToken()
 
         with self._state:
             if self._state.execution_status in [
@@ -873,21 +895,177 @@ class LocalConversation(BaseConversation):
                         )
                         break
         except Exception as e:
-            self._state.execution_status = ConversationExecutionStatus.ERROR
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
 
-            # Add an error event
-            self._on_event(
-                ConversationErrorEvent(
-                    source="environment",
-                    code=e.__class__.__name__,
-                    detail=str(e),
+                # Add an error event
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
+                    )
                 )
-            )
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        finally:
+            self._cancel_token = None
+
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Uses ``agent.astep()`` for non-blocking LLM I/O while keeping the
+        same control-flow semantics (confirmation mode, stuck detection,
+        stop hooks, iteration cap).
+
+        The running task is tracked in ``_arun_task`` so that
+        :meth:`interrupt` can cancel it mid-LLM-call.  On
+        ``CancelledError`` the conversation transitions to ``PAUSED``
+        and emits an :class:`InterruptEvent`.
+
+        A fresh :class:`CancellationToken` is created per run so that
+        ``interrupt()`` can signal in-flight tool calls to abort.  After
+        ``CancelledError`` any ``ActionEvent`` without a matching
+        observation is patched with a synthetic ``AgentErrorEvent`` so
+        the LLM conversation history stays consistent.
+        """
+        self._ensure_agent_ready()
+        self._arun_task = asyncio.current_task()
+        self._cancel_token = CancellationToken()
+
+        with self._state:
+            if self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
+            ]:
+                self._state.execution_status = ConversationExecutionStatus.RUNNING
+
+        iteration = 0
+        try:
+            while True:
+                logger.debug(f"Conversation arun iteration {iteration}")
+                with self._state:
+                    if self._state.execution_status in [
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
+                    ]:
+                        break
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    feedback_msg = MessageEvent(
+                                        source="environment",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        break
+
+                    if self._stuck_detector:
+                        is_stuck = self._stuck_detector.is_stuck()
+                        if is_stuck:
+                            logger.warning("Stuck pattern detected.")
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.STUCK
+                            )
+                            continue
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
+
+                    await self.agent.astep(
+                        self,
+                        on_event=self._on_event,
+                        on_token=self._on_token,
+                    )
+                    iteration += 1
+
+                    if (
+                        self.state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
+                        break
+        except asyncio.CancelledError:
+            # CancelledError is intentionally NOT re-raised.  ``interrupt()``
+            # uses ``asyncio.Task.cancel()`` to break out of ``arun()`` and
+            # expects the task to terminate cleanly.  Re-raising would
+            # propagate the cancellation to EventService/caller which would
+            # surface it as an unexpected error.  Instead we transition to
+            # PAUSED so the conversation can be resumed later.
+            logger.info("arun() interrupted via task cancellation")
+            with self._state:
+                # Emit synthetic error observations for any ActionEvents
+                # that were in-flight when the interrupt landed.  Without
+                # these the LLM history would contain tool-call requests
+                # with no tool-result, which causes provider errors on
+                # the next completion call.
+                self._emit_orphaned_action_errors()
+
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._on_event(InterruptEvent())
+        except Exception as e:
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
+                    )
+                )
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
+        finally:
+            self._cancel_token = None
+            self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -926,6 +1104,35 @@ class LocalConversation(BaseConversation):
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
 
+    def _emit_orphaned_action_errors(self) -> None:
+        """Emit ``AgentErrorEvent`` for actions that have no observation.
+
+        After an interrupt, tool calls that were in-flight may have their
+        ``ActionEvent`` already in the history but no corresponding
+        ``ObservationEvent``.  LLM providers reject conversation
+        histories with orphaned tool-call requests, so we backfill
+        them with a synthetic error.
+
+        Must be called while holding ``self._state``.
+        """
+        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        for ae in orphans:
+            logger.info(
+                "Emitting synthetic error for orphaned action %s (%s)",
+                ae.id,
+                ae.tool_name,
+            )
+            self._on_event(
+                AgentErrorEvent(
+                    error=(
+                        "Tool call interrupted before completion. "
+                        "The conversation was paused."
+                    ),
+                    tool_name=ae.tool_name,
+                    tool_call_id=ae.tool_call_id,
+                )
+            )
+
     def pause(self) -> None:
         """Pause agent execution.
 
@@ -950,6 +1157,37 @@ class LocalConversation(BaseConversation):
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
+
+        If an async run is in progress the underlying ``asyncio.Task`` is
+        cancelled; ``arun()`` catches the resulting ``CancelledError``, sets
+        execution status to ``PAUSED``, and emits an
+        :class:`~openhands.sdk.event.InterruptEvent`.
+
+        The cancellation token is set *before* cancelling the task so
+        that :class:`ParallelToolExecutor` can skip pending tool calls
+        and individual tools can check for early exit.
+
+        If no async task is tracked (e.g. the synchronous ``run()`` is active)
+        the call falls back to :meth:`pause`.
+
+        This method is safe to call from signal handlers and from other
+        threads (the cancellation is scheduled on the task's event loop).
+        """
+        # Set the cancellation token first so thread-pool workers see it
+        # before the asyncio task is cancelled.
+        token = self._cancel_token
+        if token is not None:
+            token.cancel()
+
+        task = self._arun_task
+        if task is not None and not task.done():
+            task.cancel()
+            logger.info("interrupt(): cancelled in-flight arun() task")
+        else:
+            self.pause()
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.

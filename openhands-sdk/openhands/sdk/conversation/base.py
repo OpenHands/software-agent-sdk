@@ -185,6 +185,15 @@ class BaseConversation(ABC):
         """
         ...
 
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Default implementation delegates to the synchronous ``run()``.
+        Subclasses (e.g., :class:`LocalConversation`) should override this
+        to use async agent steps for non-blocking LLM I/O.
+        """
+        self.run()
+
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy for the conversation."""
@@ -219,6 +228,25 @@ class BaseConversation(ABC):
 
     @abstractmethod
     def pause(self) -> None: ...
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()`` LLM call.
+
+        Unlike :meth:`pause`, which waits for the current LLM request to
+        finish, ``interrupt()`` cancels the asyncio task that is driving
+        ``arun()``, so the cancellation takes effect at the very next
+        ``await`` boundary — typically inside the streaming HTTP read.
+
+        If no async run is in progress (e.g. the synchronous ``run()`` is
+        active instead), the call silently falls back to :meth:`pause`.
+
+        After an interrupt the conversation status is set to ``PAUSED``
+        and an :class:`~openhands.sdk.event.InterruptEvent` is emitted,
+        so the conversation can be resumed with a subsequent ``run()``
+        or ``arun()`` call.
+        """
+        # Default: fall back to pause for subclasses that don't override.
+        self.pause()
 
     @abstractmethod
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None: ...

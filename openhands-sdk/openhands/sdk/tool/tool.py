@@ -1,3 +1,4 @@
+import asyncio
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -160,6 +161,18 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         Default implementation does nothing. Subclasses should override
         this method to perform cleanup (e.g., closing connections,
         terminating processes, etc.).
+        """
+        pass
+
+    def interrupt(self) -> None:
+        """Interrupt any in-flight execution (e.g., send Ctrl+C).
+
+        Called from a *different* thread when a conversation interrupt
+        fires while this tool is still executing.  Implementations should
+        be thread-safe and idempotent.
+
+        The default is a no-op; tools with long-running operations
+        (terminal subprocesses, browser navigations, …) should override.
         """
         pass
 
@@ -375,6 +388,22 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             raise TypeError(
                 "Output must be dict or BaseModel when no output schema is defined"
             )
+
+    async def acall(
+        self, action: ActionT, conversation: "LocalConversation | None" = None
+    ) -> Observation:
+        """Async tool execution.
+
+        The default implementation runs :meth:`__call__` in a thread via
+        :func:`asyncio.loop.run_in_executor` so that blocking tool I/O
+        (subprocess management, filesystem operations, etc.) does not
+        starve the event loop.
+
+        Tools with native async implementations (e.g. HTTP-based tools)
+        can override this method to avoid the thread-pool overhead.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self, action, conversation)
 
     def to_mcp_tool(
         self,

@@ -706,8 +706,11 @@ class EventService:
         """Run the conversation asynchronously in the background.
 
         This method starts the conversation run in a background task and returns
-        immediately. The conversation status can be monitored via the
-        GET /api/conversations/{id} endpoint or WebSocket events.
+        immediately.  When possible, the conversation is driven via its native
+        ``arun()`` coroutine so LLM I/O does not tie up a thread-pool worker.
+        For conversations that do not expose ``arun()`` (e.g., custom
+        subclasses), the synchronous ``run()`` is executed in the thread pool as
+        before.
 
         Raises:
             ValueError: If the service is inactive or conversation is already running.
@@ -735,7 +738,14 @@ class EventService:
 
             async def _run_and_publish():
                 try:
-                    await loop.run_in_executor(self._run_executor, conversation.run)
+                    # Prefer the native async path when available so the event
+                    # loop is free during LLM I/O. Fall back to thread-pool
+                    # execution for backward compatibility.
+                    arun = getattr(conversation, "arun", None)
+                    if arun is not None and asyncio.iscoroutinefunction(arun):
+                        await conversation.arun()
+                    else:
+                        await loop.run_in_executor(self._run_executor, conversation.run)
                 except Exception:
                     logger.exception("Error during conversation run")
                 finally:
@@ -785,6 +795,28 @@ class EventService:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.pause)
             # Publish state update after pause to ensure stats are updated
+            await self._publish_state_update()
+
+    async def interrupt(self):
+        """Immediately cancel an in-flight async LLM call.
+
+        Delegates to :meth:`LocalConversation.interrupt` which cancels the
+        ``arun()`` task.  If no async run is in progress the call falls
+        back to :meth:`pause`.
+        """
+        if self._conversation:
+            self._conversation.interrupt()
+            # Wait for the run task to finish so we can publish the final
+            # state update (PAUSED + InterruptEvent) cleanly.
+            if self._run_task is not None and not self._run_task.done():
+                with suppress(Exception):
+                    await asyncio.wait_for(self._run_task, timeout=5.0)
+                # Only clear _run_task if it actually finished; if
+                # wait_for timed out the task may still be running and
+                # clearing prematurely would allow a second run() to
+                # start while the first is still in progress.
+                if self._run_task is not None and self._run_task.done():
+                    self._run_task = None
             await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):

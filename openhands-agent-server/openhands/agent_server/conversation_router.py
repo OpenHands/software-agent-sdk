@@ -187,6 +187,26 @@ async def pause_conversation(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/interrupt",
+    responses={404: {"description": "Item not found"}},
+)
+async def interrupt_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Immediately interrupt a running conversation.
+
+    Unlike ``/pause``, which waits for the current LLM call to finish,
+    ``/interrupt`` cancels the in-flight request so the effect is instant.
+    The conversation transitions to *paused* and can be resumed later.
+    """
+    interrupted = await conversation_service.interrupt_conversation(conversation_id)
+    if not interrupted:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+    return Success()
+
+
 @conversation_router.delete(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
