@@ -598,6 +598,38 @@ class TestACPAgentInitState:
         assert events[0].dynamic_context is not None
         assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
 
+    def test_init_state_renders_registry_secrets_without_agent_context(self, tmp_path):
+        """The <CUSTOM_SECRETS> block should render from secret_registry alone.
+
+        Callers that ship secrets through the canonical conversation
+        channel (``StartConversationRequest.secrets`` →
+        ``Conversation.update_secrets`` → ``secret_registry``) but don't
+        attach an ``AgentContext`` shouldn't see those secrets silently
+        dropped from the system suffix — the values still flow into the
+        subprocess env via ``_start_acp_server``, so the agent needs to
+        know they're available.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()  # no agent_context
+        state = _make_state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "REGISTRY_TOKEN": StaticSecret(
+                    value=SecretStr("tok"), description="Registry token"
+                )
+            }
+        )
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
+
 
 # ---------------------------------------------------------------------------
 # _OpenHandsACPBridge
@@ -3686,6 +3718,214 @@ class TestACPSecretsEnvInjection:
         assert "EMPTY_SECRET" not in env
 
 
+class TestACPSecretRegistryEnvInjection:
+    """Tests for secret injection from the conversation's secret_registry.
+
+    Secrets registered via ``Conversation.update_secrets()`` — or the
+    equivalent ``payload.secrets`` channel that app-server callers
+    (agent-canvas, the OpenHands cloud app server) use — must land in the
+    ACP subprocess env without each caller having to also build an
+    ``AgentContext(secrets=...)`` shim around the same data.
+
+    Same-key precedence is
+    ``acp_env > existing base env > secret_registry > agent_context.secrets``.
+    Registry and context entries only fill genuine gaps in the base env.
+    """
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path, *, registry_secrets=None) -> dict:
+        """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
+        state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
+
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPSecretsEnvInjection._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_registry_string_secret_injected_into_subprocess_env(self, tmp_path):
+        """A string secret in secret_registry lands in the subprocess env.
+
+        The canvas / OpenHands ``payload.secrets`` channel ends up here
+        via ``Conversation.update_secrets()`` → ``SecretRegistry.update_secrets``;
+        without this injection the secret is invisible to the ACP CLI.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "sk-from-registry"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "sk-from-registry"
+
+    def test_registry_lookup_secret_injected_into_subprocess_env(self, tmp_path):
+        """A LookupSecret (callable) in secret_registry resolves and injects.
+
+        This is the wire shape canvas actually sends: a ``LookupSecret``
+        whose ``get_value()`` fetches over HTTP from the agent-server's
+        ``/api/settings/secrets/{name}`` endpoint.
+        """
+        from openhands.sdk.secret import SecretSource
+
+        class _FakeLookupSecret(SecretSource):
+            stored_value: str
+
+            def get_value(self) -> str | None:
+                return self.stored_value
+
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "OPENAI_API_KEY": _FakeLookupSecret(stored_value="sk-fake-openai")
+            },
+        )
+        assert env.get("OPENAI_API_KEY") == "sk-fake-openai"
+
+    def test_acp_env_takes_precedence_over_registry_secret(self, tmp_path):
+        """An explicit ``acp_env`` entry wins over the same key in the registry."""
+        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-acp-env"
+
+    def test_acp_env_shadow_skips_registry_lookup(self, tmp_path):
+        """``acp_env`` shadowing a key must not trigger ``get_value()``.
+
+        LookupSecret performs an HTTP request in production; calling it for
+        a key that ``acp_env`` is about to override wastes a round-trip and
+        can emit spurious lookup-failure warnings.
+        """
+        from pydantic import Field
+
+        from openhands.sdk.secret import SecretSource
+
+        class _CountingLookupSecret(SecretSource):
+            stored_value: str
+            calls: list[int] = Field(default_factory=list)
+
+            def get_value(self) -> str | None:
+                self.calls.append(1)
+                return self.stored_value
+
+        secret = _CountingLookupSecret(stored_value="from-registry")
+        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": secret},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-acp-env"
+        assert secret.calls == []
+
+    def test_registry_secret_takes_precedence_over_agent_context_secret(self, tmp_path):
+        """``secret_registry`` wins over ``agent_context.secrets`` on collision.
+
+        Precedence ladder for this collision:
+        ``acp_env > existing base env > secret_registry > agent_context.secrets``.
+        The registry is the canonical conversation-secret channel
+        (``StartConversationRequest.secrets`` lands here); ``agent_context.
+        secrets`` is the legacy direct-attach path. When both carry the same
+        key the canonical channel wins — that's also what lets OpenHands
+        eventually drop its ``AgentContext(secrets=...)`` shim without a
+        behaviour break for clients that still attach via both paths
+        during the migration.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-registry"
+
+    def test_empty_registry_does_not_change_behaviour(self, tmp_path):
+        """An empty secret_registry must not raise or alter the spawn env."""
+        agent = _make_agent(acp_env={"FOO": "bar"})
+        env = self._run_start_capturing_env(agent, tmp_path, registry_secrets=None)
+        assert env.get("FOO") == "bar"
+
+    def test_failing_registry_lookup_swallowed(self, tmp_path):
+        """A secret source that raises is dropped, not propagated.
+
+        ``SecretRegistry.get_secret_value`` already catches lookup
+        errors and returns ``None``; the spawn-env loop must treat
+        that ``None`` as "skip", so a transient secret-source failure
+        (network blip, expired token) doesn't take the whole ACP
+        subprocess down.
+        """
+        from openhands.sdk.secret import SecretSource
+
+        class _BrokenSecret(SecretSource):
+            def get_value(self) -> str | None:
+                raise OSError("network down")
+
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"BROKEN": _BrokenSecret()},
+        )
+        assert "BROKEN" not in env
+
+
 class TestACPEnvConflictSuppression:
     """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
 
@@ -3695,7 +3935,7 @@ class TestACPEnvConflictSuppression:
     does not support OAuth bearer tokens, breaking auth silently.
 
     _start_acp_server must strip the conflicting vars regardless of where they
-    came from: acp_env, os.environ, or agent_context.secrets.
+    came from: acp_env, os.environ, secret_registry, or agent_context.secrets.
     """
 
     @staticmethod
