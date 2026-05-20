@@ -205,6 +205,34 @@ def test_add_workspace_parents_dedupes_duplicate_paths_within_single_payload(cli
     assert body["workspaceParents"][0]["id"] == "first"
 
 
+def test_workspace_with_id_equal_to_long_path_is_accepted(client):
+    """The GUI sends ``id == path``; a path longer than the old 512-char
+    ``id`` cap must still validate now that the cap matches ``path`` (4096).
+    Covers both ``WorkspaceItem`` and ``WorkspaceParentItem``.
+    """
+    # Arrange: a 1024-char path — comfortably past the old 512 cap, well
+    # under the 4096 ceiling shared with ``path``.
+    long_path = "/" + ("a" * 1023)
+
+    # Act
+    add_workspace = client.post(
+        "/api/workspaces",
+        json={"workspaces": [{"id": long_path, "name": "deep", "path": long_path}]},
+    )
+    add_parent = client.post(
+        "/api/workspaces/parents",
+        json={"parents": [{"id": long_path, "name": "deep", "path": long_path}]},
+    )
+    listed = client.get("/api/workspaces").json()
+
+    # Assert
+    assert add_workspace.status_code == 200, add_workspace.text
+    assert add_parent.status_code == 200, add_parent.text
+    assert [w["path"] for w in listed["workspaces"]] == [long_path]
+    assert [p["path"] for p in listed["workspaceParents"]] == [long_path]
+    assert listed["workspaces"][0]["id"] == long_path
+
+
 def test_unset_parent_path_is_omitted_from_response_and_on_disk_json(client):
     """A workspace without ``parentPath`` must serialize as an absent key,
     not ``"parentPath": null``.

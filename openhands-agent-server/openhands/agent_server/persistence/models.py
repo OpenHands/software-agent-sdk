@@ -384,7 +384,11 @@ WORKSPACES_SCHEMA_VERSION = 1
 
 
 class WorkspaceItem(BaseModel):
-    id: str = Field(..., min_length=1, max_length=512)
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
     name: str = Field(..., min_length=1, max_length=256)
     path: str = Field(..., min_length=1, max_length=4096)
     parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
@@ -392,7 +396,8 @@ class WorkspaceItem(BaseModel):
 
 
 class WorkspaceParentItem(BaseModel):
-    id: str = Field(..., min_length=1, max_length=512)
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
     name: str = Field(..., min_length=1, max_length=256)
     path: str = Field(..., min_length=1, max_length=4096)
 
