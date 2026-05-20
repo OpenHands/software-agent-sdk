@@ -200,6 +200,45 @@ class ConversationPage(BaseModel):
     next_page_id: str | None = None
 
 
+def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInfo:
+    """Return ``info`` with ``agent.agent_context.skills`` set to ``[]``.
+
+    Applied at the four HTTP read routes that emit ``ConversationInfo``
+    (search, get, batch-get, start). The persisted ``ConversationState``
+    on disk and the in-memory copy held by the agent's runtime are
+    untouched — only the bytes leaving over HTTP shrink.
+
+    Why drop the skills entirely on the wire: when an ``AgentContext``
+    is constructed with ``load_user_skills=True`` / ``load_public_skills=True``,
+    its model_validator resolves the entire skill catalog (~40 entries
+    in stock setups) and persists them inline. Every conversation
+    fetch therefore carried ~260 KB of skill content that no API
+    consumer actually reads — the skill bodies are only consumed
+    server-side at prompt-render time, never client-side.
+
+    Dropping ``skills`` from the API response (rather than from the
+    model itself) keeps the model semantics simple: the wire
+    representation differs from the in-memory representation in
+    exactly one place, here, instead of via a serializer / validator
+    pair that has to coordinate across persistence, ``model_copy``,
+    ``round_trip``, equality checks, snapshot drift detection, etc.
+
+    A ``model_copy`` chain is enough because ``BaseModel.model_copy``
+    is shallow on default — we replace the leaf ``skills`` list with
+    an empty list without touching any other field. The returned
+    object is a fresh ``ConversationInfo`` instance; callers that
+    hold the input reference observe no mutation.
+    """
+    agent_ctx = getattr(info.agent, "agent_context", None)
+    if agent_ctx is None or not agent_ctx.skills:
+        return info
+    trimmed_agent_context = agent_ctx.model_copy(update={"skills": []})
+    trimmed_agent = info.agent.model_copy(
+        update={"agent_context": trimmed_agent_context}
+    )
+    return info.model_copy(update={"agent": trimmed_agent})
+
+
 # Deprecated compatibility aliases for the old ACP-specific response names.
 # Keep runtime assignment aliases so existing imports still resolve to the
 # canonical Pydantic models; PEP 695 ``type`` aliases would not preserve that.

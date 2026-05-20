@@ -19,6 +19,7 @@ from openhands.agent_server.models import (
     ConversationSortOrder,
     SendMessageRequest,
     StartACPConversationRequest,
+    trim_conversation_response_skills,
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.agent.acp_agent import ACPAgent
@@ -85,9 +86,11 @@ async def search_acp_conversations(
     """
     assert limit > 0
     assert limit <= 100
-    return await conversation_service.search_acp_conversations(
+    page = await conversation_service.search_acp_conversations(
         page_id, limit, status, sort_order
     )
+    page.items = [trim_conversation_response_skills(item) for item in page.items]
+    return page
 
 
 @conversation_router_acp.get("/count", deprecated=True)
@@ -123,7 +126,7 @@ async def get_acp_conversation(
     conversation = await conversation_service.get_acp_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return conversation
+    return trim_conversation_response_skills(conversation)
 
 
 @conversation_router_acp.get("", deprecated=True)
@@ -137,7 +140,11 @@ async def batch_get_acp_conversations(
     Use ``/api/conversations`` instead.
     """
     assert len(ids) < 100
-    return await conversation_service.batch_get_acp_conversations(ids)
+    conversations = await conversation_service.batch_get_acp_conversations(ids)
+    return [
+        trim_conversation_response_skills(c) if c is not None else None
+        for c in conversations
+    ]
 
 
 @conversation_router_acp.post("", deprecated=True)
@@ -157,4 +164,4 @@ async def start_acp_conversation(
     """
     info, is_new = await conversation_service.start_acp_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
-    return info
+    return trim_conversation_response_skills(info)
