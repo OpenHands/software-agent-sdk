@@ -144,6 +144,41 @@ class TestRenderResumeTranscript:
         assert "(completed)" in out
         assert "ok" in out
 
+    def test_cross_session_same_id_both_render(self) -> None:
+        # ACP providers like Codex reset tool_call_id counters each session.
+        # A user message between two events with the same id means they come
+        # from different sessions — both must render, not just the latest.
+        session_1 = _tool(
+            "exec_1",
+            title="bash",
+            raw_input={"command": "pytest"},
+            raw_output="5 passed",
+        )
+        boundary = _user("please continue")  # session boundary
+        session_2 = _tool(
+            "exec_1",  # same id, new session
+            title="bash",
+            raw_input={"command": "ls"},
+            raw_output="file.txt",
+        )
+        out = render_resume_transcript([session_1, boundary, session_2])
+        assert out is not None
+        # Both sessions render (not just the last).
+        assert out.count("[TOOL USE: bash]") == 2
+        assert "5 passed" in out
+        assert "file.txt" in out
+
+    def test_cross_session_dedup_within_session_still_collapses(self) -> None:
+        # Within one session, pending→completed for the same id still
+        # collapses to the terminal event.
+        pending = _tool("exec_1", title="bash", status="pending")
+        completed = _tool("exec_1", title="bash", raw_output="ok", status="completed")
+        # Note: no MessageEvent between them — same session.
+        out = render_resume_transcript([pending, completed])
+        assert out is not None
+        assert out.count("[TOOL USE: bash]") == 1
+        assert "(completed)" in out
+
     def test_preserves_order_across_event_types(self) -> None:
         events = [
             _user("first user"),
@@ -196,6 +231,17 @@ class TestRenderResumeTranscript:
         out = render_resume_transcript(events, max_chars=max_chars)
         assert out is not None
         assert len(out) <= max_chars
+
+    @pytest.mark.parametrize("max_chars", [1, 5, 10, 30, 200])
+    def test_tight_budget_output_still_starts_with_marker(self, max_chars: int) -> None:
+        # Even when the budget is so small that header+footer+body don't fit,
+        # the output must start with the marker so that callers can detect a
+        # resumed transcript and the double-resume guard stays reliable.
+        events = [_user("x" * 5000)]
+        out = render_resume_transcript(events, max_chars=max_chars)
+        assert out is not None
+        assert len(out) <= max_chars
+        assert out.startswith(RESUME_CONTEXT_MARKER[:max_chars])
 
     @pytest.mark.parametrize("cap", [0, 1, 2, 3, 4, 50])
     def test_max_message_chars_strictly_bounds_text(self, cap: int) -> None:

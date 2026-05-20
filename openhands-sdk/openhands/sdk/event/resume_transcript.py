@@ -209,16 +209,46 @@ def _render_tool_event(event: ACPToolCallEvent, max_chars: int) -> str | None:
 
 
 def _terminal_tool_indices(events: Sequence[Event]) -> set[int]:
-    """Indices of the *terminal* ACPToolCallEvent for each ``tool_call_id``.
+    """Indices of the terminal ACPToolCallEvent for each *streaming sequence*.
 
-    Events whose ``tool_call_id`` appears with a later index are non-terminal
-    and should be skipped.
+    ACP streams ``pending → … → completed`` events for a single tool call
+    consecutively; only the last event in that run carries the final I/O.
+    We keep that last event and drop the earlier intermediates.
+
+    Critically, dedup is scoped to **contiguous runs separated by
+    MessageEvents**, not to the entire history. ACP providers (e.g. Codex)
+    reset ``tool_call_id`` counters each session — after a sandbox recycle a
+    new ``exec_1`` is entirely unrelated to the previous ``exec_1``. A
+    ``MessageEvent`` is the natural session-boundary signal: if any message
+    event falls between two occurrences of the same ``tool_call_id``, they
+    belong to different sessions and both events render independently.
     """
-    last: dict[str, int] = {}
+    # Collect positions of MessageEvents (session boundary markers).
+    msg_indices: set[int] = set()
+    tool_positions: dict[str, list[int]] = {}
     for i, event in enumerate(events):
-        if isinstance(event, ACPToolCallEvent) and event.tool_call_id:
-            last[event.tool_call_id] = i
-    return set(last.values())
+        if isinstance(event, MessageEvent):
+            msg_indices.add(i)
+        elif isinstance(event, ACPToolCallEvent) and event.tool_call_id:
+            tool_positions.setdefault(event.tool_call_id, []).append(i)
+
+    keep: set[int] = set()
+    for positions in tool_positions.values():
+        if len(positions) == 1:
+            keep.add(positions[0])
+            continue
+        # Split into groups at MessageEvent boundaries.
+        groups: list[list[int]] = [[positions[0]]]
+        for idx in positions[1:]:
+            prev = groups[-1][-1]
+            if any(prev < m < idx for m in msg_indices):
+                groups.append([idx])
+            else:
+                groups[-1].append(idx)
+        for group in groups:
+            keep.add(group[-1])
+
+    return keep
 
 
 def render_resume_transcript(
@@ -311,7 +341,17 @@ def render_resume_transcript(
         )
 
     # ``max_chars`` is so tight that even header+footer alone don't leave
-    # room for a meaningful body. Fall back to a single tail-truncation of
-    # the assembled string — the footer (and the tail of the latest event)
-    # will dominate the surviving bytes.
-    return _truncate_keep_tail(full, max_chars)
+    # room for a meaningful body. We must still preserve the marker as the
+    # first bytes of the output — it is the shared signal that callers use
+    # for double-resume detection, so breaking that contract (by returning a
+    # tail that starts mid-content) would silently corrupt the guard.
+    if max_chars <= 0:
+        return ""
+    marker_prefix = marker + "\n"
+    if len(marker_prefix) >= max_chars:
+        return marker_prefix[:max_chars]
+    # Fill the remaining budget with the freshest tail of the transcript.
+    content_budget = max_chars - len(marker_prefix)
+    return marker_prefix + _truncate_keep_tail(
+        full[len(marker_prefix) :], content_budget
+    )
