@@ -248,18 +248,29 @@ class RootSpan:
     traces with no ``session_id``), so we switched to the recommended pattern.
     """
 
-    def __init__(self, name: str, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        session_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+    ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
-        if session_id:
-            # ``set_trace_session_id`` requires an active span; briefly enter
-            # the span context to apply the session id to the trace metadata.
+        if session_id or metadata or tags:
+            # These trace/span helpers require an active span; briefly enter
+            # the span context to apply conversation-level observability data.
             with contextlib.suppress(Exception):
                 with Laminar.use_span(self.span):
-                    Laminar.set_trace_session_id(session_id)
+                    if session_id:
+                        Laminar.set_trace_session_id(session_id)
+                    if metadata:
+                        Laminar.set_trace_metadata(metadata)
+                    if tags:
+                        Laminar.set_span_tags(tags)
         self._ended = False
 
     def end(self) -> None:
@@ -273,7 +284,12 @@ class RootSpan:
             logger.debug("Error ending observability root span", exc_info=True)
 
 
-def start_root_span(name: str, session_id: str | None = None) -> RootSpan | None:
+def start_root_span(
+    name: str,
+    session_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
     Returns ``None`` if observability is not enabled.
@@ -281,7 +297,7 @@ def start_root_span(name: str, session_id: str | None = None) -> RootSpan | None
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id)
+        return RootSpan(name, session_id=session_id, metadata=metadata, tags=tags)
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None

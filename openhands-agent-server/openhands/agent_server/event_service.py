@@ -645,6 +645,8 @@ class EventService:
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
+            observability_metadata=self.stored.observability_metadata,
+            observability_tags=self.stored.observability_tags,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)

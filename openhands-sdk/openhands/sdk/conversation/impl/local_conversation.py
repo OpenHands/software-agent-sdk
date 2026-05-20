@@ -23,6 +23,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -109,6 +110,8 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -150,6 +153,8 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -275,7 +280,11 @@ class LocalConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         atexit.register(self.close)
-        self._start_observability_span(str(desired_id))
+        self._start_observability_span(
+            str(desired_id),
+            metadata=observability_metadata,
+            tags=observability_tags,
+        )
         self.delete_on_close = delete_on_close
 
     @property

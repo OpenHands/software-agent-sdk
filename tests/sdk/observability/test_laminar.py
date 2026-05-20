@@ -438,6 +438,34 @@ def contextlib_compat():
     return contextlib.contextmanager
 
 
+def test_root_span_sets_trace_metadata_and_tags():
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+    fake_context = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+        mock_laminar.use_span.return_value.__enter__.return_value = fake_context
+
+        RootSpan(
+            "conversation",
+            session_id="session-1",
+            metadata={"repo_name": "OpenHands/software-agent-sdk"},
+            tags=["repo:OpenHands/software-agent-sdk"],
+        )
+
+        mock_laminar.start_span.assert_called_once_with("conversation")
+        mock_laminar.use_span.assert_called_once_with(fake_span)
+        mock_laminar.set_trace_session_id.assert_called_once_with("session-1")
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"repo_name": "OpenHands/software-agent-sdk"}
+        )
+        mock_laminar.set_span_tags.assert_called_once_with(
+            ["repo:OpenHands/software-agent-sdk"]
+        )
+
+
 def test_deprecated_shims_emit_warnings():
     """The legacy global-stack API must emit DeprecationWarning so external
     callers (none found in the org-wide audit, but still) are alerted before
