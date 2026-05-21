@@ -99,15 +99,9 @@ def _inject_project_skills(
 ) -> AgentBase:
     """Resolve project skills from the workspace and merge them into the context.
 
-    ``AgentContext.load_project_skills`` is only a request flag: project skills
-    require the workspace path, which is not known at AgentContext validation
-    time, so its ``_load_auto_skills`` validator cannot resolve them. We resolve
-    them here, at conversation start, where the (possibly worktree) workspace
-    path is available. This replaces the client-side project-skill injection that
-    agent-canvas does today (agent-canvas#707).
-
-    Project skills take precedence over same-named skills already present on the
-    context, matching the precedence used by ``load_all_skills``.
+    Resolved here, at conversation start, because the workspace path is not known
+    at AgentContext validation time. Project skills take precedence over
+    same-named skills already on the context (agent-canvas#707).
     """
     context = agent.agent_context
     if context is None or not context.load_project_skills:
@@ -592,9 +586,7 @@ class ConversationService:
 
         request = _prepare_request_workspace(request, conversation_id)
 
-        # Resolve project skills from the (possibly worktree) workspace and merge
-        # them into the agent context — see agent-canvas#707. Done here rather
-        # than in AgentContext because the workspace path is only known now.
+        # Merge project skills from the workspace into the agent context.
         if request.agent is not None:
             agent = _inject_project_skills(request.agent, request.workspace)
             request = request.model_copy(update={"agent": agent})

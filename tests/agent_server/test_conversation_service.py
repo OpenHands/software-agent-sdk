@@ -2861,18 +2861,12 @@ def _agent_with_context(agent_context):
     )
 
 
-# Tests for _inject_project_skills (agent-canvas#707).
-
-
 @pytest.mark.parametrize(
     "agent_context, expect_load_called",
     [
-        # No agent context at all → nothing to inject into.
-        (None, False),
-        # Flag off → resolution must not even be attempted.
-        (AgentContext(load_project_skills=False), False),
-        # Flag on but no project skills found → resolution attempted, no change.
-        (AgentContext(load_project_skills=True), True),
+        (None, False),  # no context to inject into
+        (AgentContext(load_project_skills=False), False),  # flag off
+        (AgentContext(load_project_skills=True), True),  # flag on, no skills found
     ],
 )
 def test_inject_project_skills_noop(agent_context, expect_load_called):
@@ -2892,14 +2886,12 @@ def test_inject_project_skills_noop(agent_context, expect_load_called):
 @pytest.mark.parametrize(
     "existing, project, expected",
     [
-        # Distinct names → both kept.
-        (
+        (  # distinct names → both kept
             [Skill(name="existing", content="keep me")],
             [Skill(name="project-skill", content="from workspace")],
             {"existing": "keep me", "project-skill": "from workspace"},
         ),
-        # Same name → project skill overrides the existing one.
-        (
+        (  # same name → project skill wins
             [Skill(name="dup", content="old")],
             [Skill(name="dup", content="new from workspace")],
             {"dup": "new from workspace"},
