@@ -34,7 +34,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, Message
+from openhands.sdk import LLM, Agent, AgentContext, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -49,6 +49,7 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -2852,99 +2853,77 @@ class TestACPActivityHeartbeatWiring:
         assert not hasattr(agent, "_on_activity")
 
 
-class TestInjectProjectSkills:
-    """Tests for _inject_project_skills (agent-canvas#707)."""
+def _agent_with_context(agent_context):
+    return Agent(
+        llm=LLM(model="gpt-4o", usage_id="test-llm"),
+        tools=[],
+        agent_context=agent_context,
+    )
 
-    def _agent(self, agent_context):
-        return Agent(
-            llm=LLM(model="gpt-4o", usage_id="test-llm"),
-            tools=[],
-            agent_context=agent_context,
-        )
 
-    def test_no_agent_context_is_noop(self):
-        from openhands.sdk.workspace import LocalWorkspace
+# Tests for _inject_project_skills (agent-canvas#707).
 
-        agent = self._agent(None)
-        workspace = LocalWorkspace(working_dir="/tmp/ws")
 
-        assert _inject_project_skills(agent, workspace) is agent
+@pytest.mark.parametrize(
+    "agent_context, expect_load_called",
+    [
+        # No agent context at all → nothing to inject into.
+        (None, False),
+        # Flag off → resolution must not even be attempted.
+        (AgentContext(load_project_skills=False), False),
+        # Flag on but no project skills found → resolution attempted, no change.
+        (AgentContext(load_project_skills=True), True),
+    ],
+)
+def test_inject_project_skills_noop(agent_context, expect_load_called):
+    agent = _agent_with_context(agent_context)
+    workspace = LocalWorkspace(working_dir="/tmp/ws")
 
-    def test_flag_off_is_noop(self):
-        from openhands.sdk import AgentContext
-        from openhands.sdk.workspace import LocalWorkspace
+    with patch(
+        "openhands.agent_server.conversation_service.load_available_skills",
+        return_value={},
+    ) as mock_load:
+        result = _inject_project_skills(agent, workspace)
 
-        agent = self._agent(AgentContext(load_project_skills=False))
-        workspace = LocalWorkspace(working_dir="/tmp/ws")
+    assert result is agent
+    assert mock_load.called is expect_load_called
 
-        with patch(
-            "openhands.agent_server.conversation_service.load_available_skills"
-        ) as mock_load:
-            result = _inject_project_skills(agent, workspace)
 
-        # Resolution must not even be attempted when the flag is off.
-        mock_load.assert_not_called()
-        assert result is agent
+@pytest.mark.parametrize(
+    "existing, project, expected",
+    [
+        # Distinct names → both kept.
+        (
+            [Skill(name="existing", content="keep me")],
+            [Skill(name="project-skill", content="from workspace")],
+            {"existing": "keep me", "project-skill": "from workspace"},
+        ),
+        # Same name → project skill overrides the existing one.
+        (
+            [Skill(name="dup", content="old")],
+            [Skill(name="dup", content="new from workspace")],
+            {"dup": "new from workspace"},
+        ),
+    ],
+)
+def test_inject_project_skills_merges_with_project_precedence(
+    existing, project, expected
+):
+    agent = _agent_with_context(AgentContext(skills=existing, load_project_skills=True))
+    workspace = LocalWorkspace(working_dir="/tmp/ws")
 
-    def test_no_project_skills_returns_agent_unchanged(self):
-        from openhands.sdk import AgentContext
-        from openhands.sdk.workspace import LocalWorkspace
+    with patch(
+        "openhands.agent_server.conversation_service.load_available_skills",
+        return_value={s.name: s for s in project},
+    ) as mock_load:
+        result = _inject_project_skills(agent, workspace)
 
-        agent = self._agent(AgentContext(load_project_skills=True))
-        workspace = LocalWorkspace(working_dir="/tmp/ws")
-
-        with patch(
-            "openhands.agent_server.conversation_service.load_available_skills",
-            return_value={},
-        ):
-            result = _inject_project_skills(agent, workspace)
-
-        assert result is agent
-
-    def test_project_skills_merged_into_context(self):
-        from openhands.sdk import AgentContext
-        from openhands.sdk.skills import Skill
-        from openhands.sdk.workspace import LocalWorkspace
-
-        existing = Skill(name="existing", content="keep me")
-        project = Skill(name="project-skill", content="from workspace")
-        agent = self._agent(AgentContext(skills=[existing], load_project_skills=True))
-        workspace = LocalWorkspace(working_dir="/tmp/ws")
-
-        with patch(
-            "openhands.agent_server.conversation_service.load_available_skills",
-            return_value={project.name: project},
-        ) as mock_load:
-            result = _inject_project_skills(agent, workspace)
-
-        mock_load.assert_called_once_with(
-            work_dir="/tmp/ws",
-            include_user=False,
-            include_project=True,
-            include_public=False,
-        )
-        assert result is not agent
-        assert result.agent_context is not None
-        names = {s.name for s in result.agent_context.skills}
-        assert names == {"existing", "project-skill"}
-
-    def test_project_skill_overrides_same_named_existing(self):
-        from openhands.sdk import AgentContext
-        from openhands.sdk.skills import Skill
-        from openhands.sdk.workspace import LocalWorkspace
-
-        existing = Skill(name="dup", content="old")
-        project = Skill(name="dup", content="new from workspace")
-        agent = self._agent(AgentContext(skills=[existing], load_project_skills=True))
-        workspace = LocalWorkspace(working_dir="/tmp/ws")
-
-        with patch(
-            "openhands.agent_server.conversation_service.load_available_skills",
-            return_value={project.name: project},
-        ):
-            result = _inject_project_skills(agent, workspace)
-
-        assert result.agent_context is not None
-        skills = result.agent_context.skills
-        assert len(skills) == 1
-        assert skills[0].content == "new from workspace"
+    mock_load.assert_called_once_with(
+        work_dir="/tmp/ws",
+        include_user=False,
+        include_project=True,
+        include_public=False,
+    )
+    assert result is not agent
+    assert result.agent_context is not None
+    assert {s.name: s.content for s in result.agent_context.skills} == expected
