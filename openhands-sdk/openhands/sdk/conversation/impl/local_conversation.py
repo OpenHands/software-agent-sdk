@@ -58,6 +58,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills import load_available_skills
 from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -504,6 +505,26 @@ class LocalConversation(BaseConversation):
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
+        # Resolve project skills from the workspace. AgentContext can't do this
+        # itself (the workspace path is unknown at validation time), so it is done
+        # here, where the path is known. Project skills take precedence over
+        # same-named skills already on the context.
+        project_skills_loaded = False
+        if merged_context is not None and merged_context.load_project_skills:
+            project_skills = load_available_skills(
+                work_dir=self.workspace.working_dir,
+                include_user=False,
+                include_project=True,
+                include_public=False,
+            )
+            if project_skills:
+                merged_skills = {s.name: s for s in merged_context.skills}
+                merged_skills.update(project_skills)
+                merged_context = merged_context.model_copy(
+                    update={"skills": list(merged_skills.values())}
+                )
+                project_skills_loaded = True
+
         # Expand MCP config variables with per-conversation secrets
         # This handles ${VAR} and ${VAR:-default} placeholders:
         # - Variables referencing secrets injected via API are expanded to secret values
@@ -521,9 +542,9 @@ class LocalConversation(BaseConversation):
             )
             logger.debug("Expanded MCP config variables")
 
-        # Update agent with merged content only if we have plugins or MCP config
-        # Skip update when nothing changed to avoid unnecessary agent state mutations
-        if self._plugin_specs or has_mcp_config:
+        # Update agent with merged content only if something changed.
+        # Skip update otherwise to avoid unnecessary agent state mutations.
+        if self._plugin_specs or has_mcp_config or project_skills_loaded:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,

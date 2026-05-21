@@ -21,7 +21,6 @@ from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
     _get_worktree_start_point,
-    _inject_project_skills,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -34,7 +33,7 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
-from openhands.sdk import LLM, Agent, AgentContext, Message
+from openhands.sdk import LLM, Agent, Message
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -49,7 +48,6 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
-from openhands.sdk.skills import Skill
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
@@ -2851,71 +2849,3 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
-
-
-def _agent_with_context(agent_context):
-    return Agent(
-        llm=LLM(model="gpt-4o", usage_id="test-llm"),
-        tools=[],
-        agent_context=agent_context,
-    )
-
-
-@pytest.mark.parametrize(
-    "agent_context, expect_load_called",
-    [
-        (None, False),  # no context to inject into
-        (AgentContext(load_project_skills=False), False),  # flag off
-        (AgentContext(load_project_skills=True), True),  # flag on, no skills found
-    ],
-)
-def test_inject_project_skills_noop(agent_context, expect_load_called):
-    agent = _agent_with_context(agent_context)
-    workspace = LocalWorkspace(working_dir="/tmp/ws")
-
-    with patch(
-        "openhands.agent_server.conversation_service.load_available_skills",
-        return_value={},
-    ) as mock_load:
-        result = _inject_project_skills(agent, workspace)
-
-    assert result is agent
-    assert mock_load.called is expect_load_called
-
-
-@pytest.mark.parametrize(
-    "existing, project, expected",
-    [
-        (  # distinct names → both kept
-            [Skill(name="existing", content="keep me")],
-            [Skill(name="project-skill", content="from workspace")],
-            {"existing": "keep me", "project-skill": "from workspace"},
-        ),
-        (  # same name → project skill wins
-            [Skill(name="dup", content="old")],
-            [Skill(name="dup", content="new from workspace")],
-            {"dup": "new from workspace"},
-        ),
-    ],
-)
-def test_inject_project_skills_merges_with_project_precedence(
-    existing, project, expected
-):
-    agent = _agent_with_context(AgentContext(skills=existing, load_project_skills=True))
-    workspace = LocalWorkspace(working_dir="/tmp/ws")
-
-    with patch(
-        "openhands.agent_server.conversation_service.load_available_skills",
-        return_value={s.name: s for s in project},
-    ) as mock_load:
-        result = _inject_project_skills(agent, workspace)
-
-    mock_load.assert_called_once_with(
-        work_dir="/tmp/ws",
-        include_user=False,
-        include_project=True,
-        include_public=False,
-    )
-    assert result is not agent
-    assert result.agent_context is not None
-    assert {s.name: s.content for s in result.agent_context.skills} == expected
