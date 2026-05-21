@@ -53,7 +53,7 @@ class HookDefinition(BaseModel):
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
     timeout: int = 60
-    max_iterations: int = 10
+    max_iterations: int = 3
     async_: bool = Field(default=False, alias="async")  # 'async' is a reserved keyword
 
     model_config = {

@@ -1,6 +1,5 @@
 """Hook executor - runs shell commands and agent evaluations with JSON I/O."""
 
-import concurrent.futures
 import json
 import logging
 import os
@@ -9,7 +8,6 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
-import opentelemetry.context as otel_context
 from pydantic import BaseModel
 
 from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
@@ -163,6 +161,20 @@ class HookExecutor:
         self.persistence_dir = persistence_dir
         self.visualizer = visualizer
 
+    def _allow(
+        self,
+        reason: str,
+        *,
+        success: bool = False,
+        error: str | None = None,
+    ) -> HookResult:
+        return HookResult(
+            success=success,
+            decision=HookDecision.ALLOW,
+            reason=reason,
+            error=error,
+        )
+
     @observe(
         name="hook.execute.agent",
         ignore_inputs=["self", "hook", "event"],
@@ -173,11 +185,6 @@ class HookExecutor:
         hook: HookDefinition,
         event: HookEvent,
     ) -> HookResult:
-        """Execute an agent-based hook by spawning a short-lived sub-conversation.
-
-        The sub-conversation inherits the parent LLM, runs with user-configured
-        tools and no hooks (preventing recursion), and must return a JSON decision.
-        """
         # Lazy imports to avoid circular dependency:
         # executor <- manager <- conversation_hooks <- local_conversation -> executor
         from openhands.sdk.agent import Agent  # type: ignore[attr-defined]
@@ -196,19 +203,14 @@ class HookExecutor:
                 f"Agent hook has no LLM configured for event '{event_type}'"
                 " — defaulting to allow"
             )
-            return HookResult(
-                success=True,
-                decision=HookDecision.ALLOW,
-                reason="No LLM configured for agent hook",
-            )
+            return self._allow("No LLM configured for agent hook")
 
-        # Isolated LLM copy — hook metrics not attributed to the parent conversation.
-        hook_llm = self.llm.model_copy(update={"usage_id": "hook-agent-evaluator"})
-        hook_llm.reset_metrics()
-
-        # Capture the current OTel span context so the sub-conversation thread
-        # becomes a child of this span rather than an orphaned trace.
-        parent_ctx = otel_context.get_current()
+        hook_llm = self.llm.model_copy(
+            update={
+                "usage_id": f"hook-agent:{hook.name or 'default'}",
+                "timeout": hook.timeout,
+            }
+        )
 
         conversation = None
         try:
@@ -218,7 +220,7 @@ class HookExecutor:
                 include_default_tools=["FinishTool"],
                 system_prompt=hook.system_prompt,
             )
-            # hook_config=None disables all hooks in the sub-conversation (no recursion)
+            # hook_config=None disables hooks in the sub-conversation (no recursion)
             conversation = LocalConversation(
                 agent=agent,
                 workspace=self.working_dir,
@@ -228,93 +230,79 @@ class HookExecutor:
                 visualizer=self.visualizer,
                 max_iteration_per_run=hook.max_iterations,
             )
-            # Event payload is always injected — the agent needs it to evaluate.
             conversation.send_message(
                 f"Evaluate this {event_type} hook event and make your decision.\n\n"
                 f"## Hook Event\n```json\n{event.model_dump_json(indent=2)}\n```"
             )
-
-            def _run_with_context() -> None:
-                token = otel_context.attach(parent_ctx)
-                try:
-                    conversation.run()
-                finally:
-                    otel_context.detach(token)
-
-            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            try:
-                future = pool.submit(_run_with_context)
-                try:
-                    future.result(timeout=hook.timeout)
-                except concurrent.futures.TimeoutError:
-                    logger.warning(
-                        f"Agent hook timed out after {hook.timeout}s"
-                        f" for event '{event_type}' — defaulting to allow"
-                    )
-                    conversation.pause()
-                    return HookResult(
-                        success=False,
-                        decision=HookDecision.ALLOW,
-                        reason=(
-                            f"Agent hook timed out after {hook.timeout} seconds"
-                            " — defaulting to allow"
-                        ),
-                    )
-            finally:
-                pool.shutdown(wait=False)
+            conversation.run()
             raw = get_agent_final_response(conversation.state.events)
         except Exception as e:
             logger.warning(
                 f"Agent hook sub-conversation failed for event '{event_type}'"
                 f" — defaulting to allow: {e}"
             )
-            return HookResult(
-                success=False,
-                decision=HookDecision.ALLOW,
-                reason="Agent hook execution failed — defaulting to allow",
+            return self._allow(
+                "Agent hook execution failed — defaulting to allow",
                 error=str(e),
             )
         finally:
             if conversation is not None:
                 conversation.close()
 
+        return self._parse_decision(raw, event_type)
+
+    _JSON_DECODER = json.JSONDecoder()
+
+    def _extract_first_json_object(self, text: str) -> dict | None:
+        # Walks the string and asks the JSON decoder to parse from each '{'.
+        # Handles bare JSON, ```json ... ``` fences, prose prefixes/suffixes,
+        # and mixed combinations — anything LLMs add around the actual object.
+        for i, ch in enumerate(text):
+            if ch != "{":
+                continue
+            try:
+                obj, _ = self._JSON_DECODER.raw_decode(text[i:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                return obj
+        return None
+
+    def _parse_decision(self, raw: str, event_type: str) -> HookResult:
         if not raw:
             logger.warning(
                 f"Agent hook produced no final response for event '{event_type}'"
                 " — defaulting to allow"
             )
-            return HookResult(
-                success=False,
-                decision=HookDecision.ALLOW,
-                reason="Agent hook produced no final response — defaulting to allow",
+            return self._allow(
+                "Agent hook produced no final response — defaulting to allow"
             )
 
-        try:
-            data = json.loads(raw)
-            decision_str = str(data.get("decision", "allow")).lower()
-            reason = str(data.get("reason", ""))
-            if decision_str == "deny":
-                return HookResult(
-                    success=True,
-                    blocked=True,
-                    decision=HookDecision.DENY,
-                    reason=reason,
-                )
+        data = self._extract_first_json_object(raw)
+        if data is None:
+            logger.warning(
+                f"Agent hook returned no parseable JSON object for event"
+                f" '{event_type}' — defaulting to allow: {repr(raw)[:200]}"
+            )
+            return self._allow(
+                "Agent hook returned no parseable JSON — defaulting to allow",
+                success=True,
+            )
+
+        decision_str = str(data.get("decision", "allow")).lower()
+        reason = str(data.get("reason", ""))
+        if decision_str == "deny":
             return HookResult(
                 success=True,
-                decision=HookDecision.ALLOW,
+                blocked=True,
+                decision=HookDecision.DENY,
                 reason=reason,
             )
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning(
-                f"Agent hook returned non-JSON response for event '{event_type}'"
-                f" — defaulting to allow: {repr(raw)[:200]}"
-            )
-            return HookResult(
-                success=True,
-                decision=HookDecision.ALLOW,
-                reason="Agent hook returned non-JSON response — defaulting to allow",
-            )
+        return HookResult(
+            success=True,
+            decision=HookDecision.ALLOW,
+            reason=reason,
+        )
 
     def execute(
         self,

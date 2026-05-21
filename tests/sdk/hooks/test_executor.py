@@ -479,7 +479,7 @@ class TestAgentHookExecution:
         hook = HookDefinition(type="agent", system_prompt="Check something")
         result = executor_no_llm.execute(hook, sample_event)
 
-        assert result.success
+        assert not result.success
         assert result.decision == HookDecision.ALLOW
         assert not result.blocked
 
@@ -517,6 +517,88 @@ class TestAgentHookExecution:
         assert not result.blocked
         assert result.decision == HookDecision.ALLOW
         assert result.reason == "Looks safe"
+
+    def test_markdown_wrapped_deny_is_parsed(self, executor, sample_event):
+        """LLMs commonly wrap JSON in ```json fences; the executor must still
+        honour the decision instead of falling open."""
+        fenced = (
+            '```json\n'
+            '{"decision": "deny", "reason": "Sensitive file read"}\n'
+            '```'
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=fenced),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert result.blocked
+        assert result.decision == HookDecision.DENY
+        assert result.reason == "Sensitive file read"
+
+    def test_plain_fence_without_language_tag_is_parsed(
+        self, executor, sample_event
+    ):
+        """Some LLMs use ``` without a language tag — still extract the JSON."""
+        fenced = '```\n{"decision": "allow", "reason": "ok"}\n```'
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=fenced),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert not result.blocked
+        assert result.decision == HookDecision.ALLOW
+        assert result.reason == "ok"
+
+    def test_prose_prefix_before_json_is_parsed(self, executor, sample_event):
+        """LLMs often explain themselves before emitting JSON; we must still
+        honour a real deny instead of silently falling open to allow."""
+        prose_then_json = (
+            "After reviewing the workspace I found REPORT.md is missing.\n\n"
+            '{"decision": "deny", "reason": "missing deliverable"}'
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=prose_then_json),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert result.blocked
+        assert result.decision == HookDecision.DENY
+        assert result.reason == "missing deliverable"
+
+    def test_prose_suffix_after_json_is_parsed(self, executor, sample_event):
+        """Trailing chatter after the JSON object must not defeat the parser."""
+        json_then_prose = (
+            '{"decision": "deny", "reason": "sensitive file"}\n\n'
+            "Let me know if you need more details."
+        )
+
+        with (
+            patch(self._AGENT_PATH),
+            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._RESPONSE_PATH, return_value=json_then_prose),
+        ):
+            mock_conv_cls.return_value = MagicMock()
+            hook = HookDefinition(type="agent")
+            result = executor._execute_agent_hook(hook, sample_event)
+
+        assert result.blocked
+        assert result.decision == HookDecision.DENY
+        assert result.reason == "sensitive file"
 
     def test_invalid_json_defaults_to_allow(self, executor, sample_event):
         """_execute_agent_hook with non-JSON LLM response defaults to allow."""
@@ -561,33 +643,31 @@ class TestAgentHookExecution:
         assert result.decision == HookDecision.ALLOW
         assert result.success is False
 
-    def test_timeout_enforced(self, executor, sample_event):
-        """Agent hook respects hook.timeout via ThreadPoolExecutor."""
-        import time
+    def test_timeout_propagated_to_hook_llm(self, executor, sample_event):
+        """hook.timeout is forwarded to the copied LLM, parent's timeout untouched."""
+        parent_timeout = executor.llm.timeout
+        captured_llm = {}
 
-        def slow_run():
-            time.sleep(10)
+        def capture_agent_init(**kwargs):
+            captured_llm["llm"] = kwargs.get("llm")
+            return MagicMock()
 
         with (
-            patch(self._AGENT_PATH),
-            patch(self._CONV_PATH) as mock_conv_cls,
+            patch(self._AGENT_PATH, side_effect=capture_agent_init),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")),
         ):
-            mock_conv = MagicMock()
-            mock_conv.run = slow_run
-            mock_conv_cls.return_value = mock_conv
+            hook = HookDefinition(type="agent", timeout=7)
+            executor._execute_agent_hook(hook, sample_event)
 
-            hook = HookDefinition(type="agent", timeout=1)
-            start = time.time()
-            result = executor._execute_agent_hook(hook, sample_event)
-            elapsed = time.time() - start
+        hook_llm = captured_llm.get("llm")
+        assert hook_llm is not None
+        assert hook_llm.timeout == 7
+        assert executor.llm.timeout == parent_timeout
 
-        assert elapsed < 5
-        assert not result.blocked
-        assert result.decision == HookDecision.ALLOW
-        assert "timed out" in (result.reason or "")
+    def test_hook_metrics_under_usage_id(self, executor, sample_event):
+        """Hook LLM uses per-hook usage_id and shares parent's Metrics object."""
+        parent_metrics = executor.llm.metrics
 
-    def test_metrics_are_isolated_from_parent_llm(self, executor, sample_event):
-        """model_copy + reset_metrics ensures hook tokens don't pollute parent LLM."""
         captured_llm = {}
 
         def capture_agent_init(**kwargs):
@@ -604,7 +684,27 @@ class TestAgentHookExecution:
         hook_llm = captured_llm.get("llm")
         assert hook_llm is not None
         assert hook_llm is not executor.llm
-        assert hook_llm.usage_id == "hook-agent-evaluator"
+        assert hook_llm.usage_id == "hook-agent:default"
+        assert hook_llm._metrics is parent_metrics
+
+    def test_hook_usage_id_uses_hook_name(self, executor, sample_event):
+        """A named hook gets its own usage_id bucket: hook-agent:<name>."""
+        captured_llm = {}
+
+        def capture_agent_init(**kwargs):
+            captured_llm["llm"] = kwargs.get("llm")
+            return MagicMock()
+
+        with (
+            patch(self._AGENT_PATH, side_effect=capture_agent_init),
+            patch(self._CONV_PATH, side_effect=RuntimeError("stop early")),
+        ):
+            hook = HookDefinition(type="agent", name="security-check")
+            executor._execute_agent_hook(hook, sample_event)
+
+        hook_llm = captured_llm.get("llm")
+        assert hook_llm is not None
+        assert hook_llm.usage_id == "hook-agent:security-check"
 
 
 class TestPromptHookNotImplemented:
