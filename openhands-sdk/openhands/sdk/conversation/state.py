@@ -1,5 +1,6 @@
 # state.py
 import json
+import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
@@ -211,6 +212,7 @@ class ConversationState(OpenHandsModel):
     # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
     _view: View = PrivateAttr(default_factory=View)
     _view_watermark: int = PrivateAttr(default=0)
+    _view_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -246,12 +248,13 @@ class ConversationState(OpenHandsModel):
 
         Callers must treat the returned view as read-only.
         """
-        n = len(self._events)
-        if n > self._view_watermark:
-            for i in range(self._view_watermark, n):
-                self._view.append_event(self._events[i])
-            self._view_watermark = n
-        return self._view
+        with self._view_lock:
+            n = len(self._events)
+            if n > self._view_watermark:
+                for i in range(self._view_watermark, n):
+                    self._view.append_event(self._events[i])
+                self._view_watermark = n
+            return self._view
 
     def rebuild_view(self) -> None:
         """Re-derive the cached view from the full event log.
@@ -263,9 +266,14 @@ class ConversationState(OpenHandsModel):
         - Cold load (resuming a persisted ``ConversationState``).
         - Fork creation, after deep-copying events from the source.
         - Explicit error recovery (e.g. malformed-history retry).
+
+        Any ``View`` reference previously returned by ``state.view``
+        is invalidated after this call and must not be used — it
+        will never reflect new events or the rebuilt state.
         """
-        self._view = View.from_events(self._events)
-        self._view_watermark = len(self._events)
+        with self._view_lock:
+            self._view = View.from_events(self._events)
+            self._view_watermark = len(self._events)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:

@@ -194,3 +194,8 @@ def test_resume_path_rebuilds_view(tmp_path):
     )
     assert len(resumed.view.events) == 1
     assert resumed.view.events[0].id == state.events[0].id
+
+    # Verify the watermark is correctly set so incremental reads work
+    # post-resume (guards against rebuild_view leaving watermark at 0).
+    resumed.events.append(_msg("after-resume"))
+    assert len(resumed.view.events) == 2
