@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from pydantic import PrivateAttr
@@ -195,8 +196,6 @@ def test_agent_rebuilds_view_on_malformed_history_recovery(
     force_responses: bool,
 ):
     """rebuild_view is called before CondensationRequest on malformed history."""
-    from unittest.mock import patch
-
     llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
     agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
     convo = Conversation(agent=agent)
@@ -220,8 +219,6 @@ async def test_agent_rebuilds_view_on_malformed_history_recovery_async(
     force_responses: bool,
 ):
     """Async parity: astep calls rebuild_view before condensation retry."""
-    from unittest.mock import patch
-
     llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
     agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
     convo = Conversation(agent=agent)

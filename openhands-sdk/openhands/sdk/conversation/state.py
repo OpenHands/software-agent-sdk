@@ -212,7 +212,7 @@ class ConversationState(OpenHandsModel):
     # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
     _view: View = PrivateAttr(default_factory=View)
     _view_watermark: int = PrivateAttr(default=0)
-    _view_lock: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -272,8 +272,9 @@ class ConversationState(OpenHandsModel):
         will never reflect new events or the rebuilt state.
         """
         with self._view_lock:
-            self._view = View.from_events(self._events)
-            self._view_watermark = len(self._events)
+            snapshot = list(self._events)
+            self._view = View.from_events(snapshot)
+            self._view_watermark = len(snapshot)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
