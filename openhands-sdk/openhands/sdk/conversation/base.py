@@ -127,11 +127,14 @@ class BaseConversation(ABC):
         # that constructed the conversation.
         self._observability_root_span: RootSpan | None = None
 
-    def _start_observability_span(self, session_id: str) -> None:
+    def _start_observability_span(
+        self, session_id: str, user_id: str | None = None
+    ) -> None:
         """Start a per-conversation observability root span.
 
         Args:
             session_id: The session ID to associate with the trace
+            user_id: Optional user ID to associate with the trace
         """
         if not should_enable_observability():
             return
@@ -139,7 +142,7 @@ class BaseConversation(ABC):
             # Idempotent: never start two roots for one conversation.
             return
         self._observability_root_span = start_root_span(
-            "conversation", session_id=session_id
+            "conversation", session_id=session_id, user_id=user_id
         )
 
     def _end_observability_span(self) -> None:

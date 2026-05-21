@@ -25,7 +25,8 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.22.1
+                default: v1.23.0
+
 
 
 
