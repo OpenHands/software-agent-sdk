@@ -1,7 +1,9 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
@@ -180,3 +182,99 @@ async def test_async_no_response_exhausts_retries(
         )
 
     assert mock_acompletion.call_count == base_llm.num_retries
+
+
+# ------------------------------------------------------------------
+# Async aresponses tests
+# ------------------------------------------------------------------
+
+
+def create_mock_responses_api_response(
+    text: str = "ok",
+) -> ResponsesAPIResponse:
+    return ResponsesAPIResponse(
+        id="resp-1",
+        created_at=1,
+        output=[
+            ResponseOutputMessage(
+                id="msg-1",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[
+                    ResponseOutputText(type="output_text", text=text, annotations=[])
+                ],
+            )
+        ],
+        model="gpt-4o",
+        object="response",
+    )
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_aresponses",
+    new_callable=AsyncMock,
+)
+async def test_async_aresponses_retry_bumps_temperature(
+    mock_aresponses: AsyncMock, base_llm: LLM
+) -> None:
+    """aresponses must apply the temperature bump on retry (B2 regression)."""
+    assert base_llm.temperature == 0.0
+
+    mock_aresponses.side_effect = [
+        LLMNoResponseError("empty response"),
+        create_mock_responses_api_response("ok"),
+    ]
+
+    resp = await base_llm.aresponses(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_aresponses.call_count == 2
+    _, second_kwargs = mock_aresponses.call_args_list[1]
+    assert second_kwargs.get("temperature") == 1.0
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_aresponses",
+    new_callable=AsyncMock,
+)
+async def test_async_aresponses_retries_then_succeeds(
+    mock_aresponses: AsyncMock, base_llm: LLM
+) -> None:
+    mock_aresponses.side_effect = [
+        LLMNoResponseError("empty response"),
+        create_mock_responses_api_response("success"),
+    ]
+
+    resp = await base_llm.aresponses(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert resp.message is not None
+    assert mock_aresponses.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_aresponses",
+    new_callable=AsyncMock,
+)
+async def test_async_aresponses_exhausts_retries(
+    mock_aresponses: AsyncMock, base_llm: LLM
+) -> None:
+    mock_aresponses.side_effect = [
+        LLMNoResponseError("empty-1"),
+        LLMNoResponseError("empty-2"),
+    ]
+
+    with pytest.raises(LLMNoResponseError):
+        await base_llm.aresponses(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    assert mock_aresponses.call_count == base_llm.num_retries

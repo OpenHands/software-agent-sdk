@@ -785,6 +785,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (formatted_messages, cc_tools, use_mock_tools, call_kwargs,
              telemetry_ctx)
         """
+        # Defensive copy — this method mutates kwargs (e.g. kwargs["tools"])
+        # and the caller should not observe those side-effects.
+        kwargs = dict(kwargs)
+
         formatted_messages = self.format_messages_for_llm(messages)
         use_native_fc = self.native_tool_calling
         original_fncall_msgs = copy.deepcopy(formatted_messages)
@@ -857,6 +861,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             (instructions, input_items, resp_tools, call_kwargs,
              telemetry_ctx)
         """
+        # Defensive copy — select_responses_options may mutate kwargs.
+        kwargs = dict(kwargs)
+
         instructions, input_items = self.format_messages_for_responses(messages)
 
         # Responses path always supports function tools
