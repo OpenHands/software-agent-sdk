@@ -125,7 +125,7 @@ class Config(BaseModel):
         ),
     )
     allow_workspace_cors_origins: list[str] = Field(
-        default_factory=list,
+        default_factory=lambda: ["*"],
         description=(
             "Additional CORS origins permitted ONLY for the workspace-session "
             "auth endpoint (``/api/auth/workspace-session``) and the workspace "
@@ -134,7 +134,15 @@ class Config(BaseModel):
             "for those routes, but are NOT granted CORS access to the rest of "
             "the API. Use this to let a different-origin frontend mint the "
             "workspace session cookie and load workspace artifacts without "
-            "opening the full API surface to that origin."
+            "opening the full API surface to that origin.\n\n"
+            "Defaults to ``['*']``: workspace-scoped routes accept CORS from "
+            "any origin. This is intentional — minting the cookie still "
+            "requires the ``X-Session-API-Key`` header (so an arbitrary "
+            "origin cannot mint a cookie it doesn't already have a key for), "
+            "and the cookie itself is ``Partitioned`` (CHIPS), which scopes "
+            "it to the embedding top-level site that minted it. Set an "
+            "explicit list of origins (e.g. ``OH_ALLOW_WORKSPACE_CORS_"
+            "ORIGINS_0=https://canvas.example.com``) to lock this down."
         ),
     )
     conversations_path: Path = Field(

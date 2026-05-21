@@ -71,6 +71,10 @@ def cors_config():
     return Config(
         session_api_keys=[SESSION_KEY],
         allow_cors_origins=[GLOBAL_ORIGIN],
+        # Explicitly lock down the workspace allowlist for these tests so we
+        # can assert that listed-vs-unlisted origins are differentiated.
+        # (The shipped default is ``["*"]`` — see the default-config tests
+        # at the bottom of this file.)
         allow_workspace_cors_origins=[WORKSPACE_ORIGIN],
     )
 
@@ -164,13 +168,17 @@ def test_global_origin_allowed_on_other_api(tmp_path, cors_config):
     assert resp.headers["access-control-allow-origin"] == GLOBAL_ORIGIN
 
 
-# ---- default config: no extra origins -------------------------------------
+# ---- default config: wildcard on workspace routes only --------------------
 
 
-def test_default_config_blocks_remote_origin_everywhere(tmp_path):
-    """Without any CORS config, remote origins are blocked on both
-    workspace and non-workspace routes (localhost is still auto-allowed
-    via the LocalhostCORSMiddleware path)."""
+def test_default_config_allows_any_origin_on_workspace_routes(tmp_path):
+    """The shipped default for ``allow_workspace_cors_origins`` is
+    ``["*"]``, so workspace-scoped routes accept CORS from any origin
+    out of the box.
+
+    Because ``allow_credentials=True``, Starlette echoes the request
+    Origin back rather than emitting a literal ``*`` (browsers reject
+    ``*`` with credentials)."""
     cid = uuid4()
     client = _build_client(
         tmp_path,
@@ -181,7 +189,23 @@ def test_default_config_blocks_remote_origin_everywhere(tmp_path):
     for path in (
         "/api/auth/workspace-session",
         f"/api/conversations/{cid}/workspace/report.html",
-        "/api/conversations",
     ):
-        resp = _preflight(client, path, origin=WORKSPACE_ORIGIN)
-        assert "access-control-allow-origin" not in resp.headers, path
+        resp = _preflight(client, path, origin=OTHER_ORIGIN)
+        assert resp.status_code == 200, path
+        # With credentials enabled the request origin is echoed back, not "*".
+        assert resp.headers["access-control-allow-origin"] == OTHER_ORIGIN, path
+        assert resp.headers["access-control-allow-credentials"] == "true", path
+
+
+def test_default_config_still_blocks_remote_origin_on_other_api(tmp_path):
+    """The default workspace wildcard does not bleed into the rest of
+    the API — ``allow_cors_origins`` is still empty by default, so
+    arbitrary origins are blocked on non-workspace routes."""
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=Config(session_api_keys=[SESSION_KEY]),
+    )
+
+    resp = _preflight(client, "/api/conversations", origin=OTHER_ORIGIN)
+    assert "access-control-allow-origin" not in resp.headers
