@@ -201,6 +201,23 @@ def _select_auth_method(
     return None
 
 
+def _extract_current_model_id(response: Any) -> str | None:
+    """Read ``models.currentModelId`` off a session response, if present.
+
+    The ``models`` field on session responses is marked **UNSTABLE** in the ACP
+    spec — agents predating it (or implementations that opt out) leave it
+    ``None``.  Use ``getattr`` rather than attribute access so a missing field
+    just yields ``None`` instead of raising.
+    """
+    if response is None:
+        return None
+    models = getattr(response, "models", None)
+    if models is None:
+        return None
+    current = getattr(models, "current_model_id", None)
+    return current if isinstance(current, str) and current else None
+
+
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
@@ -749,6 +766,13 @@ class ACPAgent(AgentBase):
     _agent_version: str = PrivateAttr(
         default=""
     )  # ACP server version from InitializeResponse
+    # The model the ACP server reported as active for this session, captured
+    # from ``models.currentModelId`` on the new_session / load_session
+    # response.  Overridden by ``self.acp_model`` when the caller explicitly
+    # chose one (either via ``set_session_model`` or via session ``_meta``).
+    # ``None`` when the server doesn't surface model state — the field is
+    # marked UNSTABLE in the ACP spec, so older agents may omit it.
+    _current_model_id: str | None = PrivateAttr(default=None)
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
@@ -868,6 +892,19 @@ class ACPAgent(AgentBase):
     def agent_version(self) -> str:
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
+
+    @property
+    def current_model_id(self) -> str | None:
+        """The model the ACP server is currently using for this session.
+
+        Captured from ``models.currentModelId`` on the
+        ``new_session`` / ``load_session`` response when the server surfaces
+        it (UNSTABLE ACP capability), or ``self.acp_model`` when the caller
+        explicitly chose one.  ``None`` for older servers that don't report
+        model state and when no override was set — callers should treat the
+        value as best-effort.
+        """
+        return self._current_model_id
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
@@ -1036,7 +1073,7 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> tuple[Any, Any, Any, str, str, str]:
+        async def _init() -> tuple[Any, Any, Any, str, str, str, str | None]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1119,14 +1156,19 @@ class ACPAgent(AgentBase):
             # subprocess crash) propagate — there is no working connection to
             # fall back on, and the outer init_state handler cleans up.
             session_id: str | None = None
+            # Captured for model extraction below — typed as ``Any`` because
+            # ``new_session`` and ``load_session`` return different concrete
+            # response types and we only care about the ``models`` attribute.
+            reported_model_id: str | None = None
             if prior_session_id is not None:
                 try:
-                    await conn.load_session(
+                    load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
                         mcp_servers=[],
                     )
                     session_id = prior_session_id
+                    reported_model_id = _extract_current_model_id(load_response)
                     logger.info(
                         "Resumed ACP session: %s (cwd=%s)",
                         session_id,
@@ -1146,12 +1188,19 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
+                reported_model_id = _extract_current_model_id(response)
             await _maybe_set_session_model(
                 conn,
                 agent_name,
                 session_id,
                 self.acp_model,
             )
+
+            # Resolve the model the agent will actually use.  If the caller
+            # forced one via ``acp_model``, trust that; otherwise fall back to
+            # whatever the server reported in ``models.currentModelId``.  Older
+            # agents that don't surface the field leave it ``None``.
+            current_model_id = self.acp_model or reported_model_id
 
             # Resolve the permission mode.  Known providers each have their
             # own mode ID (bypassPermissions, full-access, yolo …).
@@ -1165,7 +1214,15 @@ class ACPAgent(AgentBase):
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
-            return conn, process, filtered_reader, session_id, agent_name, agent_version
+            return (
+                conn,
+                process,
+                filtered_reader,
+                session_id,
+                agent_name,
+                agent_version,
+                current_model_id,
+            )
 
         result = self._executor.run_async(_init)
         (
@@ -1175,6 +1232,7 @@ class ACPAgent(AgentBase):
             self._session_id,
             self._agent_name,
             self._agent_version,
+            self._current_model_id,
         ) = result
         self._working_dir = working_dir
 

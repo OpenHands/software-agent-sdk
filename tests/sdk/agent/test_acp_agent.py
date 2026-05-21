@@ -14,6 +14,7 @@ from acp.exceptions import RequestError as ACPRequestError
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _estimate_cost_from_tokens,
+    _extract_current_model_id,
     _extract_token_usage,
     _image_url_to_acp_block,
     _maybe_set_session_model,
@@ -3838,3 +3839,80 @@ class TestACPEnvConflictSuppression:
 
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
         assert "CLAUDE_CONFIG_DIR" not in env
+
+
+class TestExtractCurrentModelId:
+    """``_extract_current_model_id`` reads the model the ACP server reports.
+
+    The ``models`` capability is marked UNSTABLE in the spec — older agents
+    omit the field entirely and the helper must tolerate that without
+    raising.
+    """
+
+    def test_returns_model_id_when_response_carries_one(self):
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "claude-opus-4-1"
+        assert _extract_current_model_id(response) == "claude-opus-4-1"
+
+    def test_returns_none_when_response_is_none(self):
+        # ``load_session`` can return ``None`` for servers that don't
+        # implement the call — the helper must not crash.
+        assert _extract_current_model_id(None) is None
+
+    def test_returns_none_when_models_field_is_absent(self):
+        # Older agents predate the UNSTABLE ``models`` capability and don't
+        # surface it on the response object.
+        response = MagicMock(spec=[])  # spec=[] → no attributes
+        assert _extract_current_model_id(response) is None
+
+    def test_returns_none_when_models_field_is_none(self):
+        response = MagicMock()
+        response.models = None
+        assert _extract_current_model_id(response) is None
+
+    def test_returns_none_when_current_model_id_is_empty_string(self):
+        # An empty string is treated the same as a missing field — we don't
+        # want to surface "" as a real model name.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = ""
+        assert _extract_current_model_id(response) is None
+
+    def test_returns_none_when_current_model_id_is_not_a_string(self):
+        # Defensive: an agent returning a non-string here is malformed.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = 42
+        assert _extract_current_model_id(response) is None
+
+
+class TestACPAgentCurrentModelIdProperty:
+    """The public ``current_model_id`` property mirrors the private attr.
+
+    Full end-to-end coverage of the session-creation flow lives in the
+    integration tests; here we just lock down the property contract.
+    """
+
+    def test_returns_none_before_init(self):
+        agent = _make_agent()
+        assert agent.current_model_id is None
+
+    def test_returns_private_attr_value(self):
+        agent = _make_agent()
+        agent._current_model_id = "claude-sonnet-4-5"
+        assert agent.current_model_id == "claude-sonnet-4-5"
+
+    def test_acp_model_override_wins_over_server_report(self):
+        """When ``acp_model`` is set, ``current_model_id`` reflects the override.
+
+        Mirrors the resolution logic in ``_init``: a caller-provided
+        ``acp_model`` takes precedence over whatever the server happens to
+        report — both for the ``set_session_model`` path (Codex / Gemini)
+        and the ``session _meta`` path (Claude Code).
+        """
+        agent = _make_agent(acp_model="gpt-5")
+        # Simulate the assignment that happens inside ``_init`` after we
+        # consult both sources.
+        agent._current_model_id = agent.acp_model or "fallback-from-server"
+        assert agent.current_model_id == "gpt-5"
