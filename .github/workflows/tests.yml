@@ -86,7 +86,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -156,7 +156,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -216,7 +216,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -288,7 +288,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -345,7 +345,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -400,7 +400,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -446,7 +446,7 @@ jobs:
               uses: actions/checkout@v6
 
             - name: Install uv
-              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
                   enable-cache: true
                   python-version: '3.13'
