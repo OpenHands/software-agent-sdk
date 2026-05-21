@@ -259,14 +259,12 @@ def _compose_conversation_info(
     # model the agent last resolved. ``ACPAgent._init`` writes the same
     # values into ``agent_state["acp_current_model_*"]`` at session start.
     agent_state = getattr(state, "agent_state", {}) or {}
-    current_model_id = (
-        getattr(state.agent, "current_model_id", None)
-        or agent_state.get("acp_current_model_id")
-    )
-    current_model_name = (
-        getattr(state.agent, "current_model_name", None)
-        or agent_state.get("acp_current_model_name")
-    )
+    current_model_id = getattr(
+        state.agent, "current_model_id", None
+    ) or agent_state.get("acp_current_model_id")
+    current_model_name = getattr(
+        state.agent, "current_model_name", None
+    ) or agent_state.get("acp_current_model_name")
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,

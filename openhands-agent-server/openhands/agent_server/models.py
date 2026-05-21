@@ -203,8 +203,8 @@ class _ConversationInfoBase(BaseModel):
             "Human-readable display name for the active model. For ACP "
             "agents, this is lifted off ``ACPAgent.current_model_name``, "
             "which resolves opaque aliases (e.g. claude-agent-acp's "
-            "``\"default\"``) to the matching ``ModelInfo.name`` from the "
-            "session response (e.g. ``\"Default (recommended)\"``). When "
+            '``"default"``) to the matching ``ModelInfo.name`` from the '
+            'session response (e.g. ``"Default (recommended)"``). When '
             "the alias-resolution lookup misses, this equals "
             "``current_model_id``. Native OpenHands agents leave this "
             "``None``."

@@ -1159,9 +1159,7 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> (
-            tuple[Any, Any, Any, str, str, str, str | None, list[Any]]
-        ):
+        async def _init() -> tuple[Any, Any, Any, str, str, str, str | None, list[Any]]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1279,9 +1277,7 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
-                reported_model_id, available_models = _extract_session_models(
-                    response
-                )
+                reported_model_id, available_models = _extract_session_models(response)
             await _maybe_set_session_model(
                 conn,
                 agent_name,
