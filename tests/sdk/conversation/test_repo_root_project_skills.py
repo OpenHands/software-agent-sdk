@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
@@ -169,5 +170,36 @@ def test_load_project_skills_flag_merges_with_project_precedence(tmp_path: Path)
     assert skills["keep"].content == "keep me"
     assert "SENTINEL_NEW" in skills["agents"].content
     assert "OLD_CONTENT" not in skills["agents"].content
+
+    conversation.close()
+
+
+def test_load_project_skills_failure_does_not_block_conversation(tmp_path: Path):
+    """Project-skill loading is best-effort: a load error must not break startup."""
+    (tmp_path / "AGENTS.md").write_text("# Guidelines\n\nSENTINEL\n")
+
+    agent = _agent(
+        AgentContext(
+            skills=[Skill(name="keep", content="keep me")],
+            load_project_skills=True,
+            current_datetime="2026-01-01T00:00:00Z",
+        )
+    )
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=tmp_path / "conversation",
+        delete_on_close=True,
+    )
+
+    with patch(
+        "openhands.sdk.conversation.impl.local_conversation.load_available_skills",
+        side_effect=PermissionError("workspace unreadable"),
+    ):
+        conversation.send_message("hi")  # must not raise
+
+    # Conversation started; pre-existing skills are untouched.
+    assert conversation.agent.agent_context is not None
+    assert {s.name for s in conversation.agent.agent_context.skills} == {"keep"}
 
     conversation.close()

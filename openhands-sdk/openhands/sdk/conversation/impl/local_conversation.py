@@ -511,12 +511,22 @@ class LocalConversation(BaseConversation):
         # same-named skills already on the context.
         project_skills_loaded = False
         if merged_context is not None and merged_context.load_project_skills:
-            project_skills = load_available_skills(
-                work_dir=self.workspace.working_dir,
-                include_user=False,
-                include_project=True,
-                include_public=False,
-            )
+            # Best-effort: a failure to load project skills must not prevent the
+            # conversation from starting. (load_available_skills already guards
+            # the project source internally; this is belt-and-suspenders.)
+            try:
+                project_skills = load_available_skills(
+                    work_dir=self.workspace.working_dir,
+                    include_user=False,
+                    include_project=True,
+                    include_public=False,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to load project skills; continuing without them",
+                    exc_info=True,
+                )
+                project_skills = {}
             if project_skills:
                 merged_skills = {s.name: s for s in merged_context.skills}
                 merged_skills.update(project_skills)

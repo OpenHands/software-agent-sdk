@@ -100,7 +100,7 @@ class AgentContext(BaseModel):
         default=False,
         description=(
             "Whether to automatically load project skills from the conversation "
-            "workspace (e.g. .openhands/skills/, .cursorrules, agents.md). Unlike "
+            "workspace (e.g. .openhands/skills/, AGENTS.md). Unlike "
             "load_user_skills / load_public_skills, this flag is not resolved by "
             "AgentContext itself (the workspace path is unknown at validation "
             "time); LocalConversation resolves it lazily on the first "
