@@ -96,6 +96,19 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_project_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load project skills from the conversation "
+            "workspace (e.g. .openhands/skills/, .cursorrules, agents.md). "
+            "Unlike load_user_skills / load_public_skills, this flag is NOT "
+            "resolved by AgentContext itself: project skills require the workspace "
+            "path, which is not known at validation time. The agent-server "
+            "resolves and merges them into ``skills`` at conversation start when "
+            "this flag is set."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(

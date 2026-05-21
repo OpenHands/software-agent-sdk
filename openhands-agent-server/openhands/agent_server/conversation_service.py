@@ -42,6 +42,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.skills import load_available_skills
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -89,6 +90,41 @@ def _append_worktree_guidance(
     existing_suffix = (context.system_message_suffix or "").strip()
     suffix = f"{existing_suffix}\n\n{guidance}" if existing_suffix else guidance
     updated_context = context.model_copy(update={"system_message_suffix": suffix})
+    return agent.model_copy(update={"agent_context": updated_context})
+
+
+def _inject_project_skills(
+    agent: AgentBase,
+    workspace: LocalWorkspace,
+) -> AgentBase:
+    """Resolve project skills from the workspace and merge them into the context.
+
+    ``AgentContext.load_project_skills`` is only a request flag: project skills
+    require the workspace path, which is not known at AgentContext validation
+    time, so its ``_load_auto_skills`` validator cannot resolve them. We resolve
+    them here, at conversation start, where the (possibly worktree) workspace
+    path is available. This replaces the client-side project-skill injection that
+    agent-canvas does today (agent-canvas#707).
+
+    Project skills take precedence over same-named skills already present on the
+    context, matching the precedence used by ``load_all_skills``.
+    """
+    context = agent.agent_context
+    if context is None or not context.load_project_skills:
+        return agent
+
+    project_skills = load_available_skills(
+        work_dir=workspace.working_dir,
+        include_user=False,
+        include_project=True,
+        include_public=False,
+    )
+    if not project_skills:
+        return agent
+
+    merged = {s.name: s for s in context.skills}
+    merged.update(project_skills)
+    updated_context = context.model_copy(update={"skills": list(merged.values())})
     return agent.model_copy(update={"agent_context": updated_context})
 
 
@@ -555,6 +591,13 @@ class ConversationService:
             return conversation_info, False
 
         request = _prepare_request_workspace(request, conversation_id)
+
+        # Resolve project skills from the (possibly worktree) workspace and merge
+        # them into the agent context — see agent-canvas#707. Done here rather
+        # than in AgentContext because the workspace path is only known now.
+        if request.agent is not None:
+            agent = _inject_project_skills(request.agent, request.workspace)
+            request = request.model_copy(update={"agent": agent})
 
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:

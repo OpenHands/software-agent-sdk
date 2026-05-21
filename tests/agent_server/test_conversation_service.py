@@ -21,6 +21,7 @@ from openhands.agent_server.conversation_service import (
     AutoTitleSubscriber,
     ConversationService,
     _get_worktree_start_point,
+    _inject_project_skills,
 )
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -2849,3 +2850,101 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+class TestInjectProjectSkills:
+    """Tests for _inject_project_skills (agent-canvas#707)."""
+
+    def _agent(self, agent_context):
+        return Agent(
+            llm=LLM(model="gpt-4o", usage_id="test-llm"),
+            tools=[],
+            agent_context=agent_context,
+        )
+
+    def test_no_agent_context_is_noop(self):
+        from openhands.sdk.workspace import LocalWorkspace
+
+        agent = self._agent(None)
+        workspace = LocalWorkspace(working_dir="/tmp/ws")
+
+        assert _inject_project_skills(agent, workspace) is agent
+
+    def test_flag_off_is_noop(self):
+        from openhands.sdk import AgentContext
+        from openhands.sdk.workspace import LocalWorkspace
+
+        agent = self._agent(AgentContext(load_project_skills=False))
+        workspace = LocalWorkspace(working_dir="/tmp/ws")
+
+        with patch(
+            "openhands.agent_server.conversation_service.load_available_skills"
+        ) as mock_load:
+            result = _inject_project_skills(agent, workspace)
+
+        # Resolution must not even be attempted when the flag is off.
+        mock_load.assert_not_called()
+        assert result is agent
+
+    def test_no_project_skills_returns_agent_unchanged(self):
+        from openhands.sdk import AgentContext
+        from openhands.sdk.workspace import LocalWorkspace
+
+        agent = self._agent(AgentContext(load_project_skills=True))
+        workspace = LocalWorkspace(working_dir="/tmp/ws")
+
+        with patch(
+            "openhands.agent_server.conversation_service.load_available_skills",
+            return_value={},
+        ):
+            result = _inject_project_skills(agent, workspace)
+
+        assert result is agent
+
+    def test_project_skills_merged_into_context(self):
+        from openhands.sdk import AgentContext
+        from openhands.sdk.skills import Skill
+        from openhands.sdk.workspace import LocalWorkspace
+
+        existing = Skill(name="existing", content="keep me")
+        project = Skill(name="project-skill", content="from workspace")
+        agent = self._agent(AgentContext(skills=[existing], load_project_skills=True))
+        workspace = LocalWorkspace(working_dir="/tmp/ws")
+
+        with patch(
+            "openhands.agent_server.conversation_service.load_available_skills",
+            return_value={project.name: project},
+        ) as mock_load:
+            result = _inject_project_skills(agent, workspace)
+
+        mock_load.assert_called_once_with(
+            work_dir="/tmp/ws",
+            include_user=False,
+            include_project=True,
+            include_public=False,
+        )
+        assert result is not agent
+        assert result.agent_context is not None
+        names = {s.name for s in result.agent_context.skills}
+        assert names == {"existing", "project-skill"}
+
+    def test_project_skill_overrides_same_named_existing(self):
+        from openhands.sdk import AgentContext
+        from openhands.sdk.skills import Skill
+        from openhands.sdk.workspace import LocalWorkspace
+
+        existing = Skill(name="dup", content="old")
+        project = Skill(name="dup", content="new from workspace")
+        agent = self._agent(AgentContext(skills=[existing], load_project_skills=True))
+        workspace = LocalWorkspace(working_dir="/tmp/ws")
+
+        with patch(
+            "openhands.agent_server.conversation_service.load_available_skills",
+            return_value={project.name: project},
+        ):
+            result = _inject_project_skills(agent, workspace)
+
+        assert result.agent_context is not None
+        skills = result.agent_context.skills
+        assert len(skills) == 1
+        assert skills[0].content == "new from workspace"
