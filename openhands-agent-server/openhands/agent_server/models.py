@@ -184,6 +184,19 @@ class _ConversationInfoBase(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the agent is actually using for this session. For ACP "
+            "agents, this is lifted off ``ACPAgent.current_model_id`` "
+            "(populated from the ``models.currentModelId`` field on the "
+            "ACP session response, or from ``acp_model`` when the caller "
+            "forced an override). ``None`` for older ACP servers that "
+            "don't surface the field, or while the agent is still "
+            "initializing. Native OpenHands agents leave this ``None`` — "
+            "consumers should read ``agent.llm.model`` for those."
+        ),
+    )
 
 
 class ConversationInfo(_ConversationInfoBase):

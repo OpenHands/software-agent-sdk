@@ -245,12 +245,20 @@ def _compose_conversation_info(
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
+    #
+    # ``current_model_id`` is read off the live agent instance and lifted onto
+    # ConversationInfo as a top-level field because the agent itself stores it
+    # in a PrivateAttr (ACPAgent is frozen) and that doesn't survive
+    # ``model_dump``.  ``getattr`` handles non-ACP agents which don't have the
+    # attribute at all.
+    current_model_id = getattr(state.agent, "current_model_id", None)
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        current_model_id=current_model_id,
     )
 
 

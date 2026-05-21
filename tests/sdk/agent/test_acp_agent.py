@@ -3888,17 +3888,22 @@ class TestExtractCurrentModelId:
 
 
 class TestACPAgentCurrentModelIdProperty:
-    """The public ``current_model_id`` property mirrors the private attr.
+    """``current_model_id`` is a read-only property backed by a PrivateAttr.
 
-    Full end-to-end coverage of the session-creation flow lives in the
-    integration tests; here we just lock down the property contract.
+    ``AgentBase`` is frozen so the value can't live on the agent as a
+    regular Pydantic field; it doesn't round-trip through ``model_dump``
+    either.  Cross-process consumers (the OpenHands app_server) should
+    read it off ``ConversationInfo`` instead — the agent-server lifts the
+    value off the agent into the API response.
     """
 
-    def test_returns_none_before_init(self):
+    def test_defaults_to_none(self):
         agent = _make_agent()
         assert agent.current_model_id is None
 
-    def test_returns_private_attr_value(self):
+    def test_reflects_private_attr(self):
+        # ``_init`` writes the resolved model into ``_current_model_id``
+        # after consulting the server response + the caller override.
         agent = _make_agent()
         agent._current_model_id = "claude-sonnet-4-5"
         assert agent.current_model_id == "claude-sonnet-4-5"
@@ -3912,7 +3917,13 @@ class TestACPAgentCurrentModelIdProperty:
         and the ``session _meta`` path (Claude Code).
         """
         agent = _make_agent(acp_model="gpt-5")
-        # Simulate the assignment that happens inside ``_init`` after we
-        # consult both sources.
         agent._current_model_id = agent.acp_model or "fallback-from-server"
         assert agent.current_model_id == "gpt-5"
+
+    def test_does_not_round_trip_through_json(self):
+        # Locks in the deliberate design choice: PrivateAttr → not serialized.
+        # Cross-process consumers must read from ``ConversationInfo``.
+        agent = _make_agent()
+        agent._current_model_id = "claude-opus-4-1"
+        clone = ACPAgent.model_validate_json(agent.model_dump_json())
+        assert clone.current_model_id is None

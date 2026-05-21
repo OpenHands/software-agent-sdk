@@ -772,6 +772,11 @@ class ACPAgent(AgentBase):
     # chose one (either via ``set_session_model`` or via session ``_meta``).
     # ``None`` when the server doesn't surface model state — the field is
     # marked UNSTABLE in the ACP spec, so older agents may omit it.
+    #
+    # Kept as a PrivateAttr (not a Pydantic field) because ``AgentBase`` is
+    # frozen and this is per-session runtime state, not config.  The
+    # agent-server lifts it onto ``ConversationInfo`` so the value can cross
+    # the API boundary even though the agent itself doesn't serialize it.
     _current_model_id: str | None = PrivateAttr(default=None)
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
@@ -903,6 +908,11 @@ class ACPAgent(AgentBase):
         explicitly chose one.  ``None`` for older servers that don't report
         model state and when no override was set — callers should treat the
         value as best-effort.
+
+        Note: this is in-process runtime state; it does not round-trip
+        through ``model_dump()``.  Consumers that need to read it across the
+        API boundary should look at ``ConversationInfo.current_model_id``,
+        which the agent-server lifts off the agent into the response.
         """
         return self._current_model_id
 
