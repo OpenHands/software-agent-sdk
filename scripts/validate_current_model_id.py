@@ -32,16 +32,21 @@ def _make_state(agent: ACPAgent) -> ConversationState:
 
 def run_scenario(label: str, agent: ACPAgent) -> None:
     print(f"\n=== {label} ===")
-    print(f"  acp_command   = {agent.acp_command}")
-    print(f"  acp_model     = {agent.acp_model!r}")
+    print(f"  acp_command       = {agent.acp_command}")
+    print(f"  acp_model         = {agent.acp_model!r}")
     state = _make_state(agent)
     try:
         agent.init_state(state, on_event=lambda _evt: None)
-        print(f"  agent_name    = {agent.agent_name!r}")
-        print(f"  agent_version = {agent.agent_version!r}")
-        print(f"  current_model_id = {agent.current_model_id!r}")
+        print(f"  agent_name        = {agent.agent_name!r}")
+        print(f"  agent_version     = {agent.agent_version!r}")
+        print(f"  current_model_id   = {agent.current_model_id!r}")
+        print(f"  current_model_name = {agent.current_model_name!r}")
         if agent.current_model_id:
-            print("  ✓ current_model_id is populated")
+            same = agent.current_model_name == agent.current_model_id
+            print(
+                "  ✓ current_model_id populated"
+                + ("" if same else " (and name resolves to a different value)")
+            )
         else:
             print(
                 "  ✗ current_model_id is None — server didn't report it "

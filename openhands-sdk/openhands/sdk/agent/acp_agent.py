@@ -201,21 +201,58 @@ def _select_auth_method(
     return None
 
 
+def _extract_session_models(response: Any) -> tuple[str | None, list[Any]]:
+    """Extract the model state off a session response.
+
+    Returns a ``(current_model_id, available_models)`` pair, both best-effort.
+    The ``models`` capability is marked **UNSTABLE** in the ACP spec — agents
+    predating it (or implementations that opt out) leave the field absent or
+    ``None``, in which case we return ``(None, [])``.  ``getattr`` keeps the
+    helper tolerant of agents that emit a partial structure.
+    """
+    if response is None:
+        return None, []
+    models = getattr(response, "models", None)
+    if models is None:
+        return None, []
+    current = getattr(models, "current_model_id", None)
+    current = current if isinstance(current, str) and current else None
+    available = getattr(models, "available_models", None) or []
+    return current, list(available)
+
+
 def _extract_current_model_id(response: Any) -> str | None:
     """Read ``models.currentModelId`` off a session response, if present.
 
-    The ``models`` field on session responses is marked **UNSTABLE** in the ACP
-    spec — agents predating it (or implementations that opt out) leave it
-    ``None``.  Use ``getattr`` rather than attribute access so a missing field
-    just yields ``None`` instead of raising.
+    Thin wrapper preserved for callers that only care about the id and not
+    the surrounding ``available_models`` list.
     """
-    if response is None:
+    current, _ = _extract_session_models(response)
+    return current
+
+
+def _resolve_model_name(
+    current_model_id: str | None,
+    available_models: list[Any],
+) -> str | None:
+    """Map a raw ``currentModelId`` to the human-readable ``ModelInfo.name``.
+
+    ACP servers sometimes return an alias (e.g. claude-agent-acp emits
+    ``"default"``) where the resolved underlying model is exposed via the
+    matching entry in ``available_models``.  This helper performs that
+    lookup and falls back to the raw id when the alias isn't in the list —
+    so codex-acp, which already reports the concrete id, sees no behavior
+    change.
+    """
+    if current_model_id is None:
         return None
-    models = getattr(response, "models", None)
-    if models is None:
-        return None
-    current = getattr(models, "current_model_id", None)
-    return current if isinstance(current, str) and current else None
+    for model_info in available_models:
+        if getattr(model_info, "model_id", None) == current_model_id:
+            name = getattr(model_info, "name", None)
+            if isinstance(name, str) and name:
+                return name
+            break
+    return current_model_id
 
 
 async def _maybe_set_session_model(
@@ -778,6 +815,12 @@ class ACPAgent(AgentBase):
     # agent-server lifts it onto ``ConversationInfo`` so the value can cross
     # the API boundary even though the agent itself doesn't serialize it.
     _current_model_id: str | None = PrivateAttr(default=None)
+    # ``models.availableModels`` from the same session response — used to
+    # resolve aliases like claude-agent-acp's ``"default"`` to their
+    # human-readable name via ``current_model_name``.  Each element is an
+    # ACP ``ModelInfo`` (kept as ``Any`` here to avoid pulling the SDK type
+    # into the frozen model class).
+    _available_models: list[Any] = PrivateAttr(default_factory=list)
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
@@ -915,6 +958,26 @@ class ACPAgent(AgentBase):
         which the agent-server lifts off the agent into the response.
         """
         return self._current_model_id
+
+    @property
+    def current_model_name(self) -> str | None:
+        """Human-readable name for the active model.
+
+        Some ACP servers (notably ``claude-agent-acp``) report opaque
+        aliases like ``"default"`` as ``currentModelId`` and expose the
+        resolved underlying model only through the matching entry in
+        ``models.availableModels``.  This property performs that lookup
+        and returns ``ModelInfo.name`` when there's a match (e.g.
+        ``"Default (recommended)"``), falling back to the raw
+        ``current_model_id`` otherwise — so servers that already report a
+        concrete id (e.g. ``codex-acp``'s ``"gpt-5.5/xhigh"``) pass
+        through unchanged.
+
+        Same lifecycle and serialization caveats as ``current_model_id``:
+        in-process runtime state, lifted onto ``ConversationInfo`` by the
+        agent-server for cross-process consumers.
+        """
+        return _resolve_model_name(self._current_model_id, self._available_models)
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
@@ -1083,7 +1146,9 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> tuple[Any, Any, Any, str, str, str, str | None]:
+        async def _init() -> (
+            tuple[Any, Any, Any, str, str, str, str | None, list[Any]]
+        ):
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1170,6 +1235,7 @@ class ACPAgent(AgentBase):
             # ``new_session`` and ``load_session`` return different concrete
             # response types and we only care about the ``models`` attribute.
             reported_model_id: str | None = None
+            available_models: list[Any] = []
             if prior_session_id is not None:
                 try:
                     load_response = await conn.load_session(
@@ -1178,7 +1244,9 @@ class ACPAgent(AgentBase):
                         mcp_servers=[],
                     )
                     session_id = prior_session_id
-                    reported_model_id = _extract_current_model_id(load_response)
+                    reported_model_id, available_models = _extract_session_models(
+                        load_response
+                    )
                     logger.info(
                         "Resumed ACP session: %s (cwd=%s)",
                         session_id,
@@ -1198,7 +1266,9 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
-                reported_model_id = _extract_current_model_id(response)
+                reported_model_id, available_models = _extract_session_models(
+                    response
+                )
             await _maybe_set_session_model(
                 conn,
                 agent_name,
@@ -1232,6 +1302,7 @@ class ACPAgent(AgentBase):
                 agent_name,
                 agent_version,
                 current_model_id,
+                available_models,
             )
 
         result = self._executor.run_async(_init)
@@ -1243,6 +1314,7 @@ class ACPAgent(AgentBase):
             self._agent_name,
             self._agent_version,
             self._current_model_id,
+            self._available_models,
         ) = result
         self._working_dir = working_dir
 

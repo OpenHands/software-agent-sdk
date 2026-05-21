@@ -17,6 +17,7 @@ result into the response model.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
@@ -136,3 +137,64 @@ def test_current_model_id_propagates_init_resolution(
 
     info = _compose_conversation_info(stored, state)
     assert info.current_model_id == expected
+
+
+def _model_info(model_id: str, name: str | None) -> object:
+    m = MagicMock()
+    m.model_id = model_id
+    m.name = name
+    return m
+
+
+def test_current_model_name_is_lifted_alongside_id():
+    """``ConversationInfo.current_model_name`` mirrors the agent's resolved name.
+
+    Simulates the claude-agent-acp default-config case: ``current_model_id``
+    is the alias ``"default"`` and ``current_model_name`` is the resolved
+    human-readable string from ``ModelInfo.name``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._current_model_id = "default"
+    agent._available_models = [_model_info("default", "Default (recommended)")]
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_model_id == "default"
+    assert info.current_model_name == "Default (recommended)"
+
+
+def test_current_model_name_falls_back_to_id_when_no_match():
+    """codex-acp pattern: concrete id, no ``available_models`` lookup needed.
+
+    Locks in the contract that ``current_model_name`` is always at least
+    as informative as ``current_model_id``.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"])
+    agent._current_model_id = "gpt-5.5/xhigh"
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_model_id == "gpt-5.5/xhigh"
+    assert info.current_model_name == "gpt-5.5/xhigh"
+
+
+def test_current_model_name_is_none_for_native_openhands_agent():
+    """Native agents don't have the attribute; ``getattr`` returns None."""
+    agent = Agent(
+        llm=LLM(
+            model="gpt-4o",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        ),
+        tools=[Tool(name="TerminalTool")],
+    )
+    state = _make_state(agent)
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_model_name is None

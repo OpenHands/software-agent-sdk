@@ -15,10 +15,12 @@ from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _estimate_cost_from_tokens,
     _extract_current_model_id,
+    _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
+    _resolve_model_name,
     _select_auth_method,
     _serialize_tool_content,
 )
@@ -3927,3 +3929,106 @@ class TestACPAgentCurrentModelIdProperty:
         agent._current_model_id = "claude-opus-4-1"
         clone = ACPAgent.model_validate_json(agent.model_dump_json())
         assert clone.current_model_id is None
+
+
+class TestExtractSessionModels:
+    """``_extract_session_models`` reads both id and available_models."""
+
+    def test_returns_both_when_response_carries_them(self):
+        m1 = MagicMock()
+        m1.model_id = "default"
+        m1.name = "Default (recommended)"
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "default"
+        response.models.available_models = [m1]
+        cur, avail = _extract_session_models(response)
+        assert cur == "default"
+        assert avail == [m1]
+
+    def test_returns_empty_list_when_models_absent(self):
+        # Older agents don't include the ``models`` block at all.
+        response = MagicMock(spec=[])
+        cur, avail = _extract_session_models(response)
+        assert cur is None
+        assert avail == []
+
+    def test_returns_empty_list_when_available_models_missing(self):
+        # Half-implemented agents may emit ``currentModelId`` without
+        # ``availableModels`` — propagate that as an empty list, not a crash.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "gpt-5"
+        response.models.available_models = None
+        cur, avail = _extract_session_models(response)
+        assert cur == "gpt-5"
+        assert avail == []
+
+
+class TestResolveModelName:
+    """``_resolve_model_name`` resolves alias model_ids to ``ModelInfo.name``.
+
+    The motivating case is claude-agent-acp returning ``"default"`` for
+    ``currentModelId`` while exposing the human-readable name (``"Default
+    (recommended)"``) on the matching ``available_models`` entry.
+    """
+
+    def _model_info(self, model_id: str, name: str | None) -> Any:
+        m = MagicMock()
+        m.model_id = model_id
+        m.name = name
+        return m
+
+    def test_returns_name_when_id_matches_an_entry(self):
+        # Mirrors claude-agent-acp's actual default-config response.
+        models = [
+            self._model_info("default", "Default (recommended)"),
+            self._model_info("sonnet", "Sonnet"),
+            self._model_info("haiku", "Haiku"),
+        ]
+        assert _resolve_model_name("default", models) == "Default (recommended)"
+        assert _resolve_model_name("sonnet", models) == "Sonnet"
+
+    def test_falls_back_to_raw_id_when_no_match(self):
+        # codex-acp reports the concrete id directly; if it ever appears
+        # in ``current_model_id`` without a matching ``available_models``
+        # entry, we should still pass it through.
+        assert _resolve_model_name("gpt-5.5/xhigh", []) == "gpt-5.5/xhigh"
+        models = [self._model_info("other", "Other")]
+        assert _resolve_model_name("gpt-5.5/xhigh", models) == "gpt-5.5/xhigh"
+
+    def test_falls_back_to_id_when_entry_has_empty_name(self):
+        # Defensive: if a server includes the entry but leaves ``name``
+        # empty or non-string, don't surface an unhelpful blank string.
+        models = [self._model_info("default", "")]
+        assert _resolve_model_name("default", models) == "default"
+        models = [self._model_info("default", None)]
+        assert _resolve_model_name("default", models) == "default"
+
+    def test_returns_none_when_id_is_none(self):
+        assert _resolve_model_name(None, []) is None
+
+
+class TestACPAgentCurrentModelNameProperty:
+    """``current_model_name`` exposes the resolved display name."""
+
+    def test_defaults_to_none(self):
+        assert _make_agent().current_model_name is None
+
+    def test_resolves_via_available_models_lookup(self):
+        # Simulates claude-agent-acp default config: alias id + descriptive name.
+        agent = _make_agent()
+        agent._current_model_id = "default"
+        m = MagicMock()
+        m.model_id = "default"
+        m.name = "Default (recommended)"
+        agent._available_models = [m]
+        assert agent.current_model_name == "Default (recommended)"
+
+    def test_falls_back_to_raw_id_when_lookup_misses(self):
+        # codex-acp pattern: concrete id, available_models may or may not
+        # carry a matching entry — either way we want the id surfaced.
+        agent = _make_agent()
+        agent._current_model_id = "gpt-5.5/xhigh"
+        agent._available_models = []
+        assert agent.current_model_name == "gpt-5.5/xhigh"

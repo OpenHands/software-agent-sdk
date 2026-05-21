@@ -197,6 +197,19 @@ class _ConversationInfoBase(BaseModel):
             "consumers should read ``agent.llm.model`` for those."
         ),
     )
+    current_model_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable display name for the active model. For ACP "
+            "agents, this is lifted off ``ACPAgent.current_model_name``, "
+            "which resolves opaque aliases (e.g. claude-agent-acp's "
+            "``\"default\"``) to the matching ``ModelInfo.name`` from the "
+            "session response (e.g. ``\"Default (recommended)\"``). When "
+            "the alias-resolution lookup misses, this equals "
+            "``current_model_id``. Native OpenHands agents leave this "
+            "``None``."
+        ),
+    )
 
 
 class ConversationInfo(_ConversationInfoBase):

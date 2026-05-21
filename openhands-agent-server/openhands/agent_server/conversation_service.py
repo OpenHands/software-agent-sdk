@@ -246,12 +246,13 @@ def _compose_conversation_info(
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
     #
-    # ``current_model_id`` is read off the live agent instance and lifted onto
-    # ConversationInfo as a top-level field because the agent itself stores it
-    # in a PrivateAttr (ACPAgent is frozen) and that doesn't survive
-    # ``model_dump``.  ``getattr`` handles non-ACP agents which don't have the
-    # attribute at all.
+    # ``current_model_id`` and ``current_model_name`` are read off the live
+    # agent instance and lifted onto ConversationInfo as top-level fields
+    # because the agent itself stores them in PrivateAttrs (ACPAgent is
+    # frozen) and PrivateAttrs don't survive ``model_dump``.  ``getattr``
+    # handles non-ACP agents which don't have the attributes at all.
     current_model_id = getattr(state.agent, "current_model_id", None)
+    current_model_name = getattr(state.agent, "current_model_name", None)
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
@@ -259,6 +260,7 @@ def _compose_conversation_info(
         created_at=stored.created_at,
         updated_at=stored.updated_at,
         current_model_id=current_model_id,
+        current_model_name=current_model_name,
     )
 
 
