@@ -75,7 +75,7 @@ jobs:
 
             - name: Detect sdk changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       openhands-sdk/**
@@ -145,7 +145,7 @@ jobs:
 
             - name: Detect tools changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       openhands-tools/**
@@ -205,7 +205,7 @@ jobs:
 
             - name: Detect Windows-relevant changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       openhands-tools/**
@@ -277,7 +277,7 @@ jobs:
 
             - name: Detect Agent Server changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       openhands-agent-server/**
@@ -334,7 +334,7 @@ jobs:
 
             - name: Detect workspace changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       openhands-workspace/**
@@ -389,7 +389,7 @@ jobs:
 
             - name: Detect cross changes
               id: changed
-              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
               with:
                   files: |
                       tests/**
