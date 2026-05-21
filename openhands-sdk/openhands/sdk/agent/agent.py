@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -488,6 +488,41 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             additional_secret_infos=secret_infos,
         )
 
+    def _finalize_batch(
+        self,
+        batch: _ActionBatch,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Emit batch results and handle finish (shared by sync/async)."""
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                conversation.state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
+
+    def _batch_kwargs(
+        self,
+        conversation: LocalConversation,
+        action_events: list[ActionEvent],
+    ) -> dict[str, Any]:
+        """Build common kwargs for _ActionBatch.prepare / aprepare."""
+        return dict(
+            action_events=action_events,
+            state=conversation.state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+            cancel_token=conversation.cancel_token,
+        )
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -495,27 +530,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         """Prepare a batch, emit results, and handle finish."""
-        state = conversation.state
-        batch = _ActionBatch.prepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-        )
-        batch.emit(on_event)
-        batch.finalize(
-            on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
-            ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
-        )
+        batch = _ActionBatch.prepare(**self._batch_kwargs(conversation, action_events))
+        self._finalize_batch(batch, conversation, on_event)
 
     async def _aexecute_actions(
         self,
@@ -523,33 +539,152 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         action_events: list[ActionEvent],
         on_event: ConversationCallbackType,
     ) -> None:
-        """Async variant of :meth:`_execute_actions`.
+        """Async variant of :meth:`_execute_actions`."""
+        batch = await _ActionBatch.aprepare(
+            **self._batch_kwargs(conversation, action_events)
+        )
+        self._finalize_batch(batch, conversation, on_event)
 
-        Each tool call runs in its own thread via
-        :meth:`ParallelToolExecutor.aexecute_batch`, giving the event
-        loop an ``await`` boundary between every tool invocation.
+    def _step_check_pending(
+        self,
+        conversation: LocalConversation,
+    ) -> list[ActionEvent] | None:
+        """Return pending actions if they exist, else check blocked messages.
+
+        Returns pending actions list (possibly empty if blocked message found
+        and FINISHED was set), or None if step should proceed to LLM call.
         """
         state = conversation.state
-        batch = await _ActionBatch.aprepare(
-            action_events,
-            state=state,
-            executor=self._parallel_executor,
-            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
-            tools=self.tools_map,
-            cancel_token=conversation.cancel_token,
-        )
-        batch.emit(on_event)
-        batch.finalize(
-            on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
-            ),
-            mark_finished=lambda: setattr(
-                state,
-                "execution_status",
-                ConversationExecutionStatus.FINISHED,
-            ),
-        )
+        pending = ConversationState.get_unmatched_actions(state.events)
+        if pending:
+            logger.info(
+                "Confirmation mode: Executing %d pending action(s)",
+                len(pending),
+            )
+            return pending
+
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return []  # empty = handled, don't proceed
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is "
+                "None; skipping hook check for legacy conversation "
+                "state."
+            )
+        return None
+
+    def _handle_llm_error(
+        self,
+        error: Exception,
+        on_event: ConversationCallbackType,
+    ) -> bool:
+        """Handle LLM errors shared by step/astep. Returns True if handled."""
+        if isinstance(error, FunctionCallValidationError):
+            logger.warning(f"LLM generated malformed function call: {error}")
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[TextContent(text=str(error))],
+                    ),
+                )
+            )
+            return True
+
+        if isinstance(error, LLMMalformedConversationHistoryError):
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed "
+                    "history: %s",
+                    error,
+                )
+                on_event(CondensationRequest())
+                return True
+            logger.warning(
+                "LLM raised malformed conversation history error but "
+                "no condenser can handle condensation requests. This "
+                "usually indicates an upstream event-stream or resume "
+                "bug: %s",
+                error,
+            )
+            return False
+
+        if isinstance(error, LLMContextWindowExceedError):
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised context window exceeded error, triggering condensation"
+                )
+                on_event(CondensationRequest())
+                return True
+            self._log_context_window_exceeded_warning()
+            return False
+
+        return False
+
+    def _dispatch_llm_response(
+        self,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        *,
+        async_mode: bool = False,
+    ) -> Any:
+        """Route LLM response to the appropriate handler.
+
+        Returns None for sync, or a coroutine for async (when
+        ``async_mode=True`` and the response has tool calls).
+        """
+        message: Message = llm_response.message
+        state = conversation.state
+        response_type = classify_response(message)
+
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                if async_mode:
+                    return self._ahandle_tool_calls(
+                        message,
+                        llm_response,
+                        conversation,
+                        state,
+                        on_event,
+                    )
+                self._handle_tool_calls(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                )
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                )
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
+                )
+        return None
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -558,44 +693,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        state = conversation.state
-        # Check for pending actions (implicit confirmation)
-        # and execute them before sampling new actions.
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
-        if pending_actions:
-            logger.info(
-                "Confirmation mode: Executing %d pending action(s)",
-                len(pending_actions),
-            )
-            self._execute_actions(conversation, pending_actions, on_event)
+        pending = self._step_check_pending(conversation)
+        if pending is not None:
+            if pending:
+                self._execute_actions(conversation, pending, on_event)
             return
 
-        # Check if the last user message was blocked by a UserPromptSubmit hook
-        # If so, skip processing and mark conversation as finished
-        if state.last_user_message_id is not None:
-            reason = state.pop_blocked_message(state.last_user_message_id)
-            if reason is not None:
-                logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
-                return
-        elif state.blocked_messages:
-            logger.debug(
-                "Blocked messages exist but last_user_message_id is None; "
-                "skipping hook check for legacy conversation state."
-            )
-
-        # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            conversation.state.events,
+            condenser=self.condenser,
+            llm=self.llm,
         )
-
-        # Process condensation event before agent sampels another action
         if isinstance(_messages_or_condensation, Condensation):
             on_event(_messages_or_condensation)
             return
 
         _messages = _messages_or_condensation
-
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
@@ -608,78 +721,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
             )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            on_event(error_message)
-            return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as structurally
-            # invalid (for example, broken tool_use/tool_result pairing). Route
-            # this into condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream bugs remain
-            # visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed history: "
-                    f"{e}"
-                )
-                on_event(CondensationRequest())
+        except (
+            FunctionCallValidationError,
+            LLMMalformedConversationHistoryError,
+            LLMContextWindowExceedError,
+        ) as e:
+            if self._handle_llm_error(e, on_event):
                 return
-            logger.warning(
-                "LLM raised malformed conversation history error but no "
-                "condenser can handle condensation requests. This usually "
-                "indicates an upstream event-stream or resume bug: "
-                f"{e}"
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available or doesn't handle requests; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
+            raise
 
-        # LLMResponse already contains the converted message and metrics snapshot
-        message: Message = llm_response.message
-        response_type = classify_response(message)
-
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+        self._dispatch_llm_response(
+            llm_response,
+            conversation,
+            on_event,
+        )
 
     async def astep(
         self,
@@ -696,39 +751,26 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         parallel calls with :func:`asyncio.gather`, keeping the event
         loop responsive during blocking tool I/O.
         """
-        state = conversation.state
-        # Check for pending actions (implicit confirmation)
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
-        if pending_actions:
-            logger.info(
-                "Confirmation mode: Executing %d pending action(s)",
-                len(pending_actions),
-            )
-            await self._aexecute_actions(conversation, pending_actions, on_event)
+        pending = self._step_check_pending(conversation)
+        if pending is not None:
+            if pending:
+                await self._aexecute_actions(
+                    conversation,
+                    pending,
+                    on_event,
+                )
             return
 
-        if state.last_user_message_id is not None:
-            reason = state.pop_blocked_message(state.last_user_message_id)
-            if reason is not None:
-                logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
-                return
-        elif state.blocked_messages:
-            logger.debug(
-                "Blocked messages exist but last_user_message_id is None; "
-                "skipping hook check for legacy conversation state."
-            )
-
         _messages_or_condensation = await aprepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            conversation.state.events,
+            condenser=self.condenser,
+            llm=self.llm,
         )
-
         if isinstance(_messages_or_condensation, Condensation):
             on_event(_messages_or_condensation)
             return
 
         _messages = _messages_or_condensation
-
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
@@ -741,81 +783,23 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
             )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            on_event(error_message)
-            return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as
-            # structurally invalid (for example, broken
-            # tool_use/tool_result pairing).  Route this into
-            # condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream
-            # bugs remain visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed "
-                    "history: %s",
-                    e,
-                )
-                on_event(CondensationRequest())
+        except (
+            FunctionCallValidationError,
+            LLMMalformedConversationHistoryError,
+            LLMContextWindowExceedError,
+        ) as e:
+            if self._handle_llm_error(e, on_event):
                 return
-            logger.warning(
-                "LLM raised malformed conversation history error but "
-                "no condenser can handle condensation requests. This "
-                "usually indicates an upstream event-stream or resume "
-                "bug: %s",
-                e,
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger
-            # condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
+            raise
 
-        message: Message = llm_response.message
-        response_type = classify_response(message)
-
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+        coro = self._dispatch_llm_response(
+            llm_response,
+            conversation,
+            on_event,
+            async_mode=True,
+        )
+        if coro is not None:
+            await coro
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]

@@ -184,15 +184,15 @@ class ResponseDispatchMixin:
             event: ActionEvent | MessageEvent,
         ) -> CriticResult | None: ...
 
-    def _handle_tool_calls(
+    def _prepare_action_events(
         self,
         message: Message,
         llm_response: LLMResponse,
         conversation: LocalConversation,
         state: ConversationState,
         on_event: ConversationCallbackType,
-    ) -> None:
-        """Handle LLM response containing tool calls."""
+    ) -> list[ActionEvent] | None:
+        """Build action events from tool calls. Returns None if confirmation needed."""
         if not all(isinstance(c, TextContent) for c in message.content):
             logger.warning(
                 "LLM returned tool calls but message content is not all "
@@ -222,11 +222,27 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._requires_user_confirmation(state, action_events):
-            return
+            return None
+        return action_events
 
-        if action_events:
+    def _handle_tool_calls(
+        self,
+        message: Message,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Handle LLM response containing tool calls."""
+        action_events = self._prepare_action_events(
+            message,
+            llm_response,
+            conversation,
+            state,
+            on_event,
+        )
+        if action_events is not None and action_events:
             self._execute_actions(conversation, action_events, on_event)
-
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
     async def _ahandle_tool_calls(
@@ -237,46 +253,20 @@ class ResponseDispatchMixin:
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
-        """Async variant of :meth:`_handle_tool_calls`.
-
-        Delegates tool execution to :meth:`_aexecute_actions` so each
-        tool call runs in its own thread and multiple calls are scheduled
-        concurrently via :func:`asyncio.gather`.
-        """
-        if not all(isinstance(c, TextContent) for c in message.content):
-            logger.warning(
-                "LLM returned tool calls but message content is not all "
-                "TextContent - ignoring non-text content"
+        """Async variant of :meth:`_handle_tool_calls`."""
+        action_events = self._prepare_action_events(
+            message,
+            llm_response,
+            conversation,
+            state,
+            on_event,
+        )
+        if action_events is not None and action_events:
+            await self._aexecute_actions(
+                conversation,
+                action_events,
+                on_event,
             )
-
-        thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-        action_events: list[ActionEvent] = []
-        assert message.tool_calls, "classify_response guarantees tool_calls"
-        for i, tool_call in enumerate(message.tool_calls):
-            action_event = self._get_action_event(
-                tool_call,
-                conversation=conversation,
-                llm_response_id=llm_response.id,
-                on_event=on_event,
-                security_analyzer=state.security_analyzer,
-                thought=thought_content if i == 0 else [],
-                reasoning_content=(message.reasoning_content if i == 0 else None),
-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
-                responses_reasoning_item=(
-                    message.responses_reasoning_item if i == 0 else None
-                ),
-            )
-            if action_event is None:
-                continue
-            action_events.append(action_event)
-
-        if self._requires_user_confirmation(state, action_events):
-            return
-
-        if action_events:
-            await self._aexecute_actions(conversation, action_events, on_event)
-
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
     def _handle_content_response(
