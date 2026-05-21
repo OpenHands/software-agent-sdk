@@ -39,7 +39,7 @@ from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
-from openhands.agent_server.middleware import WorkspaceScopedCORSMiddleware
+from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -519,11 +519,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app, config)
     _setup_static_files(app, config)
-    app.add_middleware(
-        WorkspaceScopedCORSMiddleware,
-        allow_origins=config.allow_cors_origins,
-        allow_workspace_origins=config.allow_workspace_cors_origins,
-    )
+    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
     _add_exception_handlers(app)
 
     return app

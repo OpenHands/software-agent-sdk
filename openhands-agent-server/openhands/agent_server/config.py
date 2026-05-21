@@ -120,29 +120,13 @@ class Config(BaseModel):
     allow_cors_origins: list[str] = Field(
         default_factory=list,
         description=(
-            "Set of CORS origins permitted by this server (Anything from localhost is "
-            "always accepted regardless of what's in here)."
-        ),
-    )
-    allow_workspace_cors_origins: list[str] = Field(
-        default_factory=lambda: ["*"],
-        description=(
-            "Additional CORS origins permitted ONLY for the workspace-session "
-            "auth endpoint (``/api/auth/workspace-session``) and the workspace "
-            "static-file routes (``/api/conversations/{id}/workspace/*``). "
-            "Origins listed here are allowed in addition to ``allow_cors_origins`` "
-            "for those routes, but are NOT granted CORS access to the rest of "
-            "the API. Use this to let a different-origin frontend mint the "
-            "workspace session cookie and load workspace artifacts without "
-            "opening the full API surface to that origin.\n\n"
-            "Defaults to ``['*']``: workspace-scoped routes accept CORS from "
-            "any origin. This is intentional — minting the cookie still "
-            "requires the ``X-Session-API-Key`` header (so an arbitrary "
-            "origin cannot mint a cookie it doesn't already have a key for), "
-            "and the cookie itself is ``Partitioned`` (CHIPS), which scopes "
-            "it to the embedding top-level site that minted it. Set an "
-            "explicit list of origins (e.g. ``OH_ALLOW_WORKSPACE_CORS_"
-            "ORIGINS_0=https://canvas.example.com``) to lock this down."
+            "Set of CORS origins permitted by this server. Anything from "
+            "localhost / 127.0.0.1 (any port) and the IP in ``DOCKER_HOST_ADDR`` "
+            "is always accepted regardless of what's in here. "
+            "Note: this list does not apply to the workspace cookie / static-file "
+            "routes (``/api/auth/workspace-session`` and "
+            "``/api/conversations/{id}/workspace/*``), which always accept CORS "
+            "from any origin — see ``middleware.py`` for the rationale."
         ),
     )
     conversations_path: Path = Field(
