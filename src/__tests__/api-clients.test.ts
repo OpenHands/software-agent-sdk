@@ -760,6 +760,7 @@ describe('Auxiliary API clients', () => {
     const client = new ConversationClient({ host: 'http://example.com' });
     await client.sendEvent('c1', { role: 'user', content: [] }, { run: true });
     await client.pauseConversation('c1');
+    await client.interruptConversation('c1');
     await client.runConversation('c1');
     await client.askAgent('c1', 'status?');
     await client.respondToConfirmation('c1', { accept: true });
@@ -775,17 +776,22 @@ describe('Auxiliary API clients', () => {
       })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      4,
+      3,
+      'http://example.com/api/conversations/c1/interrupt',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
       'http://example.com/api/conversations/c1/ask_agent',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ question: 'status?' }) })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      5,
+      6,
       'http://example.com/api/conversations/c1/events/respond_to_confirmation',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ accept: true }) })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      7,
+      8,
       'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
     );

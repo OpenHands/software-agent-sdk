@@ -90,6 +90,14 @@ export class ConversationClient {
     return response.data;
   }
 
+  async interruptConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/interrupt`,
+      {}
+    );
+    return response.data;
+  }
+
   async runConversation(conversationId: string): Promise<Success> {
     const response = await this.client.post<Success>(
       `/api/conversations/${conversationId}/run`,

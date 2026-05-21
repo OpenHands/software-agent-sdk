@@ -1,5 +1,5 @@
 import { HttpClient } from './http-client';
-import { AliveStatus, ReadyStatus } from '../models/api';
+import { AliveStatus, HealthStatus, ReadyStatus } from '../models/api';
 import { ServerInfo } from '../types/base';
 
 export interface ServerClientOptions {
@@ -33,8 +33,8 @@ export class ServerClient {
     return response.data;
   }
 
-  async getHealth(): Promise<string> {
-    const response = await this.client.get<string>('/health');
+  async getHealth(): Promise<HealthStatus> {
+    const response = await this.client.get<HealthStatus>('/health');
     return response.data;
   }
 

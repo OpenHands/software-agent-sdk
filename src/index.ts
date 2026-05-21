@@ -236,6 +236,7 @@ export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/h
 
 export type {
   AliveStatus,
+  HealthStatus,
   ReadyStatus,
   ProvidersResponse,
   ModelsResponse,

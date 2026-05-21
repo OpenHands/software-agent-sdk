@@ -58,7 +58,7 @@ describe('Deterministic API Integration Tests', () => {
 
       expect(root).toBeDefined();
       expect(alive.status).toBe('ok');
-      expect(health).toBe('OK');
+      expect(health.status).toBe('ok');
       expect(['ready', 'initializing']).toContain(ready.status);
       expect(info.version).toBeDefined();
       expect(Array.isArray(providers)).toBe(true);
@@ -114,14 +114,13 @@ describe('Deterministic API Integration Tests', () => {
         const finalResponse = await conversation.getAgentFinalResponse();
         expect(typeof finalResponse).toBe('string');
 
-        const trajectoryFile = `/workspace/conversations/${conversation.id.replace(/-/g, '')}.zip`;
-        await workspace.executeCommand(
-          `mkdir -p /workspace/conversations && printf 'trajectory-data' > ${trajectoryFile}`
-        );
         const trajectory = await conversation.downloadTrajectory();
         expect(trajectory).toBeInstanceOf(Blob);
-        expect(await trajectory.text()).toContain('trajectory-data');
-        await workspace.executeCommand(`rm -f ${trajectoryFile}`);
+        expect(trajectory.size).toBeGreaterThan(0);
+        const trajectoryBytes = new Uint8Array(await trajectory.arrayBuffer());
+        // Verify it's a valid ZIP file (PK\x03\x04 magic bytes)
+        expect(trajectoryBytes[0]).toBe(0x50); // P
+        expect(trajectoryBytes[1]).toBe(0x4b); // K
 
         const forkedConversation = await conversation.fork({
           title: 'Forked from deterministic test',
