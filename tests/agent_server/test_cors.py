@@ -22,7 +22,10 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.dependencies import (
+    WORKSPACE_SESSION_COOKIE_NAME,
+    get_conversation_service,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.middleware import (
     CORSDispatcher,
@@ -120,6 +123,86 @@ def test_workspace_static_accepts_any_origin(tmp_path):
         assert resp.status_code == 200, origin
         assert resp.headers["access-control-allow-origin"] == origin, origin
         assert resp.headers["access-control-allow-credentials"] == "true", origin
+
+
+# ---- workspace-cookie routes: actual responses (not just preflight) --------
+# These tests cover the QA-found bug where ``allow_origins=["*"]`` made
+# Starlette emit ``Access-Control-Allow-Origin: *`` on the actual POST/DELETE
+# response unless the request already carried a Cookie header — which
+# real browsers reject for credentialed CORS. The fix is to use
+# ``allow_origin_regex=r".*"`` so the request Origin is echoed on every
+# response, not just preflight.
+
+
+def test_workspace_session_post_response_echoes_origin_no_cookie(tmp_path):
+    """The very first mint request from a browser does NOT carry a
+    Cookie (it's the one creating the cookie). The response must still
+    echo the Origin — not emit ``*`` — or the browser rejects the
+    credentialed response and the cookie never gets set."""
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=Config(session_api_keys=[SESSION_KEY]),
+    )
+
+    resp = client.post(
+        "/api/auth/workspace-session",
+        headers={
+            "X-Session-API-Key": SESSION_KEY,
+            "Origin": REMOTE_ORIGIN,
+        },
+    )
+    assert resp.status_code == 204
+    # The actual response must echo the origin — not "*" — for the
+    # browser to accept it with credentials.
+    assert resp.headers["access-control-allow-origin"] == REMOTE_ORIGIN
+    assert resp.headers["access-control-allow-credentials"] == "true"
+    # Vary: Origin is required so caches don't collapse responses
+    # across origins.
+    assert "Origin" in resp.headers.get("vary", "")
+    # And the cookie itself is actually set.
+    assert WORKSPACE_SESSION_COOKIE_NAME in resp.cookies
+
+
+def test_workspace_session_delete_response_echoes_origin(tmp_path):
+    client = _build_client(
+        tmp_path,
+        conversation_id=uuid4(),
+        config=Config(session_api_keys=[SESSION_KEY]),
+    )
+
+    resp = client.delete(
+        "/api/auth/workspace-session",
+        headers={"X-Session-API-Key": SESSION_KEY, "Origin": REMOTE_ORIGIN},
+    )
+    assert resp.status_code == 204
+    assert resp.headers["access-control-allow-origin"] == REMOTE_ORIGIN
+    assert resp.headers["access-control-allow-credentials"] == "true"
+
+
+def test_workspace_static_get_response_echoes_origin(tmp_path):
+    """Actual GET against a workspace static file from an arbitrary
+    origin must also echo the Origin (not ``*``) for credentialed
+    ``fetch()`` from JS to work."""
+    (tmp_path / "report.html").write_text("<title>ok</title>")
+    cid = uuid4()
+    client = _build_client(
+        tmp_path,
+        conversation_id=cid,
+        config=Config(session_api_keys=[SESSION_KEY]),
+    )
+
+    resp = client.get(
+        f"/api/conversations/{cid}/workspace/report.html",
+        headers={
+            "X-Session-API-Key": SESSION_KEY,
+            "Origin": REMOTE_ORIGIN,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.text == "<title>ok</title>"
+    assert resp.headers["access-control-allow-origin"] == REMOTE_ORIGIN
+    assert resp.headers["access-control-allow-credentials"] == "true"
 
 
 # ---- non-workspace routes: standard CORS, configurable ---------------------

@@ -21,25 +21,31 @@ The agent server has two distinct CORS requirements:
      * ``GET`` ``/api/conversations/{id}/workspace/...`` — workspace
        static files served using the cookie
 
-   These routes **always accept CORS from any origin** with credentials,
-   because the actual security boundary is enforced elsewhere:
+   These routes accept CORS from any origin with credentials. The actual
+   security boundary is enforced elsewhere:
 
      * Minting still requires ``X-Session-API-Key``, so an arbitrary
        origin cannot mint a cookie it doesn't already have the key for.
      * The cookie is ``Partitioned`` (CHIPS), scoping it to the embedding
-       top-level site that minted it — a different top-level site cannot
-       piggy-back on someone else's workspace cookie.
+       top-level site that minted it — at least on browsers that
+       implement CHIPS (Chromium/Edge today; Firefox/Safari coverage
+       still in progress).
 
-   Because ``allow_credentials=True``, Starlette echoes the request
-   ``Origin`` back rather than emitting a literal ``*`` (browsers reject
-   ``*`` with credentials), so credentialed fetches from any origin
-   actually work.
+   Wildcard credentialed CORS uses ``allow_origin_regex=r".*"`` instead
+   of ``allow_origins=["*"]``. Starlette's ``CORSMiddleware`` treats the
+   literal ``"*"`` as ``allow_all_origins=True`` and then emits the
+   string ``"*"`` on actual (non-preflight) responses unless the request
+   already carries a ``Cookie`` header — which fails the very first mint
+   request that creates the cookie, because browsers reject
+   ``Access-Control-Allow-Origin: *`` together with
+   ``Access-Control-Allow-Credentials: true``. The regex path
+   unconditionally echoes the request ``Origin`` back, which is what
+   credentialed CORS actually requires.
 
 The single global ``CORSDispatcher`` middleware routes each request to
-the appropriate underlying ``LocalhostCORSMiddleware`` based on the
-request path, after stripping any ``root_path`` set via FastAPI (so the
-dispatch is correct behind reverse proxies that mount this server under
-a sub-path).
+the appropriate underlying middleware based on the request path, after
+stripping any ``root_path`` set via FastAPI (so the dispatch is correct
+behind reverse proxies that mount this server under a sub-path).
 """
 
 import os
@@ -47,7 +53,6 @@ import re
 from urllib.parse import urlparse
 
 from fastapi.middleware.cors import CORSMiddleware
-from starlette._utils import get_route_path
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 
@@ -110,34 +115,54 @@ class LocalhostCORSMiddleware(CORSMiddleware):
 class CORSDispatcher:
     """Routes each request to the correct CORS middleware by path.
 
-    * Workspace cookie endpoints (see module docstring) → wildcard CORS.
+    * Workspace cookie endpoints (see module docstring) → wildcard CORS
+      that echoes the request Origin on every response (preflight and
+      actual). Implemented via ``allow_origin_regex=r".*"``, not
+      ``allow_origins=["*"]``, because Starlette's literal-``"*"``
+      handling on simple responses breaks credentialed CORS on requests
+      that don't carry a ``Cookie`` header — including the first mint
+      request that creates the cookie.
     * Everything else → ``LocalhostCORSMiddleware`` configured with the
       operator-supplied ``allow_origins`` list.
 
-    The path lookup uses ``starlette._utils.get_route_path`` so that
-    deployments behind a reverse proxy that mounts this server under a
-    sub-path (FastAPI's ``root_path`` / ``OH_WEB_URL``) still match
-    workspace routes correctly.
+    The path lookup strips ``scope['root_path']`` from ``scope['path']``
+    the same way Starlette's router does, so deployments behind a
+    reverse proxy that mount this server under a sub-path (FastAPI's
+    ``root_path`` / ``OH_WEB_URL``) still match workspace routes
+    correctly. We inline the trivial strip rather than call Starlette's
+    private ``_utils.get_route_path``, which has no stability guarantees.
 
-    Each wrapped ``LocalhostCORSMiddleware`` is constructed once at
-    startup so that Starlette's precomputed preflight/simple headers
-    are reused across requests; there is no per-request middleware
-    instantiation cost.
+    Each wrapped middleware is constructed once at startup so that
+    Starlette's precomputed preflight/simple headers are reused across
+    requests; there is no per-request middleware instantiation cost.
     """
 
     def __init__(self, app: ASGIApp, *, allow_origins: list[str]) -> None:
         self._default_cors = LocalhostCORSMiddleware(
             app, allow_origins=list(allow_origins)
         )
-        # Wildcard. With ``allow_credentials=True``, Starlette echoes the
-        # request Origin back rather than emitting a literal "*", which
-        # is what browsers require for credentialed CORS.
-        self._workspace_cors = LocalhostCORSMiddleware(app, allow_origins=["*"])
+        # Match any origin via regex. With allow_credentials=True this
+        # causes Starlette to echo the request Origin on both preflight
+        # and actual responses (with a ``Vary: Origin`` so caches don't
+        # collapse responses across origins).
+        self._workspace_cors = CORSMiddleware(
+            app,
+            allow_origin_regex=r".*",
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope.get("type") == "http" and _is_workspace_cookie_path(
-            get_route_path(scope)
-        ):
-            await self._workspace_cors(scope, receive, send)
-            return
+        if scope.get("type") == "http":
+            root_path = scope.get("root_path", "")
+            path = scope.get("path", "/")
+            # Strip the proxy/root prefix the same way Starlette's
+            # router does before matching.
+            route_path = path.removeprefix(root_path) if root_path else path
+            if not route_path:
+                route_path = "/"
+            if _is_workspace_cookie_path(route_path):
+                await self._workspace_cors(scope, receive, send)
+                return
         await self._default_cors(scope, receive, send)
