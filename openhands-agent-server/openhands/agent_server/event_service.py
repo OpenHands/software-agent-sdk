@@ -795,6 +795,25 @@ class EventService:
                     self._run_task = None
                     await self._publish_state_update()
 
+                    # Re-arm a run for input that landed while this one was
+                    # wrapping up. LocalConversation.run() deliberately keeps
+                    # looping on FINISHED so a message arriving *mid-run* is
+                    # absorbed; but once the loop has fully exited there is a
+                    # gap — this task's wait_for_pending() tail above — in which
+                    # an incoming send_message(run=True) has its run() rejected
+                    # as "conversation_already_running" and suppressed (see
+                    # send_message). send_message() resets the terminal
+                    # FINISHED/STUCK status to IDLE, so an IDLE status here means
+                    # exactly that: unprocessed input with no run scheduled.
+                    # Kick one off so the message isn't stranded until the user
+                    # sends again.
+                    if (
+                        await self._get_execution_status()
+                        == ConversationExecutionStatus.IDLE
+                    ):
+                        with suppress(ValueError):
+                            await self.run()
+
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
 
