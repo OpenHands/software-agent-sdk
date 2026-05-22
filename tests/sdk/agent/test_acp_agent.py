@@ -1426,9 +1426,7 @@ class TestACPAgentAstep:
         try:
             agent._executor = executor
             with pytest.raises(RuntimeError, match="simulated upstream failure"):
-                asyncio.run(
-                    agent.astep(conversation, on_event=emitted.append)
-                )
+                asyncio.run(agent.astep(conversation, on_event=emitted.append))
         finally:
             executor.close()
 
@@ -1454,9 +1452,7 @@ class TestACPAgentAstep:
         assert len(typed_errors) == 1, (
             f"expected one ConversationErrorEvent, got {emitted}"
         )
-        assert (
-            conversation.state.execution_status == ConversationExecutionStatus.ERROR
-        )
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
     def test_astep_emits_failed_tool_calls_on_cancellation(self, tmp_path):
         """``asyncio.CancelledError`` during astep must close in-flight

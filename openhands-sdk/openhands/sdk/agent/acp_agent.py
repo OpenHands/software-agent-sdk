@@ -1286,9 +1286,7 @@ class ACPAgent(AgentBase):
         if self._suffix_install_state == "pending_first_prompt":
             self._suffix_install_state = "installed"
 
-    async def _do_acp_prompt(
-        self, prompt_blocks: list[Any]
-    ) -> PromptResponse | None:
+    async def _do_acp_prompt(self, prompt_blocks: list[Any]) -> PromptResponse | None:
         """One ACP ``conn.prompt`` round-trip + UsageUpdate sync.
 
         Always runs on the portal loop (where ``self._conn`` lives).  No
