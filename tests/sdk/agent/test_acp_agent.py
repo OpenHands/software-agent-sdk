@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -564,7 +565,31 @@ class TestACPAgentInitState:
         assert agent._installed_suffix is not None
         assert "Team rules." in agent._installed_suffix
 
-    def test_init_state_sets_installed_for_resumed_session(self, tmp_path):
+    def test_init_state_sets_installed_when_suffix_marker_persisted(self, tmp_path):
+        """A successful first turn persists ``acp_suffix_installed`` — on resume
+        the ACPAgent reads that marker and skips re-injection."""
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            "acp_session_id": "prior-session-id",
+            "acp_suffix_installed": True,
+        }
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "installed"
+
+    def test_init_state_pending_when_session_id_only_no_suffix_marker(self, tmp_path):
+        """Persisted ``acp_session_id`` without ``acp_suffix_installed`` means
+        the prior session was created but its first prompt never completed
+        (cancelled / crashed before ``_finalize_successful_turn``).  The
+        ACP subprocess never received the suffix; on resume we must
+        re-inject it on the next turn rather than infer "installed" from
+        session-id presence alone.
+        """
         agent = _make_agent(
             agent_context=AgentContext(system_message_suffix="Team rules.")
         )
@@ -574,7 +599,7 @@ class TestACPAgentInitState:
         with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
             agent.init_state(state, on_event=lambda _: None)
 
-        assert agent._suffix_install_state == "installed"
+        assert agent._suffix_install_state == "pending_first_prompt"
 
     def test_init_state_includes_registry_secrets_in_suffix(self, tmp_path):
         from pydantic import SecretStr
@@ -1171,7 +1196,11 @@ class TestACPAgentStep:
         assert "Team rules." not in prompt_text
 
     def test_step_suffix_install_state_transitions_to_installed(self, tmp_path):
-        """After the first turn the install state must be 'installed'."""
+        """After the first turn the install state must be 'installed' AND the
+        ``acp_suffix_installed`` marker must be persisted into
+        ``state.agent_state`` so a subsequent agent-server restart can tell
+        the suffix was actually installed (rather than inferring from the
+        mere presence of ``acp_session_id``)."""
         agent = _make_agent(
             agent_context=AgentContext(
                 system_message_suffix="Team rules.", current_datetime=None
@@ -1193,6 +1222,7 @@ class TestACPAgentStep:
         agent.step(conversation, on_event=lambda _: None)
 
         assert agent._suffix_install_state == "installed"
+        assert state.agent_state.get("acp_suffix_installed") is True
 
     def test_step_with_reasoning_surfaces_via_action_event(self, tmp_path):
         """Reasoning traces are preserved in ActionEvent.reasoning_content."""
@@ -1329,6 +1359,369 @@ class TestACPAgentStep:
         assert wired_during_prompt == [on_token]
         # And unwired afterward so a late token chunk is a no-op.
         assert mock_client.on_token is None
+
+
+# ---------------------------------------------------------------------------
+# Async step (astep) — regression coverage for #3348
+# ---------------------------------------------------------------------------
+
+
+class TestACPAgentAstep:
+    """Native ``ACPAgent.astep`` must not fall back to ``AgentBase.astep``
+    (which wraps ``step`` in ``loop.run_in_executor``).  Doing so would
+    move post-prompt callbacks onto an executor worker thread,
+    deadlocking against ``LocalConversation.arun`` which holds the
+    state's reentrant ``FIFOLock`` on the loop thread.  See #3348.
+    """
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_astep_overrides_default_agentbase_implementation(self):
+        """Structural guard: if this flips back, ``AgentBase.astep``'s
+        ``run_in_executor`` wrapper resumes and #3348 reopens.
+        """
+        assert ACPAgent.astep is not AgentBase.astep
+
+    def test_astep_runs_post_prompt_callbacks_on_caller_thread(self, tmp_path):
+        """Post-prompt ``on_event`` callbacks must fire on the caller
+        thread (same thread that holds ``state.lock`` in ``arun``).
+        ``FIFOLock`` is reentrant per-thread; if astep schedules ``step``
+        on a worker thread (the buggy default), callbacks run cross-thread
+        and block on the lock owner forever — see #3348.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        caller_thread_id = threading.get_ident()
+        prompt_thread_id: list[int] = []
+        on_event_thread_ids: list[int] = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            # Must execute on the portal loop's thread, not the caller's
+            # — proves we actually crossed the loop boundary.
+            prompt_thread_id.append(threading.get_ident())
+            mock_client.accumulated_text.append("answer")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+
+            def _capture_event(event):
+                on_event_thread_ids.append(threading.get_ident())
+
+            asyncio.run(agent.astep(conversation, on_event=_capture_event))
+        finally:
+            executor.close()
+
+        assert len(prompt_thread_id) == 1
+        assert prompt_thread_id[0] != caller_thread_id
+
+        # FinishAction + ObservationEvent — both on caller thread.
+        assert len(on_event_thread_ids) >= 2
+        for tid in on_event_thread_ids:
+            assert tid == caller_thread_id, (
+                f"on_event ran on thread {tid} instead of caller "
+                f"{caller_thread_id} — astep regressed to thread-pool path"
+            )
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+
+    def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
+        """astep's error path must call ``_emit_turn_error`` AND re-raise.
+
+        Guards against a silently swallowed ``raise`` in the
+        ``except Exception`` branch — without re-raise,
+        ``LocalConversation.arun()`` would not transition out of the
+        loop and the failure would be invisible to ``RemoteConversation``.
+        Mirrors the contract that sync ``step()`` already enforces.
+        """
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _failing_prompt(prompt_blocks, session_id):
+            raise RuntimeError("simulated upstream failure")
+
+        agent._conn.prompt = _failing_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            with pytest.raises(RuntimeError, match="simulated upstream failure"):
+                asyncio.run(agent.astep(conversation, on_event=emitted.append))
+        finally:
+            executor.close()
+
+        # _emit_turn_error emits exactly two events: MessageEvent + typed
+        # ConversationErrorEvent.  Both must land before re-raise.
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
+        error_messages = [
+            e
+            for e in emitted
+            if isinstance(e, MessageEvent) and "ACP error" in _message_text(e)
+        ]
+        typed_errors = [
+            e
+            for e in emitted
+            if isinstance(e, ConversationErrorEvent) and e.code == "ACPPromptError"
+        ]
+        assert len(error_messages) == 1, (
+            f"expected one error MessageEvent, got {emitted}"
+        )
+        assert len(typed_errors) == 1, (
+            f"expected one ConversationErrorEvent, got {emitted}"
+        )
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_astep_emits_failed_tool_calls_on_cancellation(self, tmp_path):
+        """``asyncio.CancelledError`` during astep must close in-flight
+        ``ACPToolCallEvent``s as ``failed`` and re-raise.
+
+        ``asyncio.CancelledError`` inherits from ``BaseException`` (not
+        ``Exception``), so the generic ``except Exception`` handler does
+        not catch it — without an explicit ``except asyncio.CancelledError``
+        branch, the cancel races straight to ``finally`` (which only
+        clears callbacks).  Any ``pending`` / ``in_progress`` tool cards
+        already streamed would then stay live forever
+        (``LocalConversation._emit_orphaned_action_errors`` only patches
+        ``ActionEvent``s, not ``ACPToolCallEvent``s).
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):
+                # Seed an in-flight tool call AFTER _reset_client_for_turn
+                # has run (which clears accumulated_tool_calls).  In
+                # production the bridge accumulates these inside
+                # session_update as ToolCallStart / ToolCallProgress
+                # notifications arrive.
+                mock_client.accumulated_tool_calls.append(
+                    {
+                        "tool_call_id": "tc-cancel-1",
+                        "title": "in-flight tool",
+                        "status": "in_progress",
+                        "tool_kind": None,
+                        "raw_input": None,
+                        "raw_output": None,
+                        "content": None,
+                    }
+                )
+                # Signal caller loop that we're holding inside the prompt
+                # so the cancel races deterministically.
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                # Block long enough for the cancel to land.
+                await asyncio.sleep(60)
+                return None
+
+            agent._conn.prompt = _fake_prompt
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        failed_tool_events = [
+            e
+            for e in emitted
+            if isinstance(e, ACPToolCallEvent)
+            and e.tool_call_id == "tc-cancel-1"
+            and e.status == "failed"
+        ]
+        assert len(failed_tool_events) == 1, (
+            f"expected one terminal failed event for tc-cancel-1, "
+            f"got: {[(type(e).__name__, getattr(e, 'status', None)) for e in emitted]}"
+        )
+        assert failed_tool_events[0].is_error is True
+
+    def test_astep_cancellation_does_not_mark_suffix_installed(self, tmp_path):
+        """Cancellation before a turn completes must leave
+        ``_suffix_install_state`` as ``pending_first_prompt``.
+
+        Otherwise the local state would say "installed" while the ACP
+        server never received the suffix (the cancel landed before the
+        portal task could persist it), and the next turn would skip
+        re-injection.  Mirrors the ``_build_acp_prompt`` contract that
+        the install state is only committed via
+        ``_finalize_successful_turn`` → ``_commit_suffix_installation``.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        conversation = self._make_conversation_with_message(tmp_path)
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "pending_first_prompt"
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                await asyncio.sleep(60)
+                return None
+
+            agent._conn.prompt = _fake_prompt
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=lambda _: None)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        # Cancellation hit before _finalize_successful_turn ran, so the
+        # suffix install state must remain pending — a subsequent turn
+        # will re-inject the suffix.
+        assert agent._suffix_install_state == "pending_first_prompt", (
+            f"suffix install state was prematurely flipped to "
+            f"{agent._suffix_install_state!r} — next turn would skip suffix"
+        )
+        # ``acp_suffix_installed`` must also not be persisted into
+        # ``agent_state``: otherwise a process restart between this
+        # cancelled turn and the next would read the marker and skip
+        # re-injection (issue #3359 review thread 7).
+        assert conversation.state.agent_state.get("acp_suffix_installed") is not True, (
+            "acp_suffix_installed was persisted despite cancellation — "
+            "a process restart would skip suffix re-injection"
+        )
+
+    def test_astep_does_not_deadlock_under_reentrant_state_lock(self, tmp_path):
+        """End-to-end shape of the #3348 bug.
+
+        Mirrors ``LocalConversation.arun``: holds ``state.lock`` on the
+        loop thread across ``await astep(...)``, while a post-prompt
+        callback re-acquires it (same shape as ``stats_callback``'s
+        ``with state:``).  With astep overridden, the callback runs on
+        the same thread as the lock owner — FIFOLock's reentrancy lets
+        it through.  Without the override, this hangs.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        state = conversation.state
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            mock_client.accumulated_text.append("done")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+
+            # stats_callback-shaped re-entry: take the state lock briefly
+            # from each event callback.  Same-thread reentry must succeed.
+            def _capture_event(event):
+                with state:
+                    pass
+
+            async def _arun_shaped() -> None:
+                with state:
+                    await asyncio.wait_for(
+                        agent.astep(conversation, on_event=_capture_event),
+                        timeout=10.0,
+                    )
+
+            asyncio.run(_arun_shaped())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
 
 
 # ---------------------------------------------------------------------------
