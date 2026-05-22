@@ -292,7 +292,10 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
             conversations_dir=conversations_dir,
         ) as secondary:
             assert secondary._event_services is not None
-            secondary_event_service = secondary._event_services[conversation_info.id]
+            secondary_event_service = await secondary.get_event_service(
+                conversation_info.id
+            )
+            assert secondary_event_service is not None
             secondary_state = await secondary_event_service.get_state()
 
             assert any(
@@ -319,123 +322,6 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_event_services_use_centralized_lease_renewal(tmp_path):
-    """Event services created by ConversationService should not spawn
-    their own lease renewal tasks — renewal is handled centrally."""
-    conversations_dir = tmp_path / "conversations"
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-
-    request = StartConversationRequest(
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        confirmation_policy=NeverConfirm(),
-    )
-
-    async with ConversationService(conversations_dir=conversations_dir) as svc:
-        info, _ = await svc.start_conversation(request)
-        assert svc._event_services is not None
-        es = svc._event_services[info.id]
-
-        # Per-service renewal task should NOT be created
-        assert es._lease_task is None
-        assert es._external_lease_renewal is True
-
-        # Centralized task should exist
-        assert svc._lease_renewal_task is not None
-        assert not svc._lease_renewal_task.done()
-
-    # After __aexit__, centralized task should be cleaned up
-    assert svc._lease_renewal_task is None
-
-
-@pytest.mark.asyncio
-async def test_centralized_lease_renewal_invokes_renew(tmp_path):
-    """The centralized loop calls renew_lease() on every active service."""
-    conversations_dir = tmp_path / "conversations"
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-
-    request = StartConversationRequest(
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        confirmation_policy=NeverConfirm(),
-    )
-
-    with patch(
-        "openhands.agent_server.conversation_service.LEASE_RENEW_INTERVAL_SECONDS",
-        0.05,
-    ):
-        async with ConversationService(conversations_dir=conversations_dir) as svc:
-            info1, _ = await svc.start_conversation(request)
-            info2, _ = await svc.start_conversation(request)
-            assert svc._event_services is not None
-            es1 = svc._event_services[info1.id]
-            es2 = svc._event_services[info2.id]
-
-            renew_calls: dict[str, int] = {"es1": 0, "es2": 0}
-            original_renew1 = es1.renew_lease
-            original_renew2 = es2.renew_lease
-
-            def counting_renew1():
-                renew_calls["es1"] += 1
-                original_renew1()
-
-            def counting_renew2():
-                renew_calls["es2"] += 1
-                original_renew2()
-
-            es1.renew_lease = counting_renew1  # type: ignore[method-assign]
-            es2.renew_lease = counting_renew2  # type: ignore[method-assign]
-
-            # Wait for at least 2 renewal cycles
-            await asyncio.sleep(0.15)
-
-            assert renew_calls["es1"] >= 1, "renew_lease not called on es1"
-            assert renew_calls["es2"] >= 1, "renew_lease not called on es2"
-
-
-@pytest.mark.asyncio
-async def test_event_services_share_dedicated_run_executor(tmp_path):
-    """Event services created by ConversationService should share a single
-    dedicated thread pool for conversation.run() calls."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    conversations_dir = tmp_path / "conversations"
-    workspace_dir = tmp_path / "workspace"
-    workspace_dir.mkdir()
-
-    request = StartConversationRequest(
-        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
-        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
-        confirmation_policy=NeverConfirm(),
-    )
-
-    async with ConversationService(
-        conversations_dir=conversations_dir, max_concurrent_runs=5
-    ) as svc:
-        info, _ = await svc.start_conversation(request)
-        assert svc._event_services is not None
-        es = svc._event_services[info.id]
-
-        # A dedicated executor should exist on the service
-        assert svc._run_executor is not None
-        assert isinstance(svc._run_executor, ThreadPoolExecutor)
-        assert svc._run_executor._max_workers == 5
-
-        # EventService should share the same executor instance
-        assert es._run_executor is svc._run_executor
-
-    # After __aexit__, executor should be shut down
-    assert svc._run_executor is None
-
-
-@pytest.mark.asyncio
-async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_path):
-    """Reproduces the crash-recovery bug: after a non-graceful shutdown the lease
-    file is left on disk pointing at a still-future expires_at. A fresh server
-    started before the TTL elapses must still pick up the conversation rather
-    than skipping it for up to the full TTL window.
     """
     conversations_dir = tmp_path / "conversations"
     workspace_dir = tmp_path / "workspace"
@@ -467,11 +353,88 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
 
     async with ConversationService(conversations_dir=conversations_dir) as restarted:
         assert restarted._event_services is not None
-        # The conversation must be present in the restarted service.
-        assert conversation_id in restarted._event_services, (
-            "Restart failed to pick up an existing conversation whose lease "
-            "was left orphaned by a non-graceful shutdown."
-        )
+        assert conversation_id not in restarted._event_services
+        event_service = await restarted.get_event_service(conversation_id)
+        assert event_service is not None
+
+
+@pytest.mark.asyncio
+async def test_startup_does_not_eagerly_start_persisted_conversations(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    with patch.object(ConversationService, "_start_event_service") as mock_start:
+        async with ConversationService(
+            conversations_dir=conversations_dir
+        ) as restarted:
+            assert restarted._event_services == {}
+            mock_start.assert_not_called()
+            assert conversation_info.id not in restarted._event_services
+
+
+@pytest.mark.asyncio
+async def test_get_event_service_hydrates_persisted_conversation_once(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
+    async with ConversationService(conversations_dir=conversations_dir) as restarted:
+        assert restarted._event_services == {}
+        with patch.object(
+            restarted,
+            "_start_event_service",
+            wraps=restarted._start_event_service,
+        ) as mock_start:
+            first = await restarted.get_event_service(conversation_info.id)
+            second = await restarted.get_event_service(conversation_info.id)
+
+        assert first is not None
+        assert second is first
+        assert mock_start.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_persisted_conversation_does_not_hydrate(tmp_path):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+        cid = conversation_info.id
+
+    async with ConversationService(conversations_dir=conversations_dir) as svc:
+        with patch.object(svc, "_start_event_service") as mock_start:
+            deleted = await svc.delete_conversation(cid)
+        assert deleted is True
+        mock_start.assert_not_called()
+        assert cid not in svc._event_services
+        assert not (conversations_dir / cid.hex).exists()
 
 
 class TestConversationServiceSearchConversations:

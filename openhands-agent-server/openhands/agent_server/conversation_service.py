@@ -30,6 +30,7 @@ from openhands.agent_server.server_details_router import update_last_execution_t
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -313,8 +314,10 @@ def _register_agent_definitions(
 @dataclass
 class ConversationService:
     """
-    Conversation service which stores to a local file store. When the context starts
-    all event_services are loaded into memory, and stored when it stops.
+    Conversation service backed by a local file store.
+
+    Persisted conversations are hydrated into EventService instances only when
+    an operation needs the live conversation runtime.
     """
 
     conversations_dir: Path = field()
@@ -324,6 +327,13 @@ class ConversationService:
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
+    _stored_conversations: dict[UUID, StoredConversation] | None = field(
+        default=None, init=False
+    )
+    _hydration_locks: dict[UUID, asyncio.Lock] = field(
+        default_factory=dict, init=False
+    )
+    _hydration_locks_guard: asyncio.Lock | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
@@ -333,22 +343,33 @@ class ConversationService:
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
-        if event_service is None:
+        event_service = await self.get_event_service(
+            conversation_id, hydrate_if_missing=False
+        )
+        stored = (
+            event_service.stored
+            if event_service is not None
+            else self._get_stored_conversation(conversation_id)
+        )
+        if stored is None:
             return None
-        state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
 
     async def get_acp_conversation(
         self, conversation_id: UUID
     ) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
-        if event_service is None:
+        event_service = await self.get_event_service(
+            conversation_id, hydrate_if_missing=False
+        )
+        stored = (
+            event_service.stored
+            if event_service is not None
+            else self._get_stored_conversation(conversation_id)
+        )
+        if stored is None:
             return None
-        state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
+
 
     async def search_conversations(
         self,
@@ -396,11 +417,8 @@ class ConversationService:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
-        # Collect all conversations with their info
         all_conversations = []
-        for id, event_service in self._event_services.items():
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
+
             # Apply status filter if provided
             if (
                 execution_status is not None
@@ -408,7 +426,7 @@ class ConversationService:
             ):
                 continue
 
-            all_conversations.append((id, conversation_info))
+            all_conversations.append((stored.id, conversation_info))
 
         # Sort conversations based on sort_order
         if sort_order == ConversationSortOrder.CREATED_AT:
@@ -458,8 +476,6 @@ class ConversationService:
             raise ValueError("inactive_service")
 
         count = 0
-        for event_service in self._event_services.values():
-            state = await event_service.get_state()
 
             # Apply status filter if provided
             if (
@@ -558,8 +574,6 @@ class ConversationService:
 
         # Dynamically register tools from client's registry
         if request.tool_module_qualnames:
-            import importlib
-
             for tool_name, module_qualname in request.tool_module_qualnames.items():
                 try:
                     # Import the module to trigger tool auto-registration
@@ -638,7 +652,7 @@ class ConversationService:
     async def pause_conversation(self, conversation_id: UUID) -> bool:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
@@ -671,7 +685,7 @@ class ConversationService:
     async def resume_conversation(self, conversation_id: UUID) -> bool:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service:
             await event_service.start()
         return bool(event_service)
@@ -679,8 +693,12 @@ class ConversationService:
     async def delete_conversation(self, conversation_id: UUID) -> bool:
         if self._event_services is None:
             raise ValueError("inactive_service")
+
         event_service = self._event_services.pop(conversation_id, None)
-        if event_service:
+
+        if event_service is not None:
+            if self._stored_conversations is not None:
+                self._stored_conversations.pop(conversation_id, None)
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
@@ -715,7 +733,31 @@ class ConversationService:
 
             logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
-        return False
+
+        stored = self._get_stored_conversation(conversation_id)
+        if stored is None:
+            return False
+
+        if self._stored_conversations is not None:
+            self._stored_conversations.pop(conversation_id, None)
+
+        conversation_dir = self.conversations_dir / conversation_id.hex
+        try:
+            state = await self._get_conversation_state(stored, None)
+            conversation_info = _compose_webhook_conversation_info(stored, state)
+            conversation_info.execution_status = ConversationExecutionStatus.DELETING
+            await self._notify_conversation_webhooks(conversation_info)
+        except Exception as e:
+            logger.warning(
+                f"Failed to notify webhooks for conversation {conversation_id}: {e}"
+            )
+
+        safe_rmtree(
+            conversation_dir,
+            f"conversation directory for {conversation_id}",
+        )
+        logger.info(f"Successfully deleted conversation {conversation_id}")
+        return True
 
     async def update_conversation(
         self, conversation_id: UUID, request: UpdateConversationRequest
@@ -731,7 +773,7 @@ class ConversationService:
         """
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service is None:
             return False
 
@@ -770,10 +812,29 @@ class ConversationService:
         )
         return True
 
-    async def get_event_service(self, conversation_id: UUID) -> EventService | None:
+    async def get_event_service(
+        self, conversation_id: UUID, *, hydrate_if_missing: bool = True
+    ) -> EventService | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
-        return self._event_services.get(conversation_id)
+        event_service = self._event_services.get(conversation_id)
+        if event_service is not None:
+            return event_service
+        if not hydrate_if_missing:
+            return None
+        stored = self._get_stored_conversation(conversation_id)
+        if stored is None:
+            return None
+        try:
+            return await self._hydrate_event_service(stored)
+        except ConversationLeaseHeldError as exc:
+            logger.debug(
+                "Conversation %s is owned by %s until %s",
+                conversation_id,
+                exc.owner_instance_id,
+                exc.expires_at,
+            )
+            return None
 
     async def generate_conversation_title(
         self, conversation_id: UUID, max_length: int = 50, llm: LLM | None = None
@@ -781,7 +842,7 @@ class ConversationService:
         """Generate a title for the conversation using LLM."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service is None:
             return None
 
@@ -793,7 +854,7 @@ class ConversationService:
         """Ask the agent a simple question without affecting conversation state."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service is None:
             return None
 
@@ -805,7 +866,7 @@ class ConversationService:
         """Force condensation of the conversation history."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
+        event_service = await self.get_event_service(conversation_id)
         if event_service is None:
             return False
 
@@ -838,10 +899,13 @@ class ConversationService:
 
         # Reject duplicate fork IDs early to avoid clobbering an active
         # conversation or leaking an EventService reference.
-        if fork_id is not None and fork_id in self._event_services:
+        if fork_id is not None and (
+            fork_id in self._event_services
+            or self._get_stored_conversation(fork_id) is not None
+        ):
             raise ValueError(f"Conversation with id {fork_id} already exists")
 
-        source_service = self._event_services.get(source_id)
+        source_service = await self.get_event_service(source_id)
         if source_service is None:
             return None
 
@@ -880,75 +944,145 @@ class ConversationService:
         state = await fork_event_service.get_state()
         return _compose_conversation_info(fork_event_service.stored, state)
 
-    async def __aenter__(self):
-        self.conversations_dir.mkdir(parents=True, exist_ok=True)
-        self._run_executor = ThreadPoolExecutor(
-            max_workers=self.max_concurrent_runs,
-            thread_name_prefix="conversation-run",
-        )
-        self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
-            stored: StoredConversation | None = None
+            if not conversation_dir.is_dir():
+                continue
+            stored = self._load_stored_conversation(conversation_dir)
+            if stored is None or stored.id in seen:
+                continue
+            if self._stored_conversations is not None:
+                self._stored_conversations[stored.id] = stored
+            rows.append((stored, None))
+            seen.add(stored.id)
+        return rows
+
+    def _iter_known_conversations(
+        self,
+    ) -> list[tuple[StoredConversation, EventService | None]]:
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+
+        known: list[tuple[StoredConversation, EventService | None]] = []
+        seen: set[UUID] = set()
+        for conversation_id, event_service in self._event_services.items():
+            known.append((event_service.stored, event_service))
+            seen.add(conversation_id)
+
+        if self._stored_conversations is not None:
+            for stored in self._stored_conversations.values():
+                if stored.id not in seen:
+                    known.append((stored, None))
+                    seen.add(stored.id)
+
+        known.extend(self._discover_stored_conversations_on_disk(seen))
+        return known
+
+    async def _get_conversation_state(
+        self, stored: StoredConversation, event_service: EventService | None
+    ) -> ConversationState:
+        if event_service is not None:
+            return await event_service.get_state()
+
+        base_state = self.conversations_dir / stored.id.hex / BASE_STATE
+        if base_state.exists():
             try:
-                meta_file = conversation_dir / "meta.json"
-                if not meta_file.exists():
-                    continue
-                json_str = meta_file.read_text()
-                stored = StoredConversation.model_validate_json(
-                    json_str,
+                state = ConversationState.model_validate_json(
+                    base_state.read_text(),
                     context={
                         "cipher": self.cipher,
                     },
                 )
-                # Dynamically register tools when resuming persisted conversations
-                if stored.tool_module_qualnames:
-                    for (
-                        tool_name,
-                        module_qualname,
-                    ) in stored.tool_module_qualnames.items():
-                        try:
-                            # Import the module to trigger tool auto-registration
-                            importlib.import_module(module_qualname)
-                            logger.debug(
-                                f"Tool '{tool_name}' registered via module "
-                                f"'{module_qualname}' when resuming conversation "
-                                f"{stored.id}"
-                            )
-                        except ImportError as e:
-                            logger.warning(
-                                f"Failed to import module '{module_qualname}' for "
-                                f"tool '{tool_name}' when resuming conversation "
-                                f"{stored.id}: {e}. Tool will not be available."
-                            )
-                            # Continue even if some tools fail to register
-                    if stored.tool_module_qualnames:
-                        logger.debug(
-                            f"Dynamically registered "
-                            f"{len(stored.tool_module_qualnames)} tools when "
-                            f"resuming conversation {stored.id}: "
-                            f"{list(stored.tool_module_qualnames.keys())}"
-                        )
-                # Register agent definitions when resuming
-                if stored.agent_definitions:
-                    _register_agent_definitions(
-                        stored.agent_definitions,
-                        context=f"resuming conversation {stored.id}",
-                    )
-                await self._start_event_service(stored)
-            except ConversationLeaseHeldError as exc:
-                conversation_id = (
-                    stored.id if stored is not None else conversation_dir.name
-                )
-                logger.debug(
-                    "Skipping active conversation %s owned by %s until %s",
-                    conversation_id,
-                    exc.owner_instance_id,
-                    exc.expires_at,
-                )
+                # Match the resume path without constructing LocalConversation.
+                state.agent = stored.agent
+                state.workspace = stored.workspace
+                state.max_iterations = stored.max_iterations
+                state.stuck_detection = stored.stuck_detection
+                state.confirmation_policy = stored.confirmation_policy
+                state.security_analyzer = stored.security_analyzer
+                state.hook_config = stored.hook_config
+                return state
             except Exception:
-                logger.exception(
-                    f"error_loading_event_service:{conversation_dir}", stack_info=True
-                )
+                logger.exception("error_loading_conversation_state:%s", base_state)
+
+        return ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            persistence_dir=str(self.conversations_dir / stored.id.hex),
+            max_iterations=stored.max_iterations,
+            stuck_detection=stored.stuck_detection,
+            confirmation_policy=stored.confirmation_policy,
+            security_analyzer=stored.security_analyzer,
+            tags=stored.tags,
+            hook_config=stored.hook_config,
+        )
+
+    async def _hydrate_event_service(
+        self, stored: StoredConversation
+    ) -> EventService:
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+
+        existing = event_services.get(stored.id)
+        if existing is not None:
+            return existing
+
+        guard = self._hydration_locks_guard
+        if guard is None:
+            raise ValueError("inactive_service")
+
+        async with guard:
+            if stored.id not in self._hydration_locks:
+                self._hydration_locks[stored.id] = asyncio.Lock()
+            lock = self._hydration_locks[stored.id]
+
+        async with lock:
+            try:
+                existing = event_services.get(stored.id)
+                if existing is not None:
+                    return existing
+
+                self._prepare_stored_conversation_for_resume(stored)
+                return await self._start_event_service(stored)
+            finally:
+                async with guard:
+                    self._hydration_locks.pop(stored.id, None)
+
+    def _prepare_stored_conversation_for_resume(
+        self, stored: StoredConversation
+    ) -> None:
+        if stored.tool_module_qualnames:
+            for tool_name, module_qualname in stored.tool_module_qualnames.items():
+                try:
+                    importlib.import_module(module_qualname)
+                    logger.debug(
+                        f"Tool '{tool_name}' registered via module "
+                        f"'{module_qualname}' when resuming conversation {stored.id}"
+                    )
+                except ImportError as e:
+                    logger.warning(
+                        f"Failed to import module '{module_qualname}' for tool "
+                        f"'{tool_name}' when resuming conversation {stored.id}: {e}. "
+                        "Tool will not be available."
+                    )
+            logger.debug(
+                f"Dynamically registered {len(stored.tool_module_qualnames)} tools "
+                f"when resuming conversation {stored.id}: "
+                f"{list(stored.tool_module_qualnames.keys())}"
+            )
+
+        if stored.agent_definitions:
+            _register_agent_definitions(
+                stored.agent_definitions,
+                context=f"resuming conversation {stored.id}",
+            )
+
+    async def __aenter__(self):
+        self.conversations_dir.mkdir(parents=True, exist_ok=True)
+        self._event_services = {}
+        self._stored_conversations = {}
+        self._hydration_locks_guard = asyncio.Lock()
 
         # Initialize conversation webhook subscribers
         self._conversation_webhook_subscribers = [
@@ -993,6 +1127,9 @@ class ConversationService:
         if event_services is None:
             return
         self._event_services = None
+        self._stored_conversations = None
+        self._hydration_locks.clear()
+        self._hydration_locks_guard = None
         # This stops conversations and saves meta
         await asyncio.gather(
             *[
@@ -1066,6 +1203,8 @@ class ConversationService:
             raise
 
         event_services[stored.id] = event_service
+        if self._stored_conversations is not None:
+            self._stored_conversations[stored.id] = event_service.stored
         return event_service
 
 
