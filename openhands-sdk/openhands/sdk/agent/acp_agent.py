@@ -1266,13 +1266,19 @@ class ACPAgent(AgentBase):
             return None
         return blocks
 
-    async def _do_acp_prompt(self, prompt_blocks: list[Any]) -> PromptResponse:
+    async def _do_acp_prompt(
+        self, prompt_blocks: list[Any]
+    ) -> PromptResponse | None:
         """One ACP ``conn.prompt`` round-trip + UsageUpdate sync.
 
         Always runs on the portal loop (where ``self._conn`` lives).  No
         retry / timeout — callers wrap with their own per-attempt
         strategy so they can pick ``time.sleep`` (sync) or
         ``asyncio.sleep`` (async).
+
+        Return type allows ``None`` because the ACP server is permitted
+        to return an empty body (and test mocks do); downstream
+        ``_finalize_successful_turn`` already accepts ``PromptResponse | None``.
         """
         usage_sync = self._client.prepare_usage_sync(self._session_id or "")
         response = await self._conn.prompt(prompt_blocks, self._session_id)
@@ -1467,7 +1473,7 @@ class ACPAgent(AgentBase):
             response: PromptResponse | None = None
             max_retries = _ACP_PROMPT_MAX_RETRIES
 
-            async def _prompt() -> PromptResponse:
+            async def _prompt() -> PromptResponse | None:
                 # Thin closure so existing mocks of ``_executor.run_async``
                 # that take a single positional callable keep working.
                 return await self._do_acp_prompt(prompt_blocks)

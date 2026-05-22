@@ -1395,6 +1395,69 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
+        """astep's error path must call ``_emit_turn_error`` AND re-raise.
+
+        Guards against a silently swallowed ``raise`` in the
+        ``except Exception`` branch — without re-raise,
+        ``LocalConversation.arun()`` would not transition out of the
+        loop and the failure would be invisible to ``RemoteConversation``.
+        Mirrors the contract that sync ``step()`` already enforces.
+        """
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _failing_prompt(prompt_blocks, session_id):
+            raise RuntimeError("simulated upstream failure")
+
+        agent._conn.prompt = _failing_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            with pytest.raises(RuntimeError, match="simulated upstream failure"):
+                asyncio.run(
+                    agent.astep(conversation, on_event=emitted.append)
+                )
+        finally:
+            executor.close()
+
+        # _emit_turn_error emits exactly two events: MessageEvent + typed
+        # ConversationErrorEvent.  Both must land before re-raise.
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
+        error_messages = [
+            e
+            for e in emitted
+            if isinstance(e, MessageEvent) and "ACP error" in _message_text(e)
+        ]
+        typed_errors = [
+            e
+            for e in emitted
+            if isinstance(e, ConversationErrorEvent) and e.code == "ACPPromptError"
+        ]
+        assert len(error_messages) == 1, (
+            f"expected one error MessageEvent, got {emitted}"
+        )
+        assert len(typed_errors) == 1, (
+            f"expected one ConversationErrorEvent, got {emitted}"
+        )
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.ERROR
+        )
+
     def test_astep_does_not_deadlock_under_reentrant_state_lock(self, tmp_path):
         """End-to-end shape of the #3348 bug.
 
