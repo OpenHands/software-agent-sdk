@@ -523,13 +523,29 @@ class EventService:
         """Configure stats update callbacks to stream stats changes via events."""
 
         def stats_callback() -> None:
-            """Callback to emit stats updates."""
+            """Callback to emit stats updates.
+
+            Invoked synchronously by ``Telemetry.on_response`` (regular
+            Agent path) and ``ACPAgent._record_usage`` (ACP path) — both
+            run inside ``LocalConversation.run()``'s ``with self._state:``
+            block, so the caller already owns the conversation state lock.
+
+            DO NOT re-acquire the state lock here (``with state:``). It
+            looks safe — ``FIFOLock`` documents itself as reentrant — but
+            on the ACP code path it deadlocks (silently) before the rest
+            of ``step()`` can emit the assistant's FinishAction +
+            ObservationEvent, leaving every conversation hung in
+            ``running`` status forever. ``_emit_event_from_thread`` below
+            already acquires the lock on the executor thread before
+            persisting the event; that's the only place serialization
+            needs the lock anyway.
+            """
             # Publish only the stats field to avoid sending entire state
             if not self._conversation:
                 return
-            state = self._conversation._state
-            with state:
-                event = ConversationStateUpdateEvent(key="stats", value=state.stats)
+            event = ConversationStateUpdateEvent(
+                key="stats", value=self._conversation._state.stats
+            )
             self._emit_event_from_thread(event)
 
         for llm in agent.get_all_llms():
