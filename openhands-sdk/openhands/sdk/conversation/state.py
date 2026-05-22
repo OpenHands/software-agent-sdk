@@ -246,13 +246,23 @@ class ConversationState(OpenHandsModel):
         Full enforcement happens only via ``rebuild_view()``, which is
         called on cold load, fork, and error recovery.
 
-        Callers must treat the returned view as read-only.
+        Callers must treat the returned view as read-only.  This
+        reference is also invalidated by any call to ``rebuild_view()``;
+        re-read ``state.view`` after any rebuild if you need a fresh
+        snapshot.
         """
         with self._view_lock:
             n = len(self._events)
             for i in range(self._view_watermark, n):
-                self._view.append_event(self._events[i])
-                self._view_watermark = i + 1
+                try:
+                    self._view.append_event(self._events[i])
+                    self._view_watermark = i + 1
+                except Exception:
+                    # Incremental append failed; rebuild from scratch
+                    # with full enforcement to recover a consistent view.
+                    self._view = View.from_events(self._events)
+                    self._view_watermark = len(self._events)
+                    break
             return self._view
 
     def rebuild_view(self) -> None:
