@@ -14,7 +14,6 @@ from acp.exceptions import RequestError as ACPRequestError
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _estimate_cost_from_tokens,
-    _extract_current_model_id,
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
@@ -3420,6 +3419,46 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "legacy-sess"
 
+    def test_resume_preserves_persisted_model_when_load_session_omits_models(
+        self, tmp_path
+    ):
+        """Resume must not blank the persisted ``acp_current_model_*`` when
+        ``load_session`` returns no ``models`` field.
+
+        The ``models`` capability is UNSTABLE; some agents only attach it to
+        ``new_session`` responses, not ``load_session``. Previously
+        ``init_state`` unconditionally overwrote ``agent_state`` with the
+        freshly-extracted (possibly ``None``) values, dropping the chip on
+        every resume. The contract is: only update model state when we
+        actually learned something new.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "claude-opus-4-1",
+            "acp_current_model_name": "Opus 4.1",
+        }
+        # ``load_session`` returns a response whose ``models`` field is
+        # absent — same shape as a server that doesn't surface the
+        # UNSTABLE capability on resume responses.
+        conn = self._make_conn()
+        load_response = MagicMock(spec=[])  # spec=[] → no .models attribute
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # Persisted values survive the resume even though load_session
+        # didn't re-report them.
+        assert state.agent_state["acp_current_model_id"] == "claude-opus-4-1"
+        assert state.agent_state["acp_current_model_name"] == "Opus 4.1"
+
     def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
         """When load_session fails and new_session runs, init_state must
         overwrite state.agent_state['acp_session_id'] with the new id so
@@ -3843,35 +3882,36 @@ class TestACPEnvConflictSuppression:
         assert "CLAUDE_CONFIG_DIR" not in env
 
 
-class TestExtractCurrentModelId:
-    """``_extract_current_model_id`` reads the model the ACP server reports.
+class TestExtractSessionModels:
+    """``_extract_session_models`` reads the model the ACP server reports.
 
     The ``models`` capability is marked UNSTABLE in the spec — older agents
     omit the field entirely and the helper must tolerate that without
-    raising.
+    raising, returning ``(None, [])``.
     """
 
     def test_returns_model_id_when_response_carries_one(self):
         response = MagicMock()
         response.models = MagicMock()
         response.models.current_model_id = "claude-opus-4-1"
-        assert _extract_current_model_id(response) == "claude-opus-4-1"
+        response.models.available_models = []
+        assert _extract_session_models(response) == ("claude-opus-4-1", [])
 
     def test_returns_none_when_response_is_none(self):
         # ``load_session`` can return ``None`` for servers that don't
         # implement the call — the helper must not crash.
-        assert _extract_current_model_id(None) is None
+        assert _extract_session_models(None) == (None, [])
 
     def test_returns_none_when_models_field_is_absent(self):
         # Older agents predate the UNSTABLE ``models`` capability and don't
         # surface it on the response object.
         response = MagicMock(spec=[])  # spec=[] → no attributes
-        assert _extract_current_model_id(response) is None
+        assert _extract_session_models(response) == (None, [])
 
     def test_returns_none_when_models_field_is_none(self):
         response = MagicMock()
         response.models = None
-        assert _extract_current_model_id(response) is None
+        assert _extract_session_models(response) == (None, [])
 
     def test_returns_none_when_current_model_id_is_empty_string(self):
         # An empty string is treated the same as a missing field — we don't
@@ -3879,14 +3919,16 @@ class TestExtractCurrentModelId:
         response = MagicMock()
         response.models = MagicMock()
         response.models.current_model_id = ""
-        assert _extract_current_model_id(response) is None
+        response.models.available_models = []
+        assert _extract_session_models(response) == (None, [])
 
     def test_returns_none_when_current_model_id_is_not_a_string(self):
         # Defensive: an agent returning a non-string here is malformed.
         response = MagicMock()
         response.models = MagicMock()
         response.models.current_model_id = 42
-        assert _extract_current_model_id(response) is None
+        response.models.available_models = []
+        assert _extract_session_models(response) == (None, [])
 
 
 class TestACPAgentCurrentModelIdProperty:

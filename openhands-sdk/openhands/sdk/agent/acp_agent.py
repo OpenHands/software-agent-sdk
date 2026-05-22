@@ -221,16 +221,6 @@ def _extract_session_models(response: Any) -> tuple[str | None, list[Any]]:
     return current, list(available)
 
 
-def _extract_current_model_id(response: Any) -> str | None:
-    """Read ``models.currentModelId`` off a session response, if present.
-
-    Thin wrapper preserved for callers that only care about the id and not
-    the surrounding ``available_models`` list.
-    """
-    current, _ = _extract_session_models(response)
-    return current
-
-
 _GENERIC_MODEL_ALIASES = frozenset({"default", "auto", "sonnet", "opus", "haiku"})
 
 
@@ -1076,17 +1066,24 @@ class ACPAgent(AgentBase):
         # this, ``ConversationInfo.current_model_*`` would only be populated
         # while the subprocess is alive — i.e. the chip would vanish from
         # idle / restored conversations in the sidebar.
-        state.agent_state = {
+        #
+        # On resume, ``load_session`` may not surface ``models`` (the
+        # capability is UNSTABLE, and some servers only attach it to
+        # ``new_session`` responses) — in that case ``_current_model_id`` is
+        # ``None`` here even though we *did* know the model on the previous
+        # launch.  Preserve whatever the persisted ``agent_state`` already
+        # holds rather than blanking it; the chip should survive a resume.
+        new_agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
             "acp_session_id": self._session_id,
             "acp_session_cwd": self._working_dir,
-            "acp_current_model_id": self._current_model_id,
-            "acp_current_model_name": _resolve_model_name(
-                self._current_model_id, self._available_models
-            ),
         }
+        if self._current_model_id is not None:
+            new_agent_state["acp_current_model_id"] = self._current_model_id
+            new_agent_state["acp_current_model_name"] = self.current_model_name
+        state.agent_state = new_agent_state
 
         if self._installed_suffix:
             self._suffix_install_state = (

@@ -124,7 +124,7 @@ def test_current_model_id_propagates_init_resolution(
 ):
     """End-to-end check of the resolution semantics ``_init`` is meant to apply.
 
-    ``_init`` resolves ``self.acp_model or _extract_current_model_id(response)``;
+    ``_init`` resolves ``self.acp_model or _extract_session_models(response)[0]``;
     the resolved value lands in ``_current_model_id``; the agent-server then
     lifts it onto ``ConversationInfo``. This test simulates the assignment
     ``_init`` makes and verifies the value travels through.
