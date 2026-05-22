@@ -224,6 +224,11 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
 
 def test_preloaded_custom_tool_resolves_in_live_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -752,6 +757,11 @@ def test_conversation_stats_with_live_server(
     # Patch LLM.completion with our cost-tracking version
     monkeypatch.setattr(LLM, "completion", fake_completion_with_cost, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_cost(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     # Create an Agent with a real LLM object
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
@@ -893,6 +903,11 @@ def test_events_not_lost_during_client_disconnection(
     monkeypatch.setattr(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish_tool(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     # Create an Agent with empty tools list (finish is a built-in tool)
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1054,6 +1069,11 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     monkeypatch.setattr(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish_tool(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
@@ -1233,6 +1253,11 @@ def test_security_risk_field_with_live_server(
         LLM, "completion", fake_completion_with_tool_calls, raising=True
     )
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_tool_calls(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     # Create an Agent (security analyzer functionality has been deprecated and removed)
     # Using empty tools list since tools need to be registered in the server
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1387,6 +1412,11 @@ def test_hook_config_sent_to_server(
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     # Create an Agent
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
@@ -1602,6 +1632,11 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(LLM, "completion", fake_completion_with_finish, raising=True)
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
     workspace = RemoteWorkspace(
@@ -1729,6 +1764,11 @@ def test_remote_state_exposes_invoked_skills(
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
+
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
 
     skill = Skill(
         name="frobnitz-converter",
@@ -1901,3 +1941,127 @@ def test_settings_and_secrets_api_with_live_server(server_env):
 
         # Cleanup
         client.delete("/api/settings/secrets/ANOTHER_SECRET")
+
+
+def test_interrupt_endpoint_cancels_running_conversation(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """POST /{conversation_id}/interrupt cancels a running arun() task.
+
+    Uses a slow LLM (blocking sleep during completion) so the conversation
+    stays in RUNNING long enough for the interrupt request to arrive.
+    Verifies the conversation transitions to PAUSED with an InterruptEvent.
+    """
+    import asyncio
+
+    slow_delay = 10  # seconds — long enough to guarantee interrupt lands
+
+    def slow_completion(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        # Block in a way that arun() can cancel the awaiting coroutine.
+        time.sleep(slow_delay)
+        # Should never reach here if interrupt arrives in time.
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        litellm_msg = LiteLLMMessage.model_validate(
+            {"role": "assistant", "content": "Hello"}
+        )
+        return LLMResponse(
+            message=Message.from_llm_chat_message(litellm_msg),
+            metrics=MetricsSnapshot(
+                model_name="test-model",
+                accumulated_cost=0.0,
+                max_budget_per_task=None,
+                accumulated_token_usage=None,
+            ),
+            raw_response=ModelResponse(
+                id="test-resp",
+                created=int(time.time()),
+                model="test-model",
+                choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+            ),
+        )
+
+    monkeypatch.setattr(LLM, "completion", slow_completion, raising=True)
+
+    async def slow_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        # Use asyncio.sleep so CancelledError interrupts instantly.
+        await asyncio.sleep(slow_delay)
+        return slow_completion(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", slow_acompletion, raising=True)
+
+    host = server_env["host"]
+
+    with httpx.Client(base_url=host, timeout=15.0) as client:
+        # 1. Create a conversation
+        create_resp = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o-mini", "api_key": "test"},
+                    "tools": [],
+                },
+                "workspace": {"working_dir": "/tmp/workspace/project"},
+            },
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        conv_id = create_resp.json()["id"]
+
+        # 2. Send a message (without auto-run)
+        msg_resp = client.post(
+            f"/api/conversations/{conv_id}/events",
+            json={
+                "content": [{"type": "text", "text": "Do something"}],
+                "run": False,
+            },
+        )
+        assert msg_resp.status_code == 200, msg_resp.text
+
+        # 3. Start the run — this triggers arun() with the slow LLM
+        run_resp = client.post(f"/api/conversations/{conv_id}/run")
+        assert run_resp.status_code == 200, run_resp.text
+
+        # 4. Wait briefly for the run to actually start
+        status_resp = client.get(f"/api/conversations/{conv_id}")
+        for _ in range(20):
+            status_resp = client.get(f"/api/conversations/{conv_id}")
+            if status_resp.json().get("execution_status") == "running":
+                break
+            time.sleep(0.1)
+        assert status_resp.json()["execution_status"] == "running", (
+            f"Conversation did not reach RUNNING: {status_resp.json()}"
+        )
+
+        # 5. Interrupt!
+        interrupt_resp = client.post(f"/api/conversations/{conv_id}/interrupt")
+        assert interrupt_resp.status_code == 200, interrupt_resp.text
+
+        # 6. Verify the conversation transitions to PAUSED
+        for _ in range(50):
+            status_resp = client.get(f"/api/conversations/{conv_id}")
+            if status_resp.json().get("execution_status") == "paused":
+                break
+            time.sleep(0.1)
+        assert status_resp.json()["execution_status"] == "paused", (
+            f"Expected PAUSED after interrupt, got: {status_resp.json()}"
+        )
+
+        # 7. Verify an InterruptEvent was emitted
+        events_resp = client.get(
+            f"/api/conversations/{conv_id}/events/search",
+            params={
+                "kind": ("openhands.sdk.event.user_action.InterruptEvent"),
+            },
+        )
+        assert events_resp.status_code == 200
+        items = events_resp.json()["items"]
+        assert len(items) >= 1, f"Expected at least one InterruptEvent, got: {items}"

@@ -108,6 +108,19 @@ def test_openhands_models_all_have_provider_list():
     )
 
 
+def test_nemotron_3_super_uses_full_infra_name():
+    """The verified Nemotron Super entry must match the infra model name
+    (``nemotron-3-super-120b-a12b``) and the short alias should not be listed.
+    """
+    full_name = "nemotron-3-super-120b-a12b"
+    assert full_name in VERIFIED_MODELS["nvidia"]
+    assert full_name in VERIFIED_OPENHANDS_MODELS
+    for provider, models in VERIFIED_MODELS.items():
+        assert "nemotron-3-super" not in models, (
+            f"Short alias 'nemotron-3-super' should not be in provider {provider!r}"
+        )
+
+
 def test_trinity_model_is_openhands_only():
     """trinity-large-thinking should be available only via the OpenHands provider
     and must not be listed under any other provider.

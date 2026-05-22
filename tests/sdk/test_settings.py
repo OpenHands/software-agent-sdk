@@ -11,7 +11,6 @@ from openhands.sdk import (
     ACPAgentSettings,
     Agent,
     AgentContext,
-    AgentSettings,
     AgentSettingsBase,
     ConversationSettings,
     OpenHandsAgentSettings,
@@ -656,56 +655,6 @@ def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
 
     assert agent.acp_env == {"OPENAI_API_KEY": "sk-openai"}
     assert agent.agent_context == context
-
-
-# ---------------------------------------------------------------------------
-# Legacy ``AgentSettings`` compatibility
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
-    """``AgentSettings(...)`` is retained as a deprecated OpenHandsAgentSettings.
-
-    All v1.17.0 attributes must remain reachable so the API breakage
-    check does not flag them as removed.
-    """
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        settings = AgentSettings(llm=LLM(model="test-model"))
-
-    # The legacy name emits a DeprecationWarning on construction. The
-    # warning's scheduled removal is in 1.23.0 per the class docstring.
-    assert any("AgentSettings" in str(w.message) for w in caught), (
-        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
-    )
-
-    # It remains a LLMAgentSettings (and thus OpenHandsAgentSettings) subclass
-    # so existing code paths work.
-    assert isinstance(settings, OpenHandsAgentSettings)
-    # agent_kind stays "llm" because AgentSettings inherits from LLMAgentSettings
-    # — this keeps the published API surface unchanged for the breakage checker.
-    assert settings.agent_kind == "llm"
-    assert settings.llm.model == "test-model"
-
-
-def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
-    """Guardrail mirroring the API breakage CI check: don't silently remove fields."""
-    fields = AgentSettings.model_fields
-    assert {
-        "schema_version",
-        "agent",
-        "llm",
-        "tools",
-        "mcp_config",
-        "agent_context",
-        "condenser",
-        "verification",
-    }.issubset(set(fields))
-
-    # Methods defined on the original class must still resolve via
-    # inheritance.
-    for name in ("export_schema", "create_agent", "build_condenser", "build_critic"):
-        assert hasattr(AgentSettings, name), f"missing: AgentSettings.{name}"
 
 
 def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:

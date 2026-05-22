@@ -513,7 +513,7 @@ class ConversationSettings(BaseModel):
     agent_definitions: list[AgentDefinition] = Field(
         default_factory=list,
         exclude=True,
-        description="Agent definitions for DelegateTool / TaskSetTool.",
+        description="Agent definitions for task tools.",
     )
     plugins: list[PluginSource] | None = Field(
         default=None,
@@ -1301,8 +1301,9 @@ to validate/construct instances from raw payloads. Use
 :func:`default_agent_settings` for the default (LLM-agent) shape.
 
 Named ``AgentSettingsConfig`` rather than ``AgentSettings`` because the
-latter is retained as a (deprecated) concrete class for backwards
-compatibility with v1.17.x callers — see :class:`AgentSettings`.
+old concrete ``AgentSettings`` class was removed after its deprecation
+deadline. Use this union for fields that accept any supported settings
+variant.
 """
 
 
@@ -1331,64 +1332,6 @@ def validate_agent_settings(
         payload_name="AgentSettings",
     )
     return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
-
-
-class AgentSettings(LLMAgentSettings):
-    """Deprecated legacy name for :class:`OpenHandsAgentSettings`.
-
-    Before the discriminated-union redesign, ``AgentSettings`` was the
-    single concrete class for agent configuration. It is kept as a
-    :class:`LLMAgentSettings` subclass (which itself is a
-    :class:`OpenHandsAgentSettings` subclass) so every v1.17 attribute and
-    method (``agent``, ``llm``, ``tools``, ``mcp_config``,
-    ``condenser``, ``verification``, ``build_condenser``,
-    ``build_critic``, ``create_agent``, …) resolves through
-    inheritance — existing callers keep working, though direct
-    construction now emits a :class:`DeprecationWarning`.
-
-    Inherits from :class:`LLMAgentSettings` so that ``agent_kind`` remains
-    ``"llm"`` (matching the PyPI 1.19.x API surface seen by the breakage
-    checker), while new code should use :class:`OpenHandsAgentSettings`
-    directly.
-
-    For new code:
-
-    * Use :class:`OpenHandsAgentSettings` to build an explicit LLM-backed
-      agent, or :class:`ACPAgentSettings` for an ACP-delegating one.
-    * Use :data:`AgentSettingsConfig` as the type for fields that may
-      hold either variant (FastAPI / Pydantic pick the variant from
-      the ``agent_kind`` discriminator).
-    * Use :func:`validate_agent_settings` to validate raw payloads
-      into the correct variant.
-
-    Scheduled for removal in v1.23.0.
-    """
-
-    @classmethod
-    def from_persisted(
-        cls,
-        data: Any,
-        *,
-        context: Mapping[str, Any] | None = None,
-    ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
-        """Load persisted agent settings, applying any schema migrations."""
-        return validate_agent_settings(data, context=context)
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "AgentSettings",
-            deprecated_in="1.17.0",
-            removed_in="1.23.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` (for an LLM agent) or "
-                "``ACPAgentSettings`` (for an ACP agent) directly; use "
-                "``AgentSettingsConfig`` as the type for fields that accept "
-                "either variant."
-            ),
-        )
-        super().__init__(*args, **kwargs)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
