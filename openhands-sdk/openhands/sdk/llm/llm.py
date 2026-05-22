@@ -1463,7 +1463,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return LLMResponse(
                 message=message,
                 metrics=metrics_snapshot,
-                raw_response=completed,
+                raw_response=completed
             )
         except Exception as e:
             _fb_token = cast("TokenCallbackType | None", on_token)
