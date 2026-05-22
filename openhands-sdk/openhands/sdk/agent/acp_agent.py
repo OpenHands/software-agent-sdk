@@ -1636,9 +1636,14 @@ class ACPAgent(AgentBase):
                 try:
                     # Schedule the ACP prompt on the portal loop (where the
                     # connection lives); await the future back on the caller
-                    # loop.  ``asyncio.wait_for`` cancels the wrapped future
-                    # on timeout, which propagates to the portal task via
-                    # ``concurrent.futures.Future`` cancellation.
+                    # loop.  On timeout ``asyncio.wait_for`` cancels the
+                    # caller-side asyncio future; the portal task may run to
+                    # completion in the background (anyio starts it
+                    # immediately on ``start_task_soon`` and
+                    # ``concurrent.futures.Future.cancel()`` returns ``False``
+                    # for an already-running task), but
+                    # ``_clear_turn_callbacks()`` in ``finally`` ensures any
+                    # trailing ``session_update`` from that task is a no-op.
                     future = portal.start_task_soon(self._do_acp_prompt, prompt_blocks)
                     response = await asyncio.wait_for(
                         asyncio.wrap_future(future),
