@@ -26,7 +26,9 @@ class HookManager:
         session_id: str | None = None,
         llm: "LLM | None" = None,
         persistence_dir: str | None = None,
-        visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
+        visualizer: type[ConversationVisualizerBase]
+        | ConversationVisualizerBase
+        | None = None,
     ):
         self.config = config or HookConfig.load(working_dir=working_dir)
         self.executor = HookExecutor(

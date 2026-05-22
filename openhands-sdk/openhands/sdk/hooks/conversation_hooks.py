@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.event import (
     ActionEvent,
     Event,
@@ -17,8 +18,6 @@ from openhands.sdk.hooks.types import HookEventType
 from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 
-
-from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
@@ -394,7 +393,9 @@ def create_hook_callback(
     emit_hook_events: bool = True,
     llm: "LLM | None" = None,
     persistence_dir: str | None = None,
-    visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
+    visualizer: type[ConversationVisualizerBase]
+    | ConversationVisualizerBase
+    | None = None,
 ) -> tuple[HookEventProcessor, Any]:
     """Create a hook-enabled event callback. Returns (processor, callback).
 

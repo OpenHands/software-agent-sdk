@@ -161,7 +161,9 @@ class HookExecutor:
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         persistence_dir: str | None = None,
-        visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
+        visualizer: type[ConversationVisualizerBase]
+        | ConversationVisualizerBase
+        | None = None,
     ):
         self.working_dir = working_dir or os.getcwd()
         self.async_process_manager = async_process_manager or AsyncProcessManager()
@@ -347,6 +349,14 @@ class HookExecutor:
         # Cleanup expired async processes before starting new ones
         self.async_process_manager.cleanup_expired()
 
+        command = hook.command
+        if command is None:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error="'command' is required when type is 'command'",
+            )
+
         # Handle async hooks: fire and forget
         if hook.async_:
             try:
@@ -357,7 +367,7 @@ class HookExecutor:
                     start_new_session = False
 
                 process = subprocess.Popen(
-                    hook.command,
+                    command,
                     shell=True,
                     cwd=self.working_dir,
                     env=hook_env,
@@ -378,7 +388,7 @@ class HookExecutor:
 
                 # Track for cleanup
                 self.async_process_manager.add_process(process, hook.timeout)
-                logger.debug(f"Started async hook (PID {process.pid}): {hook.command}")
+                logger.debug(f"Started async hook (PID {process.pid}): {command}")
 
                 # Return placeholder success result
                 return HookResult(
@@ -396,7 +406,7 @@ class HookExecutor:
         try:
             # Execute the hook command synchronously
             result = subprocess.run(
-                hook.command,
+                command,
                 shell=True,
                 cwd=self.working_dir,
                 env=hook_env,

@@ -145,9 +145,7 @@ with tempfile.TemporaryDirectory() as tmpdir:
     print("\n" + "=" * 60)
     print("Demo 2: Stop — deny until deliverable exists")
     print("=" * 60)
-    print(
-        "Quality reviewer denies until REPORT.md exists with a bullet point.\n"
-    )
+    print("Quality reviewer denies until REPORT.md exists with a bullet point.\n")
     conversation.send_message(
         "Write REPORT.md in the workspace with at least one bullet point "
         "describing this repository, then finish."

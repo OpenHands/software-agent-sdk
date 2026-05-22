@@ -69,7 +69,8 @@ class HookDefinition(BaseModel):
             raise ValueError("'prompt' is required when type is 'prompt'")
         if self.type == HookType.AGENT and self.command is not None:
             raise ValueError(
-                "'command' must not be set when type is 'agent'; use 'system_prompt' instead"
+                "'command' must not be set when type is 'agent'; "
+                "use 'system_prompt' instead"
             )
         if self.type == HookType.AGENT and self.async_:
             raise ValueError("'async' is not supported for agent hooks")

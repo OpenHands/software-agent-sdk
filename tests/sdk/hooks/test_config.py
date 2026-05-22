@@ -12,7 +12,7 @@ from openhands.sdk.hooks.types import HookEventType
 
 def test_command_hook_requires_command():
     with pytest.raises(Exception, match="'command' is required"):
-        HookDefinition(type="command")
+        HookDefinition(type=HookType.COMMAND)
 
 
 def test_command_hook_valid():
@@ -38,12 +38,28 @@ def test_agent_hook_valid(kwargs):
     "kwargs,expected",
     [
         ({"command": "block.sh"}, "block.sh"),
-        ({"type": "agent", "name": "block-deletions", "system_prompt": "Block rm -rf"}, "agent-hook:block-deletions"),
-        ({"type": "agent", "system_prompt": "Block network calls to external IPs"}, "agent-hook:Block network calls "),
+        (
+            {
+                "type": "agent",
+                "name": "block-deletions",
+                "system_prompt": "Block rm -rf",
+            },
+            "agent-hook:block-deletions",
+        ),
+        (
+            {"type": "agent", "system_prompt": "Block network calls to external IPs"},
+            "agent-hook:Block network calls ",
+        ),
         ({"type": "agent", "system_prompt": "A" * 100}, f"agent-hook:{'A' * 20}"),
         ({"type": "agent"}, "agent-hook:agent"),
     ],
-    ids=["command", "agent-named", "agent-prompt-prefix", "agent-prompt-truncated", "agent-fallback"],
+    ids=[
+        "command",
+        "agent-named",
+        "agent-prompt-prefix",
+        "agent-prompt-truncated",
+        "agent-fallback",
+    ],
 )
 def test_display_command(kwargs, expected):
     h = HookDefinition(**kwargs)
@@ -52,9 +68,19 @@ def test_display_command(kwargs, expected):
 
 def test_multiple_agent_hooks_are_distinguishable():
     hooks = [
-        HookDefinition(type="agent", name="block-deletions", system_prompt="Block rm -rf"),
-        HookDefinition(type="agent", system_prompt="Block network calls to external IPs"),
-        HookDefinition(type="agent", system_prompt="Verify all tasks are complete"),
+        HookDefinition(
+            type=HookType.AGENT,
+            name="block-deletions",
+            system_prompt="Block rm -rf",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Block network calls to external IPs",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Verify all tasks are complete",
+        ),
     ]
     assert len({h.display_command for h in hooks}) == 3
 
@@ -62,7 +88,10 @@ def test_multiple_agent_hooks_are_distinguishable():
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        ({"type": "agent", "command": "echo hi"}, "'command' must not be set when type is 'agent'"),
+        (
+            {"type": "agent", "command": "echo hi"},
+            "'command' must not be set when type is 'agent'",
+        ),
         ({"type": "command"}, "'command' is required"),
     ],
     ids=["agent-rejects-command", "command-requires-command"],
@@ -80,7 +109,15 @@ def test_agent_hook_rejects_async():
 def test_agent_hook_from_json():
     data = {
         "stop": [
-            {"hooks": [{"type": "agent", "system_prompt": "Verify all tasks are done", "timeout": 30}]}
+            {
+                "hooks": [
+                    {
+                        "type": "agent",
+                        "system_prompt": "Verify all tasks are done",
+                        "timeout": 30,
+                    }
+                ]
+            }
         ]
     }
     config = HookConfig.from_dict(data)
