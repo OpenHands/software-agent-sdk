@@ -120,8 +120,10 @@ class Config(BaseModel):
     allow_cors_origins: list[str] = Field(
         default_factory=list,
         description=(
-            "Set of CORS origins permitted by this server (Anything from localhost is "
-            "always accepted regardless of what's in here)."
+            "CORS origins permitted by this server. Localhost / 127.0.0.1 "
+            "and ``DOCKER_HOST_ADDR`` are always allowed. Does not apply to "
+            "the workspace cookie routes, which accept any origin — see "
+            "``middleware.py``."
         ),
     )
     conversations_path: Path = Field(

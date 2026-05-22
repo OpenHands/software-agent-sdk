@@ -2317,14 +2317,20 @@ class TestStatsCallbackNoDeadlock:
     """Regression: stats_callback must not re-acquire the state lock.
 
     ``Telemetry._stats_update_callback`` is invoked synchronously from
-    ``Agent.step()`` / ``ACPAgent._record_usage`` while
-    ``LocalConversation.run()`` already holds ``state``'s FIFOLock.  Any
-    extra ``with state:`` inside the callback turns the ACP code path into
-    a silent hang — the assistant's FinishAction/ObservationEvent never
-    emit and the conversation stays ``running`` forever.
+    inside the LLM completion / ACP turn pipeline while another thread
+    (``LocalConversation.run()``) holds the conversation state's
+    ``FIFOLock`` via ``with self._state:``.
 
-    These tests pin the contract: the callback returns promptly and the
-    stats event is queued, regardless of who currently holds the lock.
+    Empirically the deadlock is **cross-thread**: the FIFOLock's
+    same-thread reentry works fine (verified in
+    ``test_same_thread_reentry_works_on_fifolock``), but when the
+    callback fires on a different thread than the lock owner, the
+    extra ``with state:`` inside the callback waits forever.  That is
+    what hung every short-text ACP conversation before this fix.
+
+    These tests pin the contract: the callback returns promptly and
+    the stats event is queued for emission regardless of which thread
+    owns the lock.
     """
 
     def _make_service_with_callback(self):
@@ -2345,11 +2351,10 @@ class TestStatsCallbackNoDeadlock:
             stored=stored,
             conversations_dir=Path("test_conversation_dir"),
         )
-        # Real LocalConversation gives us a real FIFOLock to contend on,
-        # but we don't want to spin up its event loop / persistence —
-        # MagicMock the conversation but use a real FIFOLock + a real
-        # ConversationState with a ``stats`` field so the callback can
-        # read it.
+        # A real FIFOLock on a Mock-ish state so the callback contends on
+        # the actual production lock primitive, but we don't have to spin
+        # up the LocalConversation event loop / persistence stack to
+        # exercise the deadlock.
         state = MagicMock()
         state._lock = FIFOLock()
         state.__enter__ = MagicMock(side_effect=lambda: state._lock.acquire())
@@ -2359,25 +2364,18 @@ class TestStatsCallbackNoDeadlock:
         conversation = MagicMock()
         conversation._state = state
         service._conversation = conversation
-        # Avoid the _emit_event_from_thread executor path entirely so the
-        # test stays synchronous + deterministic.
+        # Stub the executor-thread emission path so the test stays
+        # synchronous + deterministic.  The under-test behaviour is just
+        # ``stats_callback returns promptly``; the locked_on_event side of
+        # _emit_event_from_thread is covered elsewhere.
         service._emit_event_from_thread = MagicMock(name="_emit_event_from_thread")
 
         callbacks: list = []
-
-        def capture_set_callback(cb):
-            callbacks.append(cb)
-
-        llm = service._conversation._state.agent  # whatever — we don't use it
-        del llm  # silence linter
-        # Hand-register the callback like _setup_stats_streaming would.
         service._setup_stats_streaming(
             MagicMock(
                 get_all_llms=lambda: [
                     MagicMock(
-                        telemetry=MagicMock(
-                            set_stats_update_callback=capture_set_callback
-                        )
+                        telemetry=MagicMock(set_stats_update_callback=callbacks.append)
                     )
                 ]
             )
@@ -2385,7 +2383,78 @@ class TestStatsCallbackNoDeadlock:
         assert len(callbacks) == 1, "stats_callback must be registered exactly once"
         return service, state, callbacks[0]
 
-    def test_returns_promptly_with_no_lock_held(self):
+    def test_same_thread_reentry_works_on_fifolock(self):
+        """Sanity: FIFOLock's reentrancy contract holds for same-thread re-acquire.
+
+        Documents why the fix is **not** about masking a broken reentrant
+        lock — even with the buggy ``with state:`` re-entry, the same
+        thread can re-acquire FIFOLock without deadlock.  This isolates
+        the deadlock as a cross-thread phenomenon (see the next test).
+        """
+        lock = FIFOLock()
+        finished = threading.Event()
+
+        def run():
+            with lock:
+                with lock:  # same-thread re-entry
+                    pass
+            finished.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        assert finished.wait(timeout=2.0), "FIFOLock should support same-thread reentry"
+
+    @pytest.mark.timeout(10)
+    def test_returns_promptly_when_another_thread_holds_state_lock(self):
+        """The deadlock case: another thread owns the lock when the callback fires.
+
+        Mirrors production: ``LocalConversation.run()`` on thread A holds
+        ``state``'s FIFOLock via ``with self._state:``; the stats callback
+        fires on a different thread (executor / portal / bridge) and would
+        re-acquire the lock with ``with state:`` — blocking forever because
+        FIFOLock's reentrancy gates on ``threading.get_ident()`` and thread
+        B's ident is not the owner.
+
+        Pre-fix this test hangs forever and the pytest timeout cap fires.
+        Post-fix the callback no longer re-acquires the lock and returns
+        immediately, with the stats event handed to ``_emit_event_from_thread``
+        for serialization once thread A eventually releases the lock.
+        """
+        service, state, stats_callback = self._make_service_with_callback()
+        lock_acquired = threading.Event()
+        callback_completed = threading.Event()
+        release_lock = threading.Event()
+
+        def thread_a_holds_lock():
+            with state:
+                lock_acquired.set()
+                # Hold the lock until the callback thread has done its work
+                # (or until the test times out, whichever comes first).
+                release_lock.wait(timeout=5.0)
+
+        def thread_b_invokes_callback():
+            assert lock_acquired.wait(timeout=2.0), "thread A never took the lock"
+            stats_callback()
+            callback_completed.set()
+
+        a = threading.Thread(target=thread_a_holds_lock, daemon=True)
+        b = threading.Thread(target=thread_b_invokes_callback, daemon=True)
+        a.start()
+        b.start()
+        try:
+            assert callback_completed.wait(timeout=2.0), (
+                "stats_callback hung — thread A still holds the FIFOLock "
+                "and the callback's `with state:` is blocking on it. "
+                "Restore the fix that removes the redundant lock acquire."
+            )
+            emit_mock = cast(MagicMock, service._emit_event_from_thread)
+            emit_mock.assert_called_once()
+        finally:
+            release_lock.set()
+            a.join(timeout=2.0)
+            b.join(timeout=2.0)
+
+    def test_returns_promptly_with_no_lock_contention(self):
+        """Baseline: callback returns and emit is scheduled when nothing is held."""
         service, _state, stats_callback = self._make_service_with_callback()
         finished = threading.Event()
 
@@ -2393,38 +2462,9 @@ class TestStatsCallbackNoDeadlock:
             stats_callback()
             finished.set()
 
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
+        threading.Thread(target=run, daemon=True).start()
         assert finished.wait(timeout=2.0), (
             "stats_callback did not return within 2s with no lock contention"
-        )
-        emit_mock = cast(MagicMock, service._emit_event_from_thread)
-        emit_mock.assert_called_once()
-
-    @pytest.mark.timeout(10)
-    def test_returns_promptly_when_caller_already_holds_state_lock(self):
-        """The deadlock case: simulate Agent.step() owning the state lock.
-
-        Pre-fix, this hangs forever; post-fix, it returns instantly because
-        we no longer re-enter the lock inside stats_callback. The pytest
-        timeout cap prevents CI from sitting on the hang.
-        """
-        service, state, stats_callback = self._make_service_with_callback()
-        finished = threading.Event()
-
-        def run():
-            # Mirror what LocalConversation.run() does: take the lock,
-            # then synchronously invoke the LLM telemetry callback chain.
-            with state:
-                stats_callback()
-            finished.set()
-
-        t = threading.Thread(target=run, daemon=True)
-        t.start()
-        assert finished.wait(timeout=2.0), (
-            "stats_callback deadlocks when the calling thread already holds "
-            "the state lock (regression: see commit that removes `with state:` "
-            "inside _setup_stats_streaming)"
         )
         emit_mock = cast(MagicMock, service._emit_event_from_thread)
         emit_mock.assert_called_once()
