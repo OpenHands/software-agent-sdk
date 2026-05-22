@@ -276,9 +276,8 @@ class ConversationState(OpenHandsModel):
         state until a successful ``rebuild_view()`` call.
         """
         with self._view_lock:
-            snapshot = list(self._events)
-            self._view = View.from_events(snapshot)
-            self._view_watermark = len(snapshot)
+            self._view = View.from_events(self._events)
+            self._view_watermark = len(self._events)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
