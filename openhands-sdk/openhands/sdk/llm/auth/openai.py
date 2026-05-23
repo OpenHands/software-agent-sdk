@@ -386,6 +386,23 @@ async def _refresh_access_token(refresh_token: str) -> dict[str, Any]:
         return response.json()
 
 
+def _refresh_access_token_sync(refresh_token: str) -> dict[str, Any]:
+    """Synchronously refresh the access token using a refresh token."""
+    with Client() as client:
+        response = client.post(
+            f"{ISSUER}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": CLIENT_ID,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if not response.is_success:
+            raise RuntimeError(f"Token refresh failed: {response.status_code}")
+        return response.json()
+
+
 # HTML templates for OAuth callback
 _HTML_SUCCESS = """<!DOCTYPE html>
 <html>
@@ -491,6 +508,24 @@ class OpenAISubscriptionAuth:
             expires_in=tokens.get("expires_in", 3600),
         )
         return updated
+
+    def refresh_if_needed_sync(self) -> OAuthCredentials | None:
+        """Synchronously refresh credentials if they are expired."""
+        creds = self.get_credentials()
+        if creds is None:
+            return None
+
+        if not creds.is_expired():
+            return creds
+
+        logger.info("Refreshing OpenAI access token")
+        tokens = _refresh_access_token_sync(creds.refresh_token)
+        return self._credential_store.update_tokens(
+            vendor=self.vendor,
+            access_token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            expires_in=tokens.get("expires_in", 3600),
+        )
 
     async def login(
         self,
@@ -772,6 +807,8 @@ class OpenAISubscriptionAuth:
             temperature=None,
             max_output_tokens=None,
             stream=True,
+            auth_type="subscription",
+            subscription_vendor="openai",
             **llm_kwargs,
         )
         llm._is_subscription = True
@@ -779,6 +816,8 @@ class OpenAISubscriptionAuth:
         llm.max_output_tokens = None
         llm._effective_max_output_tokens = None
         llm.temperature = None
+        llm.auth_type = "subscription"
+        llm.subscription_vendor = "openai"
         return llm
 
 
@@ -856,18 +895,32 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
         model = model.removeprefix("openai/")
 
     auth = OpenAISubscriptionAuth()
-    credentials = auth.get_credentials()
-    if credentials is None or credentials.is_expired():
+    credentials = auth.refresh_if_needed_sync()
+    if credentials is None:
         raise ValueError("OpenAI subscription login is required")
 
-    runtime_llm = auth.create_llm(
+    llm_kwargs = llm.model_dump(
+        exclude_none=True,
+        exclude_defaults=True,
+        exclude={
+            "model",
+            "api_key",
+            "base_url",
+            "auth_type",
+            "subscription_vendor",
+            "extra_headers",
+            "max_output_tokens",
+            "stream",
+            "temperature",
+        },
+    )
+    llm_kwargs["usage_id"] = llm.usage_id
+
+    return auth.create_llm(
         model=model,
         credentials=credentials,
-        usage_id=llm.usage_id,
+        **llm_kwargs,
     )
-    runtime_llm.auth_type = "subscription"
-    runtime_llm.subscription_vendor = "openai"
-    return runtime_llm
 
 
 def subscription_login(

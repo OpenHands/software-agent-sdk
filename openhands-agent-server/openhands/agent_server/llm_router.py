@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from dataclasses import dataclass
@@ -32,9 +33,13 @@ class PendingDeviceLogin:
 
     device_code: DeviceCode
     expires_at: int
+    epoch: int
 
 
 _PENDING_OPENAI_DEVICE_LOGINS: dict[str, PendingDeviceLogin] = {}
+_IN_FLIGHT_OPENAI_DEVICE_LOGINS: set[str] = set()
+_OPENAI_DEVICE_LOGIN_LOCK = asyncio.Lock()
+_OPENAI_DEVICE_LOGIN_EPOCH = 0
 
 
 class ProvidersResponse(BaseModel):
@@ -183,11 +188,13 @@ async def start_openai_subscription_device_login() -> SubscriptionDeviceStartRes
     challenge = await auth.start_device_login()
     token = secrets.token_urlsafe(32)
     expires_at = int(time.time() * 1000) + (DEVICE_CODE_TIMEOUT_SECONDS * 1000)
-    _drop_expired_device_logins()
-    _PENDING_OPENAI_DEVICE_LOGINS[token] = PendingDeviceLogin(
-        device_code=challenge,
-        expires_at=expires_at,
-    )
+    async with _OPENAI_DEVICE_LOGIN_LOCK:
+        _drop_expired_device_logins()
+        _PENDING_OPENAI_DEVICE_LOGINS[token] = PendingDeviceLogin(
+            device_code=challenge,
+            expires_at=expires_at,
+            epoch=_OPENAI_DEVICE_LOGIN_EPOCH,
+        )
     return SubscriptionDeviceStartResponse(
         device_code=token,
         user_code=challenge.user_code,
@@ -204,20 +211,36 @@ async def poll_openai_subscription_device_login(
     request: SubscriptionDevicePollRequest,
 ) -> SubscriptionStatusResponse:
     """Poll a ChatGPT device-code sign-in without returning tokens."""
-    _drop_expired_device_logins()
-    pending = _PENDING_OPENAI_DEVICE_LOGINS.get(request.device_code)
-    if pending is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subscription device login not found or expired",
-        )
+    async with _OPENAI_DEVICE_LOGIN_LOCK:
+        _drop_expired_device_logins()
+        pending = _PENDING_OPENAI_DEVICE_LOGINS.pop(request.device_code, None)
+        if pending is None:
+            if request.device_code in _IN_FLIGHT_OPENAI_DEVICE_LOGINS:
+                return SubscriptionStatusResponse(connected=False)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Subscription device login not found or expired",
+            )
+        _IN_FLIGHT_OPENAI_DEVICE_LOGINS.add(request.device_code)
 
     auth = _get_openai_subscription_auth()
-    credentials = await auth.poll_device_login(pending.device_code)
-    if credentials is None:
+    try:
+        credentials = await auth.poll_device_login(pending.device_code)
+    finally:
+        async with _OPENAI_DEVICE_LOGIN_LOCK:
+            _IN_FLIGHT_OPENAI_DEVICE_LOGINS.discard(request.device_code)
+
+    async with _OPENAI_DEVICE_LOGIN_LOCK:
+        current_epoch = _OPENAI_DEVICE_LOGIN_EPOCH
+        if credentials is None:
+            if pending.epoch == current_epoch:
+                _PENDING_OPENAI_DEVICE_LOGINS[request.device_code] = pending
+            return SubscriptionStatusResponse(connected=False)
+
+    if pending.epoch != current_epoch:
+        auth.logout()
         return SubscriptionStatusResponse(connected=False)
 
-    _PENDING_OPENAI_DEVICE_LOGINS.pop(request.device_code, None)
     return SubscriptionStatusResponse(connected=True, expires_at=credentials.expires_at)
 
 
@@ -226,6 +249,11 @@ async def poll_openai_subscription_device_login(
 )
 async def logout_openai_subscription() -> SubscriptionStatusResponse:
     """Remove stored ChatGPT subscription credentials."""
+    global _OPENAI_DEVICE_LOGIN_EPOCH
+
     auth = _get_openai_subscription_auth()
     auth.logout()
+    async with _OPENAI_DEVICE_LOGIN_LOCK:
+        _OPENAI_DEVICE_LOGIN_EPOCH += 1
+        _PENDING_OPENAI_DEVICE_LOGINS.clear()
     return SubscriptionStatusResponse(connected=False)

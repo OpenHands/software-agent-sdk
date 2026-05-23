@@ -198,6 +198,7 @@ def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch
                 interval=1,
             ),
             expires_at=int(llm_router.time.time() * 1000) + 60_000,
+            epoch=llm_router._OPENAI_DEVICE_LOGIN_EPOCH,
         )
     )
 
@@ -239,6 +240,19 @@ def test_openai_subscription_logout_endpoint(client, monkeypatch):
     """Logout removes credentials and returns disconnected status."""
     from openhands.agent_server import llm_router
 
+    llm_router._PENDING_OPENAI_DEVICE_LOGINS["opaque-token"] = (
+        llm_router.PendingDeviceLogin(
+            device_code=llm_router.DeviceCode(
+                verification_url="https://auth.example/device",
+                user_code="ABCD-EFGH",
+                device_auth_id="openai-device-auth-id",
+                interval=1,
+            ),
+            expires_at=int(llm_router.time.time() * 1000) + 60_000,
+            epoch=llm_router._OPENAI_DEVICE_LOGIN_EPOCH,
+        )
+    )
+
     class FakeAuth:
         logged_out = False
 
@@ -253,3 +267,4 @@ def test_openai_subscription_logout_endpoint(client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["connected"] is False
     assert FakeAuth.logged_out is True
+    assert llm_router._PENDING_OPENAI_DEVICE_LOGINS == {}
