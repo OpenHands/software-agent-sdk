@@ -198,23 +198,42 @@ def _curated_entry(
 # (fast + capable), plus a couple of siblings. Intentionally excludes Llama,
 # DBRX, and legacy endpoints — those surface automatically via discovery if the
 # workspace has them enabled.
+#
+# Last sync with Databricks FMAPI docs: May 2026.
+# Source: https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models
 CURATED_DATABRICKS_MODELS: tuple[ModelPickerEntry, ...] = (
+    # ------------------------------------------------------------------ #
     # Anthropic — Claude (native Anthropic Messages API)
+    # ------------------------------------------------------------------ #
     _curated_entry(
-        "databricks-claude-sonnet-4-5", ProviderFamily.ANTHROPIC, recommended=True
+        "databricks-claude-sonnet-4-6", ProviderFamily.ANTHROPIC, recommended=True
     ),
-    _curated_entry("databricks-claude-opus-4-1", ProviderFamily.ANTHROPIC),
+    _curated_entry("databricks-claude-sonnet-4-5", ProviderFamily.ANTHROPIC),
     _curated_entry("databricks-claude-haiku-4-5", ProviderFamily.ANTHROPIC),
-    # OpenAI — GPT-5 (Responses API) and gpt-oss (OpenAI Chat)
+    _curated_entry("databricks-claude-opus-4-7", ProviderFamily.ANTHROPIC),
+    _curated_entry("databricks-claude-opus-4-5", ProviderFamily.ANTHROPIC),
+    _curated_entry("databricks-claude-opus-4-1", ProviderFamily.ANTHROPIC),
+    # ------------------------------------------------------------------ #
+    # OpenAI — GPT-5 series (Responses API) and gpt-oss (OpenAI Chat)
+    # ------------------------------------------------------------------ #
     _curated_entry(
         "databricks-gpt-5-mini", ProviderFamily.OPENAI_RESPONSES, recommended=True
     ),
+    _curated_entry("databricks-gpt-5-5-pro", ProviderFamily.OPENAI_RESPONSES),
+    _curated_entry("databricks-gpt-5-5", ProviderFamily.OPENAI_RESPONSES),
+    _curated_entry("databricks-gpt-5-4", ProviderFamily.OPENAI_RESPONSES),
+    _curated_entry("databricks-gpt-5-4-mini", ProviderFamily.OPENAI_RESPONSES),
     _curated_entry("databricks-gpt-5", ProviderFamily.OPENAI_RESPONSES),
     _curated_entry("databricks-gpt-oss-120b", ProviderFamily.OPENAI),
+    # ------------------------------------------------------------------ #
     # Google — Gemini (native generateContent)
+    # ------------------------------------------------------------------ #
     _curated_entry(
-        "databricks-gemini-2-5-flash", ProviderFamily.GEMINI, recommended=True
+        "databricks-gemini-3-5-flash", ProviderFamily.GEMINI, recommended=True
     ),
+    _curated_entry("databricks-gemini-3-flash", ProviderFamily.GEMINI),
+    _curated_entry("databricks-gemini-3-pro", ProviderFamily.GEMINI),
+    _curated_entry("databricks-gemini-2-5-flash", ProviderFamily.GEMINI),
     _curated_entry("databricks-gemini-2-5-pro", ProviderFamily.GEMINI),
 )
 

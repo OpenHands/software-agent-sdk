@@ -57,31 +57,48 @@ logger = logging.getLogger(__name__)
 # limits — e.g. Anthropic Claude endpoints are gateway-capped at 200K even if
 # the upstream contract supports more. Keep this table conservative.
 DATABRICKS_CONTEXT_WINDOWS: dict[str, int] = {
-    # --- Databricks-hosted FM (OpenAI Chat family) ---
-    "databricks/databricks-dbrx-instruct": 32_768,
-    "databricks/databricks-meta-llama-3-1-70b-instruct": 128_000,
+    # --- Databricks-hosted FM (OpenAI Chat / mlflow family) ---
+    "databricks/databricks-meta-llama-3-1-8b-instruct":  128_000,
     "databricks/databricks-meta-llama-3-1-405b-instruct": 128_000,
-    "databricks/databricks-meta-llama-3-3-70b-instruct": 128_000,
-    "databricks/databricks-meta-llama-4-maverick": 128_000,
-    "databricks/databricks-mixtral-8x7b-instruct": 32_768,
-    "databricks/databricks-gpt-oss-20b": 128_000,
-    "databricks/databricks-gpt-oss-120b": 128_000,
-    # --- Anthropic native (Claude series on gateway) ---
-    "databricks/databricks-claude-3-5-sonnet-2":  200_000,
-    "databricks/databricks-claude-3-7-sonnet":    200_000,
+    "databricks/databricks-meta-llama-3-3-70b-instruct":  128_000,
+    "databricks/databricks-llama-4-maverick":             128_000,
+    "databricks/databricks-gpt-oss-20b":                  128_000,
+    "databricks/databricks-gpt-oss-120b":                 128_000,
+    "databricks/databricks-qwen35-122b-a10b":             128_000,
+    "databricks/databricks-qwen3-next-80b-a3b-instruct":  128_000,
+    "databricks/databricks-gemma-3-12b":                   8_192,
+    # --- Anthropic native (Claude 4 series on gateway) ---
     "databricks/databricks-claude-sonnet-4":      200_000,
     "databricks/databricks-claude-sonnet-4-5":    200_000,
-    "databricks/databricks-claude-opus-4-6":      200_000,
+    "databricks/databricks-claude-sonnet-4-6":    200_000,
     "databricks/databricks-claude-haiku-4-5":     200_000,
+    "databricks/databricks-claude-opus-4-1":      200_000,
+    "databricks/databricks-claude-opus-4-5":      200_000,
+    "databricks/databricks-claude-opus-4-6":      200_000,
+    "databricks/databricks-claude-opus-4-7":      200_000,
     # --- Google Gemini native ---
     "databricks/databricks-gemini-2-5-flash":     1_048_576,
     "databricks/databricks-gemini-2-5-pro":       1_048_576,
+    "databricks/databricks-gemini-3-1-flash-lite": 1_048_576,
+    "databricks/databricks-gemini-3-flash":        1_048_576,
+    "databricks/databricks-gemini-3-5-flash":      1_048_576,
+    "databricks/databricks-gemini-3-pro":          1_048_576,
+    "databricks/databricks-gemini-3-1-pro":        1_048_576,
     # --- OpenAI Responses (GPT-5 series) ---
     "databricks/databricks-gpt-5":                400_000,
+    "databricks/databricks-gpt-5-mini":           400_000,
+    "databricks/databricks-gpt-5-nano":           400_000,
+    "databricks/databricks-gpt-5-1":              400_000,
+    "databricks/databricks-gpt-5-1-codex-max":    400_000,
+    "databricks/databricks-gpt-5-1-codex-mini":   400_000,
     "databricks/databricks-gpt-5-2":              400_000,
+    "databricks/databricks-gpt-5-2-codex":        400_000,
+    "databricks/databricks-gpt-5-3-codex":        400_000,
     "databricks/databricks-gpt-5-4":              400_000,
     "databricks/databricks-gpt-5-4-mini":         400_000,
     "databricks/databricks-gpt-5-4-nano":         400_000,
+    "databricks/databricks-gpt-5-5":              400_000,
+    "databricks/databricks-gpt-5-5-pro":          400_000,
 }
 
 # Maximum output tokens for known Databricks FMAPI models.
@@ -91,31 +108,48 @@ DATABRICKS_CONTEXT_WINDOWS: dict[str, int] = {
 # tokens include internal thinking tokens — the budget must be generous enough
 # that visible text actually fits. See ``databricks-ai-gateway-fm-apis`` skill.
 DATABRICKS_MAX_OUTPUT: dict[str, int] = {
-    # --- OpenAI Chat family ---
-    "databricks/databricks-dbrx-instruct": 4_096,
-    "databricks/databricks-meta-llama-3-1-70b-instruct": 4_096,
-    "databricks/databricks-meta-llama-3-1-405b-instruct": 4_096,
-    "databricks/databricks-meta-llama-3-3-70b-instruct": 4_096,
-    "databricks/databricks-meta-llama-4-maverick":       8_192,
-    "databricks/databricks-mixtral-8x7b-instruct": 4_096,
-    "databricks/databricks-gpt-oss-20b":   16_384,   # reasoning capacity
-    "databricks/databricks-gpt-oss-120b":  16_384,
-    # --- Anthropic ---
-    "databricks/databricks-claude-3-5-sonnet-2":  8_192,
-    "databricks/databricks-claude-3-7-sonnet":    8_192,
-    "databricks/databricks-claude-sonnet-4":      8_192,
-    "databricks/databricks-claude-sonnet-4-5":   64_000,
-    "databricks/databricks-claude-opus-4-6":     32_000,
-    "databricks/databricks-claude-haiku-4-5":     8_192,
-    # --- Gemini (budget includes thinking) ---
-    "databricks/databricks-gemini-2-5-flash":    65_536,
-    "databricks/databricks-gemini-2-5-pro":      65_536,
-    # --- OpenAI Responses (GPT-5) — generous default so reasoning fits ---
-    "databricks/databricks-gpt-5":              16_384,
-    "databricks/databricks-gpt-5-2":            16_384,
-    "databricks/databricks-gpt-5-4":            16_384,
-    "databricks/databricks-gpt-5-4-mini":       16_384,
-    "databricks/databricks-gpt-5-4-nano":       16_384,
+    # --- OpenAI Chat / mlflow family ---
+    "databricks/databricks-meta-llama-3-1-8b-instruct":   4_096,
+    "databricks/databricks-meta-llama-3-1-405b-instruct":  4_096,
+    "databricks/databricks-meta-llama-3-3-70b-instruct":   4_096,
+    "databricks/databricks-llama-4-maverick":              8_192,
+    "databricks/databricks-gpt-oss-20b":                  16_384,  # reasoning
+    "databricks/databricks-gpt-oss-120b":                 16_384,
+    "databricks/databricks-qwen35-122b-a10b":              8_192,
+    "databricks/databricks-qwen3-next-80b-a3b-instruct":   8_192,
+    "databricks/databricks-gemma-3-12b":                   4_096,
+    # --- Anthropic (Claude 4 series) ---
+    "databricks/databricks-claude-sonnet-4":               8_192,
+    "databricks/databricks-claude-sonnet-4-5":            64_000,
+    "databricks/databricks-claude-sonnet-4-6":            64_000,
+    "databricks/databricks-claude-haiku-4-5":              8_192,
+    "databricks/databricks-claude-opus-4-1":              32_000,
+    "databricks/databricks-claude-opus-4-5":              32_000,
+    "databricks/databricks-claude-opus-4-6":              32_000,
+    "databricks/databricks-claude-opus-4-7":              32_000,
+    # --- Gemini (budget includes thinking tokens) ---
+    "databricks/databricks-gemini-2-5-flash":             65_536,
+    "databricks/databricks-gemini-2-5-pro":               65_536,
+    "databricks/databricks-gemini-3-1-flash-lite":        65_536,
+    "databricks/databricks-gemini-3-flash":               65_536,
+    "databricks/databricks-gemini-3-5-flash":             65_536,
+    "databricks/databricks-gemini-3-pro":                 65_536,
+    "databricks/databricks-gemini-3-1-pro":               65_536,
+    # --- OpenAI Responses (GPT-5) — generous so reasoning tokens fit ---
+    "databricks/databricks-gpt-5":                        16_384,
+    "databricks/databricks-gpt-5-mini":                   16_384,
+    "databricks/databricks-gpt-5-nano":                   16_384,
+    "databricks/databricks-gpt-5-1":                      16_384,
+    "databricks/databricks-gpt-5-1-codex-max":            32_768,
+    "databricks/databricks-gpt-5-1-codex-mini":           16_384,
+    "databricks/databricks-gpt-5-2":                      16_384,
+    "databricks/databricks-gpt-5-2-codex":                32_768,
+    "databricks/databricks-gpt-5-3-codex":                32_768,
+    "databricks/databricks-gpt-5-4":                      16_384,
+    "databricks/databricks-gpt-5-4-mini":                 16_384,
+    "databricks/databricks-gpt-5-4-nano":                 16_384,
+    "databricks/databricks-gpt-5-5":                      32_768,
+    "databricks/databricks-gpt-5-5-pro":                  32_768,
 }
 
 
