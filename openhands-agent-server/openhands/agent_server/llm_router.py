@@ -242,9 +242,10 @@ async def poll_openai_subscription_device_login(
             return SubscriptionStatusResponse(connected=False)
         if pending.epoch != current_epoch:
             return SubscriptionStatusResponse(connected=False)
-
-    auth.save_credentials(credentials)
-    return SubscriptionStatusResponse(connected=True, expires_at=credentials.expires_at)
+        auth.save_credentials(credentials)
+        return SubscriptionStatusResponse(
+            connected=True, expires_at=credentials.expires_at
+        )
 
 
 @llm_router.post(
@@ -255,8 +256,8 @@ async def logout_openai_subscription() -> SubscriptionStatusResponse:
     global _OPENAI_DEVICE_LOGIN_EPOCH
 
     auth = _get_openai_subscription_auth()
-    auth.logout()
     async with _OPENAI_DEVICE_LOGIN_LOCK:
         _OPENAI_DEVICE_LOGIN_EPOCH += 1
         _PENDING_OPENAI_DEVICE_LOGINS.clear()
+        auth.logout()
     return SubscriptionStatusResponse(connected=False)

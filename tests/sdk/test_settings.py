@@ -1737,6 +1737,36 @@ def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
     assert agent.llm.is_subscription is True
 
 
+def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.from_persisted(
+        {
+            "model": "gpt-5.2-codex",
+            "auth_type": "subscription",
+            "subscription_vendor": "openai",
+            "schema_version": 1,
+        }
+    )
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
 def test_openai_subscription_create_llm_serializes_subscription_auth(
     monkeypatch,
 ) -> None:

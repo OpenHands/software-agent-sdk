@@ -519,6 +519,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
+    _subscription_credential_store: Any = PrivateAttr(default=None)
+    _subscription_credentials: Any = PrivateAttr(default=None)
     _litellm_provider: str | None = PrivateAttr(default=None)
     _prompt_cache_key: str | None = PrivateAttr(default=None)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
@@ -1765,8 +1767,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_subscription:
             from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
 
-            auth = OpenAISubscriptionAuth()
+            auth = OpenAISubscriptionAuth(
+                credential_store=self._subscription_credential_store
+            )
             credentials = auth.refresh_if_needed_sync()
+            if credentials is None:
+                credentials = self._subscription_credentials
             if credentials is None:
                 raise ValueError("OpenAI subscription login is required")
             api_key_value = credentials.access_token
@@ -2374,7 +2380,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         payload.pop("schema_version", None)
         payload = canonicalize_openhands_llm_payload(payload)
-        return cls.model_validate(payload, context=context)
+        llm = cls.model_validate(payload, context=context)
+        if llm.auth_type == "subscription":
+            from openhands.sdk.llm.auth.openai import (
+                create_subscription_llm_from_config,
+            )
+
+            return create_subscription_llm_from_config(llm)
+        return llm
 
     def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""

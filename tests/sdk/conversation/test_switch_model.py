@@ -487,7 +487,8 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
 
     def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
         runtime = llm.model_copy()
-        runtime._is_subscription = True
+        if llm.auth_type == "subscription":
+            runtime._is_subscription = True
         return runtime
 
     monkeypatch.setattr(
@@ -508,3 +509,9 @@ def test_switch_llm_to_subscription_profile_disables_condenser(
     assert conv.agent.llm.is_subscription
     assert conv.agent.condenser is None
     assert conv.state.agent.condenser is None
+
+    conv.switch_llm(_make_llm("regular-model", "regular"))
+
+    assert conv.agent.llm.model == "regular-model"
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser
