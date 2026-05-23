@@ -830,6 +830,8 @@ class OpenAISubscriptionAuth:
         llm.temperature = None
         llm.auth_type = "subscription"
         llm.subscription_vendor = "openai"
+        llm._subscription_credential_store = self._credential_store
+        llm._subscription_credentials = creds
         return llm
 
 
