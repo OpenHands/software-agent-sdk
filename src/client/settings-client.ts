@@ -9,6 +9,7 @@ import type {
   SettingsApiResponse,
   SettingsSchema,
   SettingsUpdateRequest,
+  SecretValueResponse,
   SecretsListResponse,
   UpsertSecretRequest,
   UpsertSecretResponse,
@@ -69,6 +70,14 @@ export class SettingsClient {
 
   async upsertSecret(request: UpsertSecretRequest): Promise<UpsertSecretResponse> {
     const response = await this.client.put<UpsertSecretResponse>('/api/settings/secrets', request);
+    return response.data;
+  }
+
+  async getSecret(name: string): Promise<SecretValueResponse> {
+    const response = await this.client.get<SecretValueResponse>(
+      `/api/settings/secrets/${encodeURIComponent(name)}`,
+      { responseType: 'text' }
+    );
     return response.data;
   }
 

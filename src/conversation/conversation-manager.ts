@@ -4,9 +4,12 @@
 
 import { HttpClient } from '../client/http-client';
 import { ApiKeysClient } from '../client/api-keys-client';
+import { CloudProxyClient } from '../client/cloud-proxy-client';
 import { DesktopClient } from '../client/desktop-client';
 import { FileClient } from '../client/file-client';
+import { HooksClient } from '../client/hooks-client';
 import { LLMMetadataClient } from '../client/llm-client';
+import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
 import { ServerClient } from '../client/server-client';
 import { SecurityClient } from '../client/security-client';
@@ -16,6 +19,7 @@ import { SharedClient } from '../client/shared-client';
 import { SkillsClient } from '../client/skills-client';
 import { ToolClient } from '../client/tool-client';
 import { VSCodeClient } from '../client/vscode-client';
+import { WorkspacesClient } from '../client/workspaces-client';
 import { RemoteConversation } from './remote-conversation';
 import { RemoteWorkspace } from '../workspace/remote-workspace';
 import {
@@ -86,10 +90,14 @@ export class ConversationManager {
   public readonly vscode: VSCodeClient;
   public readonly desktop: DesktopClient;
   public readonly files: FileClient;
+  public readonly workspaces: WorkspacesClient;
   public readonly security: SecurityClient;
   public readonly apiKeys: ApiKeysClient;
   public readonly session: SessionClient;
   public readonly shared: SharedClient;
+  public readonly hooks: HooksClient;
+  public readonly mcp: MCPClient;
+  public readonly cloudProxy: CloudProxyClient;
   public readonly acp: ACPConversationNamespace;
 
   constructor(options: ConversationManagerOptions) {
@@ -116,10 +124,14 @@ export class ConversationManager {
     this.vscode = new VSCodeClient(clientOptions);
     this.desktop = new DesktopClient(clientOptions);
     this.files = new FileClient(clientOptions);
+    this.workspaces = new WorkspacesClient(clientOptions);
     this.security = new SecurityClient(clientOptions);
     this.apiKeys = new ApiKeysClient(clientOptions);
     this.session = new SessionClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
+    this.hooks = new HooksClient(clientOptions);
+    this.mcp = new MCPClient(clientOptions);
+    this.cloudProxy = new CloudProxyClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
   }
 
@@ -393,10 +405,14 @@ export class ConversationManager {
     this.vscode.close();
     this.desktop.close();
     this.files.close();
+    this.workspaces.close();
     this.security.close();
     this.apiKeys.close();
     this.session.close();
     this.shared.close();
+    this.hooks.close();
+    this.mcp.close();
+    this.cloudProxy.close();
     this.client.close();
   }
 }

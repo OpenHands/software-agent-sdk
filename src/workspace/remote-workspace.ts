@@ -93,6 +93,13 @@ export class RemoteWorkspace implements IWorkspace {
     return `${this.host}/api/conversations/${conversationId}/workspace/`;
   }
 
+  async deleteWorkspaceSession(): Promise<void> {
+    await this.client.delete('/api/auth/workspace-session', {
+      credentials: 'include',
+      acceptableStatusCodes: new Set([204]),
+    });
+  }
+
   async executeCommand(
     command: string,
     cwd?: string,

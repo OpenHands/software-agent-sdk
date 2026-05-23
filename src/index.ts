@@ -140,6 +140,9 @@ export type { BashWebSocketClientOptions } from './events/bash-websocket-client'
 
 // HTTP client
 export { HttpClient, HttpError } from './client/http-client';
+export { CloudProxyClient } from './client/cloud-proxy-client';
+export { HooksClient } from './client/hooks-client';
+export { MCPClient } from './client/mcp-client';
 export { WorkspacesClient } from './client/workspaces-client';
 export {
   AGENT_SERVER_VERSION_ERROR_CODE,
@@ -238,12 +241,20 @@ export type {
   AskAgentRequest,
   AskAgentResponse,
   SetSecurityAnalyzerRequest,
+  SetConfirmationPolicyRequest,
+  ConversationEventSearchOptions,
+  ConversationEventCountOptions,
   ForkConversationRequest,
   AgentResponseResult,
+  ConversationEvent as ConversationApiEvent,
+  ConversationEventPage,
 } from './models/conversation';
 
 // Client options
 export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/http-client';
+export type { CloudProxyClientOptions } from './client/cloud-proxy-client';
+export type { HooksClientOptions } from './client/hooks-client';
+export type { MCPClientOptions } from './client/mcp-client';
 export type {
   DeleteWorkspaceResponse,
   WorkspacesClientOptions,
@@ -296,10 +307,24 @@ export type {
   UpsertSecretRequest,
   UpsertSecretResponse,
   DeleteSecretResponse,
+  SecretValueResponse,
   FileSubdirectoryEntry,
   FileSubdirectoryPage,
   FileHomeResponse,
   FileSearchSubdirsOptions,
+  CloudProxyRequest,
+  CloudProxyResponse,
+  HooksRequest,
+  HooksResponse,
+  StdioMCPServerSpec,
+  RemoteMCPServerType,
+  RemoteMCPServerSpec,
+  MCPServerSpec,
+  MCPTestRequest,
+  MCPTestSuccess,
+  MCPTestFailureKind,
+  MCPTestFailure,
+  MCPTestResponse,
   SecuritySettings,
   SecurityTraceResponse,
   ApiKey,
@@ -369,6 +394,9 @@ import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { BashWebSocketClient } from './events/bash-websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
+import { CloudProxyClient } from './client/cloud-proxy-client';
+import { HooksClient } from './client/hooks-client';
+import { MCPClient } from './client/mcp-client';
 import { WorkspacesClient } from './client/workspaces-client';
 import {
   AGENT_SERVER_VERSION_ERROR_CODE,
@@ -421,6 +449,9 @@ export default {
   BashWebSocketClient,
   HttpClient,
   HttpError,
+  CloudProxyClient,
+  HooksClient,
+  MCPClient,
   WorkspacesClient,
   AGENT_SERVER_VERSION_ERROR_CODE,
   AgentServerFeatureRequirements,

@@ -15,6 +15,21 @@ export const AgentServerFeatureRequirements = {
     displayName: 'Workspaces',
     minVersion: '1.23.0',
   },
+  hooks: {
+    feature: 'hooks',
+    displayName: 'Hooks API',
+    minVersion: '1.23.0',
+  },
+  mcpTest: {
+    feature: 'mcp-test',
+    displayName: 'MCP test API',
+    minVersion: '1.23.0',
+  },
+  cloudProxy: {
+    feature: 'cloud-proxy',
+    displayName: 'Cloud proxy',
+    minVersion: '1.23.0',
+  },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
 export class AgentServerVersionError extends Error {

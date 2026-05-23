@@ -232,7 +232,7 @@ export class RemoteConversation implements IConversation {
   }
 
   async setConfirmationPolicy(policy: ConfirmationPolicyBase): Promise<void> {
-    await this.client.post(`/api/conversations/${this.id}/confirmation_policy`, policy);
+    await this.client.post(`/api/conversations/${this.id}/confirmation_policy`, { policy });
   }
 
   async sendConfirmationResponse(accept: boolean, reason?: string): Promise<void> {
@@ -304,10 +304,19 @@ export class RemoteConversation implements IConversation {
   /**
    * Fork the current conversation and return a new RemoteConversation instance.
    */
-  async fork(request: ForkConversationRequest = {}): Promise<RemoteConversation> {
+  async fork(
+    request: ForkConversationRequest = {},
+    options: { includeSkills?: boolean } = {}
+  ): Promise<RemoteConversation> {
     const response = await this.client.post<ConversationInfo>(
       `/api/conversations/${this.id}/fork`,
-      request
+      request,
+      {
+        params:
+          options.includeSkills === undefined
+            ? undefined
+            : { include_skills: options.includeSkills },
+      }
     );
 
     const forkWorkspace = new RemoteWorkspace({
@@ -346,7 +355,7 @@ export class RemoteConversation implements IConversation {
    * Set the security analyzer for the conversation.
    * The security analyzer evaluates action risks.
    */
-  async setSecurityAnalyzer(securityAnalyzer: any | null): Promise<void> {
+  async setSecurityAnalyzer(securityAnalyzer: unknown | null): Promise<void> {
     const request: SetSecurityAnalyzerRequest = { security_analyzer: securityAnalyzer };
     await this.client.post(`/api/conversations/${this.id}/security_analyzer`, request);
   }

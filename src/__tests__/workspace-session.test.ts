@@ -85,4 +85,18 @@ describe('RemoteWorkspace.startWorkspaceSession', () => {
 
     expect(baseUrl).toBe('https://agent.example.com/api/conversations/cid-only/workspace/');
   });
+
+  it('deletes the workspace session cookie with credentials included', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(noContentResponse()) as jest.Mock;
+    global.fetch = fetchMock as typeof fetch;
+
+    const workspace = makeWorkspace();
+    await workspace.deleteWorkspaceSession();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(new URL(url as string).pathname).toBe('/api/auth/workspace-session');
+    expect((init as RequestInit).method).toBe('DELETE');
+    expect((init as RequestInit).credentials).toBe('include');
+  });
 });

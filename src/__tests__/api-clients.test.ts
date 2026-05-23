@@ -1,5 +1,6 @@
 import {
   Agent,
+  ConversationExecutionStatus,
   ConversationManager,
   HttpClient,
   HttpError,
@@ -13,10 +14,13 @@ import {
   ApiKeysClient,
   BashClient,
   clearAgentServerInfoCache,
+  CloudProxyClient,
   compareAgentServerVersions,
   ConversationClient,
   FileClient,
+  HooksClient,
   isAgentServerVersionError,
+  MCPClient,
   ProfilesClient,
   SecurityClient,
   ServerClient,
@@ -47,10 +51,14 @@ describe('Auxiliary API clients', () => {
     expect(manager.profiles.host).toBe('http://example.com');
     expect(manager.profiles.apiKey).toBe('secret');
     expect(manager.files).toBeInstanceOf(FileClient);
+    expect(manager.workspaces).toBeInstanceOf(WorkspacesClient);
     expect(manager.security).toBeInstanceOf(SecurityClient);
     expect(manager.apiKeys).toBeInstanceOf(ApiKeysClient);
     expect(manager.session).toBeInstanceOf(SessionClient);
     expect(manager.shared).toBeInstanceOf(SharedClient);
+    expect(manager.hooks).toBeInstanceOf(HooksClient);
+    expect(manager.mcp).toBeInstanceOf(MCPClient);
+    expect(manager.cloudProxy).toBeInstanceOf(CloudProxyClient);
   });
 
   it('Workspace exposes bash namespace', () => {
@@ -679,6 +687,31 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation.setConfirmationPolicy wraps the SDK v1.23.0 request body', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.setConfirmationPolicy({ kind: 'NeverConfirm' });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/confirmation_policy',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ policy: { kind: 'NeverConfirm' } }),
+      })
+    );
+  });
+
   it('HttpClient can parse blob responses when requested', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       new Response(new Blob(['zip-data']), {
@@ -807,14 +840,16 @@ describe('Auxiliary API clients', () => {
       { agent_settings: {}, conversation_settings: { max_iterations: 50 } },
       { secrets: [{ name: 'TOKEN', description: 'token' }] },
       { name: 'TOKEN', description: 'token' },
+      'plain-secret',
       { deleted: true },
     ];
     global.fetch = jest.fn().mockImplementation(() => {
       const body = responses.shift();
+      const isText = typeof body === 'string';
       return Promise.resolve(
-        new Response(JSON.stringify(body), {
+        new Response(isText ? body : JSON.stringify(body), {
           status: 200,
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': isText ? 'text/plain' : 'application/json' },
         })
       );
     }) as typeof fetch;
@@ -824,6 +859,7 @@ describe('Auxiliary API clients', () => {
     await client.updateSettings({ conversation_settings_diff: { max_iterations: 50 } });
     await client.listSecrets();
     await client.upsertSecret({ name: 'TOKEN', value: 'secret', description: 'token' });
+    await expect(client.getSecret('TOKEN')).resolves.toBe('plain-secret');
     await client.deleteSecret('TOKEN/with slash');
 
     expect(global.fetch).toHaveBeenNthCalledWith(
@@ -854,6 +890,11 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       5,
+      'http://example.com/api/settings/secrets/TOKEN',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
       'http://example.com/api/settings/secrets/TOKEN%2Fwith%20slash',
       expect.objectContaining({ method: 'DELETE' })
     );
@@ -878,12 +919,21 @@ describe('Auxiliary API clients', () => {
           }
         )
       )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
       .mockResolvedValueOnce(new Response(binary, { status: 200 }))
       .mockResolvedValueOnce(new Response(new Blob(['trajectory']), { status: 200 }));
 
     const client = new FileClient({ host: 'http://example.com' });
     await expect(client.getHome()).resolves.toEqual({ home: '/workspace' });
     await client.searchSubdirectories('/workspace', { limit: 10, pageId: 'p1' });
+    await expect(client.uploadTextFile('hello', '/workspace/hello.txt')).resolves.toEqual({
+      success: true,
+    });
     await expect(client.downloadTextFile('/workspace/README.md')).resolves.toBe('hello');
     await expect(client.downloadTrajectory('conv 1')).resolves.toBeInstanceOf(Blob);
 
@@ -894,11 +944,18 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       3,
+      'http://example.com/api/file/upload?path=%2Fworkspace%2Fhello.txt',
+      expect.objectContaining({ method: 'POST', body: expect.any(FormData) })
+    );
+    const uploadInit = (global.fetch as jest.Mock).mock.calls[2][1];
+    expect(uploadInit.headers['Content-Type']).toBeUndefined();
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
       'http://example.com/api/file/download?path=%2Fworkspace%2FREADME.md',
       expect.objectContaining({ method: 'GET' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      4,
+      5,
       'http://example.com/api/file/download-trajectory/conv%201',
       expect.objectContaining({ method: 'GET' })
     );
@@ -952,6 +1009,193 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/conversations/c1',
       expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ title: 'New title' }) })
     );
+  });
+
+  it('ConversationClient wraps SDK v1.23.0 conversation endpoints', async () => {
+    const event = {
+      id: 'event-1',
+      kind: 'MessageEvent',
+      timestamp: '2026-05-23T12:00:00Z',
+      source: 'agent',
+    };
+    const responses = [
+      2,
+      { items: [event], next_page_id: null },
+      event,
+      4,
+      { response: 'done' },
+      { success: true },
+      { success: true },
+      { success: true },
+      { success: true },
+      { id: 'fork-1' },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await expect(
+      client.countConversations({ status: ConversationExecutionStatus.IDLE })
+    ).resolves.toBe(2);
+    await expect(client.searchEvents('c1', { kind: 'MessageEvent', limit: 5 })).resolves.toEqual({
+      items: [event],
+      next_page_id: null,
+    });
+    await expect(client.getEvent('c1', 'event-1')).resolves.toEqual(event);
+    await expect(client.getEventCount('c1', { source: 'agent' })).resolves.toBe(4);
+    await expect(client.getAgentFinalResponse('c1')).resolves.toEqual({ response: 'done' });
+    await client.setConfirmationPolicy('c1', { kind: 'NeverConfirm' });
+    await client.condenseConversation('c1');
+    await client.setSecurityAnalyzer('c1', { kind: 'LLMSecurityAnalyzer' });
+    await client.updateSecrets('c1', {
+      secrets: { TOKEN: { kind: 'StaticSecret', value: 'secret' } },
+    });
+    await client.forkConversation('c1', { title: 'Fork' }, { includeSkills: true });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/conversations/count?status=idle',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/conversations/c1/events/search?kind=MessageEvent&limit=5',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/conversations/c1/agent_final_response',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
+      'http://example.com/api/conversations/c1/confirmation_policy',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ policy: { kind: 'NeverConfirm' } }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      8,
+      'http://example.com/api/conversations/c1/security_analyzer',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ security_analyzer: { kind: 'LLMSecurityAnalyzer' } }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      10,
+      'http://example.com/api/conversations/c1/fork?include_skills=true',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ title: 'Fork' }) })
+    );
+  });
+
+  it('Hooks MCP and CloudProxy clients wrap SDK v1.23.0 endpoints', async () => {
+    const serverInfo = { version: '1.23.0', uptime: 1, idle_time: 0 };
+    const responses = [
+      serverInfo,
+      { hook_config: null },
+      serverInfo,
+      { ok: true, tools: ['ping'] },
+      serverInfo,
+      { proxied: true },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const options = { host: 'http://example.com', apiKey: 'secret' };
+    await expect(
+      new HooksClient(options).loadHooks({ project_dir: '/workspace' })
+    ).resolves.toEqual({
+      hook_config: null,
+    });
+    await expect(
+      new MCPClient(options).testServer({
+        server: { type: 'stdio', command: 'node', args: ['server.js'] },
+        timeout: 10,
+      })
+    ).resolves.toEqual({ ok: true, tools: ['ping'] });
+    await expect(
+      new CloudProxyClient(options).forward({
+        host: 'https://app.all-hands.dev',
+        path: '/api/organizations',
+        method: 'GET',
+      })
+    ).resolves.toEqual({ proxied: true });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/hooks',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ project_dir: '/workspace' }),
+        headers: expect.objectContaining({ 'X-Session-API-Key': 'secret' }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/mcp/test',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          server: { type: 'stdio', command: 'node', args: ['server.js'] },
+          timeout: 10,
+        }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
+      'http://example.com/api/cloud-proxy',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          host: 'https://app.all-hands.dev',
+          path: '/api/organizations',
+          method: 'GET',
+        }),
+      })
+    );
+  });
+
+  it('new SDK v1.23.0 clients throw AgentServerVersionError for old servers', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    await expect(
+      new MCPClient({ host: 'http://example.com' }).testServer({
+        server: { type: 'stdio', command: 'node' },
+      })
+    ).rejects.toMatchObject({
+      code: 'AGENT_SERVER_VERSION_TOO_OLD',
+      feature: 'mcp-test',
+      requiredVersion: '1.23.0',
+      actualVersion: '1.22.1',
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it('Security ApiKeys Session and Shared clients wrap app endpoints', async () => {

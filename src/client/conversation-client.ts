@@ -1,13 +1,23 @@
-import { HttpClient } from './http-client';
-import { LLM, Success } from '../types/base';
+import { HttpClient, HttpError } from './http-client';
+import { ConversationExecutionStatus, LLM, Success } from '../types/base';
 import type {
+  AgentResponseResult,
   AskAgentResponse,
   ConfirmationResponseRequest,
+  ConversationEvent,
+  ConversationEventCountOptions,
+  ConversationEventPage,
+  ConversationEventSearchOptions,
   ConversationInfo,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  ForkConversationRequest,
+  SetConfirmationPolicyRequest,
+  SetSecurityAnalyzerRequest,
   UpdateConversationRequest,
+  UpdateSecretsRequest,
 } from '../models/conversation';
+import type { ConfirmationPolicyBase } from '../types/base';
 
 export interface ConversationClientOptions {
   host: string;
@@ -55,6 +65,15 @@ export class ConversationClient {
     return response.data;
   }
 
+  async countConversations(
+    options: { status?: ConversationExecutionStatus } = {}
+  ): Promise<number> {
+    const response = await this.client.get<number>('/api/conversations/count', {
+      params: options as Record<string, unknown>,
+    });
+    return response.data;
+  }
+
   async getConversations<TConversation = ConversationInfo>(
     conversationIds: string[]
   ): Promise<Array<TConversation | null>> {
@@ -69,6 +88,42 @@ export class ConversationClient {
   ): Promise<TConversation> {
     const response = await this.client.get<TConversation>(`/api/conversations/${conversationId}`);
     return response.data;
+  }
+
+  async searchEvents(
+    conversationId: string,
+    options: ConversationEventSearchOptions = {}
+  ): Promise<ConversationEventPage> {
+    const response = await this.client.get<ConversationEventPage>(
+      `/api/conversations/${conversationId}/events/search`,
+      { params: options as Record<string, unknown> }
+    );
+    return response.data;
+  }
+
+  async getEvent(conversationId: string, eventId: string): Promise<ConversationEvent> {
+    const response = await this.client.get<ConversationEvent>(
+      `/api/conversations/${conversationId}/events/${eventId}`
+    );
+    return response.data;
+  }
+
+  async getEvents(
+    conversationId: string,
+    eventIds: string[]
+  ): Promise<Array<ConversationEvent | null>> {
+    return Promise.all(
+      eventIds.map(async (eventId) => {
+        try {
+          return await this.getEvent(conversationId, eventId);
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 404) {
+            return null;
+          }
+          throw error;
+        }
+      })
+    );
   }
 
   async sendEvent(
@@ -114,9 +169,13 @@ export class ConversationClient {
     return response.data;
   }
 
-  async getEventCount(conversationId: string): Promise<number> {
+  async getEventCount(
+    conversationId: string,
+    options: ConversationEventCountOptions = {}
+  ): Promise<number> {
     const response = await this.client.get<number>(
-      `/api/conversations/${conversationId}/events/count`
+      `/api/conversations/${conversationId}/events/count`,
+      { params: options as Record<string, unknown> }
     );
     return response.data;
   }
@@ -128,6 +187,74 @@ export class ConversationClient {
     const response = await this.client.post<TResponse>(
       `/api/conversations/${conversationId}/events/respond_to_confirmation`,
       request
+    );
+    return response.data;
+  }
+
+  async getAgentFinalResponse(conversationId: string): Promise<AgentResponseResult> {
+    const response = await this.client.get<AgentResponseResult>(
+      `/api/conversations/${conversationId}/agent_final_response`
+    );
+    return response.data;
+  }
+
+  async setConfirmationPolicy(
+    conversationId: string,
+    policyOrRequest: ConfirmationPolicyBase | SetConfirmationPolicyRequest
+  ): Promise<Success> {
+    const request =
+      'policy' in policyOrRequest ? policyOrRequest : ({ policy: policyOrRequest } as const);
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/confirmation_policy`,
+      request
+    );
+    return response.data;
+  }
+
+  async condenseConversation(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/condense`,
+      {}
+    );
+    return response.data;
+  }
+
+  async setSecurityAnalyzer(
+    conversationId: string,
+    securityAnalyzerOrRequest: unknown | SetSecurityAnalyzerRequest | null
+  ): Promise<Success> {
+    const request = isSetSecurityAnalyzerRequest(securityAnalyzerOrRequest)
+      ? securityAnalyzerOrRequest
+      : { security_analyzer: securityAnalyzerOrRequest };
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/security_analyzer`,
+      request
+    );
+    return response.data;
+  }
+
+  async updateSecrets(conversationId: string, request: UpdateSecretsRequest): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/secrets`,
+      request
+    );
+    return response.data;
+  }
+
+  async forkConversation<TConversation = ConversationInfo>(
+    conversationId: string,
+    request: ForkConversationRequest = {},
+    options: { includeSkills?: boolean } = {}
+  ): Promise<TConversation> {
+    const response = await this.client.post<TConversation>(
+      `/api/conversations/${conversationId}/fork`,
+      request,
+      {
+        params:
+          options.includeSkills === undefined
+            ? undefined
+            : { include_skills: options.includeSkills },
+      }
     );
     return response.data;
   }
@@ -160,4 +287,8 @@ export class ConversationClient {
   close(): void {
     this.client.close();
   }
+}
+
+function isSetSecurityAnalyzerRequest(value: unknown): value is SetSecurityAnalyzerRequest {
+  return typeof value === 'object' && value !== null && 'security_analyzer' in value;
 }

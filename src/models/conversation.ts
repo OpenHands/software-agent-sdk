@@ -9,6 +9,8 @@ import {
   ConfirmationPolicyBase,
   ConversationStats,
   AgentBase,
+  Event,
+  EventPage,
   Message,
 } from '../types/base';
 import type { HookConfig } from '../hooks';
@@ -114,15 +116,23 @@ export interface UpdateConversationRequest {
 
 export interface StaticSecret {
   kind: 'StaticSecret';
-  value: string;
-  description?: string;
+  value?: string | null;
+  description?: string | null;
 }
 
 export interface LookupSecret {
   kind: 'LookupSecret';
-  source: string;
-  key: string;
-  description?: string;
+  url: string;
+  headers?: Record<string, string>;
+  description?: string | null;
+  /**
+   * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
+   */
+  source?: string;
+  /**
+   * @deprecated v1.23.0 agent servers use `url` and optional `headers`.
+   */
+  key?: string;
 }
 
 export type SecretObject = StaticSecret | LookupSecret;
@@ -151,6 +161,26 @@ export interface SetSecurityAnalyzerRequest {
   security_analyzer: unknown | null;
 }
 
+export interface SetConfirmationPolicyRequest {
+  policy: ConfirmationPolicyBase;
+}
+
+export interface ConversationEventSearchOptions {
+  page_id?: string;
+  limit?: number;
+  kind?: string;
+  source?: string;
+  body?: string;
+  sort_order?: 'TIMESTAMP' | 'TIMESTAMP_DESC';
+  timestamp__gte?: string;
+  timestamp__lt?: string;
+}
+
+export type ConversationEventCountOptions = Omit<
+  ConversationEventSearchOptions,
+  'page_id' | 'limit' | 'sort_order'
+>;
+
 export interface ConversationSearchResponse {
   items: ConversationInfo[];
   next_page_id?: string;
@@ -173,3 +203,6 @@ export interface ForkConversationRequest {
 export interface AgentResponseResult {
   response: string;
 }
+
+export type ConversationEvent = Event;
+export type ConversationEventPage = EventPage;

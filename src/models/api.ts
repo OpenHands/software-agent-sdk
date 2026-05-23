@@ -2,7 +2,8 @@
  * Models for auxiliary Agent Server APIs.
  */
 
-import { LLM } from '../types/base';
+import type { HookConfig } from '../hooks';
+import type { LLM } from '../types/base';
 
 export interface AliveStatus {
   status: string;
@@ -227,6 +228,8 @@ export interface DeleteSecretResponse {
   deleted: boolean;
 }
 
+export type SecretValueResponse = string;
+
 export interface FileSubdirectoryEntry {
   name: string;
   path: string;
@@ -245,6 +248,65 @@ export interface FileSearchSubdirsOptions {
   pageId?: string | null;
   limit?: number;
 }
+
+export interface CloudProxyRequest {
+  host: string;
+  path: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  timeout_seconds?: number;
+}
+
+export type CloudProxyResponse = unknown;
+
+export interface HooksRequest {
+  project_dir?: string | null;
+}
+
+export interface HooksResponse {
+  hook_config?: HookConfig | null;
+}
+
+export interface StdioMCPServerSpec {
+  type: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string | null;
+}
+
+export type RemoteMCPServerType = 'http' | 'shttp' | 'streamable-http' | 'sse';
+
+export interface RemoteMCPServerSpec {
+  type: RemoteMCPServerType;
+  url: string;
+  headers?: Record<string, string>;
+  api_key?: string | null;
+}
+
+export type MCPServerSpec = StdioMCPServerSpec | RemoteMCPServerSpec;
+
+export interface MCPTestRequest {
+  server: MCPServerSpec;
+  name?: string;
+  timeout?: number;
+}
+
+export interface MCPTestSuccess {
+  ok: true;
+  tools: string[];
+}
+
+export type MCPTestFailureKind = 'timeout' | 'connection' | 'unknown';
+
+export interface MCPTestFailure {
+  ok: false;
+  error: string;
+  error_kind: MCPTestFailureKind;
+}
+
+export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
 
 export interface SecuritySettings {
   RISK_SEVERITY: number;

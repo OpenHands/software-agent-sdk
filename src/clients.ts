@@ -1,8 +1,11 @@
 export { ServerClient } from './client/server-client';
 export { BashClient } from './client/bash-client';
+export { CloudProxyClient } from './client/cloud-proxy-client';
 export { ConversationClient } from './client/conversation-client';
 export { FileClient } from './client/file-client';
+export { HooksClient } from './client/hooks-client';
 export { LLMMetadataClient } from './client/llm-client';
+export { MCPClient } from './client/mcp-client';
 export { ProfilesClient } from './client/profiles-client';
 export { SettingsClient } from './client/settings-client';
 export { SkillsClient } from './client/skills-client';
@@ -27,13 +30,16 @@ export {
 
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
+export type { CloudProxyClientOptions } from './client/cloud-proxy-client';
 export type {
   ConversationClientOptions,
   CreateConversationPayload,
   SendConversationEventOptions,
 } from './client/conversation-client';
-export type { FileClientOptions } from './client/file-client';
+export type { FileClientOptions, FileUploadContent } from './client/file-client';
+export type { HooksClientOptions } from './client/hooks-client';
 export type { LLMMetadataClientOptions } from './client/llm-client';
+export type { MCPClientOptions } from './client/mcp-client';
 export type { ProfilesClientOptions, GetProfileOptions } from './client/profiles-client';
 export type {
   SettingsClientOptions,

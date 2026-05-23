@@ -705,9 +705,10 @@ export class LocalConversation implements IConversation {
         this._state.confirmationPolicy = policy as ConfirmationPolicy;
       } else {
         // Create a simple wrapper
+        const policyType = (policy as ConfirmationPolicyBase).type ?? policy.kind ?? 'never';
         this._state.confirmationPolicy = {
-          type: (policy as ConfirmationPolicyBase).type,
-          requiresConfirmation: () => (policy as ConfirmationPolicyBase).type === 'always',
+          type: policyType,
+          requiresConfirmation: () => policyType === 'always' || policyType === 'AlwaysConfirm',
         };
       }
     }

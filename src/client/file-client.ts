@@ -4,12 +4,15 @@ import type {
   FileSearchSubdirsOptions,
   FileSubdirectoryPage,
 } from '../models/api';
+import type { Success } from '../types/base';
 
 export interface FileClientOptions {
   host: string;
   apiKey?: string;
   timeout?: number;
 }
+
+export type FileUploadContent = string | Blob | File;
 
 export class FileClient {
   public readonly host: string;
@@ -55,6 +58,36 @@ export class FileClient {
 
   async downloadTextFile(path: string): Promise<string> {
     return new TextDecoder().decode(await this.downloadFile(path));
+  }
+
+  async uploadFile(
+    content: FileUploadContent,
+    destinationPath: string,
+    fileName?: string
+  ): Promise<Success> {
+    const formData = new FormData();
+    const fileConstructor = typeof File === 'undefined' ? undefined : File;
+
+    if (fileConstructor && content instanceof fileConstructor) {
+      formData.append('file', content, fileName || content.name);
+    } else if (content instanceof Blob) {
+      formData.append('file', content, fileName || 'blob-file');
+    } else {
+      formData.append(
+        'file',
+        new Blob([content], { type: 'text/plain' }),
+        fileName || 'text-file.txt'
+      );
+    }
+
+    const response = await this.client.post<Success>('/api/file/upload', formData, {
+      params: { path: destinationPath },
+    });
+    return response.data;
+  }
+
+  async uploadTextFile(text: string, destinationPath: string, fileName?: string): Promise<Success> {
+    return this.uploadFile(text, destinationPath, fileName);
   }
 
   async downloadTrajectory(conversationId: string): Promise<Blob> {

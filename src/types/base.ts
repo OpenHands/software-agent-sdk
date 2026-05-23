@@ -129,7 +129,8 @@ export interface ConversationStats {
 }
 
 export interface ConfirmationPolicyBase {
-  type: string;
+  kind?: string;
+  type?: string;
   [key: string]: unknown;
 }
 
