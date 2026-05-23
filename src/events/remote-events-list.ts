@@ -7,6 +7,7 @@
  */
 
 import { HttpClient, HttpError } from '../client/http-client';
+import type { HttpClientOptions } from '../client/http-client';
 import { Event, ConversationCallbackType } from '../types/base';
 import { EventPage } from '../types/base';
 
@@ -32,14 +33,17 @@ export interface EventSearchOptions {
   timestamp__lt?: string;
 }
 
+export type RemoteEventsListOptions = HttpClientOptions;
+
 export class RemoteEventsList {
   private client: HttpClient;
   private conversationId: string;
   private cachedEvents: Event[] = [];
   private cachedEventIds = new Set<string>();
 
-  constructor(client: HttpClient, conversationId: string) {
-    this.client = client;
+  constructor(clientOrOptions: HttpClient | RemoteEventsListOptions, conversationId: string) {
+    this.client =
+      clientOrOptions instanceof HttpClient ? clientOrOptions : new HttpClient(clientOrOptions);
     this.conversationId = conversationId;
   }
 

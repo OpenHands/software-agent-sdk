@@ -13,6 +13,17 @@ export { SecurityClient } from './client/security-client';
 export { ApiKeysClient } from './client/api-keys-client';
 export { SessionClient } from './client/session-client';
 export { SharedClient } from './client/shared-client';
+export { WorkspacesClient } from './client/workspaces-client';
+export {
+  AGENT_SERVER_VERSION_ERROR_CODE,
+  AgentServerFeatureRequirements,
+  AgentServerVersionError,
+  assertAgentServerSupports,
+  clearAgentServerInfoCache,
+  compareAgentServerVersions,
+  getCachedAgentServerInfo,
+  isAgentServerVersionError,
+} from './client/agent-server-compatibility';
 
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
@@ -41,3 +52,11 @@ export type { SecurityClientOptions } from './client/security-client';
 export type { ApiKeysClientOptions } from './client/api-keys-client';
 export type { SessionClientOptions } from './client/session-client';
 export type { SharedClientOptions, SharedEventSearchOptions } from './client/shared-client';
+export type {
+  DeleteWorkspaceResponse,
+  WorkspacesClientOptions,
+  WorkspacesListResponse,
+  WorkspaceItem,
+  WorkspaceParentItem,
+} from './client/workspaces-client';
+export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';

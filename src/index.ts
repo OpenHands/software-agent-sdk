@@ -19,7 +19,7 @@ export { LocalWorkspace } from './workspace/local-workspace';
 export { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
-export type { EventSearchOptions } from './events/remote-events-list';
+export type { EventSearchOptions, RemoteEventsListOptions } from './events/remote-events-list';
 
 // Stuck Detection
 export { StuckDetector, DEFAULT_STUCK_THRESHOLDS } from './conversation/stuck-detector';
@@ -140,6 +140,17 @@ export type { BashWebSocketClientOptions } from './events/bash-websocket-client'
 
 // HTTP client
 export { HttpClient, HttpError } from './client/http-client';
+export { WorkspacesClient } from './client/workspaces-client';
+export {
+  AGENT_SERVER_VERSION_ERROR_CODE,
+  AgentServerFeatureRequirements,
+  AgentServerVersionError,
+  assertAgentServerSupports,
+  clearAgentServerInfoCache,
+  compareAgentServerVersions,
+  getCachedAgentServerInfo,
+  isAgentServerVersionError,
+} from './client/agent-server-compatibility';
 
 // Types and interfaces
 export type {
@@ -233,6 +244,14 @@ export type {
 
 // Client options
 export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/http-client';
+export type {
+  DeleteWorkspaceResponse,
+  WorkspacesClientOptions,
+  WorkspacesListResponse,
+  WorkspaceItem,
+  WorkspaceParentItem,
+} from './client/workspaces-client';
+export type { AgentServerFeatureRequirement } from './client/agent-server-compatibility';
 
 export type {
   AliveStatus,
@@ -350,6 +369,17 @@ import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { BashWebSocketClient } from './events/bash-websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
+import { WorkspacesClient } from './client/workspaces-client';
+import {
+  AGENT_SERVER_VERSION_ERROR_CODE,
+  AgentServerFeatureRequirements,
+  AgentServerVersionError,
+  assertAgentServerSupports,
+  clearAgentServerInfoCache,
+  compareAgentServerVersions,
+  getCachedAgentServerInfo,
+  isAgentServerVersionError,
+} from './client/agent-server-compatibility';
 import { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 import { ConversationSortOrder } from './models/conversation';
 import { Agent } from './agent/agent';
@@ -391,6 +421,15 @@ export default {
   BashWebSocketClient,
   HttpClient,
   HttpError,
+  WorkspacesClient,
+  AGENT_SERVER_VERSION_ERROR_CODE,
+  AgentServerFeatureRequirements,
+  AgentServerVersionError,
+  assertAgentServerSupports,
+  clearAgentServerInfoCache,
+  compareAgentServerVersions,
+  getCachedAgentServerInfo,
+  isAgentServerVersionError,
   EventSortOrder,
   ConversationSortOrder,
   AgentExecutionStatus,

@@ -4,14 +4,19 @@ import {
   HttpClient,
   HttpError,
   RemoteConversation,
+  RemoteEventsList,
   RemoteWorkspace,
   Workspace,
 } from '../index';
 import {
+  AgentServerVersionError,
   ApiKeysClient,
   BashClient,
+  clearAgentServerInfoCache,
+  compareAgentServerVersions,
   ConversationClient,
   FileClient,
+  isAgentServerVersionError,
   ProfilesClient,
   SecurityClient,
   ServerClient,
@@ -19,6 +24,7 @@ import {
   SettingsClient,
   SharedClient,
   SkillsClient,
+  WorkspacesClient,
 } from '../clients';
 
 const originalFetch = global.fetch;
@@ -26,6 +32,7 @@ const originalFetch = global.fetch;
 describe('Auxiliary API clients', () => {
   afterEach(() => {
     global.fetch = originalFetch;
+    clearAgentServerInfoCache();
     jest.restoreAllMocks();
   });
 
@@ -71,6 +78,49 @@ describe('Auxiliary API clients', () => {
 
     expect(ready.status).toBe('initializing');
     expect(ready.message).toBe('Booting');
+  });
+
+  it('RemoteEventsList can be constructed from client options', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [], next_page_id: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const events = new RemoteEventsList({ baseUrl: 'http://example.com', apiKey: 'secret' }, 'c1');
+    const page = await events.search({ limit: 25 });
+
+    expect(page.items).toEqual([]);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/c1/events/search?limit=25',
+      expect.objectContaining({
+        method: 'GET',
+        headers: expect.objectContaining({
+          'X-Session-API-Key': 'secret',
+        }),
+      })
+    );
+  });
+
+  it('ConversationClient.switchLLM posts an explicit LLM config', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.switchLLM('c1', { model: 'gpt-4o', api_key: 'encrypted' });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/c1/switch_llm',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ llm: { model: 'gpt-4o', api_key: 'encrypted' } }),
+      })
+    );
   });
 
   it('SkillsClient.syncSkills posts to the sync endpoint', async () => {
@@ -218,6 +268,113 @@ describe('Auxiliary API clients', () => {
       'http://example.com/api/skills/installed/my%20skill',
       expect.objectContaining({ method: 'GET' })
     );
+  });
+
+  it('WorkspacesClient checks agent-server version before listing workspaces', async () => {
+    const responses = [
+      { version: '1.23.0', uptime: 1, idle_time: 0 },
+      {
+        workspaces: [
+          {
+            id: '/repo',
+            name: 'repo',
+            path: '/repo',
+            parentPath: '/home',
+          },
+        ],
+        workspaceParents: [{ id: '/home', name: 'home', path: '/home' }],
+      },
+      {
+        workspaces: [
+          {
+            id: '/repo',
+            name: 'repo',
+            path: '/repo',
+            parentPath: '/home',
+          },
+          {
+            id: '/repo2',
+            name: 'repo2',
+            path: '/repo2',
+            parentPath: '/home',
+          },
+        ],
+        workspaceParents: [{ id: '/home', name: 'home', path: '/home' }],
+      },
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+    const listed = await client.listWorkspaces();
+    const updated = await client.addWorkspaces([
+      { id: '/repo2', name: 'repo2', path: '/repo2', parentPath: '/home' },
+    ]);
+
+    expect(listed.workspaces).toHaveLength(1);
+    expect(updated.workspaces).toHaveLength(2);
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/server_info',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/workspaces',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/workspaces',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          workspaces: [{ id: '/repo2', name: 'repo2', path: '/repo2', parentPath: '/home' }],
+        }),
+      })
+    );
+  });
+
+  it('WorkspacesClient throws AgentServerVersionError for old agent servers', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ version: '1.22.1', uptime: 1, idle_time: 0 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new WorkspacesClient({ host: 'http://example.com' });
+
+    await expect(client.listWorkspaces()).rejects.toMatchObject({
+      code: 'AGENT_SERVER_VERSION_TOO_OLD',
+      feature: 'workspaces',
+      requiredVersion: '1.23.0',
+      actualVersion: '1.22.1',
+    });
+
+    try {
+      await client.listWorkspaces();
+    } catch (error) {
+      expect(error).toBeInstanceOf(AgentServerVersionError);
+      expect(isAgentServerVersionError(error)).toBe(true);
+    }
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('compares agent-server semantic versions', () => {
+    expect(compareAgentServerVersions('1.23.0', '1.23.0')).toBe(0);
+    expect(compareAgentServerVersions('v1.24.0+build.1', '1.23.0')).toBe(1);
+    expect(compareAgentServerVersions('1.22.9', '1.23.0')).toBe(-1);
+    expect(compareAgentServerVersions('1.23.0-rc.1', '1.23.0')).toBe(-1);
+    expect(compareAgentServerVersions('not-a-version', '1.23.0')).toBeNull();
   });
 
   it('BashClient.startCommand normalizes string requests', async () => {
