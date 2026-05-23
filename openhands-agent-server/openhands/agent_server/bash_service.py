@@ -406,6 +406,10 @@ class BashEventService:
                 await asyncio.to_thread(self.delete_events_older_than, cutoff)
             except Exception as e:
                 logger.warning("Bash events retention cleanup error: %s", e)
+                # Brief back-off to prevent log flooding if the failure is persistent
+                # (e.g. permission error, full disk). Cap at the normal interval so
+                # we don't over-delay in low-retention configurations.
+                await asyncio.sleep(min(interval, 60.0))
             await asyncio.sleep(interval)
 
     async def subscribe_to_events(self, subscriber: Subscriber[BashEventBase]) -> UUID:

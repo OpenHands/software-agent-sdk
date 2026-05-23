@@ -190,7 +190,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
 
-            config = get_default_config()
+            config = api.state.config
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
