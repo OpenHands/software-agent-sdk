@@ -186,22 +186,23 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
-        config = get_default_config()
-        retention_task: asyncio.Task | None = None
-        if config.bash_events_retention_seconds is not None:
-            retention_task = asyncio.create_task(
-                get_default_bash_event_service().run_retention_cleanup_loop(
-                    config.bash_events_retention_seconds
-                )
-            )
-            logger.info(
-                "Bash events retention cleanup started (retention: %ds)",
-                config.bash_events_retention_seconds,
-            )
-
         async with service:
             # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
+
+            config = get_default_config()
+            retention_task: asyncio.Task | None = None
+            if config.bash_events_retention_seconds is not None:
+                retention_task = asyncio.create_task(
+                    get_default_bash_event_service().run_retention_cleanup_loop(
+                        config.bash_events_retention_seconds
+                    )
+                )
+                logger.info(
+                    "Bash events retention cleanup started (retention: %ds)",
+                    config.bash_events_retention_seconds,
+                )
+
             try:
                 yield
             finally:

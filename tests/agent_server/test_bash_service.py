@@ -94,7 +94,7 @@ _NEW = datetime(2022, 1, 1, tzinfo=UTC)
 _CUTOFF = datetime(2021, 1, 1, tzinfo=UTC)
 
 
-async def test_delete_events_older_than_removes_old_keeps_new(tmp_path: Path):
+def test_delete_events_older_than_removes_old_keeps_new(tmp_path: Path):
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
 
     old_cmd = BashCommand(command="echo old", timestamp=_OLD)
@@ -102,7 +102,7 @@ async def test_delete_events_older_than_removes_old_keeps_new(tmp_path: Path):
     service._save_event_to_file(old_cmd)
     service._save_event_to_file(new_cmd)
 
-    count = await service.delete_events_older_than(_CUTOFF)
+    count = service.delete_events_older_than(_CUTOFF)
 
     assert count == 1
     remaining = service._get_event_files_by_pattern("*")
@@ -110,32 +110,32 @@ async def test_delete_events_older_than_removes_old_keeps_new(tmp_path: Path):
     assert new_cmd.id.hex in remaining[0].name
 
 
-async def test_delete_events_older_than_empty_directory(tmp_path: Path):
+def test_delete_events_older_than_empty_directory(tmp_path: Path):
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
-    count = await service.delete_events_older_than(_CUTOFF)
+    count = service.delete_events_older_than(_CUTOFF)
     assert count == 0
 
 
-async def test_delete_events_older_than_all_newer_are_skipped(tmp_path: Path):
+def test_delete_events_older_than_all_newer_are_skipped(tmp_path: Path):
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
 
     new_cmd = BashCommand(command="echo new", timestamp=_NEW)
     service._save_event_to_file(new_cmd)
 
-    count = await service.delete_events_older_than(_CUTOFF)
+    count = service.delete_events_older_than(_CUTOFF)
 
     assert count == 0
     assert len(service._get_event_files_by_pattern("*")) == 1
 
 
-async def test_delete_events_older_than_returns_correct_count(tmp_path: Path):
+def test_delete_events_older_than_returns_correct_count(tmp_path: Path):
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
 
     for i in range(3):
         service._save_event_to_file(BashCommand(command=f"echo {i}", timestamp=_OLD))
     service._save_event_to_file(BashCommand(command="echo new", timestamp=_NEW))
 
-    count = await service.delete_events_older_than(_CUTOFF)
+    count = service.delete_events_older_than(_CUTOFF)
 
     assert count == 3
     assert len(service._get_event_files_by_pattern("*")) == 1

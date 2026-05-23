@@ -344,8 +344,13 @@ class BashEventService:
             self._save_event_to_file(error_output)
             await self._pub_sub(error_output)
 
-    async def delete_events_older_than(self, cutoff: datetime) -> int:
+    def delete_events_older_than(self, cutoff: datetime) -> int:
         """Delete bash event files with a recorded timestamp older than ``cutoff``.
+
+        This is a synchronous method — all operations are blocking filesystem
+        I/O. Callers on the asyncio event loop should use
+        ``await asyncio.to_thread(service.delete_events_older_than, cutoff)``
+        to avoid stalling the loop.
 
         File names are prefixed with ``YYYYMMDDHHMMSS`` in ascending sort order,
         so scanning stops as soon as a file at or after the cutoff is reached.
@@ -377,7 +382,12 @@ class BashEventService:
     ) -> None:
         """Periodically purge bash event files older than ``retention_seconds``.
 
-        Runs until cancelled (e.g. during application shutdown).
+        Runs until cancelled (e.g. during application shutdown). Cleanup runs
+        immediately on entry so that files accumulated across a server restart
+        are purged without waiting for the first interval to elapse.
+
+        Blocking filesystem work is dispatched to a thread via
+        ``asyncio.to_thread`` to keep the event loop free.
 
         Args:
             retention_seconds: Age threshold in seconds; older files are deleted.
@@ -391,12 +401,12 @@ class BashEventService:
             else max(60.0, retention_seconds / 2)
         )
         while True:
-            await asyncio.sleep(interval)
             try:
                 cutoff = utc_now() - timedelta(seconds=retention_seconds)
-                await self.delete_events_older_than(cutoff)
+                await asyncio.to_thread(self.delete_events_older_than, cutoff)
             except Exception as e:
                 logger.warning("Bash events retention cleanup error: %s", e)
+            await asyncio.sleep(interval)
 
     async def subscribe_to_events(self, subscriber: Subscriber[BashEventBase]) -> UUID:
         """Subscribe to bash events.
