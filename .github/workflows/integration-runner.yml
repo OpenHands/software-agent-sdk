@@ -50,7 +50,7 @@ on:
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
     # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
-    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.5,gemini-3.1-pro
+    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,kimi-k2.6,gemini-3.1-pro
 
 jobs:
     setup-matrix:
@@ -173,11 +173,10 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             issues: write
-            pull-requests: write
         steps:
             - name: Comment on issue/PR (workflow_dispatch)
               env:
-                  GITHUB_TOKEN: ${{ github.token }}
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
@@ -197,7 +196,7 @@ jobs:
                   Results will be posted here when complete.
                   EOF
                   )
-                  gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}" --body "$COMMENT_BODY"
+                  gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"
 
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule

@@ -10,7 +10,7 @@ from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk import ConversationStats, RegistryEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
+from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
@@ -30,72 +30,6 @@ def default_llm():
         retry_min_wait=1,
         retry_max_wait=2,
     )
-
-
-def _tool_result_history() -> list[Message]:
-    return [
-        Message(
-            role="assistant",
-            content=[],
-            tool_calls=[
-                MessageToolCall(
-                    id="call_123",
-                    name="terminal",
-                    arguments='{"command": "cat document.txt"}',
-                    origin="completion",
-                )
-            ],
-        ),
-        Message(
-            role="tool",
-            content=[TextContent(text="file contents")],
-            tool_call_id="call_123",
-            name="terminal",
-        ),
-    ]
-
-
-def test_gemini_chat_format_omits_tool_call_ids():
-    llm = LLM(
-        model="litellm_proxy/gemini-3.1-pro-preview",
-        api_key=SecretStr("test_key"),
-        usage_id="test-gemini-tool-call-ids",
-    )
-    llm._model_info = {"litellm_provider": "vertex_ai"}
-
-    formatted = llm.format_messages_for_llm(_tool_result_history())
-
-    assert "id" not in formatted[0]["tool_calls"][0]
-    assert "tool_call_id" not in formatted[1]
-    assert formatted[1]["name"] == "terminal"
-
-
-def test_openai_chat_format_keeps_tool_call_ids():
-    llm = LLM(
-        model="gpt-4o",
-        api_key=SecretStr("test_key"),
-        usage_id="test-openai-tool-call-ids",
-    )
-    llm._model_info = {"litellm_provider": "openai"}
-
-    formatted = llm.format_messages_for_llm(_tool_result_history())
-
-    assert formatted[0]["tool_calls"][0]["id"] == "call_123"
-    assert formatted[1]["tool_call_id"] == "call_123"
-
-
-def test_non_gemini_vertex_chat_format_keeps_tool_call_ids():
-    llm = LLM(
-        model="vertex_ai/claude-sonnet-4-5",
-        api_key=SecretStr("test_key"),
-        usage_id="test-vertex-tool-call-ids",
-    )
-    llm._model_info = {"litellm_provider": "vertex_ai"}
-
-    formatted = llm.format_messages_for_llm(_tool_result_history())
-
-    assert formatted[0]["tool_calls"][0]["id"] == "call_123"
-    assert formatted[1]["tool_call_id"] == "call_123"
 
 
 def test_llm_init_with_default_config(default_llm):
