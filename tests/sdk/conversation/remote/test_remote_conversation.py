@@ -14,6 +14,10 @@ from openhands.sdk.conversation.impl.remote_conversation import RemoteConversati
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event import MessageEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
@@ -787,11 +791,11 @@ class TestRemoteConversation:
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
         conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
 
-        # Verify polling continued through REST FINISHED hints and returned
-        # only after the post-run WebSocket state update arrived.
-        assert poll_count[0] == 5, (
-            f"Should have polled 5 times (2 running + 3 REST finished hints), "
-            f"got {poll_count[0]}"
+        # Verify polling continued through REST FINISHED hints and completed
+        # only after one bounded final REST fallback refresh.
+        assert poll_count[0] == 6, (
+            f"Should have polled 6 times (2 running + 3 REST finished hints "
+            f"+ 1 final REST fallback), got {poll_count[0]}"
         )
 
     @patch(
@@ -856,15 +860,25 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 if poll_count[0] >= len(rest_script):
-                    conversation._terminal_status_queue.put("finished")
+                    ws_callback[0](
+                        ConversationStateUpdateEvent(
+                            key=FULL_STATE_KEY,
+                            value={"execution_status": "finished"},
+                        )
+                    )
                 return response
             return original_side_effect(method, url, **kwargs)
 
         mock_client_instance.request.side_effect = custom_side_effect
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
+        ws_callback = [lambda event: None]
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
+        ws_callback[0](
+            ConversationStateUpdateEvent(key="execution_status", value="finished")
+        )
 
         conversation.run(blocking=True, poll_interval=0.01)
 
@@ -917,15 +931,22 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 if poll_count[0] >= len(rest_script):
-                    conversation._terminal_status_queue.put("finished")
+                    ws_callback[0](
+                        ConversationStateUpdateEvent(
+                            key=FULL_STATE_KEY,
+                            value={"execution_status": "finished"},
+                        )
+                    )
                 return response
             return original_side_effect(method, url, **kwargs)
 
         mock_client_instance.request.side_effect = custom_side_effect
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
+        ws_callback = [lambda event: None]
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
 
         conversation.run(blocking=True, poll_interval=0.01)
 

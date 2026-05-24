@@ -832,17 +832,32 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        # Add a callback that signals when run completes via WebSocket
-        # This ensures we wait for all events to be delivered before run() returns
+        # Add a callback that signals when run completes via WebSocket.
+        # Per-field ERROR/STUCK updates are terminal immediately. FINISHED is
+        # authoritative only in the full post-run state snapshot emitted by the
+        # server after conversation.run()/arun() exits and pending events flush.
         def run_complete_callback(event: Event) -> None:
-            if isinstance(event, ConversationStateUpdateEvent):
-                if event.key == "execution_status":
+            if not isinstance(event, ConversationStateUpdateEvent):
+                return
+
+            if event.key == FULL_STATE_KEY:
+                raw_status = event.value.get("execution_status")
+                if raw_status is not None:
                     try:
-                        status = ConversationExecutionStatus(event.value)
+                        status = ConversationExecutionStatus(raw_status)
                         if status.is_terminal():
-                            self._terminal_status_queue.put(event.value)
+                            self._terminal_status_queue.put(raw_status)
                     except ValueError:
                         pass  # Unknown status value, ignore
+                return
+
+            if event.key == "execution_status":
+                try:
+                    status = ConversationExecutionStatus(event.value)
+                    if status.value in self._immediate_terminal_statuses():
+                        self._terminal_status_queue.put(event.value)
+                except ValueError:
+                    pass  # Unknown status value, ignore
 
         # Compose all callbacks into a single callback
         all_callbacks = self._callbacks + [run_complete_callback]
@@ -1125,14 +1140,26 @@ class RemoteConversation(BaseConversation):
                     # wait for the server's post-run WebSocket state update.
                     consecutive_terminal_polls += 1
                     if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
-                        logger.debug(
-                            "REST has reported terminal status %s for %d polls; "
-                            "waiting for post-run WebSocket state update "
-                            "(elapsed: %.1fs)",
+                        logger.warning(
+                            "REST has reported terminal status %s for %d polls "
+                            "without a post-run WebSocket snapshot; using a "
+                            "final REST refresh fallback (elapsed: %.1fs)",
                             status,
                             consecutive_terminal_polls,
                             elapsed,
                         )
+                        refreshed_status = self._state.refresh_from_server().get(
+                            "execution_status"
+                        )
+                        self._handle_conversation_status(refreshed_status)
+                        if (
+                            refreshed_status
+                            and ConversationExecutionStatus(
+                                refreshed_status
+                            ).is_terminal()
+                        ):
+                            self._state.events.reconcile()
+                            return
                 else:
                     consecutive_terminal_polls = 0
                     # Status flipped non-terminal (e.g. FINISHED→RUNNING from
@@ -1146,11 +1173,11 @@ class RemoteConversation(BaseConversation):
     def _immediate_terminal_statuses() -> frozenset[str]:
         """Statuses that the WS path may treat as authoritative termination.
 
-        FINISHED is intentionally excluded: stop hooks can flip a freshly-set
-        FINISHED back to RUNNING within the same server-side iteration, and
-        returning on the first WS notification would race that revert. The
-        REST poll path with ``TERMINAL_POLL_THRESHOLD`` consecutive
-        terminal polls is the authoritative termination check for FINISHED.
+        FINISHED is intentionally excluded for per-field state updates: stop
+        hooks can flip a freshly-set FINISHED back to RUNNING within the same
+        server-side iteration, and returning on that first notification would
+        race the revert. FINISHED is accepted from the server's full post-run
+        state snapshot, with bounded REST polling as a fallback.
         """
         return frozenset(
             {
