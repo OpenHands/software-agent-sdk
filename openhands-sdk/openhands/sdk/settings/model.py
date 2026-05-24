@@ -1190,10 +1190,13 @@ class ACPAgentSettings(AgentSettingsBase):
         """Return the effective ACP subprocess environment.
 
         Explicit :attr:`acp_env` entries override provider-derived env vars.
-        ``ACPAgent`` then injects :attr:`agent_context` secrets only for keys
-        that are still absent, preserving the overall priority:
+        The returned dict becomes ``ACPAgent.acp_env``; at spawn time
+        ``ACPAgent`` then fills still-missing keys from the conversation's
+        ``secret_registry`` (the canonical conversation-secret channel) and
+        finally from :attr:`agent_context` secrets, preserving the overall
+        priority:
 
-        ``acp_env > provider env > agent_context.secrets``.
+        ``acp_env > provider env > secret_registry > agent_context.secrets``.
         """
         return {
             **self.resolve_provider_env(),

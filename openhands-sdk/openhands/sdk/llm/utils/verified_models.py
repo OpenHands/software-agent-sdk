@@ -89,6 +89,7 @@ VERIFIED_NVIDIA_MODELS = [
 VERIFIED_QWEN_MODELS = [
     "qwen3-6-plus",
     "qwen3-coder-480b",
+    "qwen3-coder-next",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -127,6 +128,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-super-120b-a12b",
     "qwen3-6-plus",
     "qwen3-coder-480b",
+    "qwen3-coder-next",
     "trinity-large-thinking",
 ]
 
