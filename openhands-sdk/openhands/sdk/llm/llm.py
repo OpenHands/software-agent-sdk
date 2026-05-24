@@ -153,6 +153,8 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
 
+TOOL_CALL_ID_UNSUPPORTED_PROVIDERS: Final[frozenset[str]] = frozenset({"gemini"})
+
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     """Language model interface for OpenHands agents.
@@ -1909,8 +1911,36 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             for message in messages
         ]
+        self._strip_unsupported_tool_call_ids(formatted_messages)
 
         return formatted_messages
+
+    def _strip_unsupported_tool_call_ids(self, messages: list[dict[str, Any]]) -> None:
+        if not self._tool_call_ids_are_unsupported():
+            return
+
+        for message in messages:
+            if message.get("role") == "assistant":
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            tool_call.pop("id", None)
+            elif message.get("role") == "tool":
+                message.pop("tool_call_id", None)
+
+    def _tool_call_ids_are_unsupported(self) -> bool:
+        provider = self._infer_model_info_provider()
+        if provider in TOOL_CALL_ID_UNSUPPORTED_PROVIDERS:
+            return True
+
+        model_names = [self._model_name_for_capabilities()]
+        if self._model_info is not None:
+            model_key = self._model_info.get("key")
+            if isinstance(model_key, str):
+                model_names.append(model_key)
+
+        return any("gemini" in model_name.lower() for model_name in model_names)
 
     def format_messages_for_responses(
         self, messages: list[Message]
