@@ -838,21 +838,25 @@ class EventService:
                     # wrapping up. A send_message(run=True) that arrived during
                     # the wait_for_pending() tail above had its run() rejected as
                     # "conversation_already_running" and suppressed, setting
-                    # _rerun_requested. Honor it only while the conversation is
-                    # still IDLE — i.e. that message is genuinely pending. If the
-                    # run loop was still alive it already absorbed the message
-                    # (LocalConversation.run() keeps looping on FINISHED) and we
-                    # are FINISHED here, so the IDLE guard avoids a redundant run.
-                    # A deliberate run=False append, or an IDLE reached via
-                    # another path, never sets the flag.
+                    # _rerun_requested. Honor it while the conversation is IDLE
+                    # (pending input) or ACP-interrupted PAUSED (the old task
+                    # finished its interrupt before the replacement run could
+                    # start). If the run loop was still alive it already absorbed
+                    # the message and we are FINISHED here, so the guard avoids a
+                    # redundant run. A deliberate run=False append, or an IDLE
+                    # reached via another path, never sets the flag.
                     if self._rerun_requested:
-                        self._rerun_requested = False
-                        if (
-                            await self._get_execution_status()
-                            == ConversationExecutionStatus.IDLE
-                        ):
-                            with suppress(ValueError):
+                        status = await self._get_execution_status()
+                        should_restart = status == ConversationExecutionStatus.IDLE or (
+                            status == ConversationExecutionStatus.PAUSED
+                            and isinstance(conversation.agent, ACPAgent)
+                        )
+                        if should_restart:
+                            self._rerun_requested = False
+                            try:
                                 await self.run()
+                            except ValueError:
+                                self._rerun_requested = True
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())

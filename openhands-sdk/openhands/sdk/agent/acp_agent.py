@@ -1870,11 +1870,13 @@ class ACPAgent(AgentBase):
         except TimeoutError:
             await self._arequest_session_cancel()
             drained = await self._drain_cancelled_prompt(prompt_future)
-            self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
-            if not drained:
-                self._restart_session_after_drain_timeout(state, on_event)
+            with state:
+                self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
+                if not drained:
+                    self._restart_session_after_drain_timeout(state, on_event)
         except Exception as e:
-            self._emit_turn_error(e, state, on_event)
+            with state:
+                self._emit_turn_error(e, state, on_event)
             raise
         finally:
             self._clear_turn_callbacks()

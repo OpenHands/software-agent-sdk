@@ -953,7 +953,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
-        last_acp_prompt_user_message_id: str | None = None
+        last_acp_prompt_user_message_id = self._state.agent_state.get(
+            "acp_last_prompt_user_message_id"
+        )
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
@@ -1093,6 +1095,9 @@ class LocalConversation(BaseConversation):
                     iteration += 1
                     if acp_step_user_message_id is not None:
                         last_acp_prompt_user_message_id = acp_step_user_message_id
+                        self._state.agent_state["acp_last_prompt_user_message_id"] = (
+                            acp_step_user_message_id
+                        )
 
                     if self._state.execution_status in (
                         ConversationExecutionStatus.ERROR,
