@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import urlparse
@@ -60,6 +61,12 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
+
+
+@dataclass(frozen=True)
+class _RunCompletionSignal:
+    status: str
+    from_post_run_snapshot: bool
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -641,7 +648,7 @@ class RemoteConversation(BaseConversation):
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
-    _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
+    _terminal_status_queue: Queue[_RunCompletionSignal]
     _conversation_info_base_path: str
     _conversation_action_base_path: str
     delete_on_close: bool = False
@@ -705,7 +712,7 @@ class RemoteConversation(BaseConversation):
         self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
         self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
         self._cleanup_initiated = False
-        self._terminal_status_queue: Queue[str] = Queue()
+        self._terminal_status_queue: Queue[_RunCompletionSignal] = Queue()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -836,6 +843,9 @@ class RemoteConversation(BaseConversation):
         # Per-field ERROR/STUCK updates are terminal immediately. FINISHED is
         # authoritative only in the full post-run state snapshot emitted by the
         # server after conversation.run()/arun() exits and pending events flush.
+        # That snapshot may also report non-terminal-but-not-running statuses
+        # such as paused or waiting_for_confirmation, which still mean this
+        # run invocation has yielded control back to the caller.
         def run_complete_callback(event: Event) -> None:
             if not isinstance(event, ConversationStateUpdateEvent):
                 return
@@ -845,17 +855,28 @@ class RemoteConversation(BaseConversation):
                 if raw_status is not None:
                     try:
                         status = ConversationExecutionStatus(raw_status)
-                        if status.is_terminal():
-                            self._terminal_status_queue.put(raw_status)
                     except ValueError:
                         pass  # Unknown status value, ignore
+                    else:
+                        if status != ConversationExecutionStatus.RUNNING:
+                            self._terminal_status_queue.put(
+                                _RunCompletionSignal(
+                                    status=status.value,
+                                    from_post_run_snapshot=True,
+                                )
+                            )
                 return
 
             if event.key == "execution_status":
                 try:
                     status = ConversationExecutionStatus(event.value)
                     if status.value in self._immediate_terminal_statuses():
-                        self._terminal_status_queue.put(event.value)
+                        self._terminal_status_queue.put(
+                            _RunCompletionSignal(
+                                status=status.value,
+                                from_post_run_snapshot=False,
+                            )
+                        )
                 except ValueError:
                     pass  # Unknown status value, ignore
 
@@ -1039,9 +1060,9 @@ class RemoteConversation(BaseConversation):
         status before WebSocket delivers the final events.
 
         As a fallback, it also polls the server periodically. If the WebSocket
-        is delayed or disconnected, we return after multiple consecutive polls
-        show a terminal status, and reconcile events to catch any that were
-        missed via WebSocket.
+        is delayed or disconnected, polling still surfaces ERROR/STUCK promptly.
+        A REST-only FINISHED status is not authoritative because stop hooks can
+        still revert it to RUNNING before the server-side run task exits.
 
         Args:
             poll_interval: Time in seconds between status polls (fallback).
@@ -1054,12 +1075,9 @@ class RemoteConversation(BaseConversation):
         """
         start_time = time.monotonic()
         consecutive_terminal_polls = 0
-        # Return after this many consecutive terminal polls (fallback for WS issues).
-        # We use 3 polls to balance latency vs reliability:
-        # - 1 poll could be a transient state during shutdown
-        # - 2 polls might still catch a race condition
-        # - 3 polls (with default 1s interval = 3s total) provides high confidence
-        #   that the run is truly complete while keeping fallback latency reasonable
+        # Warn after this many consecutive REST terminal polls without the
+        # authoritative post-run snapshot. This is a health signal only; returning
+        # from REST FINISHED would reintroduce the stop-hook race.
         TERMINAL_POLL_THRESHOLD = 3
 
         while True:
@@ -1074,24 +1092,11 @@ class RemoteConversation(BaseConversation):
                 )
 
             # Wait for either:
-            # 1. WebSocket delivers terminal status event (fast wakeup hint)
+            # 1. WebSocket delivers a run-completion signal
             # 2. Poll interval expires (fall through to REST poll)
-            #
-            # NOTE: A WS terminal status is treated as a wakeup *hint*, not as
-            # an authoritative termination signal. Stop hooks (see
-            # ``LocalConversation.run`` in ``local_conversation.py``) can flip
-            # FINISHED back to RUNNING within the same server-side iteration
-            # to give the agent another step. If we returned on the first
-            # FINISHED notification we'd race the server's hook eval and
-            # tear down the conversation while the agent still has iteration
-            # budget left. ERROR/STUCK *do* terminate immediately — they are
-            # not subject to hook-block reverts. For FINISHED we fall through
-            # to the REST poll path below, which already requires
-            # ``TERMINAL_POLL_THRESHOLD`` consecutive terminal polls before
-            # returning. Any FINISHED→RUNNING revert (stop hook denied
-            # stopping) naturally resets the counter on the next poll.
             try:
-                ws_status = self._terminal_status_queue.get(timeout=poll_interval)
+                signal = self._terminal_status_queue.get(timeout=poll_interval)
+                ws_status = signal.status
                 # Raises ConversationRunError on ERROR/STUCK; otherwise no-op.
                 self._handle_conversation_status(ws_status)
                 if ws_status in self._immediate_terminal_statuses():
@@ -1102,18 +1107,18 @@ class RemoteConversation(BaseConversation):
                         elapsed,
                     )
                     return
+                if not signal.from_post_run_snapshot:
+                    continue
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
                     ws_status,
                     elapsed,
                 )
-                # The server publishes ConversationStateUpdateEvent only after
+                # The server publishes the full ConversationStateUpdateEvent after
                 # conversation.run()/arun() exits and pending events are flushed,
-                # so FINISHED from this queue is an authoritative run-complete
-                # signal. Avoid REST confirmation here: generic REST status reads
-                # intentionally remain non-blocking and can observe transient
-                # FINISHED while a stop hook is still executing.
+                # so non-running statuses from that snapshot are authoritative
+                # run-complete signals.
                 self._state.events.reconcile()
                 return
             except Empty:
@@ -1131,53 +1136,32 @@ class RemoteConversation(BaseConversation):
                 # Raises ConversationRunError for ERROR/STUCK states
                 self._handle_conversation_status(status)
 
-                # Track consecutive terminal polls as a fallback for WS issues.
-                # If WebSocket is delayed/disconnected, we return after multiple
-                # consecutive polls confirm the terminal status.
                 if status and ConversationExecutionStatus(status).is_terminal():
                     # ERROR/STUCK have already been handled above. FINISHED from
                     # REST is only a hint because stop hooks can still veto it;
                     # wait for the server's post-run WebSocket state update.
                     consecutive_terminal_polls += 1
-                    if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
+                    if consecutive_terminal_polls == TERMINAL_POLL_THRESHOLD:
                         logger.warning(
                             "REST has reported terminal status %s for %d polls "
-                            "without a post-run WebSocket snapshot; using a "
-                            "final REST refresh fallback (elapsed: %.1fs)",
+                            "without a post-run WebSocket snapshot; continuing "
+                            "to wait for the authoritative snapshot "
+                            "(elapsed: %.1fs)",
                             status,
                             consecutive_terminal_polls,
                             elapsed,
                         )
-                        refreshed_status = self._state.refresh_from_server().get(
-                            "execution_status"
-                        )
-                        self._handle_conversation_status(refreshed_status)
-                        if (
-                            refreshed_status
-                            and ConversationExecutionStatus(
-                                refreshed_status
-                            ).is_terminal()
-                        ):
-                            self._state.events.reconcile()
-                            return
                 else:
                     consecutive_terminal_polls = 0
-                    # Status flipped non-terminal (e.g. FINISHED→RUNNING from
-                    # a stop-hook block). Drain queued FINISHED-only WS hints
-                    # so we don't busy-spin on stale FINISHED notifications
-                    # in the next iteration. ERROR/STUCK events remain queued
-                    # for immediate handling.
-                    self._drain_finished_terminal_status_hints()
 
     @staticmethod
     def _immediate_terminal_statuses() -> frozenset[str]:
         """Statuses that the WS path may treat as authoritative termination.
 
-        FINISHED is intentionally excluded for per-field state updates: stop
-        hooks can flip a freshly-set FINISHED back to RUNNING within the same
-        server-side iteration, and returning on that first notification would
-        race the revert. FINISHED is accepted from the server's full post-run
-        state snapshot, with bounded REST polling as a fallback.
+        FINISHED is intentionally excluded for per-field state updates: stop hooks
+        can flip a freshly-set FINISHED back to RUNNING within the same server-side
+        iteration. FINISHED is accepted only from the server's full post-run state
+        snapshot.
         """
         return frozenset(
             {
@@ -1199,19 +1183,6 @@ class RemoteConversation(BaseConversation):
                 self._terminal_status_queue.get_nowait()
             except Empty:
                 break
-
-    def _drain_finished_terminal_status_hints(self) -> None:
-        """Drop only active-run FINISHED hints while preserving ERROR/STUCK."""
-        retained: list[str] = []
-        while True:
-            try:
-                status = self._terminal_status_queue.get_nowait()
-            except Empty:
-                break
-            if status != ConversationExecutionStatus.FINISHED.value:
-                retained.append(status)
-        for status in retained:
-            self._terminal_status_queue.put(status)
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""

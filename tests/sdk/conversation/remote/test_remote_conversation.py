@@ -124,6 +124,32 @@ class TestRemoteConversation:
         }
         return mock_response
 
+    @staticmethod
+    def full_state_event(status: str, **values):
+        return ConversationStateUpdateEvent(
+            key=FULL_STATE_KEY,
+            value={"execution_status": status, **values},
+        )
+
+    def install_post_run_full_state(
+        self,
+        mock_client_instance,
+        conversation_id: str,
+        status: str = "finished",
+        **values,
+    ):
+        ws_callback = [lambda event: None]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            resp = original_side_effect(method, url, **kwargs)
+            if method == "POST" and url == f"/api/conversations/{conversation_id}/run":
+                ws_callback[0](self.full_state_event(status, **values))
+            return resp
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        return ws_callback
+
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
@@ -649,12 +675,16 @@ class TestRemoteConversation:
         # Setup mocks
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        ws_callback = self.install_post_run_full_state(
+            mock_client_instance, conversation_id
+        )
 
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
 
         # Create conversation and run
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
         conversation.run()
 
         # Verify run API call
@@ -674,6 +704,7 @@ class TestRemoteConversation:
         # Setup mocks
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        ws_callback = [lambda event: None]
 
         # Override the default request side_effect to return 409 for /run endpoint
         original_side_effect = mock_client_instance.request.side_effect
@@ -683,6 +714,7 @@ class TestRemoteConversation:
                 mock_run_response = Mock()
                 mock_run_response.status_code = 409  # Already running
                 mock_run_response.raise_for_status.return_value = None
+                ws_callback[0](self.full_state_event("finished"))
                 return mock_run_response
             return original_side_effect(method, url, **kwargs)
 
@@ -693,6 +725,7 @@ class TestRemoteConversation:
 
         # Create conversation and run
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
         # With blocking=True (default), it will poll until finished
         conversation.run()  # Should not raise an exception
 
@@ -748,11 +781,10 @@ class TestRemoteConversation:
     def test_remote_conversation_run_blocking_polls_until_finished(
         self, mock_ws_client
     ):
-        """Test that blocking=True polls until status is not running.
+        """Test that blocking=True waits for the post-run state snapshot.
 
-        The implementation waits for WebSocket to deliver terminal status, but falls
-        back to REST polling if WebSocket doesn't deliver. The fallback requires 3
-        consecutive terminal polls (TERMINAL_POLL_THRESHOLD) before returning.
+        REST FINISHED is only a health signal; the server's full-state
+        ConversationStateUpdateEvent is the authoritative run-complete signal.
         """
         # Setup mocks
         conversation_id = str(uuid.uuid4())
@@ -761,6 +793,7 @@ class TestRemoteConversation:
         # Track poll count and return "running" for first 2 polls, then "finished"
         poll_count = [0]
         original_side_effect = mock_client_instance.request.side_effect
+        ws_callback = [lambda event: None]
 
         def custom_side_effect(method, url, **kwargs):
             if method == "GET" and url == f"/api/conversations/{conversation_id}":
@@ -778,7 +811,7 @@ class TestRemoteConversation:
                         "execution_status": "finished",
                     }
                     if poll_count[0] == 5:
-                        conversation._terminal_status_queue.put("finished")
+                        ws_callback[0](self.full_state_event("finished"))
                 return response
             return original_side_effect(method, url, **kwargs)
 
@@ -789,14 +822,94 @@ class TestRemoteConversation:
 
         # Create conversation and run with blocking=True
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
         conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
 
-        # Verify polling continued through REST FINISHED hints and completed
-        # only after one bounded final REST fallback refresh.
-        assert poll_count[0] == 6, (
-            f"Should have polled 6 times (2 running + 3 REST finished hints "
-            f"+ 1 final REST fallback), got {poll_count[0]}"
+        # Verify REST FINISHED alone did not complete the run; the run returned
+        # only after the post-run full-state snapshot was delivered.
+        assert poll_count[0] == 5, (
+            f"Should have polled until the post-run snapshot arrived, got "
+            f"{poll_count[0]} poll(s)"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_returns_on_waiting_for_confirmation_snapshot(
+        self, mock_ws_client
+    ):
+        """A post-run non-running full-state snapshot completes blocking run()."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        ws_callback = [lambda event: None]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "POST" and url == f"/api/conversations/{conversation_id}/run":
+                response = original_side_effect(method, url, **kwargs)
+                ws_callback[0](self.full_state_event("waiting_for_confirmation"))
+                return response
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "running",
+                    "stats": {"usage_to_metrics": {}},
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
+
+        conversation.run(blocking=True, poll_interval=0.01, timeout=0.05)
+
+        assert conversation.state.execution_status.value == "waiting_for_confirmation"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_preserves_post_run_snapshot_after_running_poll(
+        self, mock_ws_client
+    ):
+        """An in-flight RUNNING REST poll must not discard a post-run snapshot."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        ws_callback = [lambda event: None]
+        poll_count = [0]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                poll_count[0] += 1
+                ws_callback[0](self.full_state_event("finished"))
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "running",
+                    "stats": {"usage_to_metrics": {}},
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
+
+        conversation.run(blocking=True, poll_interval=0.01, timeout=0.1)
+
+        assert poll_count[0] == 1
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -823,10 +936,8 @@ class TestRemoteConversation:
         down the agent-server pod (via ``workspace_keepalive`` exit) before
         the agent could consume its iteration budget.
 
-        The fix: WS FINISHED is a fast wakeup hint only. The REST-poll
-        ``TERMINAL_POLL_THRESHOLD`` confirmation pattern is the single
-        authoritative termination check. A FINISHED→RUNNING revert seen on
-        a REST poll naturally resets the consecutive-terminal counter.
+        The fix: per-field WS FINISHED is ignored for completion. Only the
+        post-run full-state snapshot is authoritative.
         """
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
@@ -845,8 +956,17 @@ class TestRemoteConversation:
         ]
         poll_count = [0]
         original_side_effect = mock_client_instance.request.side_effect
+        ws_callback = [lambda event: None]
 
         def custom_side_effect(method, url, **kwargs):
+            if method == "POST" and url == f"/api/conversations/{conversation_id}/run":
+                response = original_side_effect(method, url, **kwargs)
+                ws_callback[0](
+                    ConversationStateUpdateEvent(
+                        key="execution_status", value="finished"
+                    )
+                )
+                return response
             if method == "GET" and url == f"/api/conversations/{conversation_id}":
                 idx = min(poll_count[0], len(rest_script) - 1)
                 status = rest_script[idx]
@@ -860,46 +980,34 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 if poll_count[0] >= len(rest_script):
-                    ws_callback[0](
-                        ConversationStateUpdateEvent(
-                            key=FULL_STATE_KEY,
-                            value={"execution_status": "finished"},
-                        )
-                    )
+                    ws_callback[0](self.full_state_event("finished"))
                 return response
             return original_side_effect(method, url, **kwargs)
 
         mock_client_instance.request.side_effect = custom_side_effect
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
-        ws_callback = [lambda event: None]
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
         ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
-        ws_callback[0](
-            ConversationStateUpdateEvent(key="execution_status", value="finished")
-        )
 
         conversation.run(blocking=True, poll_interval=0.01)
 
         # Must have polled past the 3 RUNNING REST responses (race window),
-        # then 3 consecutive FINISHED REST responses for confirmation,
-        # then 1 final state refresh. Pre-fix this would have returned on
-        # the WS FINISHED injected after the /run trigger with poll_count == 0.
-        assert poll_count[0] >= 3 + 3, (
-            f"Run() returned before REST confirmed termination. "
-            f"poll_count={poll_count[0]} — expected at least 6 (3 running "
-            f"during hook revert + 3 consecutive finished). The injected WS "
-            f"FINISHED was treated as authoritative; this is the regression."
+        # then waited for the post-run full-state snapshot. Pre-fix this would
+        # have returned on the WS FINISHED injected after the /run trigger with
+        # poll_count == 0.
+        assert poll_count[0] == len(rest_script), (
+            f"Run() returned before the post-run snapshot. poll_count={poll_count[0]}"
         )
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_run_final_refresh_must_still_be_terminal(
+    def test_remote_conversation_run_rest_finished_revert_waits_for_full_state(
         self, mock_ws_client
     ):
-        """Do not return if the final authoritative refresh sees a hook veto."""
+        """Do not return from REST FINISHED when a hook can still veto it."""
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
 
@@ -931,12 +1039,7 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 if poll_count[0] >= len(rest_script):
-                    ws_callback[0](
-                        ConversationStateUpdateEvent(
-                            key=FULL_STATE_KEY,
-                            value={"execution_status": "finished"},
-                        )
-                    )
+                    ws_callback[0](self.full_state_event("finished"))
                 return response
             return original_side_effect(method, url, **kwargs)
 
@@ -951,21 +1054,22 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)
 
         assert poll_count[0] >= len(rest_script), (
-            f"Run() returned before the final refresh confirmed terminal status. "
+            f"Run() returned before the post-run full-state snapshot. "
             f"poll_count={poll_count[0]}"
         )
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_run_keeps_error_queued_after_finished_hint(
+    def test_remote_conversation_run_keeps_error_queued_after_running_poll(
         self, mock_ws_client
     ):
-        """Active-run FINISHED hint cleanup must not discard ERROR/STUCK."""
+        """A non-terminal REST poll must not discard queued ERROR/STUCK."""
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
         original_side_effect = mock_client_instance.request.side_effect
         poll_count = [0]
+        ws_callback = [lambda event: None]
 
         def custom_side_effect(method, url, **kwargs):
             resp = original_side_effect(method, url, **kwargs)
@@ -977,8 +1081,11 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 if poll_count[0] == 1:
-                    conversation._terminal_status_queue.put("finished")
-                    conversation._terminal_status_queue.put("error")
+                    ws_callback[0](
+                        ConversationStateUpdateEvent(
+                            key="execution_status", value="error"
+                        )
+                    )
             return resp
 
         mock_client_instance.request.side_effect = custom_side_effect
@@ -986,6 +1093,7 @@ class TestRemoteConversation:
         mock_ws_client.return_value = mock_ws_instance
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
         conversation._get_last_error_detail = Mock(return_value="boom")
 
         with pytest.raises(Exception) as excinfo:
@@ -1015,6 +1123,7 @@ class TestRemoteConversation:
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
         conversation._get_last_error_detail = Mock(return_value="boom")
+        ws_callback = [mock_ws_client.call_args.kwargs["callback"]]
 
         # ``run()`` drains the WS queue at trigger time (see line "Drain any
         # stale terminal status events from previous runs"). We need the
@@ -1026,7 +1135,9 @@ class TestRemoteConversation:
         def post_run_seeds_error(method, url, **kwargs):
             resp = original_side_effect(method, url, **kwargs)
             if method == "POST" and url.endswith("/run"):
-                conversation._terminal_status_queue.put("error")
+                ws_callback[0](
+                    ConversationStateUpdateEvent(key="execution_status", value="error")
+                )
             return resp
 
         mock_client_instance.request.side_effect = post_run_seeds_error
@@ -1041,10 +1152,10 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_run_rest_fallback_refreshes_final_state(
+    def test_remote_conversation_run_full_state_updates_cached_state(
         self, mock_ws_client
     ):
-        """REST fallback refreshes cached state before run() returns."""
+        """Post-run full-state snapshots update cached state before run() returns."""
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
 
@@ -1079,6 +1190,7 @@ class TestRemoteConversation:
 
         poll_count = [0]
         original_side_effect = mock_client_instance.request.side_effect
+        ws_callback = [lambda event: None]
 
         def custom_side_effect(method, url, **kwargs):
             if method == "GET" and url == f"/api/conversations/{conversation_id}":
@@ -1096,7 +1208,12 @@ class TestRemoteConversation:
                     response.json.return_value = stale_info
                 else:
                     response.json.return_value = final_info
-                    conversation._terminal_status_queue.put("finished")
+                    ws_callback[0](
+                        ConversationStateUpdateEvent(
+                            key=FULL_STATE_KEY,
+                            value=final_info,
+                        )
+                    )
                 return response
             return original_side_effect(method, url, **kwargs)
 
@@ -1106,6 +1223,7 @@ class TestRemoteConversation:
         mock_ws_client.return_value = mock_ws_instance
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        ws_callback[0] = mock_ws_client.call_args.kwargs["callback"]
         conversation.state._cached_state = {
             "id": conversation_id,
             "execution_status": "running",
@@ -1115,6 +1233,7 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)
 
         assert poll_count[0] >= 1
+        assert conversation.state.stats.usage_to_metrics
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
