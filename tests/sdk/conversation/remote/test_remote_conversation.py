@@ -936,6 +936,45 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_run_keeps_error_queued_after_finished_hint(
+        self, mock_ws_client
+    ):
+        """Active-run FINISHED hint cleanup must not discard ERROR/STUCK."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        original_side_effect = mock_client_instance.request.side_effect
+        poll_count = [0]
+
+        def custom_side_effect(method, url, **kwargs):
+            resp = original_side_effect(method, url, **kwargs)
+            if method == "POST" and url.endswith("/run"):
+                conversation._terminal_status_queue.put("finished")
+            elif method == "GET" and url == f"/api/conversations/{conversation_id}":
+                poll_count[0] += 1
+                resp.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "running",
+                    "stats": {"usage_to_metrics": {}},
+                }
+                if poll_count[0] == 1:
+                    conversation._terminal_status_queue.put("error")
+            return resp
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation._get_last_error_detail = Mock(return_value="boom")
+
+        with pytest.raises(Exception) as excinfo:
+            conversation.run(blocking=True, poll_interval=0.01, timeout=0.5)
+
+        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_run_ws_error_still_terminates_immediately(
         self, mock_ws_client
     ):

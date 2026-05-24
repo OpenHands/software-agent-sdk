@@ -1124,7 +1124,7 @@ class RemoteConversation(BaseConversation):
                         final_status = final_info.get("execution_status")
                         if not self._handle_conversation_status(final_status):
                             consecutive_terminal_polls = 0
-                            self._drain_terminal_status_queue()
+                            self._drain_finished_terminal_status_hints()
                             continue
                         if (
                             not final_status
@@ -1133,7 +1133,7 @@ class RemoteConversation(BaseConversation):
                             ).is_terminal()
                         ):
                             consecutive_terminal_polls = 0
-                            self._drain_terminal_status_queue()
+                            self._drain_finished_terminal_status_hints()
                             continue
                         # Reconcile events to catch any that were missed via WS.
                         # This is only called in the fallback path, so it doesn't
@@ -1143,11 +1143,11 @@ class RemoteConversation(BaseConversation):
                 else:
                     consecutive_terminal_polls = 0
                     # Status flipped non-terminal (e.g. FINISHED→RUNNING from
-                    # a stop-hook block). Drain any queued WS terminal hints
+                    # a stop-hook block). Drain queued FINISHED-only WS hints
                     # so we don't busy-spin on stale FINISHED notifications
-                    # in the next iteration. New terminal events will still
-                    # be enqueued by the WS handler if/when they arrive.
-                    self._drain_terminal_status_queue()
+                    # in the next iteration. ERROR/STUCK events remain queued
+                    # for immediate handling.
+                    self._drain_finished_terminal_status_hints()
 
     @staticmethod
     def _immediate_terminal_statuses() -> frozenset[str]:
@@ -1179,6 +1179,19 @@ class RemoteConversation(BaseConversation):
                 self._terminal_status_queue.get_nowait()
             except Empty:
                 break
+
+    def _drain_finished_terminal_status_hints(self) -> None:
+        """Drop only active-run FINISHED hints while preserving ERROR/STUCK."""
+        retained: list[str] = []
+        while True:
+            try:
+                status = self._terminal_status_queue.get_nowait()
+            except Empty:
+                break
+            if status != ConversationExecutionStatus.FINISHED.value:
+                retained.append(status)
+        for status in retained:
+            self._terminal_status_queue.put(status)
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
