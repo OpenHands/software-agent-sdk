@@ -827,9 +827,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         }
 
     def _process_stream_event(
-        self, event: Any
+        self, event: Any, *, emit_deltas: bool = True
     ) -> tuple[Any | None, ModelResponseStream | None]:
         """Extract output item and delta chunk from a Responses stream event.
+
+        Args:
+            event: A single Responses streaming event.
+            emit_deltas: When ``False`` the delta chunk is never built — skip
+                the allocation when there is no stream callback to receive it.
 
         Returns:
             (output_item, delta_chunk) — either or both may be ``None``.
@@ -837,13 +842,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         output_item: Any | None = None
         delta_chunk: ModelResponseStream | None = None
 
+        # Collect finished output items
         evt_type = getattr(event, "type", None)
         if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
             item = getattr(event, "item", None)
             if item is not None:
                 output_item = item
 
-        if isinstance(
+        if emit_deltas and isinstance(
             event,
             (
                 OutputTextDeltaEvent,
@@ -911,10 +917,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # and the caller should not observe those side-effects.
         kwargs = dict(kwargs)
 
+        # 1) serialize messages
         formatted_messages = self.format_messages_for_llm(messages)
+
+        # 2) choose function-calling strategy
         use_native_fc = self.native_tool_calling
         original_fncall_msgs = copy.deepcopy(formatted_messages)
 
+        # Convert Tool objects to ChatCompletionToolParam once here
         cc_tools: list[ChatCompletionToolParam] = []
         if tools:
             cc_tools = [
@@ -926,6 +936,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         use_mock_tools = self.should_mock_tool_calls(cc_tools)
         if use_mock_tools:
+            logger.debug(
+                "LLM.completion: mocking function-calling via prompt "
+                f"for model {self.model}"
+            )
             formatted_messages, kwargs = self.pre_request_prompt_mock(
                 formatted_messages,
                 cc_tools or [],
@@ -933,10 +947,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 include_security_params=add_security_risk_prediction,
             )
 
+        # 3) normalize provider params
+        # Only pass tools when native FC is active
         kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
         has_tools_flag = bool(cc_tools) and use_native_fc
+        # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
+        # 4) request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
         assert self._telemetry is not None
@@ -946,7 +964,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self._telemetry.log_enabled:
             telemetry_ctx.update(
                 {
-                    "messages": formatted_messages[:],
+                    "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
                 }
@@ -986,9 +1004,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Defensive copy — select_responses_options may mutate kwargs.
         kwargs = dict(kwargs)
 
+        # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
 
-        # Responses path always supports function tools
+        # Convert Tool objects to Responses ToolParam
+        # (Responses path always supports function tools)
         resp_tools = (
             [
                 t.to_responses_tool(
@@ -1000,10 +1020,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else None
         )
 
+        # Normalize/override Responses kwargs consistently
         call_kwargs = select_responses_options(
             self, kwargs, include=include, store=store
         )
 
+        # Request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
         assert self._telemetry is not None
@@ -1031,11 +1053,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         formatted_messages: list[dict[str, Any]],
         cc_tools: list[ChatCompletionToolParam],
         add_security_risk_prediction: bool,
-    ) -> tuple[ModelResponse, ModelResponse | None]:
+    ) -> ModelResponse:
         """Post-process a chat completion response inside the retry boundary.
 
-        Returns ``(resp, raw_resp)`` where *raw_resp* is non-``None`` only
-        when mock-tool post-processing was applied.
+        The raw (pre-mock) response is consumed internally by
+        ``Telemetry.on_response`` and is not returned to the caller.
 
         Raises:
             LLMNoResponseError: If the response has no choices
@@ -1052,14 +1074,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 include_security_params=add_security_risk_prediction,
             )
 
+        # 6) telemetry
         assert self._telemetry is not None
         self._telemetry.on_response(resp, raw_resp=raw_resp)
 
+        # Ensure at least one choice.
+        # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
+        # inside the retry boundary so it is retried.
         if not resp.get("choices") or len(resp["choices"]) < 1:
             raise LLMNoResponseError(
                 "Response choices is less than 1. Response: " + str(resp)
             )
-        return resp, raw_resp
+        return resp
 
     # =========================================================================
     # Chat Completion API
@@ -1133,7 +1159,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 enable_streaming=enable_streaming,
                 on_token=on_token,
             )
-            resp, _ = self._validate_chat_response(
+            resp = self._validate_chat_response(
                 resp,
                 use_mock_tools=use_mock_tools,
                 formatted_messages=formatted_messages,
@@ -1200,7 +1226,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 enable_streaming=enable_streaming,
                 on_token=on_token,
             )
-            resp, _ = self._validate_chat_response(
+            resp = self._validate_chat_response(
                 resp,
                 use_mock_tools=use_mock_tools,
                 formatted_messages=formatted_messages,
@@ -1317,7 +1343,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         for event in ret:
                             if event is None:
                                 continue
-                            output_item, delta_chunk = self._process_stream_event(event)
+                            output_item, delta_chunk = self._process_stream_event(
+                                event, emit_deltas=stream_callback is not None
+                            )
                             if output_item is not None:
                                 collected_output_items.append(output_item)
                             if stream_callback is not None and delta_chunk is not None:
@@ -1428,7 +1456,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         async for event in ret:
                             if event is None:
                                 continue
-                            output_item, delta_chunk = self._process_stream_event(event)
+                            output_item, delta_chunk = self._process_stream_event(
+                                event, emit_deltas=stream_cb is not None
+                            )
                             if output_item is not None:
                                 collected_output_items.append(output_item)
                             if stream_cb is not None and delta_chunk is not None:
