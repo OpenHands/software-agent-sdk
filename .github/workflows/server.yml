@@ -353,13 +353,14 @@ jobs:
               id: prep
               env:
                   GITHUB_REF: ${{ github.ref }}
+                  ARCH: ${{ matrix.arch }}
               run: |
                   uv sync --frozen
 
                   # Generate build context and tags with arch suffix
                   # build.py now handles architecture tagging internally via --arch flag
                   # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
-                  BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch ${{ matrix.arch }}"
+                  BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch "$ARCH""
                   if [[ "$GITHUB_REF" == refs/tags/* ]]; then
                       BUILD_CMD="$BUILD_CMD --versioned-tag"
                   fi
@@ -432,13 +433,16 @@ jobs:
                   SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
                   TAGS: ${{ steps.prep.outputs.tags }}
                   VERSIONED_TAGS_CSV: ${{ steps.prep.outputs.versioned_tags_csv }}
+                  VARIANT: ${{ matrix.variant }}
+                  ARCH: ${{ matrix.arch }}
+                  BASE_IMAGE: ${{ matrix.base_image }}
               run: |
                   mkdir -p build-info
-                  cat > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json" << EOF
+                  cat > "build-info/${VARIANT}-${ARCH}.json" << EOF
                   {
-                    "variant": "${{ matrix.variant }}",
-                    "arch": "${{ matrix.arch }}",
-                    "base_image": "${{ matrix.base_image }}",
+                    "variant": "$VARIANT",
+                    "arch": "$ARCH",
+                    "base_image": "$BASE_IMAGE",
                     "image": "$IMAGE",
                     "short_sha": "$SHORT_SHA",
                     "tags": "$TAGS",
@@ -500,8 +504,8 @@ jobs:
               env:
                   SHORT_SHA: ${{ steps.get_sha.outputs.short_sha }}
                   GIT_REF: ${{ github.ref }}
+                  VARIANT: ${{ matrix.variant }}
               run: |
-                  VARIANT=${{ matrix.variant }}
                   AMD64_TAGS_CSV=$(jq -r '.tags' build-info/${VARIANT}-amd64.json)
                   declare -A SEEN_MANIFEST_TAGS=()
                   MANIFEST_TAGS=()

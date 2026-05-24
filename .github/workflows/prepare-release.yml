@@ -53,7 +53,7 @@ jobs:
                   INPUTS_VERSION: ${{ inputs.version }}
               run: |
                   echo "🔧 Setting version to $INPUTS_VERSION"
-                  make set-package-version version=$INPUTS_VERSION
+                  make set-package-version version="$INPUTS_VERSION"
 
             - name: Update sdk_ref default in run-eval workflow
               env:
