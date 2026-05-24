@@ -856,7 +856,10 @@ class TestRemoteConversation:
                     "stats": {"usage_to_metrics": {}},
                 }
                 return response
-            return original_side_effect(method, url, **kwargs)
+            resp = original_side_effect(method, url, **kwargs)
+            if method == "POST" and url.endswith("/run"):
+                conversation._terminal_status_queue.put("finished")
+            return resp
 
         mock_client_instance.request.side_effect = custom_side_effect
         mock_ws_instance = Mock()
@@ -864,21 +867,16 @@ class TestRemoteConversation:
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
 
-        # Pre-seed the WS terminal-status queue with FINISHED to simulate
-        # the initial server-side FINISHED broadcast that races the hook.
-        # The fix must NOT treat this as authoritative termination.
-        conversation._terminal_status_queue.put("finished")
-
         conversation.run(blocking=True, poll_interval=0.01)
 
         # Must have polled past the 3 RUNNING REST responses (race window),
         # then 3 consecutive FINISHED REST responses for confirmation,
         # then 1 final state refresh. Pre-fix this would have returned on
-        # the seeded WS FINISHED with poll_count == 0.
+        # the WS FINISHED injected after the /run trigger with poll_count == 0.
         assert poll_count[0] >= 3 + 3, (
             f"Run() returned before REST confirmed termination. "
             f"poll_count={poll_count[0]} — expected at least 6 (3 running "
-            f"during hook revert + 3 consecutive finished). The seeded WS "
+            f"during hook revert + 3 consecutive finished). The injected WS "
             f"FINISHED was treated as authoritative; this is the regression."
         )
 
