@@ -1121,9 +1121,20 @@ class RemoteConversation(BaseConversation):
                             elapsed,
                         )
                         final_info = self._state.refresh_from_server()
-                        self._handle_conversation_status(
-                            final_info.get("execution_status")
-                        )
+                        final_status = final_info.get("execution_status")
+                        if not self._handle_conversation_status(final_status):
+                            consecutive_terminal_polls = 0
+                            self._drain_terminal_status_queue()
+                            continue
+                        if (
+                            not final_status
+                            or not ConversationExecutionStatus(
+                                final_status
+                            ).is_terminal()
+                        ):
+                            consecutive_terminal_polls = 0
+                            self._drain_terminal_status_queue()
+                            continue
                         # Reconcile events to catch any that were missed via WS.
                         # This is only called in the fallback path, so it doesn't
                         # add overhead in the common case where WS works.

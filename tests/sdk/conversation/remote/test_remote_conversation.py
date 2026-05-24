@@ -883,6 +883,59 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_run_final_refresh_must_still_be_terminal(
+        self, mock_ws_client
+    ):
+        """Do not return if the final authoritative refresh sees a hook veto."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        rest_script = [
+            "finished",
+            "finished",
+            "finished",
+            "running",
+            "running",
+            "finished",
+            "finished",
+            "finished",
+            "finished",
+        ]
+        poll_count = [0]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                idx = min(poll_count[0], len(rest_script) - 1)
+                status = rest_script[idx]
+                poll_count[0] += 1
+                response = Mock()
+                response.status_code = 200
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": status,
+                    "stats": {"usage_to_metrics": {}},
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        conversation.run(blocking=True, poll_interval=0.01)
+
+        assert poll_count[0] >= len(rest_script), (
+            f"Run() returned before the final refresh confirmed terminal status. "
+            f"poll_count={poll_count[0]}"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_run_ws_error_still_terminates_immediately(
         self, mock_ws_client
     ):
