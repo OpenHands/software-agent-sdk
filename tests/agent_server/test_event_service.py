@@ -965,24 +965,6 @@ class TestEventServiceRespondToConfirmation:
             )
 
 
-class TestEventServiceGetState:
-    """Test cases for EventService.get_state synchronization."""
-
-    async def test_get_state_acquires_conversation_state_lock(self, event_service):
-        state = MagicMock(spec=ConversationState)
-        state.__enter__ = MagicMock(return_value=state)
-        state.__exit__ = MagicMock(return_value=None)
-        conversation = MagicMock(spec=Conversation)
-        conversation._state = state
-        event_service._conversation = conversation
-
-        result = await event_service.get_state()
-
-        assert result is state
-        state.__enter__.assert_called_once()
-        state.__exit__.assert_called_once()
-
-
 class TestEventServiceIsOpen:
     """Test cases for EventService.is_open method."""
 

@@ -1086,11 +1086,21 @@ class RemoteConversation(BaseConversation):
                         ws_status,
                         elapsed,
                     )
-                    self._state.refresh_from_server()
                     return
-                # ws_status is FINISHED (or another non-error non-stuck
-                # terminal). Don't return yet — let the REST confirmation
-                # below decide.
+                logger.info(
+                    "Run completed via post-run WebSocket state update "
+                    "(status: %s, elapsed: %.1fs)",
+                    ws_status,
+                    elapsed,
+                )
+                # The server publishes ConversationStateUpdateEvent only after
+                # conversation.run()/arun() exits and pending events are flushed,
+                # so FINISHED from this queue is an authoritative run-complete
+                # signal. Avoid REST confirmation here: generic REST status reads
+                # intentionally remain non-blocking and can observe transient
+                # FINISHED while a stop hook is still executing.
+                self._state.events.reconcile()
+                return
             except Empty:
                 pass  # Queue.get() timed out, fall through to REST polling
 
@@ -1110,36 +1120,19 @@ class RemoteConversation(BaseConversation):
                 # If WebSocket is delayed/disconnected, we return after multiple
                 # consecutive polls confirm the terminal status.
                 if status and ConversationExecutionStatus(status).is_terminal():
+                    # ERROR/STUCK have already been handled above. FINISHED from
+                    # REST is only a hint because stop hooks can still veto it;
+                    # wait for the server's post-run WebSocket state update.
                     consecutive_terminal_polls += 1
                     if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
-                        logger.info(
-                            "Run completed via REST fallback after %d consecutive "
-                            "terminal polls (status: %s, elapsed: %.1fs). "
-                            "Refreshing final state and reconciling events...",
-                            consecutive_terminal_polls,
+                        logger.debug(
+                            "REST has reported terminal status %s for %d polls; "
+                            "waiting for post-run WebSocket state update "
+                            "(elapsed: %.1fs)",
                             status,
+                            consecutive_terminal_polls,
                             elapsed,
                         )
-                        final_info = self._state.refresh_from_server()
-                        final_status = final_info.get("execution_status")
-                        if not self._handle_conversation_status(final_status):
-                            consecutive_terminal_polls = 0
-                            self._drain_finished_terminal_status_hints()
-                            continue
-                        if (
-                            not final_status
-                            or not ConversationExecutionStatus(
-                                final_status
-                            ).is_terminal()
-                        ):
-                            consecutive_terminal_polls = 0
-                            self._drain_finished_terminal_status_hints()
-                            continue
-                        # Reconcile events to catch any that were missed via WS.
-                        # This is only called in the fallback path, so it doesn't
-                        # add overhead in the common case where WS works.
-                        self._state.events.reconcile()
-                        return
                 else:
                     consecutive_terminal_polls = 0
                     # Status flipped non-terminal (e.g. FINISHED→RUNNING from
