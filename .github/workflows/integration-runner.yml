@@ -176,7 +176,7 @@ jobs:
         steps:
             - name: Comment on issue/PR (workflow_dispatch)
               env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_TOKEN: ${{ github.token }}
                   ISSUE_NUMBER: ${{ github.event.inputs.issue_number }}
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
