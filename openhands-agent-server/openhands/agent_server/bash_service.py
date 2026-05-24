@@ -410,6 +410,8 @@ class BashEventService:
                 # (e.g. permission error, full disk). Cap at the normal interval so
                 # we don't over-delay in low-retention configurations.
                 await asyncio.sleep(min(interval, 60.0))
+            # Always sleep the full interval after the error back-off, so total
+            # wait on error = min(interval, 60) + interval ≈ 2× normal cadence.
             await asyncio.sleep(interval)
 
     async def subscribe_to_events(self, subscriber: Subscriber[BashEventBase]) -> UUID:
