@@ -743,8 +743,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     enable_switch_llm_tool: bool = Field(
         default=True,
         description=(
-            "Enable the built-in switch_llm tool when saved LLM profiles are "
-            "available. The tool is omitted when no profiles exist."
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -860,7 +860,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.builtins.switch_llm import has_llm_profiles
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
         mcp_config = (
@@ -869,7 +868,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             else {}
         )
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool and has_llm_profiles():
+        if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
         return Agent(
@@ -889,7 +888,11 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
         from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
-        return LLMSummarizingCondenser(llm=llm, max_size=self.condenser.max_size)
+        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+        condenser_llm.reset_metrics()
+        return LLMSummarizingCondenser(
+            llm=condenser_llm, max_size=self.condenser.max_size
+        )
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
@@ -1190,10 +1193,13 @@ class ACPAgentSettings(AgentSettingsBase):
         """Return the effective ACP subprocess environment.
 
         Explicit :attr:`acp_env` entries override provider-derived env vars.
-        ``ACPAgent`` then injects :attr:`agent_context` secrets only for keys
-        that are still absent, preserving the overall priority:
+        The returned dict becomes ``ACPAgent.acp_env``; at spawn time
+        ``ACPAgent`` then fills still-missing keys from the conversation's
+        ``secret_registry`` (the canonical conversation-secret channel) and
+        finally from :attr:`agent_context` secrets, preserving the overall
+        priority:
 
-        ``acp_env > provider env > agent_context.secrets``.
+        ``acp_env > provider env > secret_registry > agent_context.secrets``.
         """
         return {
             **self.resolve_provider_env(),

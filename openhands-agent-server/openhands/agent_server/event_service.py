@@ -68,6 +68,9 @@ class EventService:
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    # Set when a send_message(run=True) is rejected because a run is still
+    # wrapping up; consumed by _run_and_publish to re-run the stranded message.
+    _rerun_requested: bool = field(default=False, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
@@ -419,9 +422,19 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
-            # Already running or inactive — message was sent, skip run.
-            with suppress(ValueError):
+            try:
                 await self.run()
+            except ValueError as e:
+                # run() refused. If a run is still wrapping up (its
+                # wait_for_pending tail), the message we just appended won't be
+                # picked up by it, so record explicit run intent for
+                # _run_and_publish to honor once that task clears. Tracking the
+                # request — rather than inferring it later from an IDLE status —
+                # is what keeps a deliberate run=False append, or an IDLE reached
+                # via another path, from triggering an unwanted run.
+                # "inactive_service" is terminal and must not re-arm.
+                if str(e) == "conversation_already_running":
+                    self._rerun_requested = True
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -523,13 +536,29 @@ class EventService:
         """Configure stats update callbacks to stream stats changes via events."""
 
         def stats_callback() -> None:
-            """Callback to emit stats updates."""
+            """Callback to emit stats updates.
+
+            Invoked synchronously by ``Telemetry.on_response`` (regular
+            Agent path) and ``ACPAgent._record_usage`` (ACP path) — both
+            run inside ``LocalConversation.run()``'s ``with self._state:``
+            block, so the caller already owns the conversation state lock.
+
+            DO NOT re-acquire the state lock here (``with state:``). It
+            looks safe — ``FIFOLock`` documents itself as reentrant — but
+            on the ACP code path it deadlocks (silently) before the rest
+            of ``step()`` can emit the assistant's FinishAction +
+            ObservationEvent, leaving every conversation hung in
+            ``running`` status forever. ``_emit_event_from_thread`` below
+            already acquires the lock on the executor thread before
+            persisting the event; that's the only place serialization
+            needs the lock anyway.
+            """
             # Publish only the stats field to avoid sending entire state
             if not self._conversation:
                 return
-            state = self._conversation._state
-            with state:
-                event = ConversationStateUpdateEvent(key="stats", value=state.stats)
+            event = ConversationStateUpdateEvent(
+                key="stats", value=self._conversation._state.stats
+            )
             self._emit_event_from_thread(event)
 
         for llm in agent.get_all_llms():
@@ -778,6 +807,26 @@ class EventService:
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
+
+                    # Re-arm a run for input stranded while this task was
+                    # wrapping up. A send_message(run=True) that arrived during
+                    # the wait_for_pending() tail above had its run() rejected as
+                    # "conversation_already_running" and suppressed, setting
+                    # _rerun_requested. Honor it only while the conversation is
+                    # still IDLE — i.e. that message is genuinely pending. If the
+                    # run loop was still alive it already absorbed the message
+                    # (LocalConversation.run() keeps looping on FINISHED) and we
+                    # are FINISHED here, so the IDLE guard avoids a redundant run.
+                    # A deliberate run=False append, or an IDLE reached via
+                    # another path, never sets the flag.
+                    if self._rerun_requested:
+                        self._rerun_requested = False
+                        if (
+                            await self._get_execution_status()
+                            == ConversationExecutionStatus.IDLE
+                        ):
+                            with suppress(ValueError):
+                                await self.run()
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
