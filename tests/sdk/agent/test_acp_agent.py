@@ -1543,6 +1543,7 @@ class TestACPAgentAstep:
         async def _run_with_cancel() -> None:
             prompt_entered = asyncio.Event()
             cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
             async def _fake_prompt(prompt_blocks, session_id):
@@ -1565,13 +1566,15 @@ class TestACPAgentAstep:
                 # Signal caller loop that we're holding inside the prompt
                 # so the cancel races deterministically.
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
-                # Block long enough for the cancel to land.
-                await asyncio.sleep(60)
+                # Block until cancellation releases the prompt, exercising
+                # prompt quiescing without leaving a long-running portal task.
+                await asyncio.to_thread(prompt_released.wait)
                 return None
 
             async def _fake_cancel(session_id):
                 assert session_id == "test-session"
                 caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
 
             agent._conn.prompt = _fake_prompt
             agent._conn.cancel = _fake_cancel

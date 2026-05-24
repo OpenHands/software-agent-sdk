@@ -331,3 +331,52 @@ async def test_acp_arun_marks_queued_message_running_after_finish_gap(tmp_path):
 
     assert prompts_seen == ["initial request", "intervening request"]
     assert second_step_statuses == [ConversationExecutionStatus.RUNNING]
+
+
+@pytest.mark.asyncio
+async def test_acp_arun_leaves_queued_message_idle_at_iteration_cap(tmp_path):
+    """A queued ACP message at the run cap should wait for another run."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=1,
+        stuck_detection=False,
+    )
+    conversation.send_message("initial request")
+
+    step_finished = asyncio.Event()
+    release_step = asyncio.Event()
+    prompts_seen: list[str] = []
+
+    def user_text(event: MessageEvent | None) -> str:
+        assert event is not None
+        content = event.llm_message.content[0]
+        assert isinstance(content, TextContent)
+        return content.text
+
+    async def blocking_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(user_text(prompt_message))
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+        step_finished.set()
+        await release_step.wait()
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=blocking_astep),
+    ):
+        run_task = asyncio.create_task(conversation.arun())
+        await asyncio.wait_for(step_finished.wait(), timeout=1.0)
+        await asyncio.to_thread(conversation.send_message, "intervening request")
+        release_step.set()
+        await asyncio.wait_for(run_task, timeout=1.0)
+
+    assert prompts_seen == ["initial request"]
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE

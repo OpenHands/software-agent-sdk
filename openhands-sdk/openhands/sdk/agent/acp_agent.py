@@ -1311,21 +1311,44 @@ class ACPAgent(AgentBase):
     async def _drain_cancelled_prompt(
         self,
         future: Future[PromptResponse | None] | None,
-    ) -> None:
+    ) -> bool:
         """Let a cancelled/timed-out portal prompt quiesce before rewiring."""
         if future is None or future.done():
-            return
+            return True
         try:
             await asyncio.wait_for(
                 asyncio.shield(asyncio.wrap_future(future)),
                 timeout=_ACP_CANCEL_DRAIN_TIMEOUT,
             )
+            return True
         except asyncio.CancelledError:
             if future.cancelled():
-                return
+                return True
             raise
+        except TimeoutError:
+            logger.warning(
+                "Timed out waiting for cancelled ACP prompt to drain; "
+                "the ACP session will be restarted before the next turn"
+            )
+            return False
         except Exception:
-            return
+            return future.done()
+
+    def _restart_session_after_drain_timeout(
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Restart ACP after a prompt failed to quiesce post-cancel."""
+        logger.warning("Restarting ACP session after cancelled prompt drain timeout")
+        self._cleanup()
+        self._initialized = False
+        state.agent_state = {
+            key: value
+            for key, value in state.agent_state.items()
+            if key not in {"acp_session_id", "acp_session_cwd"}
+        }
+        self.init_state(state, on_event=on_event)
 
     def _request_session_cancel(self) -> None:
         """Ask the ACP server to cancel the active session prompt."""
@@ -1829,13 +1852,17 @@ class ACPAgent(AgentBase):
             # session/cancel, so late cancelled-turn updates cannot overwrite
             # the terminal synthetic failures.
             await self._arequest_session_cancel()
-            await self._drain_cancelled_prompt(prompt_future)
+            drained = await self._drain_cancelled_prompt(prompt_future)
             self._cancel_inflight_tool_calls()
+            if not drained:
+                self._restart_session_after_drain_timeout(state, on_event)
             raise
         except TimeoutError:
             await self._arequest_session_cancel()
+            drained = await self._drain_cancelled_prompt(prompt_future)
             self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
-            await self._drain_cancelled_prompt(prompt_future)
+            if not drained:
+                self._restart_session_after_drain_timeout(state, on_event)
         except Exception as e:
             self._emit_turn_error(e, state, on_event)
             raise

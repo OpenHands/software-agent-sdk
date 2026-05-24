@@ -1078,6 +1078,15 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.IDLE,
                     ):
+                        if iteration >= self.max_iteration_per_run:
+                            logger.info(
+                                "User message arrived during final ACP iteration; "
+                                "leaving conversation idle for a follow-up run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.IDLE
+                            )
+                            break
                         logger.info(
                             "User message arrived during ACP step; continuing run"
                         )
