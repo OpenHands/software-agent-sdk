@@ -50,12 +50,11 @@ jobs:
             - name: Determine test parameters
               id: params
               env:
-                  EVENT_NAME: ${{ github.event_name }}
                   PATTERNS_INPUT: ${{ github.event.inputs.patterns }}
                   MODELS_INPUT: ${{ github.event.inputs.models }}
               run: |
                   # Use input values or defaults
-                  if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+                  if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
                     PATTERNS="$PATTERNS_INPUT"
                     MODELS="$MODELS_INPUT"
                   else

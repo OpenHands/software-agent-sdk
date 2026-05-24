@@ -83,7 +83,6 @@ jobs:
                   ANTHROPIC_API_KEY: ${{ secrets.LLM_API_KEY }}
                   OPENAI_BASE_URL: https://llm-proxy.app.all-hands.dev
                   OPENAI_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_EVENT_NAME: ${{ github.event_name }}
               run: |
                   RESULTS_DIR=".example-test-results"
                   REPORT_PATH="examples_report.md"

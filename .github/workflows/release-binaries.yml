@@ -39,7 +39,6 @@ jobs:
             - id: resolve
               shell: bash
               env:
-                  GITHUB_EVENT_NAME: ${{ github.event_name }}
                   GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
                   INPUTS_RELEASE_TAG: ${{ inputs.release_tag }}
               run: |

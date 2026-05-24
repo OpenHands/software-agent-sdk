@@ -146,7 +146,6 @@ jobs:
                   PREAMBLE_PATH: release-note-preamble.md
                   VERSION: ${{ steps.version.outputs.version }}
                   PREV_TAG: ${{ steps.prev_tag.outputs.prev_tag }}
-                  GITHUB_EVENT_PULL_REQUEST_MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
               run: |
                   NOTES_START_FLAG=()
                   if [ -n "$PREV_TAG" ]; then
@@ -160,7 +159,7 @@ jobs:
 
                   gh release create "v${VERSION}" \
                     --repo "${{ github.repository }}" \
-                    --target "$GITHUB_EVENT_PULL_REQUEST_MERGE_COMMIT_SHA" \
+                    --target "${{ github.event.pull_request.merge_commit_sha }}" \
                     --title "v${VERSION}" \
                     --generate-notes \
                     "${PREAMBLE_FLAG[@]}" \

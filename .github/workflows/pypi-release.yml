@@ -29,7 +29,6 @@ jobs:
             - name: Extract version from release tag
               id: extract_version
               env:
-                  GITHUB_EVENT_NAME: ${{ github.event_name }}
                   GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
               run: |
                   # Get version from release tag (e.g., v1.2.3 -> 1.2.3)

@@ -306,13 +306,11 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Generate Summary
-              env:
-                  NEEDS_SCAN_TODOS_OUTPUTS_TODO_COUNT: ${{ needs.scan-todos.outputs.todo-count || '0' }}
               run: |
                   echo "# 🤖 TODO Management Summary" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
 
-                  TODO_COUNT="$NEEDS_SCAN_TODOS_OUTPUTS_TODO_COUNT"
+                  TODO_COUNT="${{ needs.scan-todos.outputs.todo-count || '0' }}"
                   echo "**TODOs Found:** $TODO_COUNT" >> $GITHUB_STEP_SUMMARY
 
                   if [ "$TODO_COUNT" -gt 0 ]; then
