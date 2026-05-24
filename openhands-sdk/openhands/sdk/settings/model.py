@@ -743,8 +743,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
     enable_switch_llm_tool: bool = Field(
         default=True,
         description=(
-            "Enable the built-in switch_llm tool when saved LLM profiles are "
-            "available. The tool is omitted when no profiles exist."
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
@@ -860,7 +860,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
-        from openhands.sdk.tool.builtins.switch_llm import has_llm_profiles
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
         mcp_config = (
@@ -869,7 +868,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             else {}
         )
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
-        if self.enable_switch_llm_tool and has_llm_profiles():
+        if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
         return Agent(
