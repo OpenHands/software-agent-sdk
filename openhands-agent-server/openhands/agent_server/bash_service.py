@@ -365,7 +365,7 @@ class BashEventService:
             if path.name >= cutoff_str:
                 break  # remaining files are at or newer than cutoff
             try:
-                path.unlink()
+                path.unlink(missing_ok=True)
                 count += 1
             except Exception as e:
                 logger.warning("Failed to delete bash event file %s: %s", path, e)
