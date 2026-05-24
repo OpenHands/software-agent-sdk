@@ -165,7 +165,7 @@ class AgentContext(BaseModel):
             if name not in existing_names:
                 self.skills.append(skill)
             else:
-                logger.warning(
+                logger.debug(
                     f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
                 )
 
@@ -207,10 +207,11 @@ class AgentContext(BaseModel):
         """Split skills into repo-context and available-skills lists.
 
         Categorization rules (shared by system-message and ACP adapters):
-        - AgentSkills-format: always in available_skills (progressive disclosure).
-          Triggers also auto-inject via ``get_user_message_suffix``.
+        - AgentSkills-format: available_skills unless direct model invocation is
+          disabled. Triggers still auto-inject via ``get_user_message_suffix``.
         - Legacy with ``trigger=None``: full content in REPO_CONTEXT (always active).
-        - Legacy with triggers: listed in available_skills, injected on trigger.
+        - Legacy with triggers: listed in available_skills unless direct model
+          invocation is disabled, injected on trigger.
 
         Returns:
             ``(repo_skills, available_skills)`` tuple.
@@ -219,7 +220,8 @@ class AgentContext(BaseModel):
         available_skills: list[Skill] = []
         for s in self.skills:
             if s.is_agentskills_format or s.trigger is not None:
-                available_skills.append(s)
+                if not s.disable_model_invocation:
+                    available_skills.append(s)
             else:
                 repo_skills.append(s)
         return repo_skills, available_skills
@@ -335,7 +337,10 @@ class AgentContext(BaseModel):
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
             )
 
-    def to_acp_prompt_context(self) -> str | None:
+    def to_acp_prompt_context(
+        self,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> str | None:
         """Return the AgentContext fields that ACP can consume as prompt text.
 
         ACP servers own their tools, MCP servers, hooks, and execution model, so
@@ -354,11 +359,20 @@ class AgentContext(BaseModel):
         ``user_message_suffix`` is a compatible field but is not emitted here
         because ``LocalConversation`` already applies it through
         ``event.to_llm_message()``; including it would duplicate it.
+
+        Args:
+            additional_secret_infos: Optional list of additional secret info dicts
+                from the conversation's secret_registry, matching the interface of
+                :meth:`get_system_message_suffix`. When provided, these secrets are
+                merged with any secrets already on the AgentContext so the rendered
+                ``<CUSTOM_SECRETS>`` block matches what the regular Agent emits.
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
         # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
-        return self.get_system_message_suffix()
+        return self.get_system_message_suffix(
+            additional_secret_infos=additional_secret_infos
+        )
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]

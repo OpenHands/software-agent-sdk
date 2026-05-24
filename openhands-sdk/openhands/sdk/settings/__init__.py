@@ -32,7 +32,6 @@ if TYPE_CHECKING:
         CONVERSATION_SETTINGS_SCHEMA_VERSION,
         ACPAgentSettings,
         AgentKind,
-        AgentSettings,
         AgentSettingsBase,
         AgentSettingsConfig,
         CondenserSettings,
@@ -56,7 +55,6 @@ _MODEL_EXPORTS = {
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",
@@ -82,7 +80,6 @@ __all__ = [
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",
@@ -123,7 +120,7 @@ def __getattr__(name: str) -> Any:
         warn_deprecated(
             f"Importing {name!r} from openhands.sdk.settings",
             deprecated_in="1.19.0",
-            removed_in="1.22.0",
+            removed_in="1.24.0",
             details=(
                 "Use ``OpenHandsAgentSettings`` directly. "
                 "``LLMAgentSettings`` was renamed in v1.19.0."

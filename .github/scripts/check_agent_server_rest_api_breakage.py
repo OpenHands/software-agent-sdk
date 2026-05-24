@@ -26,13 +26,13 @@ Policies enforced:
      OpenAPI description must declare a scheduled removal version that has been
      reached by the current package version.
 
-3) Additive response oneOf/anyOf expansion is allowed
-   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
-     schemas is a normal evolution for extensible event-stream APIs.  Clients MUST
+3) Additive request/response oneOf/anyOf expansion is allowed
+   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in request
+     or response schemas is a normal evolution for extensible APIs. Clients MUST
      handle unknown discriminator values gracefully (skip/ignore).
-   - oasdiff flags ``response-body-one-of-added`` and
-     ``response-property-one-of-added`` as ERR; this script downgrades them to
-     informational notices.
+   - oasdiff can report union widening as ERR plus secondary type-change or
+     property-removal artifacts for fields that still exist on one union member;
+     this script downgrades those artifacts to informational notices.
 
 4) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
@@ -452,7 +452,10 @@ def _iter_schema_properties(schema: dict):
 
 def _removed_property_name(change: dict) -> str | None:
     text = str(change.get("text", ""))
-    match = re.search(r"(?:request property|optional property) `([^`]+)`", text)
+    match = re.search(
+        r"(?:request property|optional property|required property) `([^`]+)`",
+        text,
+    )
     if match is None:
         return None
     return match.group(1).rstrip("/").rsplit("/", maxsplit=1)[-1]
@@ -544,6 +547,36 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
         "response-property-any-of-added",
     }
 )
+
+
+_ADDITIVE_RESPONSE_BODY_ONEOF_IDS = frozenset(
+    {
+        "response-body-one-of-added",
+        "response-body-any-of-added",
+    }
+)
+
+
+def _is_union_property_removal_artifact(change: dict) -> bool:
+    """Return True for property removals that are artifacts of union widening.
+
+    When a request or response schema is widened from a concrete object schema
+    to an additive oneOf/anyOf union, oasdiff can emit secondary "removed
+    property" reports for the original object's fields even though the original
+    schema is still present as one union member.
+    """
+    change_id = str(change.get("id", "")).lower()
+    text = str(change.get("text", "")).lower()
+    return (
+        "removed" in change_id
+        and "property" in change_id
+        and ("from the response" in text or "request property" in text)
+    )
+
+
+def _is_union_type_change_artifact(change: dict) -> bool:
+    text = str(change.get("text", "")).lower()
+    return "type/format changed from `object`/`` to ``/``" in text
 
 
 def _split_breaking_changes(
@@ -706,7 +739,6 @@ def main() -> int:
         tmp_path = Path(tmp)
         prev_spec_file = tmp_path / "prev_spec.json"
         cur_spec_file = tmp_path / "cur_spec.json"
-
         prev_spec_file.write_text(json.dumps(prev_schema, indent=2))
         cur_spec_file.write_text(json.dumps(current_schema, indent=2))
 
@@ -729,6 +761,27 @@ def main() -> int:
             additive_response_oneof,
             other_breaking_changes,
         ) = _split_breaking_changes(breaking_changes)
+        response_union_artifacts = [
+            change
+            for change in removed_schema_properties
+            if _is_union_property_removal_artifact(change)
+        ]
+        removed_schema_properties = [
+            change
+            for change in removed_schema_properties
+            if not _is_union_property_removal_artifact(change)
+        ]
+        union_type_artifacts = [
+            change
+            for change in other_breaking_changes
+            if _is_union_type_change_artifact(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_union_type_change_artifact(change)
+        ]
+
         removal_errors = _validate_removed_operations(
             removed_operations,
             prev_schema,
@@ -752,6 +805,18 @@ def main() -> int:
             )
             for item in additive_response_oneof:
                 print(f"  - {item.get('text', str(item))}")
+            if response_union_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(response_union_artifacts)} request/response-property "
+                    "removal artifact(s) caused by union widening"
+                )
+            if union_type_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(union_type_artifacts)} request/response type-change "
+                    "artifact(s) caused by union widening"
+                )
 
         if other_breaking_changes:
             print(
@@ -762,6 +827,15 @@ def main() -> int:
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
+            )
+        elif (
+            response_union_artifacts or union_type_artifacts
+        ) and not additive_response_oneof:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                f"Ignored {len(response_union_artifacts)} property-removal and "
+                f"{len(union_type_artifacts)} type-change artifact(s) reported "
+                "while widening schemas."
             )
 
         print("\nBreaking REST API changes detected compared to baseline release:")

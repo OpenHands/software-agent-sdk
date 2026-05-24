@@ -87,5 +87,5 @@ def create_mcp_tools(
             )
         raise
 
-    logger.info(f"Created {len(client.tools)} MCP tools: {[t.name for t in client]}")
+    logger.info("Created %d MCP tools", len(client.tools))
     return client

@@ -1,19 +1,16 @@
+import json
 import warnings
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
-from openhands.agent_server.models import (
-    StartACPConversationRequest,
-    StartConversationRequest,
-)
+from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
     LLM,
     ACPAgentSettings,
     Agent,
     AgentContext,
-    AgentSettings,
     AgentSettingsBase,
     ConversationSettings,
     OpenHandsAgentSettings,
@@ -66,6 +63,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "agent",
         "tools",
         "enable_sub_agents",
+        "enable_switch_llm_tool",
         "mcp_config",
     }
     assert general_fields["agent"].default == "CodeActAgent"
@@ -76,6 +74,11 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["enable_sub_agents"].value_type == "boolean"
     assert general_fields["enable_sub_agents"].default is False
     assert general_fields["enable_sub_agents"].prominence is SettingProminence.MAJOR
+    assert general_fields["enable_switch_llm_tool"].value_type == "boolean"
+    assert general_fields["enable_switch_llm_tool"].default is True
+    assert (
+        general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
+    )
 
     # -- llm section --
     llm_fields = {f.key: f for f in sections["llm"].fields}
@@ -86,6 +89,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
 
     assert llm_fields["llm.model"].value_type == "string"
     assert llm_fields["llm.model"].prominence is SettingProminence.CRITICAL
+    assert llm_fields["llm.max_input_tokens"].default is None
+    assert llm_fields["llm.max_output_tokens"].default is None
     assert llm_fields["llm.api_key"].label == "API Key"
     assert llm_fields["llm.api_key"].secret is True
     assert llm_fields["llm.api_key"].prominence is SettingProminence.CRITICAL
@@ -217,7 +222,7 @@ def test_conversation_settings_create_request() -> None:
     assert overridden_request.security_analyzer is None
 
 
-def test_conversation_settings_create_request_for_acp() -> None:
+def test_conversation_settings_create_request_with_acp_agent() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -227,12 +232,12 @@ def test_conversation_settings_create_request_for_acp() -> None:
     agent = ACPAgent(acp_command=["echo", "test"])
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -255,7 +260,13 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
     general = by_keyvariant.get(("general", None))
     assert general is not None
     general_keys = {f.key for f in general.fields}
-    assert general_keys == {"agent", "tools", "enable_sub_agents", "mcp_config"}
+    assert general_keys == {
+        "agent",
+        "tools",
+        "enable_sub_agents",
+        "enable_switch_llm_tool",
+        "mcp_config",
+    }
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
     assert "agent_kind" not in general_keys
@@ -322,7 +333,7 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
         {"agent_kind": "llm", "llm": {"model": "legacy-model"}}
     )
     assert isinstance(legacy_llm, OpenHandsAgentSettings)
-    assert legacy_llm.agent_kind == "llm"
+    assert legacy_llm.agent_kind == "openhands"
     assert legacy_llm.llm.model == "legacy-model"
 
     acp = validate_agent_settings(
@@ -336,17 +347,17 @@ def test_validate_agent_settings_dispatches_on_agent_kind() -> None:
     assert acp.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_migrates_v0_llm_payload() -> None:
-    settings = AgentSettings.from_persisted({"llm": {"model": "test-model"}})
+def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
+    settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 2
+    assert settings.schema_version == 3
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
 
-def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
-    settings = AgentSettings.from_persisted(
+def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "acp",
@@ -356,15 +367,15 @@ def test_agent_settings_from_persisted_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    # v1 → v2 is a no-op for ACP payloads, but the schema_version is bumped.
-    assert settings.schema_version == 2
+    # v1 → v2 → v3 keeps ACP payloads intact while bumping schema_version.
+    assert settings.schema_version == 3
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
-def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
+def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     """v1 payloads with the deprecated ``agent_kind: 'llm'`` are migrated to
     the canonical ``'openhands'`` discriminator on read."""
-    settings = AgentSettings.from_persisted(
+    settings = validate_agent_settings(
         {
             "schema_version": 1,
             "agent_kind": "llm",
@@ -373,14 +384,35 @@ def test_agent_settings_from_persisted_canonicalizes_legacy_llm_kind() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 2
+    assert settings.schema_version == 3
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "legacy-model"
 
 
-def test_agent_settings_from_persisted_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 2"):
-        AgentSettings.from_persisted({"schema_version": 3, "llm": {"model": "m"}})
+def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 2,
+            "agent_kind": "openhands",
+            "verification": {
+                "critic_enabled": True,
+                "confirmation_mode": True,
+                "security_analyzer": "llm",
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == 3
+    verification = settings.verification.model_dump(mode="json")
+    assert verification["critic_enabled"] is True
+    assert "confirmation_mode" not in verification
+    assert "security_analyzer" not in verification
+
+
+def test_validate_agent_settings_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported version 3"):
+        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
@@ -625,56 +657,6 @@ def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
     assert agent.agent_context == context
 
 
-# ---------------------------------------------------------------------------
-# Legacy ``AgentSettings`` compatibility
-# ---------------------------------------------------------------------------
-
-
-def test_legacy_agent_settings_still_instantiates_as_llm_variant() -> None:
-    """``AgentSettings(...)`` is retained as a deprecated OpenHandsAgentSettings.
-
-    All v1.17.0 attributes must remain reachable so the API breakage
-    check does not flag them as removed.
-    """
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        settings = AgentSettings(llm=LLM(model="test-model"))
-
-    # The legacy name emits a DeprecationWarning on construction. The
-    # warning's scheduled removal is in 1.22.0 per the class docstring.
-    assert any("AgentSettings" in str(w.message) for w in caught), (
-        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
-    )
-
-    # It remains a LLMAgentSettings (and thus OpenHandsAgentSettings) subclass
-    # so existing code paths work.
-    assert isinstance(settings, OpenHandsAgentSettings)
-    # agent_kind stays "llm" because AgentSettings inherits from LLMAgentSettings
-    # — this keeps the published API surface unchanged for the breakage checker.
-    assert settings.agent_kind == "llm"
-    assert settings.llm.model == "test-model"
-
-
-def test_legacy_agent_settings_retains_all_v1_17_attributes() -> None:
-    """Guardrail mirroring the API breakage CI check: don't silently remove fields."""
-    fields = AgentSettings.model_fields
-    assert {
-        "schema_version",
-        "agent",
-        "llm",
-        "tools",
-        "mcp_config",
-        "agent_context",
-        "condenser",
-        "verification",
-    }.issubset(set(fields))
-
-    # Methods defined on the original class must still resolve via
-    # inheritance.
-    for name in ("export_schema", "create_agent", "build_condenser", "build_critic"):
-        assert hasattr(AgentSettings, name), f"missing: AgentSettings.{name}"
-
-
 def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
     """Importing ``LLMAgentSettings`` emits DeprecationWarning at import time."""
     import openhands.sdk.settings as _settings_mod
@@ -723,7 +705,7 @@ def test_conversation_settings_create_request_for_llm_variant() -> None:
     assert isinstance(request.security_analyzer, LLMSecurityAnalyzer)
 
 
-def test_conversation_settings_create_request_for_acp_variant() -> None:
+def test_conversation_settings_create_request_with_acp_agent_variant() -> None:
     settings = ConversationSettings(
         max_iterations=77,
         confirmation_mode=True,
@@ -733,12 +715,12 @@ def test_conversation_settings_create_request_for_acp_variant() -> None:
     agent = ACPAgentSettings(acp_command=["echo", "test"]).create_agent()
 
     request = settings.create_request(
-        StartACPConversationRequest,
+        StartConversationRequest,
         agent=agent,
         workspace=workspace,
     )
 
-    assert isinstance(request, StartACPConversationRequest)
+    assert isinstance(request, StartConversationRequest)
     assert request.workspace == workspace
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
@@ -779,6 +761,46 @@ def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
     assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
 
 
+def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
+    """ACP env persistence should mirror other secret-bearing settings.
+
+    The on-disk path encrypts values with a cipher, and loading with the same
+    cipher must recover plaintext so ACP agents receive usable environment
+    variables after settings are read back.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    settings = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
+    )
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
+
+    assert encrypted_value.startswith("gAAAA")
+    assert "sk-real-secret" not in json.dumps(dumped)
+
+    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    restored_from_persisted = validate_agent_settings(
+        dumped, context={"cipher": cipher}
+    )
+    assert isinstance(restored_from_persisted, ACPAgentSettings)
+    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
+
+    legacy_plaintext = ACPAgentSettings.model_validate(
+        {
+            "acp_command": ["echo", "test"],
+            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
+        },
+        context={"cipher": cipher},
+    )
+    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
+
+
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     mcp_config = MCPConfig.model_validate(
         {
@@ -802,6 +824,168 @@ def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
     leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
     assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
     assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
+    """When a cipher is in the serialization context (the on-disk persistence
+    path), MCP ``env`` / ``headers`` values must be encrypted per-value with
+    that cipher — the same way other secret fields are persisted.
+
+    Round-tripping through ``model_validate`` with the same cipher must
+    recover the original plaintext values.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    "env": {"GITHUB_TOKEN": "ghp-mcp-secret"},
+                },
+                "fetch": {
+                    "url": "https://example.com/mcp",
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                },
+            }
+        }
+    )
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+
+    servers = dumped["mcp_config"]["mcpServers"]
+    enc_token = servers["github"]["env"]["GITHUB_TOKEN"]
+    enc_auth = servers["fetch"]["headers"]["Authorization"]
+
+    # Plaintext values must NOT appear on disk.
+    serialized = json.dumps(dumped)
+    assert "ghp-mcp-secret" not in serialized
+    assert "tok-mcp-secret" not in serialized
+    assert "<redacted>" not in serialized
+
+    # Values must be Fernet ciphertext (base64; starts with "gAAAA").
+    assert enc_token.startswith("gAAAA")
+    assert enc_auth.startswith("gAAAA")
+    # Non-secret structure must remain plaintext.
+    assert servers["github"]["command"] == "uvx"
+    assert servers["github"]["args"] == ["mcp-server-github"]
+    assert servers["fetch"]["url"] == "https://example.com/mcp"
+
+    # Round-trip: decrypt with the same cipher recovers the originals.
+    restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.mcp_config is not None
+    restored_dump = restored.mcp_config.model_dump(exclude_none=True)
+    assert (
+        restored_dump["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
+    )
+    assert (
+        restored_dump["mcpServers"]["fetch"]["headers"]["Authorization"]
+        == "Bearer tok-mcp-secret"
+    )
+
+
+def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() -> None:
+    """Loading a settings file that pre-dates per-value encryption (env /
+    headers stored as plaintext) must NOT drop those values: each value that
+    isn't a valid Fernet token is passed through unchanged so the next save
+    can re-encrypt it.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    cipher = Cipher(secret_key="test-encryption-key")
+    legacy_payload = {
+        "mcp_config": {
+            "mcpServers": {
+                "github": {
+                    "command": "uvx",
+                    "args": ["mcp-server-github"],
+                    # plaintext, as the previous (pre-encryption) build wrote
+                    "env": {"GITHUB_TOKEN": "ghp-legacy-plaintext"},
+                }
+            }
+        }
+    }
+
+    restored = OpenHandsAgentSettings.model_validate(
+        legacy_payload, context={"cipher": cipher}
+    )
+    assert restored.mcp_config is not None
+    assert (
+        restored.mcp_config.model_dump(exclude_none=True)["mcpServers"]["github"][
+            "env"
+        ]["GITHUB_TOKEN"]
+        == "ghp-legacy-plaintext"
+    )
+
+
+def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() -> None:
+    """``expose_secrets="encrypted"`` without a cipher must raise — mirroring
+    the contract used for individual ``SecretStr`` fields via
+    :func:`serialize_secret`. Pydantic wraps the inner
+    ``MissingCipherError`` in a ``PydanticSerializationError``; the
+    agent-server's ``translate_missing_cipher`` walks the cause chain to
+    surface a 503.
+    """
+    from pydantic_core import PydanticSerializationError
+
+    from openhands.sdk.utils.pydantic_secrets import MissingCipherError
+
+    settings = OpenHandsAgentSettings(
+        mcp_config=MCPConfig.model_validate(
+            {
+                "mcpServers": {
+                    "github": {
+                        "command": "uvx",
+                        "args": ["mcp-server-github"],
+                        "env": {"GITHUB_TOKEN": "ghp-secret"},
+                    }
+                }
+            }
+        )
+    )
+    with pytest.raises(PydanticSerializationError) as exc_info:
+        settings.model_dump(mode="json", context={"expose_secrets": "encrypted"})
+    cause: BaseException | None = exc_info.value
+    while cause is not None:
+        if isinstance(cause, MissingCipherError):
+            break
+        cause = cause.__cause__ or cause.__context__
+    assert isinstance(cause, MissingCipherError)
+
+
+def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -> None:
+    """``expose_secrets="plaintext"`` must return raw env / headers values
+    even when a cipher is also in the context (e.g. an admin GET with
+    explicit plaintext exposure).
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    settings = OpenHandsAgentSettings(
+        mcp_config=MCPConfig.model_validate(
+            {
+                "mcpServers": {
+                    "github": {
+                        "command": "uvx",
+                        "args": ["mcp-server-github"],
+                        "env": {"GITHUB_TOKEN": "ghp-secret"},
+                    }
+                }
+            }
+        )
+    )
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(
+        mode="json",
+        context={"cipher": cipher, "expose_secrets": "plaintext"},
+    )
+    assert (
+        dumped["mcp_config"]["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
+        == "ghp-secret"
+    )
 
 
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:

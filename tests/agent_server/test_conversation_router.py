@@ -10,13 +10,11 @@ from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_service import (
-    ConversationContractMismatchError,
-    ConversationService,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ACPConversationInfo,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -25,7 +23,10 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
+from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.llm import llm_profile_store
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -564,39 +565,279 @@ def test_start_conversation_existing(
         client.app.dependency_overrides.clear()
 
 
-def test_start_conversation_contract_mismatch_returns_409(
+def test_start_conversation_accepts_openhands_agent_settings(
     client, mock_conversation_service
 ):
-    mock_conversation_service.start_conversation.side_effect = (
-        ConversationContractMismatchError(
-            "Conversation 123 exists but is only available through the ACP "
-            "conversation contract. Use /api/acp/conversations or attach with "
-            "ACPAgent."
-        )
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="settings-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="Settings Conversation",
+        created_at=now,
+        updated_at=now,
     )
-
+    mock_conversation_service.start_conversation.return_value = (info, True)
     client.app.dependency_overrides[get_conversation_service] = (
         lambda: mock_conversation_service
     )
 
     try:
-        request_data = {
-            "agent": {
-                "kind": "Agent",
-                "llm": {
-                    "model": "gpt-4o",
-                    "api_key": "test-key",
-                    "usage_id": "test-llm",
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 1,
+                    "agent_kind": "llm",
+                    "llm": {"model": "settings-model", "usage_id": "test-llm"},
+                    "tools": [],
+                    "verification": {
+                        "confirmation_mode": True,
+                        "security_analyzer": "llm",
+                    },
                 },
-                "tools": [{"name": "TerminalTool"}],
+                "workspace": {"working_dir": "/tmp/test"},
             },
-            "workspace": {"working_dir": "/tmp/test"},
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent.kind == "Agent"
+        assert request.agent.llm.model == "settings-model"
+        assert "agent_settings" not in request.model_dump(mode="json")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_agent_settings_uses_sdk_default_tools(
+    client, mock_conversation_service, monkeypatch, tmp_path
+):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+    LLMProfileStore(base_dir=profile_dir).save(
+        "fast", LLM(model="fast-model", usage_id="fast")
+    )
+
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="settings-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="Settings Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 1,
+                    "agent_kind": "llm",
+                    "llm": {"model": "settings-model", "usage_id": "test-llm"},
+                    "enable_switch_llm_tool": True,
+                    "tools": [
+                        {"name": "terminal", "params": {}},
+                        {"name": "file_editor", "params": {}},
+                        {"name": "task_tracker", "params": {}},
+                        {"name": "browser_tool_set", "params": {}},
+                    ],
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert "SwitchLLMTool" in request.agent.include_default_tools
+        assert {tool.name for tool in request.agent.tools} == {
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_tool_set",
         }
+    finally:
+        client.app.dependency_overrides.clear()
 
-        response = client.post("/api/conversations", json=request_data)
 
-        assert response.status_code == 409
-        assert "ACP conversation contract" in response.json()["detail"]
+def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
+    now = utc_now()
+    acp_info = ACPConversationInfo(
+        id=uuid4(),
+        agent=ACPAgent(acp_command=["echo", "test"]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="ACP Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (acp_info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "kind": "ACPAgent",
+                    "acp_command": ["echo", "test"],
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        assert response.json()["agent"]["kind"] == "ACPAgent"
+        mock_conversation_service.start_conversation.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_accepts_acp_agent_settings(
+    client, mock_conversation_service
+):
+    now = utc_now()
+    acp_info = ACPConversationInfo(
+        id=uuid4(),
+        agent=ACPAgent(acp_command=["echo", "settings"]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="ACP Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (acp_info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 3,
+                    "agent_kind": "acp",
+                    "acp_server": "custom",
+                    "acp_command": ["echo", "settings"],
+                    "acp_args": ["--verbose"],
+                    "acp_env": {"OPENAI_API_KEY": "sk-acp-env"},
+                    "acp_model": "acp-test-model",
+                    "acp_session_mode": "bypassPermissions",
+                    "acp_prompt_timeout": 123.0,
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent.kind == "ACPAgent"
+        assert request.agent.acp_command == ["echo", "settings"]
+        assert request.agent.acp_args == ["--verbose"]
+        assert request.agent.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
+        assert request.agent.acp_model == "acp-test-model"
+        assert request.agent.acp_session_mode == "bypassPermissions"
+        assert request.agent.acp_prompt_timeout == 123.0
+
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "agent_settings",
+    [
+        {"agent_kind": "invalid"},
+        "not-a-settings-object",
+    ],
+)
+def test_start_conversation_rejects_invalid_agent_settings(
+    client, mock_conversation_service, agent_settings
+):
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": agent_settings,
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 422
+        mock_conversation_service.start_conversation.assert_not_called()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_agent_takes_precedence_over_agent_settings(
+    client, mock_conversation_service
+):
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {
+                    "llm": {"model": "gpt-4o", "usage_id": "test-llm"},
+                    "tools": [],
+                },
+                "agent_settings": {"agent_kind": "invalid"},
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert request.agent.kind == "Agent"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_rejects_acp_agent_without_kind(
+    client, mock_conversation_service
+):
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent": {"acp_command": ["echo", "test"]},
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 422
+        mock_conversation_service.start_conversation.assert_not_called()
     finally:
         client.app.dependency_overrides.clear()
 

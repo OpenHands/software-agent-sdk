@@ -23,15 +23,10 @@ from pydantic import (
 )
 
 from openhands.sdk.settings import (
-    AGENT_SETTINGS_SCHEMA_VERSION,
-    AgentSettings,
     AgentSettingsConfig,
     ConversationSettings,
     default_agent_settings,
-)
-from openhands.sdk.settings.model import (
-    _AGENT_SETTINGS_MIGRATIONS,
-    _apply_persisted_migrations,
+    validate_agent_settings,
 )
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
@@ -58,6 +53,9 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+PERSISTED_SETTINGS_SCHEMA_VERSION = 1
+
+
 class PersistedSettings(BaseModel):
     """Persisted settings for agent server.
 
@@ -68,6 +66,11 @@ class PersistedSettings(BaseModel):
     The ``active_profile`` field tracks which LLM profile was last activated,
     allowing frontends to display which profile is currently in use.
     """
+
+    schema_version: int = Field(
+        default=PERSISTED_SETTINGS_SCHEMA_VERSION,
+        description="Persisted settings file schema version.",
+    )
 
     agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
     conversation_settings: ConversationSettings = Field(
@@ -136,7 +139,7 @@ class PersistedSettings(BaseModel):
                     agent_update,
                 )
                 try:
-                    new_agent = AgentSettings.from_persisted(agent_merged)
+                    new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original
                     # exception may contain secret values in Pydantic errors
@@ -173,6 +176,27 @@ class PersistedSettings(BaseModel):
             if conv_merged is not None:
                 conv_merged.clear()
 
+    @classmethod
+    def from_persisted(
+        cls, data: Any, *, context: dict[str, Any] | None = None
+    ) -> PersistedSettings:
+        """Load persisted settings, applying top-level and nested migrations."""
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("PersistedSettings schema_version must be an integer")
+        if version > PERSISTED_SETTINGS_SCHEMA_VERSION:
+            raise ValueError(
+                "PersistedSettings schema_version "
+                f"{version} is newer than supported version "
+                f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
+        return cls.model_validate(payload, context=context)
+
     @field_serializer("agent_settings")
     def agent_settings_serializer(
         self,
@@ -185,33 +209,30 @@ class PersistedSettings(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _normalize_inputs(cls, data: dict | object) -> dict | object:
+    def _normalize_inputs(
+        cls, data: dict | object, info: ValidationInfo
+    ) -> dict | object:
         """Normalize inputs during deserialization.
 
         Applies schema migrations for both agent and conversation settings,
         ensuring forward compatibility when loading settings files saved with
         older schema versions.
 
-        Note: We keep agent_settings as a dict here so that Pydantic's normal
-        validation handles it with context. This allows cipher-based decryption
-        to work properly through nested field validators (e.g., LLM._validate_secrets).
+        Agent settings are normalized through ``validate_agent_settings``
+        so the same migration entry point is used for settings files and direct
+        SDK callers. The validation context is forwarded so cipher-based secret
+        decryption still works during the nested settings validation.
         """
         if not isinstance(data, dict):
             return data
 
-        # Apply migrations for agent_settings but keep as dict
-        # The dict will be validated by Pydantic with context for decryption
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
             coerced = _coerce_dict_secrets(agent_settings)
-            # Apply migrations only, return dict for Pydantic to validate with context
-            migrated = _apply_persisted_migrations(
+            data["agent_settings"] = validate_agent_settings(
                 coerced,
-                current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-                migrations=_AGENT_SETTINGS_MIGRATIONS,
-                payload_name="AgentSettings",
+                context=info.context,
             )
-            data["agent_settings"] = migrated
 
         # Apply migrations for conversation_settings
         conv_settings = data.get("conversation_settings")
@@ -355,6 +376,55 @@ class Secrets(BaseModel):
             data["custom_secrets"] = converted
 
         return data
+
+
+# ── Workspaces ───────────────────────────────────────────────────────────
+
+WORKSPACES_SCHEMA_VERSION = 1
+
+
+class WorkspaceItem(BaseModel):
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+    parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkspaceParentItem(BaseModel):
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+class PersistedWorkspaces(BaseModel):
+    schema_version: int = Field(default=WORKSPACES_SCHEMA_VERSION)
+    workspaces: list[WorkspaceItem] = Field(default_factory=list)
+    workspace_parents: list[WorkspaceParentItem] = Field(
+        default_factory=list, alias="workspaceParents"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedWorkspaces:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", WORKSPACES_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedWorkspaces schema_version must be an integer")
+        if version > WORKSPACES_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedWorkspaces schema_version {version} is newer than "
+                f"supported {WORKSPACES_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
+        return cls.model_validate(payload)
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────

@@ -34,6 +34,40 @@ a human maintainer has commented confirming the results (e.g., "Human review don
 follow the normal approval policy. The eval monitor link is authoritative proof of
 benchmark validation for this repository.
 
+### Review decision policy (release PR workflow validation)
+
+For release PRs (for example branches like `rel-1.23.0`, or diffs that bump package versions
+across the distributable packages), do **NOT** approve until you have checked the latest PR-specific
+results for all three of these workflows:
+
+- `Run tests`
+- `Run Examples Scripts`
+- `Run Integration Tests`
+
+The standard review prompt does not inline ordinary PR issue comments, so use the
+GitHub API / `gh` from the terminal to inspect the latest PR comments and workflow
+results before deciding.
+
+For each workflow:
+
+1. Verify it actually ran for **this PR**, not only on `main`, on a scheduled run,
+   or on an older PR head commit.
+2. Read the latest PR comment from that workflow. In this repo those comments
+   normally look like:
+   - `Run tests`: the coverage report comment containing
+     `<!-- Pytest Coverage Comment: coverage-report -->`
+   - `Run Examples Scripts`: a comment starting with
+     `## 🔄 Running Examples`
+   - `Run Integration Tests`: a comment starting with
+     `# 🧪 Integration Tests Results`
+3. Cross-check the corresponding workflow/check result and make sure the comment
+   still matches the current PR state.
+
+If any of the three workflows is missing, skipped, stale, ambiguous, or failing,
+do **NOT** approve. Leave a **COMMENT** review that names the missing/failing
+validation and explicitly asks for human maintainer review instead.
+
+
 ### Default approval policy
 
 **Default to APPROVE**: If your review finds no issues at "important" level or higher,
@@ -124,12 +158,26 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
+- **Directory Example Entrypoints**: PRs that add or modify folder-based runnable examples under `examples/` should use `main.py` as the entrypoint and add the directory to `_TARGET_DIRECTORIES` in `tests/examples/test_examples.py`; see [Directory-Based Examples](#directory-based-examples)
 - **Event Type Deprecation**: Changes to event types (Pydantic models used in serialization) must handle deprecated fields properly
 - **Thread Safety**: New methods in `LocalConversation` that read or write `self._state` must use `with self._state:` — see the [Concurrency](#concurrency---localconversation-state-lock) section below
 - **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
 - **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
 - **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
 - **Secret Serialization**: Fields that carry secrets must use `serialize_secret()` from `openhands.sdk.utils.pydantic_secrets`. For `dict[str, str]` secret fields, wrap each value in `SecretStr` and call `serialize_secret` per value. Do not hand-roll redaction logic (e.g. custom sentinels or inline `expose_secrets` checks) in field serializers
+- **Info-Log Payloads**: `logger.info(...)` must not dump objects, dicts, or variable-length lists — see [Logging Hygiene](#logging-hygiene)
+
+## Directory-Based Examples
+
+When a PR adds or modifies a runnable example represented by a directory under `examples/`, verify that:
+
+1. The runnable entrypoint is named `main.py`.
+2. Helper modules inside that directory are not accidentally treated as standalone examples.
+3. `tests/examples/test_examples.py` includes the example directory in `_TARGET_DIRECTORIES` when the example should run in the `test-examples` workflow.
+4. The example prints an `EXAMPLE_COST: ...` marker when run by the workflow.
+
+Do not ask for this convention on support scripts that are intentionally named for GitHub workflow consumption (for example reusable automation scripts under `examples/03_github_workflows/`) unless they are presented as a directory-based runnable example.
+
 
 ## Event Type Deprecation - Critical Review Checkpoint
 
@@ -220,6 +268,12 @@ When reviewing server endpoints that create conversations or persistent artifact
 1. Identify the "point of no return" where state is written to disk.
 2. Check that subsequent operations are wrapped in try/except with cleanup.
 3. For client-supplied IDs, verify there's a duplicate check before creating state (return 409 Conflict if taken).
+
+### Logging Hygiene
+
+`logger.info(...)` must not interpolate `model_dump(...)`, `.json()`, `to_dict()`, a list/dict of tool/skill/server names, or arbitrary user-supplied values. Log a count and/or id; move full payloads to `logger.debug(...)`.
+
+When reviewing a new or changed `logger.info(...)` call: if any interpolated value is an object, a dict, or a list whose size scales with load (tools, skills, conversations, requests), flag it.
 
 ## What NOT to Comment On
 

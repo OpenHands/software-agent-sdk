@@ -26,6 +26,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    LLM_PROFILE_SCHEMA_VERSION,
     FallbackStrategy,
     ImageContent,
     LLMProfileStore,
@@ -51,7 +52,6 @@ from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
     ACPProviderInfo,
-    AgentSettings,
     AgentSettingsBase,
     AgentSettingsConfig,
     CondenserSettings,
@@ -121,7 +121,7 @@ _print_banner(__version__)
 _DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
     "LLMAgentSettings": {
         "deprecated_in": "1.19.0",
-        "removed_in": "1.22.0",
+        "removed_in": "1.24.0",
         "details": (
             "Use ``OpenHandsAgentSettings`` directly. "
             "``LLMAgentSettings`` was renamed in v1.19.0."
@@ -150,6 +150,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "LLM",
+    "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
@@ -192,7 +193,6 @@ __all__ = [
     "ACP_PROVIDERS",
     "ACPAgentSettings",
     "ACPProviderInfo",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "LLMAgentSettings",

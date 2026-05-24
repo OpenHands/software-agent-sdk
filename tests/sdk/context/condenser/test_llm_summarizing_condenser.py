@@ -56,7 +56,7 @@ def mock_llm() -> LLM:
     )
     mock_llm.format_messages_for_llm = lambda messages: messages
 
-    # Mock the required attributes that are checked in _set_env_side_effects
+    # Mock the required attributes that the LLM validator reads
     mock_llm.openrouter_site_url = "https://docs.all-hands.dev/"
     mock_llm.openrouter_app_name = "OpenHands"
     mock_llm.aws_access_key_id = None
@@ -195,7 +195,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     # Add a condensation to simulate previous summarization
     # The summary will be inserted at keep_first due to summary_offset
     condensation = Condensation(
-        forgotten_event_ids=[events[3].id, events[4].id],
+        forgotten_event_ids={events[3].id, events[4].id},
         summary="Previous summary content",
         summary_offset=keep_first,
         llm_response_id="condensation_response_1",

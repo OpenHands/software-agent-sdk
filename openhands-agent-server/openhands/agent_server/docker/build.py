@@ -473,7 +473,16 @@ class BuildOptions(BaseModel):
     @property
     def release_tag_source(self) -> str | None:
         if self.git_ref.startswith("refs/tags/"):
-            return self.git_ref.removeprefix("refs/tags/")
+            tag = self.git_ref.removeprefix("refs/tags/")
+            # For semver release tags (v1.2.3), use the SDK package version
+            # which follows PEP 440 (bare semver, no "v" prefix).
+            if _SEMVER_RELEASE_RE.fullmatch(tag):
+                if self.sdk_version != "unknown":
+                    return self.sdk_version
+                # Defensive: strip "v" if sdk_version is unavailable.
+                return tag.removeprefix("v")
+            # Non-semver tags (e.g. build-docker) are used as-is.
+            return tag
         if self.sdk_version and self.sdk_version != "unknown":
             return self.sdk_version
         return None

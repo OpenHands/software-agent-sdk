@@ -787,6 +787,7 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     # and subagents to avoid CDP port conflicts in sandbox containers.
     _shared_executor: ClassVar["BrowserToolExecutor | None"] = None
     _shared_executor_lock: ClassVar[threading.Lock] = threading.Lock()
+    _shared_executor_creation_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def is_usable(cls) -> bool:
@@ -795,30 +796,48 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         return BrowserToolExecutor.check_chromium_available() is not None
 
     @classmethod
+    def _warn_config_ignored(cls, executor_config: dict[str, object]) -> None:
+        if not executor_config:
+            return
+        _logger.warning(
+            "BrowserToolSet.create() called with executor_config but a "
+            "shared executor already exists. The config %s will be "
+            "ignored. This typically happens when a subagent requests "
+            "browser tools — it reuses the parent's browser session.",
+            list(executor_config.keys()),
+        )
+
+    @classmethod
+    def _get_or_create_shared_executor(
+        cls,
+        conv_state: "ConversationState",
+        **executor_config,
+    ) -> "BrowserToolExecutor":
+        with cls._shared_executor_creation_lock:
+            with cls._shared_executor_lock:
+                executor = cls._shared_executor
+
+            if executor is not None:
+                cls._warn_config_ignored(executor_config)
+                return executor
+
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+            with cls._shared_executor_lock:
+                cls._shared_executor = executor
+            return executor
+
+    @classmethod
     def create(
         cls,
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
-        with cls._shared_executor_lock:
-            if cls._shared_executor is not None:
-                if executor_config:
-                    _logger.warning(
-                        "BrowserToolSet.create() called with executor_config but a "
-                        "shared executor already exists. The config %s will be "
-                        "ignored. This typically happens when a subagent requests "
-                        "browser tools — it reuses the parent's browser session.",
-                        list(executor_config.keys()),
-                    )
-                executor = cls._shared_executor
-            else:
-                from openhands.tools.browser_use.impl import BrowserToolExecutor
-
-                executor = BrowserToolExecutor(
-                    full_output_save_dir=conv_state.env_observation_persistence_dir,
-                    **executor_config,
-                )
-                cls._shared_executor = executor
+        executor = cls._get_or_create_shared_executor(conv_state, **executor_config)
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []

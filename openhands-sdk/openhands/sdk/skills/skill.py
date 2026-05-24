@@ -2,6 +2,8 @@ import io
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -52,6 +54,7 @@ class SkillInfo(BaseModel):
     source: str | None = None
     description: str | None = None
     is_agentskills_format: bool = False
+    disable_model_invocation: bool = False
 
 
 class SkillResources(BaseModel):
@@ -206,6 +209,13 @@ class Skill(BaseModel):
         description=(
             "List of pre-approved tools for this skill. "
             "AgentSkills standard field (parsed from space-delimited string)."
+        ),
+    )
+    disable_model_invocation: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill can only be activated by trigger matching and "
+            "should not be advertised to the model for direct invocation."
         ),
     )
     resources: SkillResources | None = Field(
@@ -417,12 +427,17 @@ class Skill(BaseModel):
         allowed_tools_value = metadata_dict.get(
             "allowed-tools", metadata_dict.get("allowed_tools")
         )
+        disable_model_invocation_value = metadata_dict.get(
+            "disable-model-invocation",
+            metadata_dict.get("disable_model_invocation"),
+        )
         agentskills_fields = {
             "description": metadata_dict.get("description"),
             "license": metadata_dict.get("license"),
             "compatibility": metadata_dict.get("compatibility"),
             "metadata": metadata_dict.get("metadata"),
             "allowed_tools": allowed_tools_value,
+            "disable_model_invocation": disable_model_invocation_value,
         }
         # Remove None values to avoid passing unnecessary kwargs
         agentskills_fields = {
@@ -631,6 +646,7 @@ class Skill(BaseModel):
             source=self.source,
             description=self.description,
             is_agentskills_format=self.is_agentskills_format,
+            disable_model_invocation=self.disable_model_invocation,
         )
 
     def render_content(
@@ -917,6 +933,26 @@ PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 
+# Process-level cache for load_public_skills. Conversation creation re-validates
+# AgentContext several times and each validation re-runs load_public_skills
+# (git fetch + parse ~40 md files ≈ 1s). The cache short-circuits repeated calls
+# within the TTL while still picking up new skills within a minute.
+_PUBLIC_SKILLS_CACHE: dict[
+    tuple[str, str, str | None], tuple[float, list["Skill"]]
+] = {}
+_PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
+_PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
+
+
+def _invalidate_public_skills_cache() -> None:
+    """Clear the in-memory public-skills cache.
+
+    Called by ``sync_public_skills`` so a forced refresh re-parses immediately
+    instead of waiting for the TTL.
+    """
+    with _PUBLIC_SKILLS_CACHE_LOCK:
+        _PUBLIC_SKILLS_CACHE.clear()
+
 
 def load_marketplace_skill_names(
     repo_path: Path, marketplace_path: str
@@ -1011,6 +1047,15 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    cache_key = (repo_url, branch, marketplace_path)
+    with _PUBLIC_SKILLS_CACHE_LOCK:
+        cached = _PUBLIC_SKILLS_CACHE.get(cache_key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _PUBLIC_SKILLS_CACHE_TTL_SECONDS
+        ):
+            return list(cached[1])
+
     all_skills = []
 
     try:
@@ -1091,9 +1136,14 @@ def load_public_skills(
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
-    logger.info(
-        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
-    )
+    logger.info("Loaded %d public skills", len(all_skills))
+
+    # Only cache non-empty results so transient errors don't poison the cache
+    # for the full TTL window.
+    if all_skills:
+        with _PUBLIC_SKILLS_CACHE_LOCK:
+            _PUBLIC_SKILLS_CACHE[cache_key] = (time.monotonic(), list(all_skills))
+
     return all_skills
 
 

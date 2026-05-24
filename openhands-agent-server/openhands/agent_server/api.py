@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
@@ -26,7 +27,10 @@ from openhands.agent_server.conversation_router_acp import conversation_router_a
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
-from openhands.agent_server.dependencies import create_session_api_key_dependency
+from openhands.agent_server.dependencies import (
+    create_session_api_key_dependency,
+    create_workspace_session_dependency,
+)
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
@@ -34,7 +38,8 @@ from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
-from openhands.agent_server.middleware import LocalhostCORSMiddleware
+from openhands.agent_server.mcp_router import mcp_router
+from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -48,6 +53,8 @@ from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
+from openhands.agent_server.workspace_router import workspace_router
+from openhands.agent_server.workspaces_router import workspaces_router
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
@@ -263,6 +270,9 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     """
     app.include_router(server_details_router)
 
+    # Header-only auth: applied to every /api/* route EXCEPT the workspace
+    # static-file routes (handled separately below). Cookies are NOT honored
+    # here so that we don't expand the CSRF surface across the whole API.
     dependencies = []
     if config.session_api_keys:
         dependencies.append(Depends(create_session_api_key_dependency(config)))
@@ -280,10 +290,30 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(skills_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
+    api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
+    api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
     api_router.include_router(cloud_proxy_router)
+    # /api/auth/* mints workspace cookies and requires the header to bootstrap,
+    # so it lives under the header-only auth group.
+    api_router.include_router(auth_router)
     app.include_router(api_router)
+
+    # Workspace static-file routes get their own auth group that accepts
+    # EITHER the X-Session-API-Key header OR the workspace session cookie.
+    # The cookie is required so that <iframe src> / <img src> embeds of
+    # workspace artifacts work — browsers cannot attach custom headers to
+    # those requests.
+    workspace_dependencies = []
+    if config.session_api_keys:
+        workspace_dependencies.append(
+            Depends(create_workspace_session_dependency(config))
+        )
+    workspace_api_router = APIRouter(prefix="/api", dependencies=workspace_dependencies)
+    workspace_api_router.include_router(workspace_router)
+    app.include_router(workspace_api_router)
+
     app.include_router(sockets_router)
 
 
@@ -439,7 +469,15 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 request.url.path,
                 exc.detail,
             )
-        # Log 5xx errors at error level with full traceback (server errors)
+        # Log 5xx errors at error level. HTTPException is intentionally
+        # raised flow control — the route picked this status and detail
+        # on purpose — so a stack trace adds no information beyond
+        # `exc.detail` and makes routine upstream blips (e.g. a 502 from
+        # /api/cloud-proxy when the cloud is unreachable) look
+        # indistinguishable from a process crash. Unhandled exceptions
+        # still get a full traceback via _unhandled_exception_handler
+        # above. Include the traceback only when DEBUG is on, as an
+        # opt-in debugging aid.
         elif exc.status_code >= 500:
             logger.error(
                 "HTTPException %d on %s %s: %s",
@@ -447,7 +485,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 request.method,
                 request.url.path,
                 exc.detail,
-                exc_info=(type(exc), exc, exc.__traceback__),
+                exc_info=(type(exc), exc, exc.__traceback__) if DEBUG else None,
             )
             content = {
                 "detail": "Internal Server Error",
@@ -481,7 +519,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app, config)
     _setup_static_files(app, config)
-    app.add_middleware(LocalhostCORSMiddleware, allow_origins=config.allow_cors_origins)
+    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
     _add_exception_handlers(app)
 
     return app

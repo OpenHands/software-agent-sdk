@@ -1,6 +1,8 @@
 import asyncio
 import importlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -11,14 +13,14 @@ from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import (
+    LEASE_RENEW_INTERVAL_SECONDS,
+    EventService,
+)
 from openhands.agent_server.models import (
-    ACPConversationInfo,
-    ACPConversationPage,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    StartACPConversationRequest,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -26,7 +28,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Agent, AgentContext, Event, Message
+from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -90,15 +92,66 @@ def _append_worktree_guidance(
     return agent.model_copy(update={"agent_context": updated_context})
 
 
-def _get_worktree_start_point(repo_root: Path) -> str:
+def _has_git_remote(repo_root: Path, remote: str = "origin") -> bool:
     try:
-        current_branch = run_git_command(
-            ["git", "--no-pager", "rev-parse", "--abbrev-ref", "HEAD"],
+        run_git_command(["git", "remote", "get-url", remote], repo_root)
+    except GitCommandError:
+        return False
+    return True
+
+
+def _local_branch_exists(repo_root: Path, branch: str) -> bool:
+    try:
+        run_git_command(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
             repo_root,
         )
     except GitCommandError:
-        return "HEAD"
-    return current_branch if current_branch and current_branch != "HEAD" else "HEAD"
+        return False
+    return True
+
+
+def _get_worktree_start_point(repo_root: Path) -> str:
+    """Resolve the base ref a new conversation worktree should be created from.
+
+    Policy (in order):
+      1. ``origin/<default_branch>`` if an ``origin`` remote is configured.
+         ``git fetch origin`` is run first so the worktree starts from the
+         latest remote tip; the default branch is resolved via
+         ``refs/remotes/origin/HEAD``.
+      2. Local ``main`` if there is no usable remote default but ``main``
+         exists locally.
+      3. Local ``master`` if neither remote default nor local ``main`` is
+         available.
+      4. Fall back to ``HEAD`` only when none of the above applies, so worktree
+         creation still succeeds on freshly initialized repos.
+    """
+    if _has_git_remote(repo_root):
+        try:
+            run_git_command(["git", "fetch", "origin"], repo_root, timeout=60)
+        except GitCommandError as exc:
+            logger.warning(
+                "git fetch origin failed while choosing worktree start point "
+                "for %s; using cached refs. Error: %s",
+                repo_root,
+                exc,
+            )
+        try:
+            ref = run_git_command(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                repo_root,
+            )
+        except GitCommandError:
+            ref = ""
+        prefix = "refs/remotes/origin/"
+        if ref.startswith(prefix):
+            return f"origin/{ref[len(prefix) :]}"
+
+    if _local_branch_exists(repo_root, "main"):
+        return "main"
+    if _local_branch_exists(repo_root, "master"):
+        return "master"
+    return "HEAD"
 
 
 def _create_conversation_worktree(
@@ -161,9 +214,9 @@ def _create_conversation_worktree(
 
 
 def _prepare_request_workspace(
-    request: StartConversationRequest | StartACPConversationRequest,
+    request: StartConversationRequest,
     conversation_id: UUID,
-) -> StartConversationRequest | StartACPConversationRequest:
+) -> StartConversationRequest:
     if not request.worktree:
         return request
 
@@ -171,36 +224,24 @@ def _prepare_request_workspace(
     if worktree is None:
         return request
 
-    workspace, source_workspace, worktree_root, branch = worktree
+    new_workspace, source_workspace, worktree_root, branch = worktree
+    assert request.agent is not None
     agent = _append_worktree_guidance(
         request.agent,
         source_workspace=source_workspace,
         worktree_root=worktree_root,
-        workspace_dir=Path(workspace.working_dir),
+        workspace_dir=Path(new_workspace.working_dir),
         branch=branch,
     )
-    return request.model_copy(update={"workspace": workspace, "agent": agent})
+    return request.model_copy(update={"workspace": new_workspace, "agent": agent})
 
 
 logger = logging.getLogger(__name__)
 
 
-class ConversationContractMismatchError(ValueError):
-    """Raised when a conversation ID exists under a different REST contract."""
-
-
-def _conversation_contract_mismatch_message(conversation_id: UUID) -> str:
-    return (
-        f"Conversation {conversation_id} exists but is only available through the "
-        "ACP conversation contract. Use /api/acp/conversations or attach with "
-        "ACPAgent."
-    )
-
-
-def _compose_conversation_info_v1(
+def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    assert isinstance(stored.agent, Agent)
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
@@ -213,28 +254,10 @@ def _compose_conversation_info_v1(
     )
 
 
-def _compose_acp_conversation_info(
-    stored: StoredConversation, state: ConversationState
-) -> ACPConversationInfo:
-    return ACPConversationInfo(
-        **state.model_dump(mode="json"),
-        title=stored.title,
-        metrics=stored.metrics,
-        created_at=stored.created_at,
-        updated_at=stored.updated_at,
-    )
-
-
-def _is_v1_conversation(stored: StoredConversation) -> bool:
-    return isinstance(stored.agent, Agent)
-
-
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
-) -> ConversationInfo | ACPConversationInfo:
-    if _is_v1_conversation(stored):
-        return _compose_conversation_info_v1(stored, state)
-    return _compose_acp_conversation_info(stored, state)
+) -> ConversationInfo:
+    return _compose_conversation_info(stored, state)
 
 
 def _update_state_tags_sync(
@@ -247,7 +270,7 @@ def _update_state_tags_sync(
 
 def _compose_webhook_conversation_info_sync(
     stored: StoredConversation, state: ConversationState
-) -> ConversationInfo | ACPConversationInfo:
+) -> ConversationInfo:
     with state:
         return _compose_webhook_conversation_info(stored, state)
 
@@ -282,7 +305,7 @@ def _register_agent_definitions(
                 f"Failed to register agent definition "
                 f"'{agent_def.name}' ({context}): {e}"
             )
-    logger.info(
+    logger.debug(
         f"Registered {registered}/{len(agent_defs)} agent definition(s) ({context})"
     )
 
@@ -299,10 +322,13 @@ class ConversationService:
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
+    max_concurrent_runs: int = 10
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
+    _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -310,21 +336,19 @@ class ConversationService:
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
-        if not _is_v1_conversation(event_service.stored):
-            return None
         state = await event_service.get_state()
-        return _compose_conversation_info_v1(event_service.stored, state)
+        return _compose_conversation_info(event_service.stored, state)
 
     async def get_acp_conversation(
         self, conversation_id: UUID
-    ) -> ACPConversationInfo | None:
+    ) -> ConversationInfo | None:
         if self._event_services is None:
             raise ValueError("inactive_service")
         event_service = self._event_services.get(conversation_id)
         if event_service is None:
             return None
         state = await event_service.get_state()
-        return _compose_acp_conversation_info(event_service.stored, state)
+        return _compose_conversation_info(event_service.stored, state)
 
     async def search_conversations(
         self,
@@ -338,10 +362,9 @@ class ConversationService:
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_acp=False,
         )
         return ConversationPage(
-            items=cast(list[ConversationInfo], items),
+            items=items,
             next_page_id=next_page_id,
         )
 
@@ -351,16 +374,15 @@ class ConversationService:
         limit: int = 100,
         execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
-    ) -> ACPConversationPage:
+    ) -> ConversationPage:
         items, next_page_id = await self._search_conversations(
             page_id=page_id,
             limit=limit,
             execution_status=execution_status,
             sort_order=sort_order,
-            include_acp=True,
         )
-        return ACPConversationPage(
-            items=cast(list[ACPConversationInfo], items),
+        return ConversationPage(
+            items=items,
             next_page_id=next_page_id,
         )
 
@@ -370,23 +392,15 @@ class ConversationService:
         limit: int,
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
-        *,
-        include_acp: bool,
-    ) -> tuple[list[ConversationInfo | ACPConversationInfo], str | None]:
+    ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
 
         # Collect all conversations with their info
         all_conversations = []
         for id, event_service in self._event_services.items():
-            if not include_acp and not _is_v1_conversation(event_service.stored):
-                continue
             state = await event_service.get_state()
-            conversation_info = (
-                _compose_acp_conversation_info(event_service.stored, state)
-                if include_acp
-                else _compose_conversation_info_v1(event_service.stored, state)
-            )
+            conversation_info = _compose_conversation_info(event_service.stored, state)
             # Apply status filter if provided
             if (
                 execution_status is not None
@@ -433,25 +447,11 @@ class ConversationService:
         self,
         execution_status: ConversationExecutionStatus | None = None,
     ) -> int:
-        return await self._count_conversations(
-            execution_status=execution_status,
-            include_acp=False,
-        )
-
-    async def count_acp_conversations(
-        self,
-        execution_status: ConversationExecutionStatus | None = None,
-    ) -> int:
-        return await self._count_conversations(
-            execution_status=execution_status,
-            include_acp=True,
-        )
+        return await self._count_conversations(execution_status=execution_status)
 
     async def _count_conversations(
         self,
         execution_status: ConversationExecutionStatus | None,
-        *,
-        include_acp: bool,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -459,8 +459,6 @@ class ConversationService:
 
         count = 0
         for event_service in self._event_services.values():
-            if not include_acp and not _is_v1_conversation(event_service.stored):
-                continue
             state = await event_service.get_state()
 
             # Apply status filter if provided
@@ -489,10 +487,10 @@ class ConversationService:
 
     async def batch_get_acp_conversations(
         self, conversation_ids: list[UUID]
-    ) -> list[ACPConversationInfo | None]:
+    ) -> list[ConversationInfo | None]:
         results = await asyncio.gather(
             *[
-                self.get_acp_conversation(conversation_id)
+                self.get_conversation(conversation_id)
                 for conversation_id in conversation_ids
             ]
         )
@@ -533,41 +531,26 @@ class ConversationService:
     async def start_conversation(
         self, request: StartConversationRequest
     ) -> tuple[ConversationInfo, bool]:
-        conversation_info, is_new = await self._start_conversation(request)
-        assert isinstance(conversation_info, ConversationInfo)
-        return conversation_info, is_new
+        return await self._start_conversation(request)
 
     async def start_acp_conversation(
-        self, request: StartACPConversationRequest
-    ) -> tuple[ACPConversationInfo, bool]:
-        conversation_info, is_new = await self._start_conversation(request)
-        assert isinstance(conversation_info, ACPConversationInfo)
-        return conversation_info, is_new
+        self, request: StartConversationRequest
+    ) -> tuple[ConversationInfo, bool]:
+        return await self._start_conversation(request)
 
     async def _start_conversation(
-        self, request: StartConversationRequest | StartACPConversationRequest
-    ) -> tuple[ConversationInfo | ACPConversationInfo, bool]:
+        self,
+        request: StartConversationRequest,
+    ) -> tuple[ConversationInfo, bool]:
         """Start a local event_service and return its id."""
         if self._event_services is None:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
-        use_acp_contract = isinstance(request, StartACPConversationRequest)
-
         existing_event_service = self._event_services.get(conversation_id)
-        if (
-            existing_event_service is not None
-            and not use_acp_contract
-            and not _is_v1_conversation(existing_event_service.stored)
-        ):
-            raise ConversationContractMismatchError(
-                _conversation_contract_mismatch_message(conversation_id)
-            )
         if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
-            conversation_info = (
-                _compose_acp_conversation_info(existing_event_service.stored, state)
-                if use_acp_contract
-                else _compose_conversation_info_v1(existing_event_service.stored, state)
+            conversation_info = _compose_conversation_info(
+                existing_event_service.stored, state
             )
             return conversation_info, False
 
@@ -594,9 +577,9 @@ class ConversationService:
                     # tools
             if request.tool_module_qualnames:
                 logger.info(
-                    f"Dynamically registered {len(request.tool_module_qualnames)} "
-                    f"tools for conversation {conversation_id}: "
-                    f"{list(request.tool_module_qualnames.keys())}"
+                    "Dynamically registered %d tools for conversation %s",
+                    len(request.tool_module_qualnames),
+                    conversation_id,
                 )
 
         # Register subagent definitions forwarded from the client
@@ -643,11 +626,7 @@ class ConversationService:
             await event_service.send_message(message, True)
 
         state = await event_service.get_state()
-        conversation_info = (
-            _compose_acp_conversation_info(event_service.stored, state)
-            if use_acp_contract
-            else _compose_conversation_info_v1(event_service.stored, state)
-        )
+        conversation_info = _compose_conversation_info(event_service.stored, state)
 
         # Notify conversation webhooks about the started conversation
         await self._notify_conversation_webhooks(
@@ -663,6 +642,25 @@ class ConversationService:
         if event_service:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
+            state = await event_service.get_state()
+            conversation_info = _compose_webhook_conversation_info(
+                event_service.stored, state
+            )
+            await self._notify_conversation_webhooks(conversation_info)
+        return bool(event_service)
+
+    async def interrupt_conversation(self, conversation_id: UUID) -> bool:
+        """Immediately cancel an in-flight LLM call for a conversation.
+
+        Unlike :meth:`pause_conversation`, which waits for the current
+        LLM request to finish, this cancels the running ``arun()`` task
+        so the interruption takes effect mid-stream.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service:
+            await event_service.interrupt()
             state = await event_service.get_state()
             conversation_info = _compose_webhook_conversation_info(
                 event_service.stored, state
@@ -762,12 +760,13 @@ class ConversationService:
 
         updated_fields = []
         if request.title is not None:
-            updated_fields.append(f"title: {request.title}")
+            updated_fields.append("title")
         if request.tags is not None:
-            updated_fields.append(f"tags: {request.tags}")
+            updated_fields.append("tags")
         logger.info(
-            f"Successfully updated conversation {conversation_id} "
-            f"with {', '.join(updated_fields)}"
+            "Successfully updated conversation %s (%s)",
+            conversation_id,
+            ", ".join(updated_fields),
         )
         return True
 
@@ -858,7 +857,7 @@ class ConversationService:
         )
         # Extract the persisted data, then discard the temporary conversation.
         fork_conv_id = fork_conv.id
-        fork_agent = cast(Agent, fork_conv.agent)
+        fork_agent = cast(AgentBase, fork_conv.agent)
         fork_workspace = fork_conv.workspace
         fork_conv.delete_on_close = False
         fork_conv.close()
@@ -879,10 +878,14 @@ class ConversationService:
             raise
 
         state = await fork_event_service.get_state()
-        return _compose_conversation_info_v1(fork_event_service.stored, state)
+        return _compose_conversation_info(fork_event_service.stored, state)
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
+        self._run_executor = ThreadPoolExecutor(
+            max_workers=self.max_concurrent_runs,
+            thread_name_prefix="conversation-run",
+        )
         self._event_services = {}
         for conversation_dir in self.conversations_dir.iterdir():
             stored: StoredConversation | None = None
@@ -919,7 +922,7 @@ class ConversationService:
                             )
                             # Continue even if some tools fail to register
                     if stored.tool_module_qualnames:
-                        logger.info(
+                        logger.debug(
                             f"Dynamically registered "
                             f"{len(stored.tool_module_qualnames)} tools when "
                             f"resuming conversation {stored.id}: "
@@ -936,7 +939,7 @@ class ConversationService:
                 conversation_id = (
                     stored.id if stored is not None else conversation_dir.name
                 )
-                logger.info(
+                logger.debug(
                     "Skipping active conversation %s owned by %s until %s",
                     conversation_id,
                     exc.owner_instance_id,
@@ -956,9 +959,36 @@ class ConversationService:
             for webhook_spec in self.webhook_specs
         ]
 
+        self._lease_renewal_task = asyncio.create_task(self._renew_all_leases_loop())
+
         return self
 
+    async def _renew_all_leases_loop(self) -> None:
+        """Single background task that renews leases for all active conversations.
+
+        Replaces N per-conversation renewal tasks with one centralized loop,
+        reducing asyncio task overhead.  Each renewal involves synchronous
+        file I/O (FileLock + read + write), so individual calls are offloaded
+        via ``asyncio.to_thread`` to avoid blocking the event loop.
+        """
+        try:
+            while True:
+                await asyncio.sleep(LEASE_RENEW_INTERVAL_SECONDS)
+                event_services = self._event_services
+                if event_services is None:
+                    return
+                for event_service in list(event_services.values()):
+                    await asyncio.to_thread(event_service.renew_lease)
+        except asyncio.CancelledError:
+            raise
+
     async def __aexit__(self, exc_type, exc_value, traceback):
+        if self._lease_renewal_task is not None:
+            self._lease_renewal_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._lease_renewal_task
+            self._lease_renewal_task = None
+
         event_services = self._event_services
         if event_services is None:
             return
@@ -970,6 +1000,9 @@ class ConversationService:
                 for event_service in event_services.values()
             ]
         )
+        if self._run_executor is not None:
+            self._run_executor.shutdown(wait=False)
+            self._run_executor = None
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
@@ -980,6 +1013,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
+            max_concurrent_runs=config.max_concurrent_runs,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -993,28 +1027,36 @@ class ConversationService:
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
         )
-        # Create subscribers...
-        await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
-        if stored.autotitle and stored.title is None:
-            await event_service.subscribe_to_events(
-                AutoTitleSubscriber(service=event_service)
-            )
-        asyncio.gather(
-            *[
-                event_service.subscribe_to_events(
-                    WebhookSubscriber(
-                        conversation_id=stored.id,
-                        service=event_service,
-                        spec=webhook_spec,
-                        session_api_key=self.session_api_key,
-                    )
-                )
-                for webhook_spec in self.webhook_specs
-            ]
-        )
+        # Lease renewal is handled by the centralized
+        # _renew_all_leases_loop task on ConversationService.
+        event_service._external_lease_renewal = True
+        event_service._run_executor = self._run_executor
 
         try:
             await event_service.start()
+            # Register subscribers after start() so subscribe_to_events runs
+            # its initial-state push synchronously and any failure surfaces to
+            # the caller instead of being silently logged on a later publish.
+            await event_service.subscribe_to_events(
+                _EventSubscriber(service=event_service)
+            )
+            if stored.autotitle and stored.title is None:
+                await event_service.subscribe_to_events(
+                    AutoTitleSubscriber(service=event_service)
+                )
+            await asyncio.gather(
+                *[
+                    event_service.subscribe_to_events(
+                        WebhookSubscriber(
+                            conversation_id=stored.id,
+                            service=event_service,
+                            spec=webhook_spec,
+                            session_api_key=self.session_api_key,
+                        )
+                    )
+                    for webhook_spec in self.webhook_specs
+                ]
+            )
             # Save metadata immediately after successful start to ensure persistence
             # even if the system is not shut down gracefully
             await event_service.save_meta()
@@ -1195,8 +1237,15 @@ class WebhookSubscriber(Subscriber):
                         f"Failed to post events to webhook {events_url} "
                         f"after {self.spec.num_retries + 1} attempts"
                     )
-                    # Re-queue events for potential retry later
                     self.queue.extend(events_to_post)
+                    overflow = len(self.queue) - self.spec.max_queue_size
+                    if overflow > 0:
+                        del self.queue[:overflow]
+                        logger.warning(
+                            f"Webhook queue exceeded max_queue_size="
+                            f"{self.spec.max_queue_size}; dropped {overflow} "
+                            f"oldest event(s) for {events_url}."
+                        )
 
     def _cancel_flush_timer(self):
         """Cancel the current flush timer if it exists."""

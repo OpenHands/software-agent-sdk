@@ -1,9 +1,10 @@
 #!/bin/bash
 # Build script for custom base image with custom tools
 #
-# This script builds a custom base image that includes your custom tools.
-# When used with DockerDevWorkspace(base_image=...), the agent server
-# will be built on top of this image automatically.
+# This script builds a custom base image that includes your custom tools and
+# sets OH_EXTRA_PYTHON_PATH so the binary agent server can import them.
+# When used with DockerDevWorkspace(base_image=..., target="binary"), the
+# agent server will be built on top of this image automatically.
 #
 # Usage:
 #   ./build_custom_image.sh [TAG]
@@ -19,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default tag
 TAG="${1:-custom-base-image:latest}"
 
-echo "🐳 Building custom base image with custom tools..."
+echo "🐳 Building custom base image with custom tools and OH_EXTRA_PYTHON_PATH..."
 echo "🏷️  Tag: $TAG"
 echo "📂 Build context: $SCRIPT_DIR"
 echo ""
@@ -36,8 +37,12 @@ echo "🏷️  Image tag: $TAG"
 echo ""
 echo "To use this image:"
 echo "  1. Use in SDK with DockerDevWorkspace:"
-echo "     with DockerDevWorkspace(base_image='$TAG', host_port=8010) as workspace:"
-echo "         # DockerDevWorkspace will build the agent server on top of this base image"
+echo "     with DockerDevWorkspace("
+echo "         base_image='$TAG',"
+echo "         host_port=8010,"
+echo "         target='binary',"
+echo "     ) as workspace:"
+echo "         # The image sets OH_EXTRA_PYTHON_PATH for custom tool imports"
 echo "         # your code"
 echo ""
 echo "  2. Push to registry (optional):"

@@ -10,7 +10,7 @@ from pydantic_core import PydanticSerializationError
 
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm import LLM_SECRET_FIELDS
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
 
@@ -81,12 +81,6 @@ def _has_missing_cipher_cause(exc: BaseException) -> bool:
     return False
 
 
-# Fernet tokens always begin with the URL-safe base64 of version byte 0x80,
-# i.e. "gAAAAA". We gate decrypt attempts on this prefix so genuine plaintext
-# secrets pass through untouched (and we don't spam the cipher's failure log).
-_FERNET_TOKEN_PREFIX = "gAAAAA"
-
-
 def decrypt_incoming_llm_secrets(llm: LLM, cipher: Cipher) -> LLM:
     """Decrypt any pre-encrypted LLM secret fields posted back by the client.
 
@@ -103,7 +97,7 @@ def decrypt_incoming_llm_secrets(llm: LLM, cipher: Cipher) -> LLM:
         if not isinstance(val, SecretStr):
             continue
         raw = val.get_secret_value()
-        if not raw.startswith(_FERNET_TOKEN_PREFIX):
+        if not raw.startswith(FERNET_TOKEN_PREFIX):
             continue
         decrypted = cipher.decrypt(raw)
         if decrypted is not None:

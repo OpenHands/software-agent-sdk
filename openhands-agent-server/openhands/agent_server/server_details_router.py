@@ -8,6 +8,10 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
 from openhands.sdk.tool.registry import list_usable_tools
+from openhands.tools.terminal.timeout_policy import (
+    get_max_foreground_timeout_seconds,
+    get_runtime_idle_timeout_seconds,
+)
 
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
@@ -51,6 +55,12 @@ class ServerInfo(BaseModel):
     )
     python_version: str = Field(default_factory=lambda: sys.version)
     usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
+    runtime_idle_timeout_seconds: float | None = Field(
+        default_factory=lambda: get_runtime_idle_timeout_seconds()
+    )
+    max_foreground_terminal_timeout_seconds: float | None = Field(
+        default_factory=lambda: get_max_foreground_timeout_seconds()
+    )
 
     docs: str = "/docs"
     redoc: str = "/redoc"

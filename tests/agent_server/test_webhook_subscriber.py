@@ -504,6 +504,53 @@ class TestWebhookSubscriberPostEvents:
         assert subscriber.queue == original_events
 
     @pytest.mark.asyncio
+    async def test_post_events_drops_oldest_when_requeue_exceeds_max_queue_size(
+        self, mock_event_service, sample_conversation_id
+    ):
+        """Failed re-queue trims oldest events past max_queue_size."""
+        # Tight bound so we can construct overflow easily.
+        spec = WebhookSpec(
+            base_url="https://example.com",
+            event_buffer_size=1,
+            flush_delay=0.1,
+            num_retries=0,
+            retry_delay=0,
+            max_queue_size=3,
+        )
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+
+        # Build 5 distinct, identifiable events.
+        events = []
+        for i in range(5):
+            ev = MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=f"e{i}")]),
+            )
+            events.append(ev)
+
+        # Pre-load queue beyond bound so re-extend after failure must trim.
+        subscriber.queue = events.copy()
+
+        async def mock_request(*args, **kwargs):
+            raise httpx.HTTPStatusError(
+                "Server Error", request=MagicMock(), response=MagicMock()
+            )
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request = mock_request
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            await subscriber._post_events()
+
+        # Bound is honored, and the *oldest* events are the ones dropped.
+        assert len(subscriber.queue) == spec.max_queue_size
+        assert subscriber.queue == events[-spec.max_queue_size :]
+
+    @pytest.mark.asyncio
     @patch("httpx.AsyncClient")
     async def test_post_events_handles_events_without_model_dump(
         self,
@@ -1257,19 +1304,6 @@ class TestWebhookSubscriberTimerBehavior:
         subscriber._post_events.assert_called_once()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Subscribe-time errors from a subscriber's initial __call__ never "
-        "reach the start_conversation caller. Two swallow sites in series: "
-        "event_service.py:411-416 wraps the initial state sync in "
-        "try/except + logger.error (no re-raise), and "
-        "conversation_service.py:862 fires asyncio.gather() on the webhook "
-        "subscribes without awaiting. Both must be fixed for init errors "
-        "to surface. "
-        "Tracked in https://github.com/OpenHands/software-agent-sdk/issues/3121."
-    ),
-)
 @pytest.mark.timeout(30)
 async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
     persist = tmp_path / "persist"

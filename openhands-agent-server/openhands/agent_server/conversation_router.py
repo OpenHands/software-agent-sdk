@@ -19,12 +19,10 @@ from openhands.agent_server._secrets_exposure import (
     decrypt_incoming_llm_secrets,
     get_cipher,
 )
-from openhands.agent_server.conversation_service import (
-    ConversationContractMismatchError,
-    ConversationService,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
     AskAgentRequest,
     AskAgentResponse,
@@ -39,6 +37,7 @@ from openhands.agent_server.models import (
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
+    trim_conversation_response_skills,
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -89,14 +88,28 @@ async def search_conversations(
         ConversationSortOrder,
         Query(title="Sort order for conversations"),
     ] = ConversationSortOrder.CREATED_AT_DESC,
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationPage:
     """Search / List conversations"""
     assert limit > 0
     assert limit <= 100
-    return await conversation_service.search_conversations(
+    page = await conversation_service.search_conversations(
         page_id, limit, status, sort_order
     )
+    if not include_skills:
+        # ``model_copy`` rather than in-place mutation so we never
+        # write back into whatever the upstream service handed us
+        # (matters for services that cache their return value,
+        # including the ``AsyncMock`` used in route tests).
+        page = page.model_copy(
+            update={
+                "items": [
+                    trim_conversation_response_skills(item) for item in page.items
+                ]
+            }
+        )
+    return page
 
 
 @conversation_router.get("/count")
@@ -117,12 +130,15 @@ async def count_conversations(
 )
 async def get_conversation(
     conversation_id: UUID,
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Given an id, get a conversation"""
     conversation = await conversation_service.get_conversation(conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
+    if not include_skills:
+        conversation = trim_conversation_response_skills(conversation)
     return conversation
 
 
@@ -150,38 +166,38 @@ async def get_conversation_agent_final_response(
 @conversation_router.get("")
 async def batch_get_conversations(
     ids: Annotated[list[UUID], Query()],
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> list[ConversationInfo | None]:
     """Get a batch of conversations given their ids, returning null for
     any missing item"""
     assert len(ids) < 100
     conversations = await conversation_service.batch_get_conversations(ids)
+    if not include_skills:
+        return [
+            trim_conversation_response_skills(c) if c is not None else None
+            for c in conversations
+        ]
     return conversations
 
 
 # Write Methods
 
 
-@conversation_router.post(
-    "",
-    responses={409: {"description": "Conversation contract mismatch"}},
-)
+@conversation_router.post("")
 async def start_conversation(
     request: Annotated[
         StartConversationRequest, Body(examples=START_CONVERSATION_EXAMPLES)
     ],
     response: Response,
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Start a conversation in the local environment."""
-    try:
-        info, is_new = await conversation_service.start_conversation(request)
-    except ConversationContractMismatchError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
-        ) from e
+    info, is_new = await conversation_service.start_conversation(request)
     response.status_code = status.HTTP_201_CREATED if is_new else status.HTTP_200_OK
+    if not include_skills:
+        info = trim_conversation_response_skills(info)
     return info
 
 
@@ -195,6 +211,26 @@ async def pause_conversation(
     """Pause a conversation, allowing it to be resumed later."""
     paused = await conversation_service.pause_conversation(conversation_id)
     if not paused:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/interrupt",
+    responses={404: {"description": "Item not found"}},
+)
+async def interrupt_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Immediately interrupt a running conversation.
+
+    Unlike ``/pause``, which waits for the current LLM call to finish,
+    ``/interrupt`` cancels the in-flight request so the effect is instant.
+    The conversation transitions to *paused* and can be resumed later.
+    """
+    interrupted = await conversation_service.interrupt_conversation(conversation_id)
+    if not interrupted:
         raise HTTPException(status.HTTP_400_BAD_REQUEST)
     return Success()
 
@@ -419,6 +455,7 @@ async def condense_conversation(
 async def fork_conversation(
     conversation_id: UUID,
     request: Annotated[ForkConversationRequest, Body()] = ForkConversationRequest(),  # noqa: B008
+    include_skills: Annotated[bool, Query(title=INCLUDE_SKILLS_PARAM_TITLE)] = False,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> ConversationInfo:
     """Fork a conversation, deep-copying its event history.
@@ -444,4 +481,6 @@ async def fork_conversation(
             status.HTTP_404_NOT_FOUND,
             detail="Source conversation not found",
         )
+    if not include_skills:
+        info = trim_conversation_response_skills(info)
     return info

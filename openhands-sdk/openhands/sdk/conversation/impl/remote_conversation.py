@@ -60,13 +60,12 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
-ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
     return (
-        f"Conversation {conversation_id} was started with an ACP agent. "
-        "Attach with ACPAgent or use /api/acp/conversations."
+        f"Conversation {conversation_id} was started with a different agent kind. "
+        "Attach with a matching agent type."
     )
 
 
@@ -666,6 +665,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -694,6 +694,7 @@ class RemoteConversation(BaseConversation):
             secrets: Optional secrets to initialize the conversation with
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            user_id: Optional user ID to associate with observability traces
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -701,11 +702,7 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-        self._conversation_info_base_path = (
-            ACP_CONVERSATIONS_PATH
-            if agent.agent_kind == "acp"
-            else LEGACY_CONVERSATIONS_PATH
-        )
+        self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
         self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
@@ -720,18 +717,14 @@ class RemoteConversation(BaseConversation):
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
-                if agent.agent_kind != "acp":
-                    acp_resp = _send_request(
-                        self._client,
-                        "GET",
-                        f"{ACP_CONVERSATIONS_PATH}/{conversation_id}",
-                        acceptable_status_codes={404},
-                    )
-                    if acp_resp.status_code != 404:
-                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
+                agent_payload = resp.json().get("agent")
+                if agent_payload is not None:
+                    remote_agent = _validate_remote_agent(agent_payload)
+                    if remote_agent.agent_kind != agent.agent_kind:
+                        raise ValueError(_agent_kind_mismatch_message(conversation_id))
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
@@ -891,7 +884,7 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id))
+        self._start_observability_span(str(self._id), user_id=user_id)
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
@@ -921,7 +914,7 @@ class RemoteConversation(BaseConversation):
                 log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
-                with open(log_path, "w") as f:
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write(event.log_data)
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:
