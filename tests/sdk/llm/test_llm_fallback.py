@@ -6,13 +6,13 @@ from litellm.exceptions import (
     ContextWindowExceededError,
     RateLimitError,
 )
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import (
     Choices,
     Message as LiteLLMMessage,
     ModelResponse,
     Usage,
 )
-from litellm.types.llms.openai import ResponsesAPIResponse
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
