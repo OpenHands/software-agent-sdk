@@ -1692,13 +1692,15 @@ class TestACPAgentAstep:
         )
         assert failed_tool_events[0].is_error is True
 
-    def test_astep_finalizes_prompt_that_completes_during_cancellation(self, tmp_path):
+    def test_astep_finalizes_and_reraises_completed_cancelled_prompt(self, tmp_path):
         """If a cancelled ACP prompt drains successfully, keep the completed turn.
 
         The ACP server may finish the prompt while ``session/cancel`` is being
         delivered. In that case the remote session has accepted the assistant
         turn, so OpenHands must finalize the same turn locally instead of
         discarding the response and later resuming from diverged session history.
+        The original cancellation still propagates so explicit user stop intent
+        wins at the conversation layer.
         """
         from acp.schema import AgentMessageChunk, TextContentBlock
 
@@ -1748,7 +1750,8 @@ class TestACPAgentAstep:
             )
             await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
             task.cancel()
-            await task
+            with pytest.raises(asyncio.CancelledError):
+                await task
             await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
 
         try:

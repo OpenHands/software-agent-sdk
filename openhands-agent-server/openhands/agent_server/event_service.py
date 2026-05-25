@@ -432,12 +432,11 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             (
-                should_interrupt_acp,
+                did_mark_acp_prompt_superseded,
                 active_acp_prompt_has_latest_message,
-            ) = await self._running_acp_turn_state()
+            ) = await self._mark_running_acp_prompt_superseded()
             interrupted_acp = False
-            if should_interrupt_acp:
-                await self._mark_acp_inflight_prompt_superseded()
+            if did_mark_acp_prompt_superseded:
                 self._acp_internal_rerun_requested = True
                 interrupted_acp = True
                 await self.interrupt(internal_acp_rerun=True)
@@ -461,10 +460,10 @@ class EventService:
                     if interrupted_acp:
                         self._acp_internal_rerun_requested = True
 
-    def _running_acp_turn_state_sync(self) -> tuple[bool, bool]:
-        """Return whether an active ACP run should be interrupted.
+    def _mark_running_acp_prompt_superseded_sync(self) -> tuple[bool, bool]:
+        """Mark the currently running ACP prompt superseded if needed.
 
-        The tuple is ``(should_interrupt, active_prompt_has_latest_message)``.
+        The tuple is ``(did_mark_superseded, active_prompt_has_latest_message)``.
         If the running ACP prompt has already advanced to the newly appended
         user message, interrupting it would cancel the replacement prompt and
         strand that message behind the persisted cursor.
@@ -487,27 +486,19 @@ class EventService:
             active_prompt_has_latest_message = (
                 inflight_prompt_user_message_id == last_user_message_id
             )
-            return (
-                not active_prompt_has_latest_message,
-                active_prompt_has_latest_message,
-            )
-
-    async def _running_acp_turn_state(self) -> tuple[bool, bool]:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._running_acp_turn_state_sync)
-
-    def _mark_acp_inflight_prompt_superseded_sync(self) -> None:
-        if not self._conversation:
-            return
-        with self._conversation._state as state:
+            if active_prompt_has_latest_message:
+                return (False, True)
             state.agent_state = {
                 **state.agent_state,
                 ACP_SUPERSEDE_INFLIGHT_PROMPT: True,
             }
+            return (True, False)
 
-    async def _mark_acp_inflight_prompt_superseded(self) -> None:
+    async def _mark_running_acp_prompt_superseded(self) -> tuple[bool, bool]:
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._mark_acp_inflight_prompt_superseded_sync)
+        return await loop.run_in_executor(
+            None, self._mark_running_acp_prompt_superseded_sync
+        )
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)

@@ -1943,11 +1943,11 @@ class ACPAgent(AgentBase):
                     self._finalize_successful_turn(
                         drain_result.response, elapsed, state, on_event
                     )
-                    return
+                    raise
                 if drain_result.completed and drain_result.error is not None:
                     self._emit_turn_error(drain_result.error, state, on_event)
                     self._restart_session_on_next_turn = True
-                    return
+                    raise
                 self._cancel_inflight_tool_calls()
             if not drain_result.drained:
                 self._restart_session_on_next_turn = True

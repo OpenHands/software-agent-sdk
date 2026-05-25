@@ -27,6 +27,7 @@ from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
+    ACP_SUPERSEDE_INFLIGHT_PROMPT,
     LocalConversation,
 )
 from openhands.sdk.conversation.state import (
@@ -948,6 +949,45 @@ class TestEventServiceSendMessage:
 
         conversation.interrupt.assert_not_called()
         assert event_service._rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_mark_rechecks_current_prompt(
+        self, event_service, tmp_path
+    ):
+        """Do not attach the supersede marker to a replacement ACP prompt."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.send_message("replacement request")
+        latest_user_message_id = conversation.state.last_user_message_id
+        assert latest_user_message_id is not None
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        conversation.state.agent_state = {
+            **conversation.state.agent_state,
+            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID: latest_user_message_id,
+        }
+        event_service._conversation = conversation
+        release_run = asyncio.Event()
+        event_service._run_task = asyncio.create_task(release_run.wait())
+
+        try:
+            (
+                marked,
+                active_prompt_has_latest,
+            ) = await event_service._mark_running_acp_prompt_superseded()
+        finally:
+            release_run.set()
+            await event_service._run_task
+            event_service._run_task = None
+
+        assert marked is False
+        assert active_prompt_has_latest is True
+        assert ACP_SUPERSEDE_INFLIGHT_PROMPT not in conversation.state.agent_state
 
     @pytest.mark.asyncio
     async def test_explicit_interrupt_clears_internal_acp_rerun_request(

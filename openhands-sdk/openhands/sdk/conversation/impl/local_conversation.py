@@ -1091,6 +1091,28 @@ class LocalConversation(BaseConversation):
                 # for each individual mutation.
                 if acp_step_user_message is None:
                     with self._state:
+                        last_user_message_id = self._state.last_user_message_id
+                        acp_user_message_changed = (
+                            last_user_message_id is not None
+                            and last_user_message_id != last_acp_prompt_user_message_id
+                        )
+                        if acp_user_message_changed:
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived before ACP finish; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            logger.info(
+                                "User message arrived before ACP finish; continuing run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+                            continue
                         self._state.execution_status = (
                             ConversationExecutionStatus.FINISHED
                         )

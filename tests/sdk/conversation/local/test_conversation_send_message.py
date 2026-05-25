@@ -464,6 +464,72 @@ async def test_acp_arun_does_not_reprompt_when_cursor_is_current(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_acp_arun_rechecks_messages_before_finishing(tmp_path):
+    """A user message appended in the finish gap should be sent in the same run."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=3,
+        stuck_detection=False,
+    )
+    conversation.send_message("already processed")
+    conversation.state.agent_state = {
+        ACP_LAST_PROMPT_USER_MESSAGE_ID: conversation.state.last_user_message_id
+    }
+    conversation._agent_ready = True
+
+    prompts_seen: list[str] = []
+
+    def user_text(event: MessageEvent | None) -> str:
+        assert event is not None
+        content = event.llm_message.content[0]
+        assert isinstance(content, TextContent)
+        return content.text
+
+    async def record_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(user_text(prompt_message))
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    original_exit = ConversationState.__exit__
+    exit_count = 0
+    injected = False
+
+    def inject_after_empty_selection(
+        state: ConversationState, exc_type, exc_val, exc_tb
+    ) -> None:
+        nonlocal exit_count, injected
+        original_exit(state, exc_type, exc_val, exc_tb)
+        if state is conversation.state:
+            exit_count += 1
+            if exit_count == 2 and not injected:
+                injected = True
+                conversation.send_message("arrived in finish gap")
+
+    with (
+        patch.object(ConversationState, "__exit__", new=inject_after_empty_selection),
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=record_astep),
+    ):
+        await asyncio.wait_for(conversation.arun(), timeout=1.0)
+
+    assert injected is True
+    assert prompts_seen == ["arrived in finish gap"]
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert (
+        conversation.state.agent_state.get(ACP_LAST_PROMPT_USER_MESSAGE_ID)
+        == conversation.state.last_user_message_id
+    )
+
+
+@pytest.mark.asyncio
 async def test_acp_arun_does_not_commit_cursor_on_explicit_interrupt(tmp_path):
     """Explicit interruption should leave the in-flight ACP prompt retryable."""
 
