@@ -11,12 +11,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from acp.schema import (
-    AgentMessageChunk,
-    TextContentBlock,
-    ToolCallProgress,
-    ToolCallStart,
-)
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -1520,19 +1514,20 @@ class TestACPAgentAstep:
         )
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
-    def test_astep_extends_timeout_while_tool_call_is_inflight(self, tmp_path):
-        """A long-running ACP tool call should not trip prompt timeout.
+    def test_astep_times_out_while_tool_call_is_inflight(self, tmp_path):
+        """A hard ACP prompt timeout still fires during an active tool call.
 
-        Commands like `git` can legitimately run longer than
-        ``acp_prompt_timeout`` while the ACP subprocess still has an active
-        tool call. The timeout should guard idle/wedged prompts, not active
-        tools.
+        Mirroring OpenHands command handling, active output/heartbeats keep the
+        runtime alive but do not let a never-ending command suppress the hard
+        turn deadline. The timeout path must cancel the ACP session and close
+        any streamed tool cards as failed.
         """
-        from openhands.sdk.utils.async_executor import AsyncExecutor
+        from concurrent.futures import Future
 
-        agent = _make_agent(acp_prompt_timeout=0.05)
+        agent = _make_agent(acp_prompt_timeout=0.02)
         conversation = self._make_conversation_with_message(tmp_path)
         emitted: list = []
+        cancel_called = threading.Event()
 
         mock_client = _OpenHandsACPBridge()
         mock_client.get_turn_usage_update = MagicMock(return_value=object())
@@ -1540,58 +1535,58 @@ class TestACPAgentAstep:
         agent._conn = MagicMock()
         agent._session_id = "test-session"
 
-        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
-            await mock_client.session_update(
-                session_id,
-                ToolCallStart(
-                    session_update="tool_call",
-                    tool_call_id="git-1",
-                    title="git status",
-                    kind="execute",
-                    status="in_progress",
-                ),
-            )
-            await asyncio.sleep(0.08)
-            await mock_client.session_update(
-                session_id,
-                ToolCallProgress(
-                    session_update="tool_call_update",
-                    tool_call_id="git-1",
-                    status="completed",
-                    raw_output="ok",
-                ),
-            )
-            await mock_client.session_update(
-                session_id,
-                AgentMessageChunk(
-                    session_update="agent_message_chunk",
-                    content=TextContentBlock(type="text", text="done"),
-                ),
-            )
-            return None
+        class _FakePortal:
+            def __init__(self) -> None:
+                self.prompt_future: Future = Future()
 
-        agent._conn.prompt = _fake_prompt
+            def start_task_soon(self, fn, *args):  # noqa: ANN001, ANN202
+                if args:
+                    entry = {
+                        "tool_call_id": "git-1",
+                        "title": "git status",
+                        "tool_kind": "execute",
+                        "status": "in_progress",
+                        "raw_input": None,
+                        "raw_output": None,
+                        "content": None,
+                    }
+                    mock_client.accumulated_tool_calls.append(entry)
+                    mock_client._emit_tool_call_event(entry)
+                    return self.prompt_future
 
-        executor = AsyncExecutor()
-        try:
-            agent._executor = executor
+                cancel_called.set()
+                cancel_future: Future = Future()
+                cancel_future.set_result(None)
+                return cancel_future
+
+        mock_executor = MagicMock()
+        mock_executor.portal = _FakePortal()
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT", 0.01):
             asyncio.run(agent.astep(conversation, on_event=emitted.append))
-        finally:
-            executor.close()
 
-        assert (
-            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
-        )
+        assert cancel_called.is_set()
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
         assert any(
             isinstance(e, ACPToolCallEvent)
             and e.tool_call_id == "git-1"
-            and e.status == "completed"
+            and e.status == "failed"
+            and e.is_error
             for e in emitted
         )
+
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
         assert any(
-            isinstance(e, ActionEvent)
-            and isinstance(e.action, FinishAction)
-            and e.action.message == "done"
+            isinstance(e, MessageEvent)
+            and "ACP prompt timed out after" in _message_text(e)
+            for e in emitted
+        )
+        assert not any(
+            isinstance(e, ActionEvent) and isinstance(e.action, FinishAction)
             for e in emitted
         )
 

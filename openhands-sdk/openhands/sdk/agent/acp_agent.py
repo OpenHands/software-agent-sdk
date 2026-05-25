@@ -421,10 +421,6 @@ class _OpenHandsACPBridge:
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
         self._last_activity_signal: float = float("-inf")
-        # Monotonic counter bumped for every non-fork session_update. ACPAgent
-        # uses this to distinguish an idle prompt from a long-running tool call
-        # such as `git` that is still sending protocol activity.
-        self._activity_version: int = 0
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -450,21 +446,6 @@ class _OpenHandsACPBridge:
         self._usage_received.clear()
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
-
-    @property
-    def activity_version(self) -> int:
-        """Version counter for session_update activity observed this process."""
-        return self._activity_version
-
-    def has_inflight_tool_calls(self) -> bool:
-        """Return whether any live ACP tool call is not terminal yet."""
-        return any(
-            tc.get("status") not in _TERMINAL_TOOL_CALL_STATUSES
-            for tc in self.accumulated_tool_calls
-        )
-
-    def _note_session_activity(self) -> None:
-        self._activity_version += 1
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -498,8 +479,6 @@ class _OpenHandsACPBridge:
                 if isinstance(update.content, TextContentBlock):
                     self._fork_accumulated_text.append(update.content.text)
             return
-
-        self._note_session_activity()
 
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
@@ -1529,44 +1508,27 @@ class ACPAgent(AgentBase):
                 )
         return response
 
-    async def _await_prompt_response_with_idle_timeout(
+    async def _await_prompt_response_with_timeout(
         self,
         prompt_future: Future[PromptResponse | None],
     ) -> PromptResponse | None:
-        """Await a prompt response, extending the timeout during tool activity.
+        """Await an ACP prompt with a hard turn deadline.
 
-        ``acp_prompt_timeout`` is an idle timeout for ACP turns, not a hard wall
-        clock for legitimate long-running tools. Commands such as `git` can run
-        longer than the default prompt timeout while still being active inside
-        the ACP subprocess. If the timeout fires while we have seen new
-        session_update activity or while any tool call remains non-terminal,
-        keep waiting; otherwise treat it as a wedged ACP prompt.
+        The terminal tool reports hard command timeouts back to the agent
+        instead of waiting forever for active commands. ACP prompts follow the
+        same rule: activity heartbeats keep the server alive, but they do not
+        extend this prompt deadline. The timeout handler sends ``session/cancel``
+        and closes any in-flight tool cards.
         """
-        wrapped = asyncio.wrap_future(prompt_future)
-        last_activity_version = self._client.activity_version
-        while True:
-            try:
-                return await asyncio.wait_for(
-                    asyncio.shield(wrapped),
-                    timeout=self.acp_prompt_timeout,
-                )
-            except TimeoutError as exc:
-                activity_version = self._client.activity_version
-                has_inflight_tool = self._client.has_inflight_tool_calls()
-                if activity_version != last_activity_version or has_inflight_tool:
-                    last_activity_version = activity_version
-                    logger.info(
-                        "ACP prompt exceeded %.0fs but still has %s; "
-                        "extending timeout",
-                        self.acp_prompt_timeout,
-                        "an in-flight tool call"
-                        if has_inflight_tool
-                        else "session activity",
-                    )
-                    continue
-                raise TimeoutError(
-                    f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s"
-                ) from exc
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(prompt_future)),
+                timeout=self.acp_prompt_timeout,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s"
+            ) from exc
 
     def _finalize_successful_turn(
         self,
@@ -1910,10 +1872,12 @@ class ACPAgent(AgentBase):
                         )
                     )
                     prompt_future = current_prompt_future
-                    response = await self._await_prompt_response_with_idle_timeout(
+                    response = await self._await_prompt_response_with_timeout(
                         current_prompt_future
                     )
                     break
+                except TimeoutError:
+                    raise
                 except _RETRIABLE_CONNECTION_ERRORS as e:
                     if attempt < max_retries:
                         delay = _ACP_PROMPT_RETRY_DELAYS[
