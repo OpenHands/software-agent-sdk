@@ -431,9 +431,10 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
-            should_interrupt_acp, active_acp_prompt_has_latest_message = (
-                await self._running_acp_turn_state()
-            )
+            (
+                should_interrupt_acp,
+                active_acp_prompt_has_latest_message,
+            ) = await self._running_acp_turn_state()
             interrupted_acp = False
             if should_interrupt_acp:
                 await self._mark_acp_inflight_prompt_superseded()
@@ -481,10 +482,7 @@ class EventService:
                 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID
             )
             last_user_message_id = state.last_user_message_id
-            if (
-                inflight_prompt_user_message_id is None
-                or last_user_message_id is None
-            ):
+            if inflight_prompt_user_message_id is None or last_user_message_id is None:
                 return (False, False)
             active_prompt_has_latest_message = (
                 inflight_prompt_user_message_id == last_user_message_id
@@ -912,20 +910,15 @@ class EventService:
                     # run=False append, or an IDLE reached via another path,
                     # never sets the flag.
                     rerun_requested = self._rerun_requested
-                    acp_internal_rerun_requested = (
-                        self._acp_internal_rerun_requested
-                    )
+                    acp_internal_rerun_requested = self._acp_internal_rerun_requested
                     self._rerun_requested = False
                     self._acp_internal_rerun_requested = False
                     if rerun_requested:
                         status = await self._get_execution_status()
-                        should_restart = (
-                            status == ConversationExecutionStatus.IDLE
-                            or (
-                                acp_internal_rerun_requested
-                                and status == ConversationExecutionStatus.PAUSED
-                                and isinstance(conversation.agent, ACPAgent)
-                            )
+                        should_restart = status == ConversationExecutionStatus.IDLE or (
+                            acp_internal_rerun_requested
+                            and status == ConversationExecutionStatus.PAUSED
+                            and isinstance(conversation.agent, ACPAgent)
                         )
                         if should_restart:
                             try:
