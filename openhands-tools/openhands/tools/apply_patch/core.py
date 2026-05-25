@@ -477,7 +477,9 @@ def apply_commit(
             write_fn(path, change.new_content)
         elif change.type == ActionType.UPDATE:
             if change.new_content is None:
-                raise DiffError(f"apply_commit: UPDATE change for '{path}' has no content")
+                raise DiffError(
+                    f"apply_commit: UPDATE change for '{path}' has no content"
+                )
             if change.move_path:
                 write_fn(change.move_path, change.new_content)
                 remove_fn(path)

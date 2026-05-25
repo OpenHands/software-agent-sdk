@@ -1,6 +1,5 @@
 """Edit tool executor implementation."""
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 

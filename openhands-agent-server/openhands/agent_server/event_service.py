@@ -475,7 +475,6 @@ class EventService:
         main_loop = self._main_loop
         conversation = self._conversation
         if main_loop and main_loop.is_running() and conversation:
-
             # Wrap _on_event with lock acquisition to ensure thread-safe access
             # to conversation state and event log during concurrent operations
             def locked_on_event():
