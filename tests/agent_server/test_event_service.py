@@ -2311,3 +2311,311 @@ async def test_close_blocks_until_executor_thread_finishes(
     )
 
     monkeypatch.undo()
+
+
+class TestStatsCallbackNoDeadlock:
+    """Regression: stats_callback must not re-acquire the state lock.
+
+    ``Telemetry._stats_update_callback`` is invoked synchronously from
+    inside the LLM completion / ACP turn pipeline while another thread
+    (``LocalConversation.run()``) holds the conversation state's
+    ``FIFOLock`` via ``with self._state:``.
+
+    Empirically the deadlock is **cross-thread**: the FIFOLock's
+    same-thread reentry works fine (verified in
+    ``test_same_thread_reentry_works_on_fifolock``), but when the
+    callback fires on a different thread than the lock owner, the
+    extra ``with state:`` inside the callback waits forever.  That is
+    what hung every short-text ACP conversation before this fix.
+
+    These tests pin the contract: the callback returns promptly and
+    the stats event is queued for emission regardless of which thread
+    owns the lock.
+    """
+
+    def _make_service_with_callback(self):
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=Agent(
+                llm=LLM(model="gpt-4o", usage_id="test-stats"),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        service = EventService(
+            stored=stored,
+            conversations_dir=Path("test_conversation_dir"),
+        )
+        # A real FIFOLock on a Mock-ish state so the callback contends on
+        # the actual production lock primitive, but we don't have to spin
+        # up the LocalConversation event loop / persistence stack to
+        # exercise the deadlock.
+        state = MagicMock()
+        state._lock = FIFOLock()
+        state.__enter__ = MagicMock(side_effect=lambda: state._lock.acquire())
+        state.__exit__ = MagicMock(side_effect=lambda *a: state._lock.release())
+        state.stats = MagicMock(name="stats")
+
+        conversation = MagicMock()
+        conversation._state = state
+        service._conversation = conversation
+        # Stub the executor-thread emission path so the test stays
+        # synchronous + deterministic.  The under-test behaviour is just
+        # ``stats_callback returns promptly``; the locked_on_event side of
+        # _emit_event_from_thread is covered elsewhere.
+        service._emit_event_from_thread = MagicMock(name="_emit_event_from_thread")
+
+        callbacks: list = []
+        service._setup_stats_streaming(
+            MagicMock(
+                get_all_llms=lambda: [
+                    MagicMock(
+                        telemetry=MagicMock(set_stats_update_callback=callbacks.append)
+                    )
+                ]
+            )
+        )
+        assert len(callbacks) == 1, "stats_callback must be registered exactly once"
+        return service, state, callbacks[0]
+
+    def test_same_thread_reentry_works_on_fifolock(self):
+        """Sanity: FIFOLock's reentrancy contract holds for same-thread re-acquire.
+
+        Documents why the fix is **not** about masking a broken reentrant
+        lock — even with the buggy ``with state:`` re-entry, the same
+        thread can re-acquire FIFOLock without deadlock.  This isolates
+        the deadlock as a cross-thread phenomenon (see the next test).
+        """
+        lock = FIFOLock()
+        finished = threading.Event()
+
+        def run():
+            with lock:
+                with lock:  # same-thread re-entry
+                    pass
+            finished.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        assert finished.wait(timeout=2.0), "FIFOLock should support same-thread reentry"
+
+    @pytest.mark.timeout(10)
+    def test_returns_promptly_when_another_thread_holds_state_lock(self):
+        """The deadlock case: another thread owns the lock when the callback fires.
+
+        Mirrors production: ``LocalConversation.run()`` on thread A holds
+        ``state``'s FIFOLock via ``with self._state:``; the stats callback
+        fires on a different thread (executor / portal / bridge) and would
+        re-acquire the lock with ``with state:`` — blocking forever because
+        FIFOLock's reentrancy gates on ``threading.get_ident()`` and thread
+        B's ident is not the owner.
+
+        Pre-fix this test hangs forever and the pytest timeout cap fires.
+        Post-fix the callback no longer re-acquires the lock and returns
+        immediately, with the stats event handed to ``_emit_event_from_thread``
+        for serialization once thread A eventually releases the lock.
+        """
+        service, state, stats_callback = self._make_service_with_callback()
+        lock_acquired = threading.Event()
+        callback_completed = threading.Event()
+        release_lock = threading.Event()
+
+        def thread_a_holds_lock():
+            with state:
+                lock_acquired.set()
+                # Hold the lock until the callback thread has done its work
+                # (or until the test times out, whichever comes first).
+                release_lock.wait(timeout=5.0)
+
+        def thread_b_invokes_callback():
+            assert lock_acquired.wait(timeout=2.0), "thread A never took the lock"
+            stats_callback()
+            callback_completed.set()
+
+        a = threading.Thread(target=thread_a_holds_lock, daemon=True)
+        b = threading.Thread(target=thread_b_invokes_callback, daemon=True)
+        a.start()
+        b.start()
+        try:
+            assert callback_completed.wait(timeout=2.0), (
+                "stats_callback hung — thread A still holds the FIFOLock "
+                "and the callback's `with state:` is blocking on it. "
+                "Restore the fix that removes the redundant lock acquire."
+            )
+            emit_mock = cast(MagicMock, service._emit_event_from_thread)
+            emit_mock.assert_called_once()
+        finally:
+            release_lock.set()
+            a.join(timeout=2.0)
+            b.join(timeout=2.0)
+
+    def test_returns_promptly_with_no_lock_contention(self):
+        """Baseline: callback returns and emit is scheduled when nothing is held."""
+        service, _state, stats_callback = self._make_service_with_callback()
+        finished = threading.Event()
+
+        def run():
+            stats_callback()
+            finished.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        assert finished.wait(timeout=2.0), (
+            "stats_callback did not return within 2s with no lock contention"
+        )
+        emit_mock = cast(MagicMock, service._emit_event_from_thread)
+        emit_mock.assert_called_once()
+
+
+@pytest.mark.timeout(30)
+async def test_message_in_run_cleanup_tail_is_not_stranded(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """A message that lands while a *finished* run is still in its
+    ``wait_for_pending()`` cleanup tail must still be processed.
+
+    Regression test for a stranded-message race: ``send_message(run=True)``
+    suppresses run()'s ``conversation_already_running`` while ``_run_task`` is
+    wrapping up, and without the re-arm in ``_run_and_publish`` nothing re-runs
+    once the tail clears — so the message sits unprocessed until the next send.
+
+    Not the in-flight case: ``LocalConversation.run`` deliberately keeps looping
+    on FINISHED so a message arriving *during* a step is absorbed. The unguarded
+    gap is strictly the post-run executor tail owned by ``_run_and_publish``.
+    """
+    (tmp_path / "ws").mkdir()
+    # One scripted reply per user message; each is plain text (no tool calls)
+    # so the agent finishes the turn immediately. ``_call_count`` tells us how
+    # many turns actually ran.
+    parent_llm = SlowTestLLM.from_messages(
+        [text_message("reply one"), text_message("reply two")],
+        latency_s=0.0,
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="tail-strand",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None and es._callback_wrapper is not None
+
+    # Park every run in its wait_for_pending() tail until released. It runs in
+    # a thread-pool worker, so block on a threading.Event there and signal
+    # entry back to the test.
+    entered_tail = threading.Event()
+    release_tail = threading.Event()
+
+    def _blocking_wait(timeout: float) -> None:
+        entered_tail.set()
+        release_tail.wait(timeout)
+
+    monkeypatch.setattr(es._callback_wrapper, "wait_for_pending", _blocking_wait)
+
+    # Turn 1: the agent answers "first", finishes (FINISHED), then the run
+    # task parks in our blocking wait_for_pending().
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="first")]), run=True
+    )
+    assert await asyncio.to_thread(entered_tail.wait, 10.0), (
+        "first run never reached its wait_for_pending tail"
+    )
+    first_run_task = es._run_task
+    assert first_run_task is not None
+    assert parent_llm._call_count == 1
+    assert await es._get_execution_status() == ConversationExecutionStatus.FINISHED
+
+    # Turn 2 arrives DURING the tail: send_message appends it and resets the
+    # terminal status to IDLE, then run() is rejected (task not done) and
+    # suppressed. Nothing runs yet.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="second")]), run=True
+    )
+    assert parent_llm._call_count == 1, "second turn ran before the tail cleared?!"
+    assert es._run_task is first_run_task, "a second run started concurrently"
+
+    # Release the tail; the first run task finishes and clears _run_task.
+    release_tail.set()
+    await first_run_task
+
+    # The second message must now get processed. Without the _run_and_publish
+    # re-arm it is stranded (call_count stays 1, status stuck IDLE).
+    deadline = time.monotonic() + 5.0
+    while parent_llm._call_count < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+
+    assert parent_llm._call_count == 2, (
+        "second message was stranded — the agent never ran for it after the "
+        f"first run's cleanup tail cleared (call_count={parent_llm._call_count}, "
+        f"status={await es._get_execution_status()})"
+    )
+
+
+@pytest.mark.timeout(30)
+async def test_run_false_message_in_cleanup_tail_is_not_run(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """A run=False append landing in the cleanup tail must NOT be auto-run.
+
+    Guards the explicit-intent contract behind the re-arm: send_message(
+    run=False) appends without running, and _run_and_publish must not
+    resurrect it just because send_message reset the terminal status to IDLE.
+    """
+    (tmp_path / "ws").mkdir()
+    # Two scripted replies, but only the first turn should ever run.
+    parent_llm = SlowTestLLM.from_messages(
+        [text_message("reply one"), text_message("must not run")],
+        latency_s=0.0,
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="tail-run-false",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None and es._callback_wrapper is not None
+
+    entered_tail = threading.Event()
+    release_tail = threading.Event()
+
+    def _blocking_wait(timeout: float) -> None:
+        entered_tail.set()
+        release_tail.wait(timeout)
+
+    monkeypatch.setattr(es._callback_wrapper, "wait_for_pending", _blocking_wait)
+
+    # Turn 1 runs and parks in the wait_for_pending tail.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="first")]), run=True
+    )
+    assert await asyncio.to_thread(entered_tail.wait, 10.0), (
+        "first run never reached its wait_for_pending tail"
+    )
+    first_run_task = es._run_task
+    assert first_run_task is not None
+    assert parent_llm._call_count == 1
+
+    # Append a message with run=False during the tail: the caller explicitly
+    # does NOT want a run. It resets the terminal status to IDLE but must not
+    # set the re-run flag.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="just append")]), run=False
+    )
+    assert es._rerun_requested is False
+
+    # Release the tail and let the run task settle; nothing should re-run.
+    release_tail.set()
+    await first_run_task
+    await asyncio.sleep(0.3)  # give any erroneous re-arm a chance to fire
+
+    assert parent_llm._call_count == 1, (
+        "run=False append in the cleanup tail was unexpectedly run "
+        f"(call_count={parent_llm._call_count})"
+    )
+    assert es._run_task is None

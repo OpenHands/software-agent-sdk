@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-05-06T10:04:47.375927Z"
+exclude-newer = "2026-05-12T18:17:37.961907255Z"
 exclude-newer-span = "P7D"
 
 [manifest]
@@ -2502,6 +2502,8 @@ dependencies = [
     { name = "python-frontmatter" },
     { name = "python-json-logger" },
     { name = "tenacity" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-bash" },
     { name = "websockets" },
 ]
 
@@ -2527,6 +2529,8 @@ requires-dist = [
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-json-logger", specifier = ">=3.3.0" },
     { name = "tenacity", specifier = ">=9.1.2" },
+    { name = "tree-sitter", specifier = ">=0.25" },
+    { name = "tree-sitter-bash", specifier = ">=0.25" },
     { name = "websockets", specifier = ">=12" },
 ]
 provides-extras = ["boto3"]

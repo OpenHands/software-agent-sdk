@@ -3,7 +3,7 @@ import os
 import tempfile
 import traceback
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,6 +17,7 @@ from starlette.requests import Request
 
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
@@ -39,7 +40,7 @@ from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
-from openhands.agent_server.middleware import LocalhostCORSMiddleware
+from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -188,9 +189,28 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         async with service:
             # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
+
+            config = api.state.config
+            retention_task: asyncio.Task | None = None
+            if config.bash_events_retention_seconds is not None:
+                retention_task = asyncio.create_task(
+                    get_default_bash_event_service().run_retention_cleanup_loop(
+                        config.bash_events_retention_seconds
+                    )
+                )
+                logger.info(
+                    "Bash events retention cleanup started (retention: %ds)",
+                    config.bash_events_retention_seconds,
+                )
+
             try:
                 yield
             finally:
+                if retention_task is not None:
+                    retention_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await retention_task
+
                 # Define async functions for stopping each service
                 async def stop_vscode_service():
                     if vscode_service is not None:
@@ -519,7 +539,7 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app, config)
     _setup_static_files(app, config)
-    app.add_middleware(LocalhostCORSMiddleware, allow_origins=config.allow_cors_origins)
+    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
     _add_exception_handlers(app)
 
     return app
