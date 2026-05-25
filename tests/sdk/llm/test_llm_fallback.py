@@ -12,6 +12,7 @@ from litellm.types.utils import (
     ModelResponse,
     Usage,
 )
+from litellm.types.llms.openai import ResponsesAPIResponse
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
@@ -371,7 +372,6 @@ async def test_acompletion_maps_connection_error(mock_acomp):
 @patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
 async def test_aresponses_fallback_on_transport_error(mock_aresp, mock_resp):
     """aresponses must invoke fallback when the primary transport raises."""
-    from litellm.types.llms.openai import ResponsesAPIResponse
 
     primary_error = APIConnectionError(
         message="down", llm_provider="openai", model="gpt-4o"
