@@ -1585,9 +1585,12 @@ class TestACPAgentAstep:
             )
             await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+            finally:
+                prompt_released.set()
 
         try:
             agent._executor = executor
@@ -1639,14 +1642,19 @@ class TestACPAgentAstep:
 
         async def _run_with_cancel() -> None:
             prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
             async def _fake_prompt(prompt_blocks, session_id):
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
-                await asyncio.sleep(60)
+                await asyncio.to_thread(prompt_released.wait)
                 return None
 
+            async def _fake_cancel(session_id):
+                prompt_released.set()
+
             agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -1654,8 +1662,11 @@ class TestACPAgentAstep:
             )
             await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            finally:
+                prompt_released.set()
 
         try:
             agent._executor = executor

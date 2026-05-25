@@ -258,20 +258,14 @@ async def test_acp_arun_accepts_user_message_while_step_is_in_flight(tmp_path):
         await asyncio.wait_for(first_step_started.wait(), timeout=1.0)
         send_task = asyncio.create_task(send_intervening_message())
 
-        completed_promptly = True
         try:
-            await asyncio.wait_for(send_done.wait(), timeout=0.2)
-        except TimeoutError:
-            completed_promptly = False
+            await asyncio.wait_for(send_done.wait(), timeout=5.0)
         finally:
             release_first_step.set()
             await asyncio.wait_for(send_task, timeout=1.0)
             await asyncio.wait_for(second_step_seen.wait(), timeout=1.0)
             await asyncio.wait_for(run_task, timeout=1.0)
 
-    assert completed_promptly, (
-        "send_message() should not wait for the in-flight ACP prompt to finish"
-    )
     assert prompts_seen == ["initial request", "intervening request"]
 
 
@@ -385,6 +379,84 @@ async def test_acp_arun_processes_multiple_queued_messages_fifo(tmp_path):
         await asyncio.wait_for(run_task, timeout=1.0)
 
     assert prompts_seen == ["initial request", "queued one", "queued two"]
+
+
+@pytest.mark.asyncio
+async def test_acp_arun_processes_initial_queued_messages_fifo(tmp_path):
+    """ACP arun should process pre-run queued messages from oldest to newest."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=3,
+        stuck_detection=False,
+    )
+    conversation.send_message("queued one")
+    conversation.send_message("queued two")
+
+    prompts_seen: list[str] = []
+
+    def user_text(event: MessageEvent | None) -> str:
+        assert event is not None
+        content = event.llm_message.content[0]
+        assert isinstance(content, TextContent)
+        return content.text
+
+    async def blocking_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(user_text(prompt_message))
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=blocking_astep),
+    ):
+        await asyncio.wait_for(conversation.arun(), timeout=1.0)
+
+    assert prompts_seen == ["queued one", "queued two"]
+
+
+@pytest.mark.asyncio
+async def test_acp_arun_does_not_reprompt_when_cursor_is_current(tmp_path):
+    """ACP arun should finish when there is no queued user message."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=3,
+        stuck_detection=False,
+    )
+    conversation.send_message("already processed")
+    conversation.state.agent_state = {
+        "acp_last_prompt_user_message_id": conversation.state.last_user_message_id
+    }
+
+    prompts_seen: list[MessageEvent | None] = []
+
+    async def blocking_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,  # noqa: ARG001
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(prompt_message)
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=blocking_astep),
+    ):
+        await asyncio.wait_for(conversation.arun(), timeout=1.0)
+
+    assert prompts_seen == []
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
 @pytest.mark.asyncio

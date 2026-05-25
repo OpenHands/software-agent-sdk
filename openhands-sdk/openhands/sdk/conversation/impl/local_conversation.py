@@ -1020,7 +1020,7 @@ class LocalConversation(BaseConversation):
                         ]
                         if last_acp_prompt_user_message_id is None:
                             acp_step_user_message = (
-                                user_messages[-1] if user_messages else None
+                                user_messages[0] if user_messages else None
                             )
                         else:
                             last_prompt_index = next(
@@ -1085,6 +1085,13 @@ class LocalConversation(BaseConversation):
                 # lock free while awaiting them so incoming user messages can
                 # be persisted immediately; event callbacks take the lock only
                 # for each individual mutation.
+                if acp_step_user_message is None:
+                    with self._state:
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.FINISHED
+                        )
+                    break
+
                 await self.agent.astep(
                     self,
                     on_event=self._on_event_with_state_lock,

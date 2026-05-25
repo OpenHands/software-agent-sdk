@@ -846,17 +846,20 @@ class EventService:
                     # redundant run. A deliberate run=False append, or an IDLE
                     # reached via another path, never sets the flag.
                     if self._rerun_requested:
+                        self._rerun_requested = False
                         status = await self._get_execution_status()
                         should_restart = status == ConversationExecutionStatus.IDLE or (
                             status == ConversationExecutionStatus.PAUSED
                             and isinstance(conversation.agent, ACPAgent)
                         )
                         if should_restart:
-                            self._rerun_requested = False
                             try:
                                 await self.run()
-                            except ValueError:
-                                self._rerun_requested = True
+                            except ValueError as e:
+                                if str(e) == "conversation_already_running":
+                                    self._rerun_requested = True
+                                else:
+                                    raise
 
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
