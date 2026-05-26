@@ -1177,6 +1177,34 @@ def test_switch_acp_model_uninitialized_returns_409(
         client.app.dependency_overrides.clear()
 
 
+def test_switch_acp_model_protocol_error_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A rejected ACP ``session/set_model`` call maps to 400, not 500.
+
+    ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError`` (e.g.
+    method-not-found on a custom server, or an invalid model id) into a
+    ValueError, so a protocol-level rejection surfaces as a 400 client error
+    rather than an opaque 500.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = ValueError(
+        "ACP server rejected set_session_model(model='bogus'): method not found"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "bogus"},
+        )
+        assert response.status_code == 400
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_run_conversation_already_running(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):

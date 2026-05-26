@@ -1,10 +1,15 @@
+import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
@@ -47,6 +52,61 @@ def test_switch_acp_model_rejects_non_acp_agent():
     conv = _make_conversation()  # plain Agent, not ACPAgent
     with pytest.raises(ValueError, match="only supported for ACP"):
         conv.switch_acp_model("haiku")
+
+
+def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
+    """A persisted ACP conversation with a faked-out live session.
+
+    The fake ``_conn`` / ``_executor`` let ``set_acp_model`` issue its
+    protocol call without launching a real ACP subprocess.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
+    agent._conn = MagicMock()
+    agent._session_id = "sess-1"
+    agent._agent_name = "codex-acp"
+    executor = MagicMock()
+    executor.run_async = MagicMock()
+    agent._executor = executor
+    conv = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=str(tmp_path / "persist"),
+    )
+    return conv, agent
+
+
+def test_switch_acp_model_persists_authoritative_model(tmp_path):
+    """A runtime switch persists as the authoritative ``acp_model``.
+
+    Regression for the review finding that re-assigning the same (mutated)
+    agent object was an autosave no-op, and that the frozen ``acp_model``
+    field — which ``model_post_init`` / ``_start_acp_server`` read on
+    reload/resume — stayed at its construction-time value.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    live_conn = agent._conn
+
+    conv.switch_acp_model("model-b")
+
+    # In-memory: agent + state agree on the new model, and the live connection
+    # survived the model_copy so the conversation can keep running.
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_model == "model-b"
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-b"
+    assert switched.llm.model == "model-b"
+    assert switched._conn is live_conn
+    assert switched._session_id == "sess-1"
+
+    # On disk: base_state.json actually changed (not an autosave no-op), and the
+    # persisted agent reconstructs with the switched model as authoritative.
+    base_text = conv.state._fs.read(BASE_STATE)
+    reloaded = ConversationState.model_validate(json.loads(base_text))
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_model == "model-b"
+    # model_post_init derives the sentinel LLM model from the persisted acp_model.
+    assert reloaded.agent.llm.model == "model-b"
 
 
 def test_switch_profile(profile_store):

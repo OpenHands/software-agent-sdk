@@ -210,24 +210,23 @@ async def _maybe_set_session_model(
 ) -> None:
     """Apply the *initial* session model right after session creation.
 
-    This is the session-creation path only. Providers that select their
-    initial model via session ``_meta`` (i.e. ``session_meta_key`` is set —
-    claude-agent-acp) already received the model in ``new_session()``, so this
-    is a no-op for them. Providers without a meta key (codex-acp, gemini-cli)
-    get a one-shot ``set_session_model`` call here.
+    This is the session-creation path only, gated on
+    :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.supports_set_session_model`.
+    Providers that select their initial model via session ``_meta``
+    (claude-agent-acp, ``supports_set_session_model=False``) already received
+    the model in ``new_session()``, so this is a no-op for them. Providers that
+    use the protocol call for initial selection (codex-acp, gemini-cli) get a
+    one-shot ``set_session_model`` call here.
 
     Runtime, mid-conversation switches go through
     :meth:`ACPAgent.set_acp_model` instead, which always uses
-    ``set_session_model`` and is gated only on ``supports_set_session_model``.
+    ``set_session_model`` and is gated on the separate
+    ``supports_runtime_model_switch`` capability flag.
     """
     if not acp_model:
         return
     provider = detect_acp_provider_by_agent_name(agent_name)
-    if (
-        provider is not None
-        and provider.session_meta_key is None
-        and provider.supports_set_session_model
-    ):
+    if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
 
 
@@ -1856,8 +1855,12 @@ class ACPAgent(AgentBase):
         Raises:
             RuntimeError: If the ACP session has not been initialized yet
                 (i.e. before the first ``run()``).
-            ValueError: If the detected provider does not support the
-                ``session/set_model`` protocol call.
+            ValueError: If the detected provider does not support runtime model
+                switching, or the ACP server rejects the ``session/set_model``
+                call (e.g. method-not-found on a custom server, or an invalid
+                model id).
+            TimeoutError: If the server does not answer within
+                ``acp_prompt_timeout`` seconds.
         """
         if self._conn is None or self._session_id is None or self._executor is None:
             raise RuntimeError(
@@ -1865,19 +1868,36 @@ class ACPAgent(AgentBase):
                 "after the conversation has started (first run())."
             )
         provider = detect_acp_provider_by_agent_name(self._agent_name)
-        if provider is not None and not provider.supports_set_session_model:
+        if provider is not None and not provider.supports_runtime_model_switch:
             raise ValueError(
                 f"ACP provider '{provider.key}' does not support runtime model "
                 "switching via set_session_model."
             )
-        self._executor.run_async(
-            self._conn.set_session_model(model_id=model, session_id=self._session_id)
-        )
+        # Bounded round-trip: this runs while LocalConversation.switch_acp_model
+        # holds the state lock, so a server that accepts the call but never
+        # answers must not wedge the lock indefinitely. On timeout / protocol
+        # error we propagate *before* mutating any local state, so the sentinel
+        # LLM is only updated once the live session has actually switched.
+        try:
+            self._executor.run_async(
+                self._conn.set_session_model(
+                    model_id=model, session_id=self._session_id
+                ),
+                timeout=self.acp_prompt_timeout,
+            )
+        except ACPRequestError as e:
+            # acp.exceptions.RequestError derives from Exception (not
+            # RuntimeError); surface it as a ValueError so callers — and the
+            # agent-server route — treat a rejected switch as a 400-class
+            # client error rather than an opaque 500.
+            raise ValueError(
+                f"ACP server rejected set_session_model(model={model!r}): {e}"
+            ) from e
         # Reflect the live model on the sentinel LLM + metrics so cost/token
         # accounting and serialized state show the model actually in use
-        # (mirrors model_post_init). The ``acp_model`` field itself is frozen
-        # and stays at its construction-time value; the session now owns the
-        # authoritative current model.
+        # (mirrors model_post_init). The ``acp_model`` field is frozen, so the
+        # authoritative current model is persisted by
+        # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
         self.llm.model = model
         self.llm.metrics.model_name = model
         if self.llm.metrics.accumulated_token_usage is not None:

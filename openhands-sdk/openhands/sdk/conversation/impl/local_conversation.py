@@ -713,7 +713,8 @@ class LocalConversation(BaseConversation):
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or the provider does not support runtime model switching.
+                or the provider does not support runtime model switching, or
+                the ACP server rejects the switch.
             RuntimeError: If the ACP session is not yet initialized.
         """
         if not isinstance(self.agent, ACPAgent):
@@ -721,9 +722,20 @@ class LocalConversation(BaseConversation):
                 "switch_acp_model is only supported for ACP conversations."
             )
         with self._state:
+            # Perform the live protocol switch first; if it fails we leave the
+            # persisted state untouched.
             self.agent.set_acp_model(model)
-            # Re-assign so the (mutated) agent is persisted with the updated
-            # sentinel-LLM model, matching switch_llm's contract.
+            # Persist the switched model as the authoritative value. ``acp_model``
+            # is frozen, so we replace the agent with a copy carrying the new
+            # value (model_copy preserves the live ACP connection in private
+            # attrs). This matters on two counts the in-place mutation missed:
+            #   1. A fresh object identity makes the autosave path actually
+            #      write base_state.json (re-assigning the same object is a
+            #      no-op because old == new).
+            #   2. model_post_init / _start_acp_server derive the sentinel model
+            #      and the resumed session model from ``acp_model`` on reload, so
+            #      it must hold the switched value, not the construction-time one.
+            self.agent = self.agent.model_copy(update={"acp_model": model})
             self._state.agent = self.agent
 
     @observe(name="conversation.send_message")

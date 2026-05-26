@@ -3263,6 +3263,7 @@ class TestSetACPModel:
             default_session_mode="default",
             agent_name_patterns=("legacy",),
             supports_set_session_model=False,
+            supports_runtime_model_switch=False,
             session_meta_key=None,
         )
         agent = self._wire(_make_agent(), "legacy-acp")
@@ -3273,6 +3274,27 @@ class TestSetACPModel:
             with pytest.raises(ValueError, match="does not support runtime"):
                 agent.set_acp_model("x")
         agent._conn.set_session_model.assert_not_called()
+
+    def test_translates_acp_request_error_to_value_error(self):
+        # A protocol-level rejection (e.g. method-not-found on a custom server,
+        # or an invalid model id) must surface as a ValueError — not leak as a
+        # raw acp.exceptions.RequestError — so the agent-server maps it to 400.
+        agent = self._wire(_make_agent(), "codex-acp")
+        agent._executor.run_async.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
+        with pytest.raises(ValueError, match="rejected set_session_model"):
+            agent.set_acp_model("bogus-model")
+        # The sentinel LLM must not be mutated when the switch fails.
+        assert agent.llm.model != "bogus-model"
+
+    def test_passes_timeout_to_run_async(self):
+        # The protocol round-trip runs under the conversation state lock, so it
+        # must be bounded to avoid wedging the lock if the server never answers.
+        agent = self._wire(_make_agent(acp_prompt_timeout=42.0), "codex-acp")
+        agent.set_acp_model("gpt-5.4/low")
+        _, kwargs = agent._executor.run_async.call_args
+        assert kwargs["timeout"] == 42.0
 
 
 # ---------------------------------------------------------------------------
