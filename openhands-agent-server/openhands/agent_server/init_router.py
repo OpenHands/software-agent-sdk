@@ -2,7 +2,7 @@
 
 When ``Config.deferred_init`` is True the server starts in *dormant* mode:
 stateless services (VSCode, desktop, tool preload) come up as usual, but
-the conversation, event, and bash routers return 503 until ``POST /init``
+the conversation, event, and bash routers return 503 until ``POST /api/init``
 delivers the runtime configuration. This is intended for warm-pool
 deployments where pods are pre-warmed before a user is matched and the
 per-user workspace + credentials are attached later.
@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 
 # The init endpoint uses its own header (distinct from X-Session-API-Key)
 # because the session keys aren't known to the pool at warm-up time — they
-# arrive *inside* the /init body. The init key is the pool-bootstrap
+# arrive *inside* the /api/init body. The init key is the pool-bootstrap
 # credential.
 _INIT_API_KEY_HEADER = APIKeyHeader(name="X-Init-API-Key", auto_error=False)
 
@@ -41,7 +41,7 @@ InitState = Literal["dormant", "initializing", "ready"]
 
 
 class InitRequest(BaseModel):
-    """Runtime configuration delivered at /init time.
+    """Runtime configuration delivered at /api/init time.
 
     Each field is optional and overrides the equivalent field on the dormant
     ``Config``. Fields not provided keep the value the server was constructed
@@ -118,8 +118,8 @@ class InitRequest(BaseModel):
 class InitStatus(BaseModel):
     state: InitState = Field(
         description=(
-            "``dormant`` — server is up but waiting for /init. "
-            "``initializing`` — /init has been received and services are "
+            "``dormant`` — server is up but waiting for /api/init. "
+            "``initializing`` — /api/init has been received and services are "
             "starting. "
             "``ready`` — initialization complete; all /api/* routes are live."
         )
@@ -127,8 +127,8 @@ class InitStatus(BaseModel):
     error: str | None = Field(
         default=None,
         description=(
-            "If a previous /init attempt failed, the error message. The state "
-            "rolls back to ``dormant`` so /init can be retried."
+            "If a previous /api/init attempt failed, the error message. The state "
+            "rolls back to ``dormant`` so /api/init can be retried."
         ),
     )
 
@@ -160,9 +160,9 @@ def _build_initialized_config(base: Config, req: InitRequest) -> Config:
 
 
 class InitService:
-    """Tracks dormant→ready transition and serialises /init calls.
+    """Tracks dormant→ready transition and serialises /api/init calls.
 
-    A single ``asyncio.Lock`` makes concurrent /init posts safe; the second
+    A single ``asyncio.Lock`` makes concurrent /api/init posts safe; the second
     one sees ``state != "dormant"`` and gets a 400. On failure mid-init the
     state rolls back to ``dormant`` so the orchestrator can retry.
     """
@@ -217,7 +217,7 @@ class InitService:
             logger.info("deferred_init: server transitioned to ready")
             return self.snapshot()
         except Exception as exc:  # pragma: no cover - logged + re-raised
-            logger.exception("deferred_init: /init failed; rolling back to dormant")
+            logger.exception("deferred_init: /api/init failed; rolling back to dormant")
             self._error = f"{type(exc).__name__}: {exc}"
             self._state = "dormant"
             raise HTTPException(
@@ -226,7 +226,7 @@ class InitService:
             ) from exc
 
     async def teardown(self) -> None:
-        """Tear down the conversation service if /init succeeded.
+        """Tear down the conversation service if /api/init succeeded.
 
         Called from the FastAPI lifespan's finally clause so dormant pods
         that were never initialized don't need any cleanup.
@@ -242,7 +242,7 @@ def get_init_service(request: Request) -> InitService:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                "server is not running with deferred_init=True; the /init "
+                "server is not running with deferred_init=True; the /api/init "
                 "endpoint is not available"
             ),
         )
@@ -253,7 +253,7 @@ def check_init_api_key(
     request: Request,
     init_api_key: str | None = Depends(_INIT_API_KEY_HEADER),
 ) -> None:
-    """Auth gate for /init. Reads the *current* config off app state so the
+    """Auth gate for /api/init. Reads the *current* config off app state so the
     expected key can be configured at startup time alongside other env vars."""
     config: Config | None = getattr(request.app.state, "config", None)
     if config is None or config.init_api_key is None:
@@ -278,7 +278,7 @@ def require_initialized(request: Request) -> None:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail=(
             f"server is in deferred-init state '{init_service.state}'; "
-            "call POST /init first"
+            "call POST /api/init first"
         ),
     )
 

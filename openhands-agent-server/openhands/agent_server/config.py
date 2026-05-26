@@ -238,7 +238,7 @@ class Config(BaseModel):
         description=(
             "When True, the server starts in dormant mode. Stateless services "
             "(VSCode, tool preload, etc.) start as usual, but the conversation, "
-            "event, and bash routers return 503 until POST /init is called with "
+            "event, and bash routers return 503 until POST /api/init is called with "
             "the runtime configuration. This is intended for warm-pool deployments "
             "where pods are pre-warmed before a user is matched and per-user "
             "configuration is delivered later."
@@ -247,11 +247,11 @@ class Config(BaseModel):
     init_api_key: SecretStr | None = Field(
         default_factory=_default_init_api_key,
         description=(
-            "API key required to call POST /init when ``deferred_init`` is True. "
+            "API key required to call POST /api/init when ``deferred_init`` is True. "
             "Sent via the ``X-Init-API-Key`` header. Distinct from "
             "``session_api_keys`` because the session key is part of the per-user "
-            "config that arrives at /init time; the init key is the pool-bootstrap "
-            "credential held by the orchestrator. When unset, /init is "
+            "config that arrives at /api/init time; the init key is the pool-bootstrap "
+            "credential held by the orchestrator. When unset, /api/init is "
             "unauthenticated, which is acceptable for development but not for "
             "production warm pools."
         ),

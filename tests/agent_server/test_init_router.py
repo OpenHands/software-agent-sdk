@@ -93,7 +93,7 @@ class TestBuildInitializedConfig:
     def test_secret_key_falls_back_to_session_key(self):
         base = Config(deferred_init=True)
         # base.secret_key default is None (no env), so we should fall back
-        # to the first session key after /init.
+        # to the first session key after /api/init.
         assert base.secret_key is None
         merged = _build_initialized_config(
             base, InitRequest(session_api_keys=["s1", "s2"])
@@ -114,14 +114,14 @@ class TestBuildInitializedConfig:
 
 
 class TestRouterMounting:
-    """Behavior of the /init endpoint outside the lifespan."""
+    """Behavior of the /api/init endpoint outside the lifespan."""
 
     def test_init_get_404_without_deferred_mode(self):
         # When deferred_init=False the InitService is never attached to
         # app.state, so the endpoint behaves as if not configured.
         app = create_app(Config(deferred_init=False))
         client = TestClient(app)
-        resp = client.get("/init")
+        resp = client.get("/api/init")
         assert resp.status_code == 404
 
 
@@ -187,7 +187,7 @@ class TestInitServiceTransitions:
     @pytest.mark.asyncio
     async def test_init_applies_env_vars(self, tmp_path, monkeypatch):
         _reset_conversation_singleton()
-        # Pre-clean so the env var truly comes from /init.
+        # Pre-clean so the env var truly comes from /api/init.
         monkeypatch.delenv("DEFERRED_INIT_TEST_VAR", raising=False)
         base = Config(
             deferred_init=True,
@@ -238,13 +238,13 @@ class TestEndToEndOverLifespan:
                 assert resp.status_code == 503
 
                 # Init status reports dormant.
-                resp = client.get("/init")
+                resp = client.get("/api/init")
                 assert resp.status_code == 200
                 assert resp.json()["state"] == "dormant"
 
-                # Run /init.
+                # Run /api/init.
                 resp = client.post(
-                    "/init",
+                    "/api/init",
                     json={
                         "conversations_path": str(tmp_path / "u" / "convs"),
                         "bash_events_dir": str(tmp_path / "u" / "bash"),
@@ -272,7 +272,7 @@ class TestEndToEndOverLifespan:
             try:
                 # Wrong key → 401.
                 resp = client.post(
-                    "/init",
+                    "/api/init",
                     headers={"X-Init-API-Key": "wrong"},
                     json={
                         "conversations_path": str(tmp_path / "u" / "convs"),
@@ -282,12 +282,12 @@ class TestEndToEndOverLifespan:
                 assert resp.status_code == 401
 
                 # No key → 401.
-                resp = client.post("/init", json={})
+                resp = client.post("/api/init", json={})
                 assert resp.status_code == 401
 
                 # Right key → 200.
                 resp = client.post(
-                    "/init",
+                    "/api/init",
                     headers={"X-Init-API-Key": "pool-key"},
                     json={
                         "conversations_path": str(tmp_path / "u" / "convs"),
@@ -296,8 +296,8 @@ class TestEndToEndOverLifespan:
                 )
                 assert resp.status_code == 200
 
-                # GET /init does NOT require the key (status polling).
-                resp = client.get("/init")
+                # GET /api/init does NOT require the key (status polling).
+                resp = client.get("/api/init")
                 assert resp.status_code == 200
             finally:
                 _reset_conversation_singleton()
@@ -312,13 +312,13 @@ class TestEndToEndOverLifespan:
         app = create_app(cfg)
         with TestClient(app) as client:
             try:
-                # Before /init, no session key required at startup config
+                # Before /api/init, no session key required at startup config
                 # level — but the dormant gate 503s anyway.
                 assert client.get("/api/conversations/count").status_code == 503
 
                 # Init delivers the session key.
                 resp = client.post(
-                    "/init",
+                    "/api/init",
                     json={
                         "session_api_keys": ["user-session-key"],
                         "conversations_path": str(tmp_path / "u" / "convs"),
@@ -327,15 +327,15 @@ class TestEndToEndOverLifespan:
                 )
                 assert resp.status_code == 200
 
-                # NOTE: session_api_keys configured at /init time take effect
+                # NOTE: session_api_keys configured at /api/init time take effect
                 # on the *config object*, but the FastAPI session-key
                 # dependency was bound to the original (dormant) config when
                 # the routes were mounted. Documenting this trade-off:
                 # in production, set OH_SESSION_API_KEYS_0 at pod start so
                 # auth is in place from the moment routes go live, and use
-                # /init only to deliver workspace + per-user runtime config.
+                # /api/init only to deliver workspace + per-user runtime config.
                 # The dormant gate ensures no traffic reaches gated routes
-                # before /init regardless.
+                # before /api/init regardless.
                 assert app.state.config.session_api_keys == ["user-session-key"]
             finally:
                 _reset_conversation_singleton()
@@ -358,8 +358,8 @@ class TestNonDeferredPathUnchanged:
                 assert getattr(app.state, "init_service", None) is None
                 # /api/* should be live (200) — the dormant gate is a no-op.
                 assert client.get("/api/conversations/count").status_code == 200
-                # /init returns 404 because no InitService is attached.
-                assert client.get("/init").status_code == 404
+                # /api/init returns 404 because no InitService is attached.
+                assert client.get("/api/init").status_code == 404
             finally:
                 _reset_conversation_singleton()
 
@@ -368,8 +368,8 @@ class TestNonDeferredPathUnchanged:
 async def test_lifespan_teardown_releases_conversation_service_after_init(
     tmp_path,
 ):
-    """If /init succeeds, the lifespan finally clause must release the
-    conversation service. If /init never runs, teardown is a no-op."""
+    """If /api/init succeeds, the lifespan finally clause must release the
+    conversation service. If /api/init never runs, teardown is a no-op."""
     _reset_conversation_singleton()
     cfg = Config(
         deferred_init=True,

@@ -208,15 +208,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             )
 
         # In deferred-init mode the conversation service is *not* entered
-        # here — that happens later, when POST /init delivers the runtime
+        # here — that happens later, when POST /api/init delivers the runtime
         # config. We still mark the /ready endpoint as ready so a warm-pool
         # orchestrator can tell the pod has finished booting and is
-        # available to receive its /init payload.
+        # available to receive its /api/init payload.
         if deferred:
             init_service = InitService(api, base_config=config)
             api.state.init_service = init_service
             mark_initialization_complete()
-            logger.info("Server started in deferred-init mode; awaiting POST /init")
+            logger.info("Server started in deferred-init mode; awaiting POST /api/init")
             try:
                 yield
             finally:
@@ -314,12 +314,14 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     """
     app.include_router(server_details_router)
 
-    # The /init endpoint is mounted at the top level (not under /api) so it
-    # bypasses both the session-key auth and the dormant gate. It has its
-    # own X-Init-API-Key auth. When ``deferred_init`` is False the endpoints
-    # are still mounted but return 404 because no InitService is registered
-    # on app.state — see ``get_init_service``.
-    app.include_router(init_router)
+    # The /api/init endpoint bypasses both the session-key auth and the
+    # dormant gate. It has its own X-Init-API-Key auth. When
+    # ``deferred_init`` is False the endpoints are still mounted but return
+    # 404 because no InitService is registered on app.state — see
+    # ``get_init_service``.
+    init_api_router = APIRouter(prefix="/api")
+    init_api_router.include_router(init_router)
+    app.include_router(init_api_router)
 
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
@@ -328,7 +330,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     if config.session_api_keys:
         dependencies.append(Depends(create_session_api_key_dependency(config)))
     # Dormant gate: when ``deferred_init`` is True this 503s every /api/*
-    # route until POST /init completes. No-op for non-deferred deployments.
+    # route until POST /api/init completes. No-op for non-deferred deployments.
     dependencies.append(Depends(require_initialized))
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
