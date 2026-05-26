@@ -8,7 +8,20 @@
     "default_session_mode": "bypassPermissions",
     "agent_name_patterns": ["claude-agent"],
     "supports_set_session_model": false,
-    "session_meta_key": "claudeCode"
+    "session_meta_key": "claudeCode",
+    "available_models": [
+      { "id": "claude-opus-4-7", "label": "Claude Opus 4.7" },
+      { "id": "claude-opus-4-6", "label": "Claude Opus 4.6" },
+      { "id": "opus[1m]", "label": "Claude Opus (1M)" },
+      { "id": "claude-opus-4-5", "label": "Claude Opus 4.5" },
+      { "id": "claude-opus-4-1-20250805", "label": "Claude Opus 4.1" },
+      { "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6" },
+      { "id": "sonnet[1m]", "label": "Claude Sonnet (1M)" },
+      { "id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5" },
+      { "id": "claude-haiku-4-5", "label": "Claude Haiku 4.5" },
+      { "id": "opusplan", "label": "Opus (plan) + Sonnet (execute)" }
+    ],
+    "default_model": "claude-opus-4-7"
   },
   "codex": {
     "key": "codex",
@@ -19,7 +32,30 @@
     "default_session_mode": "full-access",
     "agent_name_patterns": ["codex-acp"],
     "supports_set_session_model": true,
-    "session_meta_key": null
+    "session_meta_key": null,
+    "available_models": [
+      { "id": "gpt-5.5/low", "label": "GPT-5.5 (low)" },
+      { "id": "gpt-5.5/medium", "label": "GPT-5.5 (medium)" },
+      { "id": "gpt-5.5/high", "label": "GPT-5.5 (high)" },
+      { "id": "gpt-5.5/xhigh", "label": "GPT-5.5 (xhigh)" },
+      { "id": "gpt-5.4/low", "label": "GPT-5.4 (low)" },
+      { "id": "gpt-5.4/medium", "label": "GPT-5.4 (medium)" },
+      { "id": "gpt-5.4/high", "label": "GPT-5.4 (high)" },
+      { "id": "gpt-5.4/xhigh", "label": "GPT-5.4 (xhigh)" },
+      { "id": "gpt-5.4-mini/low", "label": "GPT-5.4 Mini (low)" },
+      { "id": "gpt-5.4-mini/medium", "label": "GPT-5.4 Mini (medium)" },
+      { "id": "gpt-5.4-mini/high", "label": "GPT-5.4 Mini (high)" },
+      { "id": "gpt-5.4-mini/xhigh", "label": "GPT-5.4 Mini (xhigh)" },
+      { "id": "gpt-5.3-codex/low", "label": "GPT-5.3 Codex (low)" },
+      { "id": "gpt-5.3-codex/medium", "label": "GPT-5.3 Codex (medium)" },
+      { "id": "gpt-5.3-codex/high", "label": "GPT-5.3 Codex (high)" },
+      { "id": "gpt-5.3-codex/xhigh", "label": "GPT-5.3 Codex (xhigh)" },
+      { "id": "gpt-5.2/low", "label": "GPT-5.2 (low)" },
+      { "id": "gpt-5.2/medium", "label": "GPT-5.2 (medium)" },
+      { "id": "gpt-5.2/high", "label": "GPT-5.2 (high)" },
+      { "id": "gpt-5.2/xhigh", "label": "GPT-5.2 (xhigh)" }
+    ],
+    "default_model": "gpt-5.5/medium"
   },
   "gemini-cli": {
     "key": "gemini-cli",
@@ -30,6 +66,20 @@
     "default_session_mode": "yolo",
     "agent_name_patterns": ["gemini-cli"],
     "supports_set_session_model": true,
-    "session_meta_key": null
+    "session_meta_key": null,
+    "available_models": [
+      { "id": "auto-gemini-3", "label": "Auto (Gemini 3)" },
+      { "id": "auto-gemini-2.5", "label": "Auto (Gemini 2.5)" },
+      { "id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (preview)" },
+      { "id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (preview)" },
+      {
+        "id": "gemini-3.1-flash-lite-preview",
+        "label": "Gemini 3.1 Flash Lite (preview)"
+      },
+      { "id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro" },
+      { "id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash" },
+      { "id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite" }
+    ],
+    "default_model": "auto-gemini-2.5"
   }
 }
