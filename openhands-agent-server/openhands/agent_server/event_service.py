@@ -483,7 +483,7 @@ class EventService:
 
             # Run the locked callback in an executor to ensure the event is
             # both persisted and sent to WebSocket subscribers
-            self._main_loop.run_in_executor(None, locked_on_event)
+            main_loop.run_in_executor(None, locked_on_event)
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""

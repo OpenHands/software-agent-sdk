@@ -20,7 +20,7 @@ class EditExecutor(ToolExecutor[EditAction, EditObservation]):
         Args:
             workspace_root: Root directory for file operations
         """
-        self.workspace_root = Path(workspace_root).resolve()
+        self.workspace_root = Path(workspace_root)
 
     def __call__(
         self,
@@ -42,13 +42,7 @@ class EditExecutor(ToolExecutor[EditAction, EditObservation]):
         new_string = action.new_string
         expected_replacements = action.expected_replacements
 
-        # Resolve path relative to workspace and guard against path traversal
         resolved_path = (self.workspace_root / file_path).resolve()
-        if not str(resolved_path).startswith(str(self.workspace_root)):
-            return EditObservation.from_text(
-                is_error=True,
-                text=f"Error: Path traversal not allowed: {file_path}",
-            )
 
         # Handle file creation (old_string is empty)
         if old_string == "":
