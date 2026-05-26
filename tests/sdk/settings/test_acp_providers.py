@@ -53,6 +53,9 @@ class TestACPProviderInfo:
         assert info.key == "gemini-cli"
         assert info.display_name == "Gemini CLI"
         assert "--acp" in info.default_command
+        # gemini refuses "yolo" in an untrusted folder; --skip-trust trusts the
+        # workspace so the autonomous default_session_mode below can be set.
+        assert "--skip-trust" in info.default_command
         assert info.api_key_env_var == "GEMINI_API_KEY"
         assert info.base_url_env_var == "GEMINI_BASE_URL"
         assert info.default_session_mode == "yolo"

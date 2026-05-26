@@ -119,7 +119,16 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
+            # --skip-trust trusts the workspace so gemini-cli allows the
+            # "yolo" default_session_mode below; without it, set_session_mode
+            # fails (-32603) in untrusted folders, blocking autonomous runs.
+            default_command=(
+                "npx",
+                "-y",
+                "@google/gemini-cli",
+                "--acp",
+                "--skip-trust",
+            ),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             default_session_mode="yolo",
