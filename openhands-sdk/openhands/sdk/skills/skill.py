@@ -1212,12 +1212,6 @@ def merge_skills_by_name(
     ``primary`` skills are authoritative: they take precedence on name conflicts
     and keep their order. Each ``secondary`` skill is appended only when its name
     is not already provided by ``primary``.
-
-    This is the shared merge step used both when filling an explicit skill list
-    with auto-loaded skills (``AgentContext._load_auto_skills``) and when
-    overlaying workspace-resolved project skills onto a conversation's context
-    (``LocalConversation._ensure_plugins_loaded``); callers pass the
-    higher-precedence source as ``primary``.
     """
     merged = list(primary)
     seen = {skill.name for skill in merged}

@@ -105,7 +105,11 @@ class AgentContext(BaseModel):
             "load_user_skills / load_public_skills, this flag is not resolved by "
             "AgentContext itself (the workspace path is unknown at validation "
             "time); LocalConversation resolves it lazily on the first "
-            "send_message() / run(), when the workspace is known."
+            "send_message() / run(), when the workspace is known. Also unlike "
+            "load_user_skills / load_public_skills (which yield to explicit "
+            "skills on a name conflict), resolved project skills are "
+            "authoritative: a project skill overrides a same-named skill already "
+            "present in `skills`."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -174,6 +178,12 @@ class AgentContext(BaseModel):
         )
 
         # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+        explicit_names = {skill.name for skill in self.skills}
+        for name in auto_skills:
+            if name in explicit_names:
+                logger.debug(
+                    f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
+                )
         self.skills = merge_skills_by_name(self.skills, auto_skills.values())
         return self
 
