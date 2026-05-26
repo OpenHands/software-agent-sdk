@@ -43,6 +43,10 @@ import type { HookConfig } from '../hooks';
  */
 export interface RemoteConversationOptions extends BaseConversationOptions {
   /**
+   * Optional user ID to associate with server-side observability traces.
+   */
+  userId?: string;
+  /**
    * Optional hook configuration for this conversation.
    * Hooks are shell scripts that run server-side at key lifecycle events
    * (PreToolUse, PostToolUse, UserPromptSubmit, Stop, etc.).
@@ -87,6 +91,7 @@ export class RemoteConversation implements IConversation {
   private callback?: ConversationCallbackType;
   private onError?: ErrorCallbackType;
   private hookConfig?: HookConfig;
+  private userId?: string;
 
   constructor(
     agent: AgentBase,
@@ -99,6 +104,7 @@ export class RemoteConversation implements IConversation {
     this.onError = options.onError;
     this._conversationId = options.conversationId;
     this.hookConfig = options.hookConfig;
+    this.userId = options.userId;
 
     this.client = new HttpClient({
       baseUrl: workspace.host,
@@ -132,6 +138,7 @@ export class RemoteConversation implements IConversation {
       maxIterations?: number;
       stuckDetection?: boolean;
       hookConfig?: HookConfig;
+      userId?: string;
     } = {}
   ): Promise<void> {
     if (this._conversationId) {
@@ -151,6 +158,7 @@ export class RemoteConversation implements IConversation {
 
     // Use hook config from start options, falling back to constructor option
     const hookConfig = options.hookConfig ?? this.hookConfig ?? undefined;
+    const userId = options.userId ?? this.userId ?? undefined;
 
     const request: CreateConversationRequest = {
       agent: this.agent,
@@ -159,6 +167,7 @@ export class RemoteConversation implements IConversation {
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: this.workspace.workingDir },
       hook_config: hookConfig ?? null,
+      user_id: userId ?? null,
     };
 
     const response = await this.client.post<ConversationInfo>('/api/conversations', request);

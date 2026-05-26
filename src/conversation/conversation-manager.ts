@@ -215,6 +215,7 @@ export class ConversationManager {
       maxIterations?: number;
       stuckDetection?: boolean;
       workingDir?: string;
+      userId?: string;
     } = {}
   ): Promise<RemoteConversation> {
     const workspace = new RemoteWorkspace({
@@ -226,10 +227,12 @@ export class ConversationManager {
     const conversation = new RemoteConversation(agent, workspace, {
       maxIterations: options.maxIterations,
       stuckDetection: options.stuckDetection,
+      userId: options.userId,
     });
 
     await conversation.start({
       initialMessage: options.initialMessage,
+      userId: options.userId,
     });
 
     return conversation;
@@ -340,6 +343,7 @@ export class ConversationManager {
       maxIterations?: number;
       stuckDetection?: boolean;
       workingDir?: string;
+      userId?: string;
     } = {}
   ): Promise<ACPConversationInfo> {
     let initialMessage: CreateACPConversationRequest['initial_message'];
@@ -356,6 +360,7 @@ export class ConversationManager {
       max_iterations: options.maxIterations || 500,
       stuck_detection: options.stuckDetection ?? true,
       workspace: { type: 'local', working_dir: options.workingDir || '/tmp' },
+      user_id: options.userId ?? null,
     };
 
     const response = await this.client.post<ACPConversationInfo>('/api/acp/conversations', request);

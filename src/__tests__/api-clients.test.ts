@@ -712,6 +712,64 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('RemoteConversation.start sends the optional observability user ID', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conv-123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      userId: 'user-42',
+    });
+
+    await conversation.start({ initialMessage: 'hello' });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    );
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({
+      user_id: 'user-42',
+      initial_message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    });
+  });
+
+  it('ConversationManager.createACPConversation sends the optional observability user ID', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'acp-123' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const manager = new ConversationManager({ host: 'http://example.com' });
+    await manager.createACPConversation(
+      { kind: 'ACPAgent', llm: { model: 'gpt-4o' } },
+      { userId: 'user-42' }
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/acp/conversations',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    );
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body)).toMatchObject({
+      user_id: 'user-42',
+    });
+  });
+
   it('HttpClient can parse blob responses when requested', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       new Response(new Blob(['zip-data']), {

@@ -89,6 +89,7 @@ export interface CreateConversationRequest {
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
+  user_id?: string | null;
 }
 
 export interface CreateACPConversationRequest {
@@ -98,6 +99,7 @@ export interface CreateACPConversationRequest {
   stuck_detection: boolean;
   workspace: Record<string, unknown>;
   hook_config?: HookConfig | null;
+  user_id?: string | null;
 }
 
 export interface GenerateTitleRequest {
