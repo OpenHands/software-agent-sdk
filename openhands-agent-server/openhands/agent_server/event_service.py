@@ -917,8 +917,8 @@ class EventService:
         Runs the (blocking) protocol-level ``session/set_model`` round-trip in
         a worker thread so the event loop is not blocked.
         """
-        if not self._conversation:
-            raise ValueError("inactive_service")
+        if self._conversation is None:
+            raise RuntimeError("Conversation is not active.")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
 

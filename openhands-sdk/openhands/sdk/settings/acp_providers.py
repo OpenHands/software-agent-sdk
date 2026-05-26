@@ -109,21 +109,6 @@ class ACPProviderInfo:
     selection path keep working.
     """
 
-    supports_runtime_model_switch: bool
-    """``True`` if the server supports the ``session/set_model`` protocol call
-    for **runtime, mid-conversation model switching**.
-
-    The call applies to the live session, so subsequent turns use the new
-    model without restarting the subprocess or losing context. All three
-    built-in providers support it (verified against claude-agent-acp,
-    codex-acp, and gemini-cli).
-
-    Unlike :attr:`supports_set_session_model`, this is about switching the
-    model of an *already-running* session, not the initial selection. A
-    provider may select its initial model via ``_meta`` (claude-agent-acp)
-    yet still support ``set_session_model`` for later switches.
-    """
-
     session_meta_key: str | None
     """Top-level ``_meta`` key for model selection *at session creation*.
 
@@ -156,6 +141,25 @@ class ACPProviderInfo:
 
     When set, it must be one of the :attr:`available_models` ids. ``None`` lets
     the ACP server pick its own default.
+    """
+
+    supports_runtime_model_switch: bool = False
+    """``True`` if the server supports the ``session/set_model`` protocol call
+    for **runtime, mid-conversation model switching**.
+
+    The call applies to the live session, so subsequent turns use the new
+    model without restarting the subprocess or losing context. All three
+    built-in providers support it (verified against claude-agent-acp,
+    codex-acp, and gemini-cli).
+
+    Unlike :attr:`supports_set_session_model`, this is about switching the
+    model of an *already-running* session, not the initial selection. A
+    provider may select its initial model via ``_meta`` (claude-agent-acp)
+    yet still support ``set_session_model`` for later switches.
+
+    Defaults to ``False`` so forward-compat providers — and any external
+    caller constructing this dataclass positionally — keep working without a
+    signature break; the built-in providers set it explicitly.
     """
 
 
