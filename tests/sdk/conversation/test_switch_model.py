@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation.persistence_const import BASE_STATE
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import llm_profile_store
@@ -319,3 +320,28 @@ def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):
     assert len(seen) == 1
     assert seen[0].usage_id == "profile:fast"
     assert seen[0].model == "fast-model"
+
+
+def test_duplicate_usage_ids_in_registration_loop_are_silently_deduped(tmp_path):
+    """Regression: if agent LLM and condenser LLM both carry the same
+    usage_id (as happens when a conversation is deserialised from a
+    base_state.json written before #3368), _ensure_agent_ready() must
+    NOT raise ValueError.  The first-write-wins contract means only
+    the agent LLM entry is registered; the condenser duplicate is
+    silently skipped.
+    """
+    # Simulate the broken persisted state: condenser inherits the agent LLM's usage_id
+    agent_llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="default"
+    )
+    condenser_llm = agent_llm.model_copy()  # inherits usage_id="default"
+    condenser = LLMSummarizingCondenser(llm=condenser_llm, max_size=100, keep_first=2)
+    agent = Agent(llm=agent_llm, condenser=condenser, tools=[])
+
+    conv = LocalConversation(agent=agent, workspace=tmp_path)
+
+    # Must not raise ValueError("Usage ID 'default' already exists in registry")
+    conv._ensure_agent_ready()
+
+    # First-write-wins: only one entry under the shared usage_id
+    assert conv.llm_registry.list_usage_ids().count("default") == 1

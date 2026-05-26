@@ -629,12 +629,17 @@ class LocalConversation(BaseConversation):
             # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
 
-            # Register LLMs in the registry (still holding lock)
+            # Register LLMs in the registry (still holding lock).
+            # `registered` is updated after each add so that duplicate usage_ids
+            # within the same batch are silently skipped (first-write-wins),
+            # preventing a ValueError when e.g. agent and condenser LLMs were
+            # both serialised with usage_id="default".
             self.llm_registry.subscribe(self._state.stats.register_llm)
             registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
+                    registered.add(llm.usage_id)
 
             self._agent_ready = True
 
