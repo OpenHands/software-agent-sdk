@@ -750,6 +750,10 @@ class LocalConversation(BaseConversation):
             old_agent = self.agent
             new_agent = old_agent.model_copy(update={"acp_model": model})
             old_agent.release_runtime()
+            # ``self.agent`` is the live reference used by subsequent ``step()``
+            # calls; ``self._state.agent`` is what the autosave path serializes
+            # to base_state.json. Update both so the running conversation and the
+            # persisted state agree on the switched model.
             self.agent = new_agent
             self._state.agent = new_agent
 

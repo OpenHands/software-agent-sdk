@@ -930,7 +930,10 @@ class EventService:
         # session.
         async with self._acp_model_switch_lock:
             if self._conversation is None:
-                raise RuntimeError("Conversation is not active.")
+                raise RuntimeError(
+                    "Conversation is not active; it has not been started or has "
+                    "been closed."
+                )
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
             # Persist the switch into meta.json. ``start()`` rebuilds the runtime
