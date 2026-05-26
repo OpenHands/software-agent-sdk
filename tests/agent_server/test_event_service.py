@@ -1457,6 +1457,61 @@ class TestEventServiceSaveMeta:
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    @pytest.mark.asyncio
+    async def test_close_waits_for_in_flight_switch(self, tmp_path):
+        """close() acquires the switch lock, so it waits for an in-flight switch
+        to finish (mirroring meta.json) before tearing down the conversation.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        started = threading.Event()
+        release = threading.Event()
+        order: list[str] = []
+
+        def _slow_switch(model):
+            started.set()
+            release.wait(timeout=5)
+            order.append("switch")
+
+        conversation = MagicMock()
+        conversation.switch_acp_model.side_effect = _slow_switch
+        conversation.close.side_effect = lambda: order.append("close")
+        service._conversation = conversation
+
+        switch_task = asyncio.create_task(service.switch_acp_model("new-model"))
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, started.wait, 5)
+
+        # Start close() while the switch holds the lock; it must block on the
+        # lock rather than tear the conversation down mid-switch.
+        close_task = asyncio.create_task(service.close())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert order == []  # neither the switch nor close() has progressed yet
+
+        release.set()
+        await switch_task
+        await close_task
+
+        # The switch finished (and mirrored the model) before close() tore the
+        # conversation down.
+        assert order == ["switch", "close"]
+        assert isinstance(service.stored.agent, ACPAgent)
+        assert service.stored.agent.acp_model == "new-model"
+        assert service._conversation is None
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""

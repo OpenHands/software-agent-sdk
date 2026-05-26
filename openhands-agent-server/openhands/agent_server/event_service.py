@@ -1008,10 +1008,17 @@ class EventService:
             self._run_task = None
 
         await self._pub_sub.close()
-        if self._conversation:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.close)
-            self._conversation = None
+        # Coordinate with in-flight model switches: switch_acp_model holds this
+        # lock while its (shielded) worker applies the live switch and mirrors
+        # meta.json. Acquiring it here ensures we don't tear the conversation
+        # down from under an in-flight switch — which would leave the worker
+        # running against a closed ACP runtime and mirror meta.json for a
+        # session that has already been torn down.
+        async with self._acp_model_switch_lock:
+            if self._conversation:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._conversation.close)
+                self._conversation = None
 
         if self._lease is not None and self._lease_generation is not None:
             self._lease.release(self._lease_generation)

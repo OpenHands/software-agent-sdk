@@ -1144,7 +1144,7 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> tuple[Any, Any, Any, str, str, str]:
+        async def _init() -> tuple[str, str, str]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1173,6 +1173,17 @@ class ACPAgent(AgentBase):
                 process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
             )
+
+            # Track the subprocess/connection on self as soon as they exist, so
+            # that if a *later* init step fails (e.g. the resume model reapply
+            # times out or the server errors), init_state()'s _cleanup() can
+            # still tear them down instead of leaking the subprocess/connection.
+            # The "session initialized" gating keys off _session_id (assigned
+            # last, on full success), so an early _conn here does not make the
+            # agent look ready before _init completes.
+            self._process = process
+            self._conn = conn
+            self._filtered_reader = filtered_reader
 
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
@@ -1290,17 +1301,14 @@ class ACPAgent(AgentBase):
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
-            return conn, process, filtered_reader, session_id, agent_name, agent_version
+            return session_id, agent_name, agent_version
 
-        result = self._executor.run_async(_init)
-        (
-            self._conn,
-            self._process,
-            self._filtered_reader,
-            self._session_id,
-            self._agent_name,
-            self._agent_version,
-        ) = result
+        # _conn / _process / _filtered_reader are assigned inside _init() (right
+        # after creation) so a mid-init failure can be cleaned up; only the
+        # success-only fields are returned here.
+        self._session_id, self._agent_name, self._agent_version = (
+            self._executor.run_async(_init)
+        )
         self._working_dir = working_dir
 
     def _reset_client_for_turn(
