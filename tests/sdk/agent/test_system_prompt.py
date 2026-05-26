@@ -84,3 +84,18 @@ def test_system_prompt_none_survives_json_round_trip() -> None:
     restored = AgentBase.model_validate_json(agent_json)
     assert isinstance(restored, Agent)
     assert restored.system_prompt is None
+
+
+# --- evidence-based information section ---
+
+
+def test_default_system_prompt_contains_evidence_based_information() -> None:
+    """The default system prompt must include the EVIDENCE_BASED_INFORMATION section."""
+    agent = Agent(llm=_make_llm(), tools=[])
+    msg = agent.static_system_message
+    assert "<EVIDENCE_BASED_INFORMATION>" in msg
+    assert "</EVIDENCE_BASED_INFORMATION>" in msg
+    assert "**Field**" in msg
+    assert "**Value**" in msg
+    assert "**Quote**" in msg
+    assert "**Source**" in msg

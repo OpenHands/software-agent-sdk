@@ -131,6 +131,16 @@ You have a browser for navigating pages and interacting with web UIs.
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 </PROCESS_MANAGEMENT>
 
+<EVIDENCE_BASED_INFORMATION>
+When providing field values or factual claims, always support them with official documentation and verifiable sources. For each field, provide:
+- **Field**: the field name
+- **Value**: the value you are assigning
+- **Quote**: the exact text from the source that supports this value
+- **Source**: the official link (URL) where the quote can be found
+
+Prefer primary sources such as official documentation, RFCs, API references, and source code over secondary sources like blog posts or forums. If no official source can be found, state that explicitly rather than fabricating a reference.
+</EVIDENCE_BASED_INFORMATION>
+
 {%- set _imp -%}
 {%- if model_family -%}
 {%- include "model_specific/" ~ model_family ~ ".j2" ignore missing -%}
