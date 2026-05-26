@@ -753,6 +753,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(response.content)
             ```
         """
+        _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -890,6 +891,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                    **_caller_kwargs,
                 )
             return self._handle_error(
                 e,
@@ -899,6 +901,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                    **_caller_kwargs,
                 ),
             )
 
@@ -934,6 +937,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             if on_token is None and not self.is_subscription:
@@ -1130,6 +1134,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                    **_caller_kwargs,
                 )
             return self._handle_error(
                 e,
@@ -1141,6 +1146,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                    **_caller_kwargs,
                 ),
             )
 

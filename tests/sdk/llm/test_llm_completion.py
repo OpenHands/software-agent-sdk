@@ -871,14 +871,26 @@ def test_completion_retries_without_caching_on_prompt_cache_too_small(
     # Two calls: first with cache (fails), second without cache (succeeds)
     assert mock_completion.call_count == 2
 
+    # The first call SHOULD have cache_control markers
+    first_call_kwargs = mock_completion.call_args_list[0].kwargs
+    first_messages = first_call_kwargs.get("messages", [])
+    first_has_cache = any(
+        "cache_control" in str(block)
+        for msg in first_messages
+        for block in (
+            msg.get("content", []) if isinstance(msg.get("content"), list) else []
+        )
+    )
+    assert first_has_cache, "First call should include cache_control markers"
+
     # The second call should NOT have cache_control markers
-    second_call_args = mock_completion.call_args_list[1]
-    second_messages = second_call_args[0][0] if second_call_args[0] else []
-    has_cache_control = any(
+    second_call_kwargs = mock_completion.call_args_list[1].kwargs
+    second_messages = second_call_kwargs.get("messages", [])
+    second_has_cache = any(
         "cache_control" in str(block)
         for msg in second_messages
         for block in (
             msg.get("content", []) if isinstance(msg.get("content"), list) else []
         )
     )
-    assert not has_cache_control, "Retry should not include cache_control markers"
+    assert not second_has_cache, "Retry should not include cache_control markers"

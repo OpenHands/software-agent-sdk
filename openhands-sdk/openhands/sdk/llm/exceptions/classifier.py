@@ -74,6 +74,10 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
 
 # Vertex AI (Gemini) rejects context-caching requests when the cached content
 # is below the provider's minimum token threshold (currently 4096 tokens).
+# Example error: "The cached content is of 1171 tokens. The minimum token
+# count to start caching is 4096." — the `.lower()` comparison handles case
+# variation across providers but won't match reworded messages; update this
+# pattern if the API phrasing changes.
 PROMPT_CACHE_TOO_SMALL_PATTERNS: list[str] = [
     "minimum token count to start caching",
 ]
