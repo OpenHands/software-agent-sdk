@@ -1007,6 +1007,33 @@ class TestEventServiceSendMessage:
         assert event_service._acp_internal_rerun_requested is False
 
     @pytest.mark.asyncio
+    async def test_internal_acp_rerun_does_not_override_explicit_interrupt(
+        self, event_service
+    ):
+        """Explicit Stop/Pause should win while an internal ACP interrupt drains."""
+        conversation = MagicMock()
+        conversation.send_message = MagicMock()
+        event_service._conversation = conversation
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.run = AsyncMock()
+
+        async def interrupt_and_simulate_user_stop(internal_acp_rerun=False):
+            assert internal_acp_rerun is True
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+
+        event_service.interrupt = interrupt_and_simulate_user_stop
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+
+        event_service.run.assert_not_awaited()
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_logs_exception(self, event_service):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods

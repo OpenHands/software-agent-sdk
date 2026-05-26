@@ -80,6 +80,10 @@ class EventService:
     # send_message(run=True). Explicit user pause/interrupt clears it so user
     # stop intent wins over an earlier automatic restart request.
     _acp_internal_rerun_requested: bool = field(default=False, init=False)
+    # Incremented for explicit user pause/interrupt requests. Internal ACP
+    # supersede restarts compare this generation after their interrupt drains
+    # so a later Stop/Pause cannot be overwritten by an automatic restart.
+    _explicit_interrupt_generation: int = field(default=0, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
     _lease: ConversationLease | None = field(default=None, init=False)
@@ -431,6 +435,7 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
+            explicit_interrupt_generation = self._explicit_interrupt_generation
             (
                 did_mark_acp_prompt_superseded,
                 active_acp_prompt_has_latest_message,
@@ -440,6 +445,8 @@ class EventService:
                 self._acp_internal_rerun_requested = True
                 interrupted_acp = True
                 await self.interrupt(internal_acp_rerun=True)
+                if self._explicit_interrupt_generation != explicit_interrupt_generation:
+                    return
             try:
                 await self.run()
                 self._acp_internal_rerun_requested = False
@@ -952,6 +959,7 @@ class EventService:
 
     async def pause(self):
         if self._conversation:
+            self._explicit_interrupt_generation += 1
             self._rerun_requested = False
             self._acp_internal_rerun_requested = False
             loop = asyncio.get_running_loop()
@@ -968,6 +976,7 @@ class EventService:
         """
         if self._conversation:
             if not internal_acp_rerun:
+                self._explicit_interrupt_generation += 1
                 self._rerun_requested = False
                 self._acp_internal_rerun_requested = False
             self._conversation.interrupt()

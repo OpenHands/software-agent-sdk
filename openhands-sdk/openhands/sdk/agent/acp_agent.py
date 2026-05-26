@@ -1410,8 +1410,8 @@ class ACPAgent(AgentBase):
         # within our short grace window; it does not prove the ACP server lost
         # its persisted session. Preserve the session id so the restarted
         # subprocess can load_session() and retain conversation memory.
-        self._restart_session_on_next_turn = False
         self.init_state(state, on_event=on_event)
+        self._restart_session_on_next_turn = False
 
     def _request_session_cancel(self) -> None:
         """Ask the ACP server to cancel the active session prompt."""
@@ -1945,7 +1945,7 @@ class ACPAgent(AgentBase):
                     )
                     raise
                 if drain_result.completed and drain_result.error is not None:
-                    self._emit_turn_error(drain_result.error, state, on_event)
+                    self._cancel_inflight_tool_calls()
                     self._restart_session_on_next_turn = True
                     raise
                 self._cancel_inflight_tool_calls()

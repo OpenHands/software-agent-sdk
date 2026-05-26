@@ -5,6 +5,7 @@ import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -44,7 +45,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -75,6 +76,20 @@ logger = get_logger(__name__)
 ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
 ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
+ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
+    if not isinstance(event, MessageEvent):
+        return False
+    if event.source == "user":
+        return True
+    if event.source != "environment" or event.llm_message.role != "user":
+        return False
+    return any(
+        part.startswith(ACP_STOP_HOOK_FEEDBACK_PREFIX)
+        for part in content_to_str(event.llm_message.content)
+    )
 
 
 class LocalConversation(BaseConversation):
@@ -827,7 +842,9 @@ class LocalConversation(BaseConversation):
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
                                 if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
                                     feedback_msg = MessageEvent(
                                         source="environment",
                                         llm_message=Message(
@@ -983,7 +1000,9 @@ class LocalConversation(BaseConversation):
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
                                 if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
                                     feedback_msg = MessageEvent(
                                         source="environment",
                                         llm_message=Message(
@@ -1016,31 +1035,41 @@ class LocalConversation(BaseConversation):
                         )
 
                     if isinstance(self.agent, ACPAgent):
-                        user_messages = [
+                        acp_prompt_messages = [
                             event
                             for event in self._state.events
-                            if isinstance(event, MessageEvent)
-                            and event.source == "user"
+                            if _is_acp_prompt_message(event)
                         ]
                         if last_acp_prompt_user_message_id is None:
                             acp_step_user_message = (
-                                user_messages[0] if user_messages else None
+                                acp_prompt_messages[0] if acp_prompt_messages else None
                             )
                         else:
                             last_prompt_index = next(
                                 (
                                     index
-                                    for index, event in enumerate(user_messages)
+                                    for index, event in enumerate(acp_prompt_messages)
                                     if event.id == last_acp_prompt_user_message_id
                                 ),
                                 None,
                             )
-                            acp_step_user_message = (
-                                user_messages[last_prompt_index + 1]
-                                if last_prompt_index is not None
-                                and last_prompt_index + 1 < len(user_messages)
-                                else None
-                            )
+                            if last_prompt_index is None:
+                                logger.info(
+                                    "ACP prompt cursor %s no longer exists; "
+                                    "restarting from first available prompt",
+                                    last_acp_prompt_user_message_id,
+                                )
+                                acp_step_user_message = (
+                                    acp_prompt_messages[0]
+                                    if acp_prompt_messages
+                                    else None
+                                )
+                            else:
+                                acp_step_user_message = (
+                                    acp_prompt_messages[last_prompt_index + 1]
+                                    if last_prompt_index + 1 < len(acp_prompt_messages)
+                                    else None
+                                )
                         acp_step_user_message_id = (
                             acp_step_user_message.id
                             if acp_step_user_message is not None
@@ -1091,12 +1120,20 @@ class LocalConversation(BaseConversation):
                 # for each individual mutation.
                 if acp_step_user_message is None:
                     with self._state:
-                        last_user_message_id = self._state.last_user_message_id
-                        acp_user_message_changed = (
-                            last_user_message_id is not None
-                            and last_user_message_id != last_acp_prompt_user_message_id
+                        acp_prompt_messages = [
+                            event
+                            for event in self._state.events
+                            if _is_acp_prompt_message(event)
+                        ]
+                        latest_acp_prompt_message_id = (
+                            acp_prompt_messages[-1].id if acp_prompt_messages else None
                         )
-                        if acp_user_message_changed:
+                        acp_prompt_message_changed = (
+                            latest_acp_prompt_message_id is not None
+                            and latest_acp_prompt_message_id
+                            != last_acp_prompt_user_message_id
+                        )
+                        if acp_prompt_message_changed:
                             if iteration >= self.max_iteration_per_run:
                                 logger.info(
                                     "User message arrived before ACP finish; "
@@ -1165,12 +1202,20 @@ class LocalConversation(BaseConversation):
                     ):
                         break
 
-                    last_user_message_id = self._state.last_user_message_id
-                    acp_user_message_changed = (
-                        last_user_message_id is not None
-                        and last_user_message_id != last_acp_prompt_user_message_id
+                    acp_prompt_messages = [
+                        event
+                        for event in self._state.events
+                        if _is_acp_prompt_message(event)
+                    ]
+                    latest_acp_prompt_message_id = (
+                        acp_prompt_messages[-1].id if acp_prompt_messages else None
                     )
-                    if acp_user_message_changed and self._state.execution_status in (
+                    acp_prompt_message_changed = (
+                        latest_acp_prompt_message_id is not None
+                        and latest_acp_prompt_message_id
+                        != last_acp_prompt_user_message_id
+                    )
+                    if acp_prompt_message_changed and self._state.execution_status in (
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.IDLE,
                     ):

@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -460,6 +460,101 @@ async def test_acp_arun_does_not_reprompt_when_cursor_is_current(tmp_path):
         await asyncio.wait_for(conversation.arun(), timeout=1.0)
 
     assert prompts_seen == []
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+@pytest.mark.asyncio
+async def test_acp_arun_recovers_when_persisted_cursor_is_missing(tmp_path):
+    """A stale persisted ACP cursor should not tight-loop the run."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=3,
+        stuck_detection=False,
+    )
+    conversation.send_message("surviving message")
+    surviving_message_id = conversation.state.last_user_message_id
+    conversation.state.agent_state = {ACP_LAST_PROMPT_USER_MESSAGE_ID: "missing-id"}
+
+    prompts_seen: list[str] = []
+
+    def user_text(event: MessageEvent | None) -> str:
+        assert event is not None
+        content = event.llm_message.content[0]
+        assert isinstance(content, TextContent)
+        return content.text
+
+    async def record_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(user_text(prompt_message))
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=record_astep),
+    ):
+        await asyncio.wait_for(conversation.arun(), timeout=1.0)
+
+    assert prompts_seen == ["surviving message"]
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert (
+        conversation.state.agent_state.get(ACP_LAST_PROMPT_USER_MESSAGE_ID)
+        == surviving_message_id
+    )
+
+
+@pytest.mark.asyncio
+async def test_acp_arun_sends_stop_hook_feedback_to_acp(tmp_path):
+    """ACP stop-hook feedback should be queued as the next prompt."""
+
+    agent = ACPAgent(acp_command=["echo", "test"])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        max_iteration_per_run=3,
+        stuck_detection=False,
+    )
+    conversation.send_message("initial request")
+
+    hook = MagicMock()
+    hook.run_stop.side_effect = [(False, "please continue"), (True, None)]
+    conversation._hook_processor = hook
+    prompts_seen: list[str] = []
+
+    def user_text(event: MessageEvent | None) -> str:
+        assert event is not None
+        content = event.llm_message.content[0]
+        assert isinstance(content, TextContent)
+        return content.text
+
+    async def finish_astep(
+        self,  # noqa: ARG001
+        conv: LocalConversation,
+        on_event: ConversationCallbackType,  # noqa: ARG001
+        on_token: ConversationTokenCallbackType | None = None,  # noqa: ARG001
+        prompt_message: MessageEvent | None = None,
+    ) -> None:
+        prompts_seen.append(user_text(prompt_message))
+        conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+    with (
+        patch.object(ACPAgent, "init_state", autospec=True),
+        patch.object(ACPAgent, "astep", new=finish_astep),
+    ):
+        await asyncio.wait_for(conversation.arun(), timeout=1.0)
+
+    assert hook.run_stop.call_count == 2
+    assert prompts_seen == [
+        "initial request",
+        "[Stop hook feedback] please continue",
+    ]
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 

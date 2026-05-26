@@ -34,6 +34,7 @@ from openhands.sdk.event import (
     MessageEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
@@ -1769,6 +1770,69 @@ class TestACPAgentAstep:
             and e.action.message == "done"
             for e in emitted
         )
+
+    def test_astep_cancelled_prompt_error_pauses_without_turn_error(self, tmp_path):
+        """Explicit cancellation should not emit stale prompt errors."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                raise RuntimeError("late prompt failure")
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        assert not any(
+            isinstance(e, MessageEvent)
+            and e.source == "agent"
+            and any(
+                isinstance(c, TextContent) and c.text.startswith("ACP error:")
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+        assert not any(isinstance(e, ConversationErrorEvent) for e in emitted)
+        assert agent._restart_session_on_next_turn is True
 
     def test_astep_cancellation_does_not_mark_suffix_installed(self, tmp_path):
         """Cancellation before a turn completes must leave
@@ -3903,6 +3967,20 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
+
+    def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
+        """A failed replacement session should leave the deferred restart armed."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        agent._restart_session_on_next_turn = True
+
+        with patch.object(ACPAgent, "init_state", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                agent._restart_session_after_drain_timeout(
+                    state, on_event=lambda _: None
+                )
+
+        assert agent._restart_session_on_next_turn is True
 
     def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
         """init_state lands the session id in state.agent_state so
