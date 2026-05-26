@@ -924,14 +924,20 @@ class EventService:
                     self._acp_internal_rerun_requested = False
                     if rerun_requested:
                         status = await self._get_execution_status()
+                        rerun_generation_still_valid = (
+                            self._explicit_interrupt_generation == rerun_generation
+                        )
                         acp_internal_rerun_still_valid = (
                             acp_internal_rerun_requested
-                            and self._explicit_interrupt_generation == rerun_generation
+                            and rerun_generation_still_valid
                         )
-                        should_restart = status == ConversationExecutionStatus.IDLE or (
-                            acp_internal_rerun_still_valid
-                            and status == ConversationExecutionStatus.PAUSED
-                            and isinstance(conversation.agent, ACPAgent)
+                        should_restart = rerun_generation_still_valid and (
+                            status == ConversationExecutionStatus.IDLE
+                            or (
+                                acp_internal_rerun_still_valid
+                                and status == ConversationExecutionStatus.PAUSED
+                                and isinstance(conversation.agent, ACPAgent)
+                            )
                         )
                         if should_restart:
                             try:
@@ -1000,7 +1006,9 @@ class EventService:
                 self._acp_internal_rerun_requested = False
             self._conversation.interrupt()
             # Wait for the run task to finish so we can publish the final
-            # state update (PAUSED + InterruptEvent) cleanly.
+            # state update (PAUSED + InterruptEvent) cleanly. The shield keeps
+            # the 5s timeout from force-cancelling a cleanup that still needs
+            # to drain its ACP prompt/cancel handshake.
             if self._run_task is not None and not self._run_task.done():
                 with suppress(Exception):
                     await asyncio.wait_for(asyncio.shield(self._run_task), timeout=5.0)

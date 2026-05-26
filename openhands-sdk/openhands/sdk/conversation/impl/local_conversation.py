@@ -968,13 +968,7 @@ class LocalConversation(BaseConversation):
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
                 ConversationExecutionStatus.FINISHED,
                 ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.ERROR,
             ):
-                # If the process crashed after ACP finish events were persisted
-                # but before the cursor commit, startup may normalize RUNNING to
-                # ERROR. Promote the in-flight cursor so resume does not replay
-                # a prompt the ACP session already accepted.
-
                 updated_agent_state = dict(self._state.agent_state)
                 inflight_prompt_user_message_id = updated_agent_state.get(
                     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID
