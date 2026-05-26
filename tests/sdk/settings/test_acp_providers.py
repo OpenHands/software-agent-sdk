@@ -8,6 +8,7 @@ import pytest
 
 from openhands.sdk.settings.acp_providers import (
     ACP_PROVIDERS,
+    ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
@@ -35,6 +36,8 @@ class TestACPProviderInfo:
         assert "claude-agent" in info.agent_name_patterns
         assert info.supports_set_session_model is False
         assert info.session_meta_key == "claudeCode"
+        assert info.default_model == "claude-opus-4-7"
+        assert any(m.id == "claude-opus-4-7" for m in info.available_models)
 
     def test_codex_metadata(self):
         info = ACP_PROVIDERS["codex"]
@@ -47,6 +50,8 @@ class TestACPProviderInfo:
         assert "codex-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.session_meta_key is None
+        assert info.default_model == "gpt-5.5/medium"
+        assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
 
     def test_gemini_cli_metadata(self):
         info = ACP_PROVIDERS["gemini-cli"]
@@ -59,6 +64,8 @@ class TestACPProviderInfo:
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.session_meta_key is None
+        assert info.default_model == "gemini-2.5-pro"
+        assert any(m.id == "gemini-2.5-pro" for m in info.available_models)
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -152,6 +159,40 @@ class TestProviderRegistryConsistency:
                 assert detected.key == key, (
                     f"pattern {pattern!r} matched {detected.key!r}, expected {key!r}"
                 )
+
+
+class TestProviderModelLists:
+    """Verify the curated ``available_models`` / ``default_model`` fields."""
+
+    def test_every_builtin_provider_has_available_models(self):
+        for key, info in ACP_PROVIDERS.items():
+            assert info.available_models, f"{key}: available_models must not be empty"
+
+    def test_available_models_entries_are_model_options(self):
+        for info in ACP_PROVIDERS.values():
+            for option in info.available_models:
+                assert isinstance(option, ACPModelOption)
+                assert option.id, "model option id must not be empty"
+                assert option.label, "model option label must not be empty"
+
+    def test_model_ids_unique_within_provider(self):
+        for key, info in ACP_PROVIDERS.items():
+            ids = [m.id for m in info.available_models]
+            assert len(ids) == len(set(ids)), f"{key}: duplicate model ids"
+
+    def test_default_model_is_one_of_available_models(self):
+        for key, info in ACP_PROVIDERS.items():
+            if info.default_model is None:
+                continue
+            ids = {m.id for m in info.available_models}
+            assert info.default_model in ids, (
+                f"{key}: default_model {info.default_model!r} not in available_models"
+            )
+
+    def test_model_option_is_frozen(self):
+        option = ACP_PROVIDERS["claude-code"].available_models[0]
+        with pytest.raises((AttributeError, TypeError)):
+            option.id = "mutated"  # type: ignore[misc]
 
 
 class TestBuildSessionModelMeta:
