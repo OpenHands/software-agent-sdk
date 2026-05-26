@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -666,6 +667,7 @@ class RemoteConversation(BaseConversation):
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -695,6 +697,10 @@ class RemoteConversation(BaseConversation):
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
             user_id: Optional user ID to associate with observability traces
+            client_tools: Optional list of client-defined tool specs. These tools
+                      have no server-side executor — when the agent calls them an
+                      ActionEvent is emitted over the WebSocket and the client
+                      handles execution via callbacks.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -759,6 +765,12 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
+                # Include client-defined tool specs (no server-side executor)
+                "client_tools": (
+                    [s.model_dump(mode="json") for s in client_tools]
+                    if client_tools
+                    else []
+                ),
                 # Include tags if provided
                 "tags": tags or {},
             }
