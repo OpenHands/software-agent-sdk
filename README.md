@@ -61,7 +61,7 @@ docker run -p 8000:8000 -p 8001:8001 \
   -e OH_ENABLE_VNC=false \
   -e SESSION_API_KEY="$SESSION_API_KEY" \
   -e OH_ALLOW_CORS_ORIGINS='["*"]' \
-  ghcr.io/all-hands-ai/agent-server:78938ee-python
+  ghcr.io/openhands/agent-server:71b070d-python
 ```
 
 ### Creating a Conversation
@@ -377,14 +377,14 @@ Integration tests require a running agent-server in Docker with a mounted worksp
    chmod 777 /tmp/agent-workspace
    ```
 
-2. Start the agent-server container (software-agent-sdk v1.18.1):
+2. Start the agent-server container (software-agent-sdk v1.23.1):
 
    ```bash
    docker run -d \
      --name agent-server \
      -p 8010:8000 \
      -v /tmp/agent-workspace:/workspace \
-     ghcr.io/openhands/agent-server:7c37803-python
+     ghcr.io/openhands/agent-server:71b070d-python
    ```
 
 3. Wait for the server to be ready:
