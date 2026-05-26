@@ -1,34 +1,37 @@
 # Publishing Guide
 
-This document explains how to publish the OpenHands TypeScript Client to GitHub Packages.
+This document explains how to publish the OpenHands TypeScript Client.
 
 ## Overview
 
-The package is published exclusively to **GitHub Packages** for GitHub-native integration.
+The package is published to **two registries** on every version tag:
+
+| Registry | Workflow | Auth |
+|----------|----------|------|
+| **npm** (`registry.npmjs.org`) | `.github/workflows/npm-publish.yml` | OIDC trusted publishing |
+| **GitHub Packages** (`npm.pkg.github.com`) | `.github/workflows/release.yml` | `GITHUB_TOKEN` |
 
 ## Automated Publishing (Recommended)
 
 ### Prerequisites
 
-- **GitHub Token**: Automatically provided by GitHub Actions as `GITHUB_TOKEN`
+- **npm trusted publishing**: The `@openhands/typescript-client` package on npmjs.org must have the `OpenHands/typescript-client` repository configured as a trusted publisher (see [npm docs](https://docs.npmjs.com/trusted-publishers/)).
+- **GitHub Token**: Automatically provided by GitHub Actions as `GITHUB_TOKEN` for GitHub Packages.
 
 ### Publishing Process
 
 1. **Create and push a version tag**:
 
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag v1.23.3
+   git push origin v1.23.3
    ```
 
-2. **The `Release` GitHub Action will automatically**:
-   - Run tests
-   - Build the package
-   - Update package.json version
-   - Publish to GitHub Packages
-   - Create a GitHub release with installation instructions
+2. **Two GitHub Actions run automatically**:
+   - `npm-publish.yml`: Tests → builds → publishes to **npm** with provenance
+   - `release.yml`: Tests → builds → publishes to **GitHub Packages** → creates a GitHub Release
 
-Only `.github/workflows/release.yml` should run on version tags. The manual publish workflow is for explicit `workflow_dispatch` recovery only and must not also run on tag pushes, otherwise it can race the release workflow and fail with a duplicate-version conflict.
+Only these two workflows should run on version tags. The manual publish workflow (`.github/workflows/publish-github-packages.yml`) is for explicit `workflow_dispatch` recovery only and must not also run on tag pushes, otherwise it can race the release workflow and fail with a duplicate-version conflict.
 
 ## Manual Publishing
 
@@ -68,9 +71,13 @@ Only `.github/workflows/release.yml` should run on version tags. The manual publ
 
 ## Installation Instructions for Users
 
-### From GitHub Packages
+### From npm (Recommended)
 
-#### Option 1: Configure .npmrc (Recommended)
+```bash
+npm install @openhands/typescript-client
+```
+
+### From GitHub Packages
 
 Add to your `.npmrc` file:
 
@@ -82,12 +89,6 @@ Then install:
 
 ```bash
 npm install @openhands/typescript-client
-```
-
-#### Option 2: Direct install with registry flag
-
-```bash
-npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
 ```
 
 ## Troubleshooting
@@ -113,5 +114,6 @@ Common issues:
 
 ## Workflow Files
 
-- `.github/workflows/release.yml`: Main tag-triggered release workflow (GitHub Packages and GitHub Release)
+- `.github/workflows/npm-publish.yml`: Tag-triggered npm (npmjs.org) publish workflow (OIDC trusted publishing)
+- `.github/workflows/release.yml`: Tag-triggered GitHub Packages publish + GitHub Release workflow
 - `.github/workflows/publish-github-packages.yml`: Manual GitHub Packages recovery workflow (`workflow_dispatch` only)

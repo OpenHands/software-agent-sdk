@@ -1,0 +1,84 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Trusted publishing requires Node 22.14.0+ and npm 11.5.1+
+      # See: https://docs.npmjs.com/trusted-publishers/
+      - name: Set up Node.js for npm trusted publishing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify npm version supports trusted publishing
+        run: |
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
+          NPM_VERSION=$(npm --version)
+          NPM_MAJOR=$(echo $NPM_VERSION | cut -d. -f1)
+          NPM_MINOR=$(echo $NPM_VERSION | cut -d. -f2)
+          if [ "$NPM_MAJOR" -lt 11 ] || ([ "$NPM_MAJOR" -eq 11 ] && [ "$NPM_MINOR" -lt 5 ]); then
+            echo "Error: npm 11.5.1+ required for trusted publishing, got $NPM_VERSION"
+            exit 1
+          fi
+          echo "✓ npm $NPM_VERSION meets trusted publishing requirements"
+
+      # The repo's .npmrc redirects @openhands to GitHub Packages;
+      # remove it so this job publishes to the public npm registry.
+      - name: Remove project .npmrc
+        run: rm -f .npmrc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      # Set version from tag BEFORE build so any source that reads
+      # package.json at compile time picks up the correct version.
+      - name: Extract and set version from tag
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Publishing version: $TAG_VERSION"
+          npm version "$TAG_VERSION" --no-git-tag-version
+
+      - name: Build package
+        run: npm run build
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Validate version was set
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: package.json version ($PACKAGE_VERSION) doesn't match tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "✓ Version $PACKAGE_VERSION matches release tag"
+
+      - name: Publish to npm with provenance
+        run: npm publish --access public --provenance --tag latest
