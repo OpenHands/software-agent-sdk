@@ -734,16 +734,24 @@ class LocalConversation(BaseConversation):
             self.agent.set_acp_model(model)
             # Persist the switched model as the authoritative value. ``acp_model``
             # is frozen, so we replace the agent with a copy carrying the new
-            # value (model_copy preserves the live ACP connection in private
-            # attrs). This matters on two counts the in-place mutation missed:
+            # value. This matters on two counts the in-place mutation missed:
             #   1. A fresh object identity makes the autosave path actually
             #      write base_state.json (re-assigning the same object is a
             #      no-op because old == new).
             #   2. model_post_init / _start_acp_server derive the sentinel model
             #      and the resumed session model from ``acp_model`` on reload, so
             #      it must hold the switched value, not the construction-time one.
-            self.agent = self.agent.model_copy(update={"acp_model": model})
-            self._state.agent = self.agent
+            #
+            # model_copy is shallow, so the copy shares the live ACP runtime
+            # (_conn/_executor/_process) with the old agent. Release it from the
+            # old agent before dropping it: otherwise ACPAgent.__del__ -> close()
+            # on the discarded agent would tear down the session the copy now
+            # owns, leaving the next turn pointing at a dead connection.
+            old_agent = self.agent
+            new_agent = old_agent.model_copy(update={"acp_model": model})
+            old_agent.release_runtime()
+            self.agent = new_agent
+            self._state.agent = new_agent
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:

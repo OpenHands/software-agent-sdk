@@ -110,6 +110,42 @@ def test_switch_acp_model_persists_authoritative_model(tmp_path):
     assert reloaded.agent.llm.model == "model-b"
 
 
+def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
+    """The pre-switch agent must not tear down the shared live session.
+
+    Regression: ``switch_acp_model`` swaps in a shallow ``model_copy`` that
+    shares ``_conn`` / ``_executor`` / ``_process`` with the old agent. Without
+    releasing the runtime first, ``ACPAgent.__del__`` -> ``close()`` on the
+    discarded agent closes the connection, kills the subprocess and shuts down
+    the executor — out from under the copy, breaking the next turn.
+    """
+    conv, old_agent = _make_acp_conversation(tmp_path)
+    live_conn = old_agent._conn
+    live_executor = old_agent._executor
+
+    conv.switch_acp_model("model-b")
+
+    # The copy took over the live runtime...
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched._conn is live_conn
+    assert switched._executor is live_executor
+
+    # ...and the discarded agent was disarmed: marked closed with its runtime
+    # references cleared, so its finalizer is a no-op.
+    assert old_agent._closed is True
+    assert old_agent._conn is None
+    assert old_agent._executor is None
+    assert old_agent._process is None
+
+    # Simulating GC (__del__ -> close()) on the old agent leaves the copy's
+    # shared connection/executor untouched.
+    live_executor.run_async.reset_mock()
+    old_agent.close()
+    live_executor.run_async.assert_not_called()
+    live_executor.close.assert_not_called()
+
+
 def test_switch_profile(profile_store):
     """switch_profile switches the agent's LLM."""
     conv = _make_conversation()

@@ -1945,6 +1945,25 @@ class ACPAgent(AgentBase):
                 logger.debug("Error closing executor: %s", e)
             self._executor = None
 
+    def release_runtime(self) -> None:
+        """Relinquish ownership of the live ACP runtime without tearing it down.
+
+        Call this on an agent whose live session has been handed to a shallow
+        :meth:`~pydantic.BaseModel.model_copy` — which shares the same
+        ``_conn`` / ``_executor`` / ``_process`` references. It marks the agent
+        closed and clears those references, disarming the
+        ``__del__`` -> :meth:`close` finalizer so dropping this now-stale
+        instance cannot close resources the copy still owns.
+
+        See :meth:`LocalConversation.switch_acp_model`.
+        """
+        self._closed = True
+        self._conn = None
+        self._executor = None
+        self._process = None
+        self._client = None
+        self._filtered_reader = None
+
     def __del__(self) -> None:
         try:
             self.close()
