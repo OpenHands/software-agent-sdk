@@ -1341,7 +1341,10 @@ class ACPAgent(AgentBase):
                 timeout=_ACP_CANCEL_DRAIN_TIMEOUT,
             )
         except TimeoutError:
-            logger.warning("Timed out sending ACP session cancel; continuing cleanup")
+            logger.warning(
+                "Timed out sending ACP session cancel; restarting ACP session"
+            )
+            self._restart_session_on_next_turn = True
         except Exception:
             logger.warning("Failed to send ACP session cancel", exc_info=True)
 
@@ -1722,6 +1725,11 @@ class ACPAgent(AgentBase):
         """
         state = conversation.state
 
+        if self._restart_session_on_next_turn:
+            # If restart initialization fails, let the conversation transition
+            # to ERROR rather than reusing an ambiguous ACP session.
+            self._restart_session_after_drain_timeout(state, on_event)
+
         # Conversation implementations already attach per-turn AgentContext
         # extensions to MessageEvent.extended_content; MessageEvent.to_llm_message()
         # merges those extensions with the user text.
@@ -1858,6 +1866,8 @@ class ACPAgent(AgentBase):
         state = conversation.state
 
         if self._restart_session_on_next_turn:
+            # If restart initialization fails, let the conversation transition
+            # to ERROR rather than reusing an ambiguous ACP session.
             self._restart_session_after_drain_timeout(state, on_event)
 
         prompt_blocks: list[Any] | None = None
