@@ -960,9 +960,9 @@ class LocalConversation(BaseConversation):
         observation is patched with a synthetic ``AgentErrorEvent`` so
         the LLM conversation history stays consistent.
         """
-        self._ensure_agent_ready()
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
+        self._ensure_agent_ready()
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
