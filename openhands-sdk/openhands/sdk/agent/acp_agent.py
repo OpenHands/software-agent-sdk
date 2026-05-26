@@ -240,22 +240,39 @@ async def _reapply_session_model_on_resume(
 
     ``load_session()`` carries no model ``_meta``, so a session resumed after a
     runtime switch (or with any persisted ``acp_model``) would otherwise run on
-    the ACP server's default. This issues ``set_session_model`` gated on
-    :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.supports_runtime_model_switch`
-    — the capability for switching an *already-running* session — so the resumed
+    the ACP server's default. This issues ``set_session_model`` so the resumed
     live session matches the serialized ``acp_model``.
 
-    This deliberately uses the runtime-switch gate, not the initial-selection
-    one: claude-agent-acp selects its initial model via ``_meta``
-    (``supports_set_session_model=False``) yet supports ``set_session_model``
-    for later switches, so on resume it needs this call to honour the persisted
-    model rather than the server default.
+    The gating mirrors :meth:`ACPAgent.set_acp_model` exactly — attempt for
+    custom/unknown servers (``provider is None``, which ``set_acp_model`` also
+    lets switch and whose switches are persisted as authoritative) and for known
+    providers that support runtime switching; skip only known providers that
+    don't. This deliberately differs from the *initial-selection* gate
+    (``supports_set_session_model``): claude-agent-acp selects its initial model
+    via ``_meta`` yet supports ``set_session_model`` for later switches, so on
+    resume it needs this call to honour the persisted model rather than the
+    server default.
+
+    A server that doesn't actually support the call rejects it; that rejection
+    is swallowed (logged) here — like the ``load_session`` fallback — so a
+    stale-capability server can't break resume. The session simply keeps the
+    server default until the next explicit switch.
     """
     if not acp_model:
         return
     provider = detect_acp_provider_by_agent_name(agent_name)
-    if provider is not None and provider.supports_runtime_model_switch:
+    if provider is not None and not provider.supports_runtime_model_switch:
+        return
+    try:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+    except ACPRequestError as e:
+        logger.warning(
+            "Could not reapply model %r on resumed session %s (%s); the live "
+            "session may run on the server default until the next switch",
+            acp_model,
+            session_id,
+            e,
+        )
 
 
 def _extract_token_usage(

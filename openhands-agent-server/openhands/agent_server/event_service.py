@@ -934,20 +934,40 @@ class EventService:
                     "Conversation is not active; it has not been started or has "
                     "been closed."
                 )
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
-            # Persist the switch into meta.json. ``start()`` rebuilds the runtime
-            # agent from ``self.stored.agent``, and ``ConversationState.create()``
-            # copies that agent over the persisted base_state.json on resume — so
-            # without mirroring the new model here, a restart would silently
-            # revert to the old one. Only ``acp_model`` needs updating:
-            # ``model_post_init`` re-derives the sentinel ``llm.model`` on reload.
-            self.stored = self.stored.model_copy(
-                update={
-                    "agent": self.stored.agent.model_copy(update={"acp_model": model})
-                }
-            )
-            await self.save_meta()
+            conversation = self._conversation
+
+            async def _switch_and_persist() -> None:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, conversation.switch_acp_model, model)
+                # Persist the switch into meta.json. ``start()`` rebuilds the
+                # runtime agent from ``self.stored.agent``, and
+                # ``ConversationState.create()`` copies that agent over the
+                # persisted base_state.json on resume — so without mirroring the
+                # new model here, a restart would silently revert to the old one.
+                # Only ``acp_model`` needs updating: ``model_post_init``
+                # re-derives the sentinel ``llm.model`` on reload.
+                self.stored = self.stored.model_copy(
+                    update={
+                        "agent": self.stored.agent.model_copy(
+                            update={"acp_model": model}
+                        )
+                    }
+                )
+                await self.save_meta()
+
+            # ``run_in_executor`` cannot cancel the worker thread once it starts,
+            # so a cancellation (client disconnect / shutdown) could leave the
+            # live session + base_state.json switched while meta.json is never
+            # mirrored — and would release the lock with the worker still in
+            # flight. Run the switch + mirror as one shielded unit: on
+            # cancellation, let it finish (keeping the lock held) so persisted
+            # metadata matches the live session, then propagate the cancel.
+            task = asyncio.create_task(_switch_and_persist())
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
 
     async def close(self):
         if self._lease_task is not None:

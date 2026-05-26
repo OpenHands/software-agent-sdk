@@ -1350,6 +1350,67 @@ class TestEventServiceSaveMeta:
         assert isinstance(loaded.agent, ACPAgent)
         assert loaded.agent.acp_model == "new-model"
 
+    @pytest.mark.asyncio
+    async def test_switch_acp_model_finishes_meta_on_cancel(self, tmp_path):
+        """A cancel mid-switch still mirrors meta.json before propagating.
+
+        ``run_in_executor`` cannot cancel the worker thread, so the live switch
+        may complete; ``switch_acp_model`` must finish the meta.json mirror
+        (holding the lock) before re-raising ``CancelledError``, or a restart
+        resumes from stale metadata.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def _slow_switch(model):
+            # Stand in for the blocking worker-thread switch; block until the
+            # test releases it so we can cancel while it is in flight.
+            started.set()
+            release.wait(timeout=5)
+
+        conversation = MagicMock()
+        conversation.switch_acp_model.side_effect = _slow_switch
+        service._conversation = conversation
+
+        task = asyncio.create_task(service.switch_acp_model("new-model"))
+        loop = asyncio.get_running_loop()
+        # Wait until the worker thread is mid-switch, then cancel.
+        await loop.run_in_executor(None, started.wait, 5)
+        task.cancel()
+        # Let the cancellation reach the shield (coroutine enters the except and
+        # starts awaiting the in-flight worker) before releasing the worker.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # Despite the cancel, the worker ran to completion and meta.json was
+        # mirrored with the new model.
+        conversation.switch_acp_model.assert_called_once_with("new-model")
+        assert isinstance(service.stored.agent, ACPAgent)
+        assert service.stored.agent.acp_model == "new-model"
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert isinstance(loaded.agent, ACPAgent)
+        assert loaded.agent.acp_model == "new-model"
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""

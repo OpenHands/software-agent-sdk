@@ -3244,14 +3244,55 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_skips_reapply(self):
-        # provider=None (custom server) is out of scope here; resume
-        # reapplication is gated on a known provider that supports the switch.
+    async def test_unknown_provider_attempts_reapply(self):
+        # provider=None (custom server) is allowed to attempt the switch by
+        # set_acp_model, and such switches are persisted as authoritative — so
+        # resume must mirror that and attempt the reapply too (otherwise the
+        # resumed session would silently revert to the server default).
         conn = AsyncMock()
         await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="whatever", session_id="sess-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_known_unsupported_provider_skips_reapply(self):
+        from openhands.sdk.settings.acp_providers import ACPProviderInfo
+
+        unsupported = ACPProviderInfo(
+            key="legacy",
+            display_name="Legacy",
+            default_command=("legacy",),
+            api_key_env_var=None,
+            base_url_env_var=None,
+            default_session_mode="default",
+            agent_name_patterns=("legacy",),
+            supports_set_session_model=False,
+            supports_runtime_model_switch=False,
+            session_meta_key=None,
+        )
+        conn = AsyncMock()
+        with patch(
+            "openhands.sdk.agent.acp_agent.detect_acp_provider_by_agent_name",
+            return_value=unsupported,
+        ):
+            await _reapply_session_model_on_resume(conn, "legacy-acp", "sess-1", "x")
         conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejection_is_swallowed_on_resume(self):
+        # A server that rejects the reapply must not break resume (mirrors the
+        # load_session fallback). The error is logged, not raised.
+        conn = AsyncMock()
+        conn.set_session_model.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
+        await _reapply_session_model_on_resume(
+            conn, "some-custom-acp", "sess-1", "whatever"
+        )
+        conn.set_session_model.assert_awaited_once()
 
 
 class TestSetACPModel:
