@@ -1921,6 +1921,10 @@ class ACPAgent(AgentBase):
 
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs (async)", elapsed)
+            # ``on_event`` may be LocalConversation._on_event_with_state_lock,
+            # which re-acquires this same FIFOLock. This is safe because astep()
+            # finalization runs on the event-loop thread and FIFOLock is
+            # reentrant for the owning thread.
             with state:
                 self._finalize_successful_turn(response, elapsed, state, on_event)
         except asyncio.CancelledError:
@@ -1936,7 +1940,14 @@ class ACPAgent(AgentBase):
             # session/cancel, so late cancelled-turn updates cannot overwrite
             # the terminal synthetic failures.
             await self._arequest_session_cancel()
-            drain_result = await self._drain_cancelled_prompt(prompt_future)
+            try:
+                drain_result = await self._drain_cancelled_prompt(prompt_future)
+            except asyncio.CancelledError:
+                with state:
+                    self._cancel_inflight_tool_calls()
+                    if prompt_future is not None and not prompt_future.done():
+                        self._restart_session_on_next_turn = True
+                raise
             with state:
                 elapsed = time.monotonic() - t0
                 if drain_result.completed and drain_result.error is None:
