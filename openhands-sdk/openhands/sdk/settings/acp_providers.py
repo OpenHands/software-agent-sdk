@@ -233,7 +233,12 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_set_session_model=True,
             session_meta_key=None,
             available_models=_GEMINI_MODELS,
-            default_model="gemini-2.5-pro",
+            # Match the Gemini CLI's own no-model-configured default
+            # (``DEFAULT_GEMINI_MODEL_AUTO``), i.e. the auto-router — not a
+            # manually-pinned snapshot. Pinning ``gemini-2.5-pro`` here would
+            # make downstream clients persist a value that bypasses the CLI's
+            # auto-routing.
+            default_model="auto-gemini-2.5",
         ),
     }
 )

@@ -64,8 +64,8 @@ class TestACPProviderInfo:
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.session_meta_key is None
-        assert info.default_model == "gemini-2.5-pro"
-        assert any(m.id == "gemini-2.5-pro" for m in info.available_models)
+        assert info.default_model == "auto-gemini-2.5"
+        assert any(m.id == "auto-gemini-2.5" for m in info.available_models)
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
