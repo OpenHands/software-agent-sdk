@@ -15,7 +15,7 @@ Two demos:
 - Stop (quality reviewer): refuses to let the main agent finish until the
   required deliverable exists in the workspace.
 
-For shell-command hooks see ../33_hooks/33_hooks.py.
+For shell-command hooks see ../33_hooks/main.py.
 """
 
 import os
