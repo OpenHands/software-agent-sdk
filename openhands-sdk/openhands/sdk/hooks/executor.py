@@ -5,6 +5,8 @@ import logging
 import os
 import signal
 import subprocess
+import sys
+import threading
 import time
 
 from pydantic import BaseModel
@@ -51,6 +53,98 @@ class HookResult(BaseModel):
 
 
 logger = logging.getLogger(__name__)
+
+
+class PersistentHookRunner:
+    """A long-lived subprocess that proxies hook command execution.
+
+    Instead of forking from the main (large-heap) Python process on every
+    hook call, we fork once to create a lightweight runner, then send each
+    hook invocation over JSON-line stdin/stdout IPC.  The runner's internal
+    ``subprocess.run`` forks from a tiny heap, cutting per-call overhead.
+    """
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+
+    # -- lifecycle ------------------------------------------------------------
+
+    def _start(self) -> subprocess.Popen:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "openhands.sdk.hooks._runner"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return proc
+
+    def _ensure_alive(self) -> subprocess.Popen:
+        if self._process is None or self._process.poll() is not None:
+            self._process = self._start()
+        return self._process
+
+    # -- public API -----------------------------------------------------------
+
+    def run(
+        self,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str] | None,
+        input_data: str,
+        timeout: int,
+    ) -> dict:
+        """Send a hook execution request and return the response dict.
+
+        Raises ``RuntimeError`` if the runner is unreachable.
+        """
+        request = json.dumps(
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": env,
+                "input": input_data,
+                "timeout": timeout,
+            }
+        )
+
+        with self._lock:
+            proc = self._ensure_alive()
+            assert proc.stdin is not None  # noqa: S101
+            assert proc.stdout is not None  # noqa: S101
+            try:
+                proc.stdin.write(request + "\n")
+                proc.stdin.flush()
+                raw_line = proc.stdout.readline()
+            except (BrokenPipeError, OSError) as exc:
+                # Runner died between requests — restart for next caller.
+                self._process = None
+                raise RuntimeError(f"hook runner pipe broken: {exc}") from exc
+
+        if not raw_line:
+            self._process = None
+            raise RuntimeError("hook runner exited unexpectedly")
+
+        return json.loads(raw_line)
+
+    def close(self) -> None:
+        with self._lock:
+            proc = self._process
+            if proc is None:
+                return
+            self._process = None
+        # Close stdin to signal EOF; the runner exits cleanly.
+        if proc.stdin:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
 
 class AsyncProcessManager:
@@ -138,15 +232,167 @@ class AsyncProcessManager:
 
 
 class HookExecutor:
-    """Executes hook commands with JSON I/O."""
+    """Executes hook commands with JSON I/O.
+
+    Synchronous hooks are routed through a :class:`PersistentHookRunner` so
+    that the main Python process forks only once (to spawn the runner).  All
+    subsequent ``subprocess.run`` calls happen inside the runner's lightweight
+    heap, eliminating hundreds of expensive fork+exec cycles per conversation.
+
+    Async hooks still use ``subprocess.Popen`` directly because they are
+    fire-and-forget and need independent process-group management.
+    """
 
     def __init__(
         self,
         working_dir: str | None = None,
         async_process_manager: AsyncProcessManager | None = None,
+        persistent_runner: PersistentHookRunner | None = None,
     ):
         self.working_dir = working_dir or os.getcwd()
         self.async_process_manager = async_process_manager or AsyncProcessManager()
+        self._runner = persistent_runner or PersistentHookRunner()
+
+    def close(self) -> None:
+        """Shut down the persistent runner and clean up async processes."""
+        self._runner.close()
+        self.async_process_manager.cleanup_all()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_hook_output(hook_result: HookResult) -> HookResult:
+        """Parse JSON from stdout into structured HookResult fields."""
+        if not hook_result.stdout.strip():
+            return hook_result
+        try:
+            output_data = json.loads(hook_result.stdout)
+            if isinstance(output_data, dict):
+                if "decision" in output_data:
+                    decision_str = output_data["decision"].lower()
+                    if decision_str == "allow":
+                        hook_result.decision = HookDecision.ALLOW
+                    elif decision_str == "deny":
+                        hook_result.decision = HookDecision.DENY
+                        hook_result.blocked = True
+                if "reason" in output_data:
+                    hook_result.reason = str(output_data["reason"])
+                if "additionalContext" in output_data:
+                    hook_result.additional_context = str(
+                        output_data["additionalContext"]
+                    )
+                if "continue" in output_data:
+                    if not output_data["continue"]:
+                        hook_result.blocked = True
+        except json.JSONDecodeError:
+            pass
+        return hook_result
+
+    def _build_env(
+        self,
+        event: HookEvent,
+        extra: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        hook_env = sanitized_env()
+        hook_env["OPENHANDS_PROJECT_DIR"] = self.working_dir
+        hook_env["OPENHANDS_SESSION_ID"] = event.session_id or ""
+        hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
+        if event.tool_name:
+            hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
+        if extra:
+            hook_env.update(extra)
+        return hook_env
+
+    def _execute_sync_via_runner(
+        self,
+        hook: HookDefinition,
+        event_json: str,
+        hook_env: dict[str, str],
+    ) -> HookResult:
+        """Execute a sync hook through the persistent runner process."""
+        try:
+            resp = self._runner.run(
+                command=hook.command,
+                cwd=self.working_dir,
+                env=hook_env,
+                input_data=event_json,
+                timeout=hook.timeout,
+            )
+        except RuntimeError:
+            logger.debug("Persistent runner unavailable, falling back to direct fork")
+            return self._execute_sync_direct(hook, event_json, hook_env)
+
+        timed_out: bool = resp.get("timed_out", False)
+        error: str | None = resp.get("error")
+        if timed_out:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error=error or f"Hook timed out after {hook.timeout} seconds",
+            )
+        if error:
+            return HookResult(success=False, exit_code=-1, error=error)
+
+        exit_code: int = resp.get("exit_code", -1)
+        hook_result = HookResult(
+            success=exit_code == 0,
+            blocked=exit_code == 2,
+            exit_code=exit_code,
+            stdout=resp.get("stdout", ""),
+            stderr=resp.get("stderr", ""),
+        )
+        return self._parse_hook_output(hook_result)
+
+    def _execute_sync_direct(
+        self,
+        hook: HookDefinition,
+        event_json: str,
+        hook_env: dict[str, str],
+    ) -> HookResult:
+        """Fallback: execute a sync hook via direct subprocess.run."""
+        try:
+            result = subprocess.run(
+                hook.command,
+                shell=True,
+                cwd=self.working_dir,
+                env=hook_env,
+                input=event_json,
+                capture_output=True,
+                text=True,
+                timeout=hook.timeout,
+            )
+            hook_result = HookResult(
+                success=result.returncode == 0,
+                blocked=result.returncode == 2,
+                exit_code=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+            return self._parse_hook_output(hook_result)
+        except subprocess.TimeoutExpired:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error=f"Hook timed out after {hook.timeout} seconds",
+            )
+        except FileNotFoundError as e:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error=f"Hook command not found: {e}",
+            )
+        except Exception as e:
+            return HookResult(
+                success=False,
+                exit_code=-1,
+                error=f"Hook execution failed: {e}",
+            )
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def execute(
         self,
@@ -155,24 +401,13 @@ class HookExecutor:
         env: dict[str, str] | None = None,
     ) -> HookResult:
         """Execute a single hook."""
-        # Prepare environment
-        hook_env = sanitized_env()
-        hook_env["OPENHANDS_PROJECT_DIR"] = self.working_dir
-        hook_env["OPENHANDS_SESSION_ID"] = event.session_id or ""
-        hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type
-        if event.tool_name:
-            hook_env["OPENHANDS_TOOL_NAME"] = event.tool_name
-
-        if env:
-            hook_env.update(env)
-
-        # Serialize event to JSON for stdin
+        hook_env = self._build_env(event, env)
         event_json = event.model_dump_json()
 
         # Cleanup expired async processes before starting new ones
         self.async_process_manager.cleanup_expired()
 
-        # Handle async hooks: fire and forget
+        # Handle async hooks: fire and forget (cannot use persistent runner)
         if hook.async_:
             try:
                 creationflags = 0
@@ -192,7 +427,6 @@ class HookExecutor:
                     start_new_session=start_new_session,
                     creationflags=creationflags,
                 )
-                # Write event JSON to stdin safely
                 try:
                     if process.stdin and process.poll() is None:
                         process.stdin.write(event_json.encode())
@@ -201,11 +435,9 @@ class HookExecutor:
                 except (BrokenPipeError, OSError) as e:
                     logger.warning(f"Failed to write to async hook stdin: {e}")
 
-                # Track for cleanup
                 self.async_process_manager.add_process(process, hook.timeout)
                 logger.debug(f"Started async hook (PID {process.pid}): {hook.command}")
 
-                # Return placeholder success result
                 return HookResult(
                     success=True,
                     exit_code=0,
@@ -218,77 +450,8 @@ class HookExecutor:
                     error=f"Failed to start async hook: {e}",
                 )
 
-        try:
-            # Execute the hook command synchronously
-            result = subprocess.run(
-                hook.command,
-                shell=True,
-                cwd=self.working_dir,
-                env=hook_env,
-                input=event_json,
-                capture_output=True,
-                text=True,
-                timeout=hook.timeout,
-            )
-
-            # Parse the result
-            hook_result = HookResult(
-                success=result.returncode == 0,
-                blocked=result.returncode == 2,
-                exit_code=result.returncode,
-                stdout=result.stdout,
-                stderr=result.stderr,
-            )
-
-            # Try to parse JSON from stdout
-            if result.stdout.strip():
-                try:
-                    output_data = json.loads(result.stdout)
-                    if isinstance(output_data, dict):
-                        # Parse decision
-                        if "decision" in output_data:
-                            decision_str = output_data["decision"].lower()
-                            if decision_str == "allow":
-                                hook_result.decision = HookDecision.ALLOW
-                            elif decision_str == "deny":
-                                hook_result.decision = HookDecision.DENY
-                                hook_result.blocked = True
-
-                        # Parse other fields
-                        if "reason" in output_data:
-                            hook_result.reason = str(output_data["reason"])
-                        if "additionalContext" in output_data:
-                            hook_result.additional_context = str(
-                                output_data["additionalContext"]
-                            )
-                        if "continue" in output_data:
-                            if not output_data["continue"]:
-                                hook_result.blocked = True
-
-                except json.JSONDecodeError:
-                    # Not JSON, that's okay - just use stdout as-is
-                    pass
-
-            return hook_result
-
-        except subprocess.TimeoutExpired:
-            return HookResult(
-                success=False,
-                exit_code=-1,
-                error=f"Hook timed out after {hook.timeout} seconds",
-            )
-        except FileNotFoundError as e:
-            return HookResult(
-                success=False,
-                exit_code=-1,
-                error=f"Hook command not found: {e}",
-            )
-        except Exception as e:
-            return HookResult(
-                success=False,
-                exit_code=-1,
-                error=f"Hook execution failed: {e}",
-            )
+        # Sync hooks — route through the persistent runner
+        return self._execute_sync_via_runner(hook, event_json, hook_env)
 
     def execute_all(
         self,

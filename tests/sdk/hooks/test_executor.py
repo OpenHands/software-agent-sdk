@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from openhands.sdk.hooks.config import HookDefinition
-from openhands.sdk.hooks.executor import HookExecutor
+from openhands.sdk.hooks.executor import HookExecutor, PersistentHookRunner
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 from tests.command_utils import python_command
 
@@ -421,3 +421,143 @@ class TestAsyncProcessManager:
 
         # Clean up for test teardown
         process.terminate()
+
+
+class TestPersistentHookRunner:
+    """Tests for the persistent hook runner subprocess."""
+
+    def test_run_echo_command(self):
+        """Runner proxies a simple echo and returns stdout."""
+        runner = PersistentHookRunner()
+        try:
+            resp = runner.run(
+                command="echo hello",
+                cwd=None,
+                env=None,
+                input_data="",
+                timeout=10,
+            )
+            assert resp["exit_code"] == 0
+            assert "hello" in resp["stdout"]
+        finally:
+            runner.close()
+
+    def test_run_receives_stdin(self, tmp_path):
+        """Hook command inside runner receives input_data on its stdin."""
+        runner = PersistentHookRunner()
+        try:
+            resp = runner.run(
+                command=python_command(
+                    "import sys; sys.stdout.write(sys.stdin.read())"
+                ),
+                cwd=str(tmp_path),
+                env=None,
+                input_data='{"key": "value"}',
+                timeout=10,
+            )
+            assert resp["exit_code"] == 0
+            parsed = json.loads(resp["stdout"])
+            assert parsed["key"] == "value"
+        finally:
+            runner.close()
+
+    def test_run_captures_exit_code(self):
+        """Non-zero exit codes are faithfully reported."""
+        runner = PersistentHookRunner()
+        try:
+            resp = runner.run(
+                command=python_command("import sys; sys.exit(2)"),
+                cwd=None,
+                env=None,
+                input_data="",
+                timeout=10,
+            )
+            assert resp["exit_code"] == 2
+        finally:
+            runner.close()
+
+    def test_run_captures_stderr(self):
+        """stderr from the hook command is captured."""
+        runner = PersistentHookRunner()
+        try:
+            resp = runner.run(
+                command=python_command("import sys; sys.stderr.write('oops\\n')"),
+                cwd=None,
+                env=None,
+                input_data="",
+                timeout=10,
+            )
+            assert "oops" in resp["stderr"]
+        finally:
+            runner.close()
+
+    def test_run_timeout_reported(self):
+        """Timed-out commands return timed_out=True."""
+        runner = PersistentHookRunner()
+        try:
+            resp = runner.run(
+                command=python_command("import time; time.sleep(30)"),
+                cwd=None,
+                env=None,
+                input_data="",
+                timeout=1,
+            )
+            assert resp["timed_out"] is True
+            assert resp["exit_code"] == -1
+        finally:
+            runner.close()
+
+    def test_runner_reused_across_calls(self):
+        """The same subprocess handles multiple requests."""
+        runner = PersistentHookRunner()
+        try:
+            runner.run("echo a", cwd=None, env=None, input_data="", timeout=5)
+            pid1 = runner._process.pid  # type: ignore[union-attr]
+            runner.run("echo b", cwd=None, env=None, input_data="", timeout=5)
+            pid2 = runner._process.pid  # type: ignore[union-attr]
+            assert pid1 == pid2, "runner should reuse the same process"
+        finally:
+            runner.close()
+
+    def test_close_terminates_runner(self):
+        """close() shuts down the persistent subprocess."""
+        runner = PersistentHookRunner()
+        runner.run("echo x", cwd=None, env=None, input_data="", timeout=5)
+        proc = runner._process
+        assert proc is not None
+        runner.close()
+        assert proc.poll() is not None
+
+    def test_runner_restarts_after_crash(self):
+        """If the runner process dies, the next call relaunches it."""
+        runner = PersistentHookRunner()
+        try:
+            runner.run("echo first", cwd=None, env=None, input_data="", timeout=5)
+            pid1 = runner._process.pid  # type: ignore[union-attr]
+            # Forcibly kill the runner
+            runner._process.kill()  # type: ignore[union-attr]
+            runner._process.wait()  # type: ignore[union-attr]
+            # Next call should still succeed via restart
+            resp = runner.run(
+                "echo second", cwd=None, env=None, input_data="", timeout=5
+            )
+            assert resp["exit_code"] == 0
+            pid2 = runner._process.pid  # type: ignore[union-attr]
+            assert pid1 != pid2
+        finally:
+            runner.close()
+
+    def test_executor_close_shuts_down_runner(self, tmp_path):
+        """HookExecutor.close() tears down the persistent runner."""
+        executor = HookExecutor(working_dir=str(tmp_path))
+        event = HookEvent(
+            event_type=HookEventType.PRE_TOOL_USE,
+            tool_name="test",
+            session_id="s",
+        )
+        hook = HookDefinition(command="echo ok")
+        executor.execute(hook, event)
+        proc = executor._runner._process
+        assert proc is not None
+        executor.close()
+        assert proc.poll() is not None

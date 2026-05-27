@@ -16,7 +16,7 @@ from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
     create_hook_callback,
 )
-from openhands.sdk.hooks.executor import HookExecutor, HookResult
+from openhands.sdk.hooks.executor import HookExecutor, HookResult, PersistentHookRunner
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 
@@ -29,6 +29,7 @@ __all__ = [
     "HookType",
     "HookExecutor",
     "HookResult",
+    "PersistentHookRunner",
     "HookManager",
     "HookEvent",
     "HookEventType",
