@@ -105,7 +105,7 @@ from openhands.sdk.llm.streaming import (
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
-from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
+from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
@@ -757,15 +757,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Shared helpers for completion / acompletion / responses / aresponses
     # =========================================================================
 
-    def _current_metrics_snapshot(self) -> MetricsSnapshot:
-        """Snapshot current LLM metrics for an :class:`LLMResponse`."""
-        return MetricsSnapshot(
-            model_name=self.metrics.model_name,
-            accumulated_cost=self.metrics.accumulated_cost,
-            max_budget_per_task=self.metrics.max_budget_per_task,
-            accumulated_token_usage=self.metrics.accumulated_token_usage,
-        )
-
     def _make_retry_decorator(
         self,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -785,7 +776,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         message = Message.from_llm_chat_message(first_choice["message"])
         return LLMResponse(
             message=message,
-            metrics=self._current_metrics_snapshot(),
+            metrics=self.metrics.get_snapshot(),
             raw_response=resp,
         )
 
@@ -795,7 +786,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         message = Message.from_llm_responses_output(output_seq)
         return LLMResponse(
             message=message,
-            metrics=self._current_metrics_snapshot(),
+            metrics=self.metrics.get_snapshot(),
             raw_response=resp,
         )
 

@@ -110,6 +110,32 @@ def test_switch_acp_model_persists_authoritative_model(tmp_path):
     assert reloaded.agent.llm.model == "model-b"
 
 
+def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
+    """After a live switch, the model state surfaced on ``ConversationInfo``
+    must reflect the new model, not the stale session-start value.
+
+    Regression for the software-agent-sdk#3347 + #3390 integration: the chip /
+    inline picker reads ``ACPAgent.current_model_id`` (and the persisted
+    ``acp_current_model_id`` hint on cold reads). Without refreshing both on a
+    runtime switch, the chip goes stale exactly when it matters most.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._current_model_id = "model-a"  # what _init captured at session start
+    # Deliberately do NOT pre-seed ``acp_current_model_id`` in agent_state:
+    # an older/custom server may not have reported a model at init, yet a
+    # successful switch is authoritative and must still persist the hint.
+    assert "acp_current_model_id" not in conv.state.agent_state
+
+    conv.switch_acp_model("model-b")
+
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    # Live PrivateAttr (carried onto the persisted agent by the model_copy).
+    assert switched.current_model_id == "model-b"
+    # Persisted hint written unconditionally for cold reads before re-init.
+    assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+
 def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
     """The pre-switch agent must not tear down the shared live session.
 

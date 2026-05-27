@@ -167,6 +167,8 @@ consult each relevant package-level AGENTS.md.
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
 - Public SDK `Field(default=...)` changes are treated separately from removals/structural API breakages: the API breakage workflow should surface them as behavioral compatibility changes, auto-apply the green `release-note-required` label on PRs, and the release workflow should prepend those labeled PRs to generated GitHub release notes.
+- For public SDK `Field(default=...)` changes, keep two views in the API breakage workflow: compare against the latest released PyPI baseline for compatibility reporting, but compare against the PR base ref before syncing the `release-note-required` label or PR comment so unrelated follow-up PRs are not re-labeled for already-merged unreleased defaults.
+
 
 - The SDK API breakage checker compares stringified `Field(...)` values by
   parsing them as Python expressions after escaping literal newlines inside

@@ -44,6 +44,7 @@ from acp.schema import (
 from acp.transports import default_environment
 from pydantic import Field, PrivateAttr, SecretStr, field_serializer
 
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -212,6 +213,46 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _extract_session_models(
+    response: Any,
+) -> tuple[str | None, list[ACPModelInfo] | None]:
+    """Extract the model state off a session response.
+
+    Returns a ``(current_model_id, available_models)`` pair, both best-effort.
+    ``available_models`` is normalized into our own stable :class:`ACPModelInfo`
+    type at this boundary so nothing downstream depends on the vendored
+    ``acp.schema`` shape.
+
+    The second element distinguishes **absent** from **empty** — this matters
+    for resume persistence (preserve the last-known list when the server didn't
+    report one; clear it when the server explicitly says it has none):
+
+    - ``None``  — the (UNSTABLE) ``models`` block was absent from the response
+      (older agent, opted out, or ``load_session`` not carrying it).
+    - ``[]``    — the server *did* report ``models`` but offers no (usable)
+      models this session.
+    - ``[...]`` — the reported models, minus any with an unusable ``model_id``.
+
+    ``getattr`` keeps the helper tolerant of agents that emit a partial
+    structure.
+    """
+    if response is None:
+        return None, None
+    models = getattr(response, "models", None)
+    if models is None:
+        return None, None
+    current = getattr(models, "current_model_id", None)
+    current = current if isinstance(current, str) and current else None
+    raw = getattr(models, "available_models", None) or []
+    # Drop entries without a usable id: an empty/missing ``model_id`` is an
+    # invalid picker option and an unusable ``set_session_model`` target, so we
+    # filter it out rather than surfacing ``model_id=""``.
+    available = [
+        info for info in (ACPModelInfo.from_protocol(m) for m in raw) if info.model_id
+    ]
+    return current, available
 
 
 async def _maybe_set_session_model(
@@ -808,6 +849,28 @@ class ACPAgent(AgentBase):
     _agent_version: str = PrivateAttr(
         default=""
     )  # ACP server version from InitializeResponse
+    # The model the ACP server reported as active for this session, captured
+    # from ``models.currentModelId`` on the new_session / load_session
+    # response.  Overridden by ``self.acp_model`` when the caller explicitly
+    # chose one (either via ``set_session_model`` or via session ``_meta``).
+    # ``None`` when the server doesn't surface model state — the field is
+    # marked UNSTABLE in the ACP spec, so older agents may omit it.
+    #
+    # Kept as a PrivateAttr (not a Pydantic field) because ``AgentBase`` is
+    # frozen and this is per-session runtime state, not config.  The
+    # agent-server lifts it onto ``ConversationInfo`` so the value can cross
+    # the API boundary even though the agent itself doesn't serialize it.
+    _current_model_id: str | None = PrivateAttr(default=None)
+    # ``models.availableModels`` from the same session response, normalized
+    # to our stable ``ACPModelInfo`` type.  Surfaced verbatim via the
+    # ``available_models`` property (and ``ConversationInfo.available_models``)
+    # so clients can render a picker and resolve ``current_model_id`` to a
+    # display label themselves — the SDK does no name curation.
+    # ``None`` encodes "the server didn't report a ``models`` block this launch"
+    # (distinct from ``[]`` = "reported, but no models"); the persistence logic
+    # in ``init_state`` uses that distinction to preserve vs clear the stored
+    # list on resume. The public ``available_models`` property coerces to ``[]``.
+    _available_models: list[ACPModelInfo] | None = PrivateAttr(default=None)
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
@@ -928,6 +991,64 @@ class ACPAgent(AgentBase):
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
 
+    @property
+    def current_model_id(self) -> str | None:
+        """The model the ACP server is currently using for this session.
+
+        Captured from ``models.currentModelId`` on the
+        ``new_session`` / ``load_session`` response when the server surfaces
+        it (UNSTABLE ACP capability), or ``self.acp_model`` when the caller
+        explicitly chose one.  ``None`` for older servers that don't report
+        model state and when no override was set — callers should treat the
+        value as best-effort.
+
+        Note: this is in-process runtime state; it does not round-trip
+        through ``model_dump()``.  Consumers that need to read it across the
+        API boundary should look at ``ConversationInfo.current_model_id``,
+        which the agent-server lifts off the agent into the response.
+        """
+        return self._current_model_id
+
+    @property
+    def available_models(self) -> list[ACPModelInfo]:
+        """Models the ACP server offers for this session.
+
+        Captured verbatim from ``models.availableModels`` on the
+        ``new_session`` / ``load_session`` response (UNSTABLE ACP capability);
+        empty for servers that don't surface it.  Each entry carries the
+        server's ``model_id`` plus an optional ``name``/``description`` —
+        enough for a client to render a model picker and resolve
+        ``current_model_id`` to a display label without any server-side
+        curation.  ``current_model_id`` is the value to pass to
+        ``set_session_model`` to switch.
+
+        Same lifecycle and serialization caveats as ``current_model_id``:
+        in-process runtime state, lifted onto
+        ``ConversationInfo.available_models`` by the agent-server for
+        cross-process consumers. Always a list (the internal ``None``
+        "not-reported" sentinel is coerced to ``[]`` here).
+        """
+        return list(self._available_models or [])
+
+    @property
+    def supports_runtime_model_switch(self) -> bool:
+        """Whether a live, mid-conversation model switch will be attempted.
+
+        Tells a client whether to offer the inline picker's live-switch control.
+        Kept in lockstep with :meth:`set_acp_model`, which refuses the switch
+        only for a *known* provider that declares no support and otherwise
+        attempts it optimistically — so a custom/unknown ACP server that does
+        support ``session/set_model`` isn't needlessly blocked from the picker.
+        ``False`` before a session exists (nothing to switch yet).
+
+        See
+        :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`.
+        """
+        if self._session_id is None:
+            return False
+        provider = detect_acp_provider_by_agent_name(self._agent_name)
+        return provider is None or provider.supports_runtime_model_switch
+
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
 
@@ -968,6 +1089,10 @@ class ACPAgent(AgentBase):
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
         self._installed_suffix = self._render_suffix(state)
+        # A prior session id in agent_state means we may be resuming; used by
+        # ``truly_resumed`` below to decide whether the model state reported
+        # for this launch describes the resumed session or a fresh one.
+        prior_session_id = state.agent_state.get("acp_session_id")
         # ``acp_suffix_installed`` is persisted by
         # ``_commit_suffix_installation`` only after the first prompt has
         # actually returned successfully, so on resume we know whether the
@@ -988,6 +1113,15 @@ class ACPAgent(AgentBase):
             self._cleanup()
             raise
 
+        # A successful resume keeps the prior id; cwd mismatch and load_session
+        # failure both fall back to ``new_session``, which mints a fresh one.
+        # The session-id comparison is the only authoritative signal — the
+        # decision happens inside ``_start_acp_server`` and isn't otherwise
+        # observable here.
+        truly_resumed = (
+            prior_session_id is not None and self._session_id == prior_session_id
+        )
+
         self._initialized = True
 
         # Persist agent info + the ACP session id + its cwd in agent_state.
@@ -1000,13 +1134,65 @@ class ACPAgent(AgentBase):
         # in a different working directory would at best silently miss the
         # prior session and at worst load a different session that happens to
         # exist at the new cwd.
-        state.agent_state = {
+        # Persist the model state the ACP server reported for this session
+        # (current id + the available_models list) into ``agent_state`` for
+        # the same reason as ``acp_session_id`` / ``acp_session_cwd``: it's
+        # per-session state that needs to survive agent-server restarts and
+        # cold reads of the conversation list, but it lives on the frozen
+        # ACPAgent as a PrivateAttr (so doesn't serialize via ``model_dump``).
+        # The list rides along so clients can still resolve the current id to a
+        # display label (and render a picker) on cold reads; without it,
+        # ``ConversationInfo.current_model_id`` / ``available_models`` would
+        # only be populated while the subprocess is alive — i.e. the chip would
+        # vanish from idle / restored conversations in the sidebar.
+        #
+        # On resume, ``load_session`` may not surface ``models`` (the
+        # capability is UNSTABLE, and some servers only attach it to
+        # ``new_session`` responses) — in that case ``_current_model_id`` is
+        # ``None`` here even though we *did* know the model on the previous
+        # launch.  Preserve the persisted ``agent_state`` values for that
+        # case so the chip survives the resume.  But when ``_start_acp_server``
+        # fell back to a fresh ``new_session`` (cwd mismatch or load_session
+        # failure) and the response also omits ``models``, the persisted
+        # values describe the *previous* session — clear them so we don't
+        # mislabel the new one.
+        new_agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
             "acp_session_id": self._session_id,
             "acp_session_cwd": self._working_dir,
+            # Static provider capability — persisted so cold reads of the
+            # conversation list can tell the picker whether to offer live
+            # switching without re-detecting the provider server-side.
+            "acp_supports_runtime_model_switch": self.supports_runtime_model_switch,
         }
+        # ``current_model_id`` is known whenever the caller forced ``acp_model``
+        # (e.g. a prior runtime switch) or the server reported one, even on a
+        # resume whose ``load_session`` omitted the UNSTABLE ``models`` block.
+        if self._current_model_id is not None:
+            new_agent_state["acp_current_model_id"] = self._current_model_id
+        elif not truly_resumed:
+            new_agent_state.pop("acp_current_model_id", None)
+        # The list is gated *independently* on whether the server actually
+        # reported a ``models`` block this launch (``None`` = absent), NOT on
+        # whether the list is non-empty — so we can tell "server didn't report"
+        # apart from "server reported it has no models":
+        #   - reported (incl. an explicit ``[]``): overwrite, so a server that
+        #     dropped its models clears the now-stale picker options.
+        #   - not reported on a true resume: preserve the persisted list (the
+        #     UNSTABLE block is often omitted from ``load_session`` responses)
+        #     so the picker survives the restore even though ``current_model_id``
+        #     may be set from a forced ``acp_model``.
+        #   - not reported on a fresh (non-resumed) replacement: clear, since the
+        #     persisted list describes the previous session.
+        if self._available_models is not None:
+            new_agent_state["acp_available_models"] = [
+                m.model_dump() for m in self._available_models
+            ]
+        elif not truly_resumed:
+            new_agent_state.pop("acp_available_models", None)
+        state.agent_state = new_agent_state
 
         if self._installed_suffix:
             self._suffix_install_state = (
@@ -1134,7 +1320,9 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> tuple[str, str, str]:
+        async def _init() -> tuple[
+            str, str, str, str | None, list[ACPModelInfo] | None
+        ]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1228,14 +1416,24 @@ class ACPAgent(AgentBase):
             # subprocess crash) propagate — there is no working connection to
             # fall back on, and the outer init_state handler cleans up.
             session_id: str | None = None
+            # Model state reported by whichever session call we end up making
+            # (new_session for fresh, load_session for resume). Defaults stand
+            # for agents that don't surface the UNSTABLE ``models`` field.
+            reported_model_id: str | None = None
+            # ``None`` until a session call reports a ``models`` block; stays
+            # ``None`` for servers that never surface it (preserve-on-resume).
+            available_models: list[ACPModelInfo] | None = None
             if prior_session_id is not None:
                 try:
-                    await conn.load_session(
+                    load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
                         mcp_servers=[],
                     )
                     session_id = prior_session_id
+                    reported_model_id, available_models = _extract_session_models(
+                        load_response
+                    )
                     logger.info(
                         "Resumed ACP session: %s (cwd=%s)",
                         session_id,
@@ -1256,6 +1454,7 @@ class ACPAgent(AgentBase):
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
+                reported_model_id, available_models = _extract_session_models(response)
                 # Initial-selection protocol call for providers that use it
                 # (codex-acp, gemini-cli); no-op for claude, which selected its
                 # model via the _meta above.
@@ -1278,6 +1477,12 @@ class ACPAgent(AgentBase):
                     self.acp_model,
                 )
 
+            # Resolve the model the agent will actually use.  If the caller
+            # forced one via ``acp_model``, trust that; otherwise fall back to
+            # whatever the server reported in ``models.currentModelId``.  Older
+            # agents that don't surface the field leave it ``None``.
+            current_model_id = self.acp_model or reported_model_id
+
             # Resolve the permission mode.  Known providers each have their
             # own mode ID (bypassPermissions, full-access, yolo …).
             # Unknown/custom servers get None — skip the call rather than
@@ -1290,14 +1495,24 @@ class ACPAgent(AgentBase):
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
-            return session_id, agent_name, agent_version
+            return (
+                session_id,
+                agent_name,
+                agent_version,
+                current_model_id,
+                available_models,
+            )
 
         # _conn / _process / _filtered_reader are assigned inside _init() (right
         # after creation) so a mid-init failure can be cleaned up; only the
-        # success-only fields are returned here.
-        self._session_id, self._agent_name, self._agent_version = (
-            self._executor.run_async(_init)
-        )
+        # success-only fields (including the resolved model state) are returned.
+        (
+            self._session_id,
+            self._agent_name,
+            self._agent_version,
+            self._current_model_id,
+            self._available_models,
+        ) = self._executor.run_async(_init)
         self._working_dir = working_dir
 
     def _reset_client_for_turn(
@@ -2002,6 +2217,13 @@ class ACPAgent(AgentBase):
         self.llm.metrics.model_name = model
         if self.llm.metrics.accumulated_token_usage is not None:
             self.llm.metrics.accumulated_token_usage.model = model
+        # Refresh the surfaced model state so the chip/picker
+        # (``ConversationInfo.current_model_id``) reflects the switch instead
+        # of the stale session-start value. ``_current_model_id`` is a
+        # PrivateAttr, so ``switch_acp_model``'s shallow ``model_copy`` carries
+        # this updated value onto the persisted agent. ``available_models`` is
+        # unchanged by a model switch, so it is intentionally left alone.
+        self._current_model_id = model
         logger.info(
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,

@@ -789,6 +789,18 @@ class LocalConversation(BaseConversation):
             # persisted state agree on the switched model.
             self.agent = new_agent
             self._state.agent = new_agent
+            # Keep the persisted model hint in sync with the switch. The live
+            # agent's ``current_model_id`` (a PrivateAttr) already reflects the
+            # new model and wins on warm reads, but cold list reads after a
+            # process restart fall back to ``agent_state`` — which would
+            # otherwise still name the pre-switch model until the next resume.
+            # Write unconditionally: a successful switch is authoritative even
+            # for an older/custom server that reported no ``models`` at init
+            # (so the key may not exist yet).
+            self._state.agent_state = {
+                **self._state.agent_state,
+                "acp_current_model_id": model,
+            }
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
