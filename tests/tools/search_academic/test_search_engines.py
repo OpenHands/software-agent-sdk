@@ -1,28 +1,22 @@
-"""Integration tests for academic search engines.
-
-These tests verify that each search engine can successfully
-connect to and retrieve results from its respective API.
-
-Run with: pytest tests/tools/search_academic/test_search_engines.py -v
-"""
+"""Integration tests for academic search engines."""
 
 import os
 import sys
 
-# Add the openhands-tools package to path
-_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-sys.path.insert(0, os.path.join(_repo_root, "openhands-tools"))
-
 import pytest
 
-from openhands.tools.search_academic.engines import (
-    ScholarSearchEngine,
+
+_repo_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+)
+sys.path.insert(0, os.path.join(_repo_root, "openhands-tools"))
+
+from openhands.tools.search_academic.engines import (  # noqa: E402
     ArxivSearchEngine,
+    ScholarSearchEngine,
     SerperSearchEngine,
 )
-
-
-from tests.tools.search_academic.conftest import require_env
+from tests.tools.search_academic.conftest import require_env  # noqa: E402
 
 
 class TestScholarSearchEngine:
@@ -30,33 +24,30 @@ class TestScholarSearchEngine:
 
     @pytest.mark.asyncio
     async def test_search_with_api_key(self):
-        """Test that Scholar search returns non-empty results with API key."""
         api_key = require_env("SEMANTIC_SCHOLAR_API_KEY")
-
         engine = ScholarSearchEngine(api_key=api_key, timeout=30)
         response = await engine.search("machine learning", max_results=5)
 
         assert response.engine == "scholar"
-        assert response.total_found > 0, "Semantic Scholar API should return results"
+        assert response.total_found > 0
         assert len(response.results) > 0
-        print(f"\n✓ Scholar returned {len(response.results)} results")
 
     @pytest.mark.asyncio
     async def test_search_result_structure(self):
-        """Test that search results have required fields."""
+        """Search results must have title, url, snippet (abstract), and pdf_url."""
         api_key = require_env("SEMANTIC_SCHOLAR_API_KEY")
-
         engine = ScholarSearchEngine(api_key=api_key, timeout=30)
         response = await engine.search("transformer attention", max_results=3)
 
-        assert response.total_found > 0, "Semantic Scholar API should return results"
-        assert len(response.results) > 0
+        assert response.total_found > 0
         result = response.results[0]
-
         assert result.title
         assert result.url
         assert result.source == "scholar"
-        print(f"\n✓ Result structure valid: {result.title[:50]}...")
+        assert result.snippet and len(result.snippet) > 50, (
+            f"Expected snippet to include abstract, got: {result.snippet!r}"
+        )
+        assert hasattr(result, "pdf_url")
 
 
 class TestArxivSearchEngine:
@@ -64,30 +55,30 @@ class TestArxivSearchEngine:
 
     @pytest.mark.asyncio
     async def test_search_returns_results(self):
-        """Test that arXiv search returns non-empty results."""
         engine = ArxivSearchEngine(timeout=30)
         response = await engine.search("machine learning", max_results=5)
 
         assert response.engine == "arxiv"
-        assert response.total_found > 0, "arXiv API should return results"
+        assert response.total_found > 0
         assert len(response.results) > 0
-        print(f"\n✓ ArXiv search completed, total found: {response.total_found}")
-        print(f"  Results count: {len(response.results)}")
 
     @pytest.mark.asyncio
     async def test_search_result_structure(self):
-        """Test that search results have required fields."""
+        """Search results must have title, url (abs page), snippet, and pdf_url."""
         engine = ArxivSearchEngine(timeout=30)
         response = await engine.search("neural networks", max_results=3)
 
-        assert response.total_found > 0, "arXiv API should return results"
-        assert len(response.results) > 0
+        assert response.total_found > 0
         result = response.results[0]
         assert result.title
-        assert result.url
         assert result.source == "arxiv"
-        print(f"\n✓ ArXiv returned {len(response.results)} parsed results")
-        print(f"  First result: {result.title[:50]}...")
+        assert result.snippet, "Expected non-empty snippet (arXiv summary)"
+        assert result.url and "arxiv.org/abs/" in result.url, (
+            f"Expected abs page URL, got: {result.url!r}"
+        )
+        assert result.pdf_url and "arxiv.org/pdf/" in result.pdf_url, (
+            f"Expected PDF URL, got: {result.pdf_url!r}"
+        )
 
 
 class TestSerperSearchEngine:
@@ -95,16 +86,13 @@ class TestSerperSearchEngine:
 
     @pytest.mark.asyncio
     async def test_search_with_api_key(self):
-        """Test Serper search with valid API key."""
         api_key = require_env("SERPER_API_KEY")
-
         engine = SerperSearchEngine(api_key=api_key, timeout=30)
         response = await engine.search("machine learning", max_results=5)
 
         assert response.engine == "serper"
-        assert response.total_found > 0, "Serper API should return results with valid API key"
+        assert response.total_found > 0
         assert len(response.results) > 0
-        print(f"\n✓ Serper returned {len(response.results)} results")
 
 
 if __name__ == "__main__":

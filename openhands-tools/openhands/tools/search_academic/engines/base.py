@@ -237,7 +237,10 @@ class ScholarSearchEngine(BaseSearchEngine):
             params = {
                 "query": query,
                 "limit": max_results,
-                "fields": "paperId,title,url,authors,publicationDate,abstract",
+                "fields": (
+                    "paperId,title,url,authors,publicationDate,"
+                    "abstract,openAccessPdf,isOpenAccess"
+                ),
             }
 
             headers = {"x-api-key": self.api_key}
@@ -281,11 +284,14 @@ class ScholarSearchEngine(BaseSearchEngine):
         results = []
         for item in raw_response.get("data", []):
             authors = [a.get("name", "") for a in item.get("authors", [])]
+            open_access = item.get("openAccessPdf") or {}
             result = SearchResult(
                 title=item.get("title", ""),
                 url=f"https://semanticscholar.org/paper/{item.get('paperId', '')}",
                 source="scholar",
+                snippet=item.get("abstract"),
                 authors=authors,
+                pdf_url=open_access.get("url"),
                 relevance_score=0.85,
             )
             results.append(result)
@@ -378,11 +384,10 @@ class ArxivSearchEngine(BaseSearchEngine):
                 title = entry.find("atom:title", ArxivSearchEngine.NS)
                 summary = entry.find("atom:summary", ArxivSearchEngine.NS)
                 published = entry.find("atom:published", ArxivSearchEngine.NS)
-                link = entry.find("atom:link[@title='pdf']", ArxivSearchEngine.NS)
-                if link is None:
-                    link = entry.find(
-                        "atom:link[@rel='alternate']", ArxivSearchEngine.NS
-                    )
+                pdf_link = entry.find("atom:link[@title='pdf']", ArxivSearchEngine.NS)
+                abs_link = entry.find(
+                    "atom:link[@rel='alternate']", ArxivSearchEngine.NS
+                )
 
                 authors = []
                 for author in entry.findall(
@@ -399,15 +404,18 @@ class ArxivSearchEngine(BaseSearchEngine):
                     except ValueError:
                         pass
 
+                pdf_url = pdf_link.get("href", "") if pdf_link is not None else ""
+                abs_url = abs_link.get("href", "") if abs_link is not None else ""
                 result = SearchResult(
                     title=title.text.strip()
                     if title is not None and title.text
                     else "",
-                    url=link.get("href", "") if link is not None else "",
+                    url=abs_url,
                     source="arxiv",
                     snippet=summary.text.strip()[:500]
                     if summary is not None and summary.text
                     else None,
+                    pdf_url=pdf_url,
                     authors=authors,
                     published_date=parsed_date,
                     relevance_score=0.8,

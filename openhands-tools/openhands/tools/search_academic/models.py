@@ -1,7 +1,6 @@
 """Data models for academic search tools."""
 
 from datetime import date
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -15,15 +14,19 @@ class SearchResult(BaseModel):
         ...,
         description="Search engine source (serper, scholar, arxiv, pubmed, openalex)",
     )
-    snippet: Optional[str] = Field(
+    snippet: str | None = Field(
         default=None,
         description="Short snippet or abstract",
+    )
+    pdf_url: str | None = Field(
+        default=None,
+        description="Direct PDF download link when available (e.g. openAccessPdf.url)",
     )
     authors: list[str] = Field(
         default_factory=list,
         description="List of author names",
     )
-    published_date: Optional[date] = Field(
+    published_date: date | None = Field(
         default=None,
         description="Publication date",
     )
