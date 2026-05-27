@@ -2270,10 +2270,10 @@ class TestEventServiceClose:
         """EventService.run() must use the thread-pool executor when the
         agent only implements sync step() (no astep() override), even if the
         conversation overrides arun().  ``LocalConversation`` always overrides
-        arun(), so the conversation-level guard alone would route ACP/custom
-        agents through the native async path, running their sync step() in a
-        worker thread while arun() holds the state lock on the event-loop
-        thread (B5)."""
+        arun(), so the conversation-level guard alone would route sync-only
+        custom agents through the native async path, running their sync
+        step() in a worker thread while arun() holds the state lock on the
+        event-loop thread (B5)."""
         from openhands.sdk.conversation.base import BaseConversation
 
         run_called = False

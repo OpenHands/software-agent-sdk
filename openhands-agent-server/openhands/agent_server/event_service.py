@@ -741,8 +741,8 @@ class EventService:
         ``arun()`` coroutine so LLM I/O does not tie up a thread-pool worker.
         For conversations that do not expose ``arun()`` (e.g., custom
         subclasses) or whose agent only implements sync ``step()`` (no
-        ``astep()`` override, e.g. ACPAgent), the synchronous ``run()`` is
-        executed in the thread pool as before.
+        ``astep()`` override), the synchronous ``run()`` is executed
+        in the thread pool as before.
 
         Raises:
             ValueError: If the service is inactive or conversation is already running.
@@ -783,8 +783,8 @@ class EventService:
                     #    on the event loop.
                     #  • agent override – ``LocalConversation`` always overrides
                     #    ``arun()``, but an agent without an ``astep()`` override
-                    #    (e.g. ACPAgent) runs sync ``step()`` in a worker thread;
-                    #    route it through sync ``run()`` instead.
+                    #    runs sync ``step()`` in a worker thread; route it
+                    #    through sync ``run()`` instead.
                     arun = getattr(conversation, "arun", None)
                     has_native_arun = (
                         arun is not None
