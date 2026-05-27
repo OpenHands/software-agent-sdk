@@ -38,5 +38,7 @@ TMUX_SOCKET_NAME: Final[str] = "openhands"
 
 # Tmux session dimensions (columns x rows). Keep the viewport wide enough for
 # common command output while leaving scrollback retention to HISTORY_LIMIT.
+# Output wider than TMUX_SESSION_WIDTH columns will wrap; this is an accepted
+# tradeoff to avoid the oversized 1000x1000 virtual terminal grid.
 TMUX_SESSION_WIDTH: Final[int] = 256
 TMUX_SESSION_HEIGHT: Final[int] = 200
