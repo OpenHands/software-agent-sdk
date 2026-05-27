@@ -1070,7 +1070,11 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
         finally:
-            self._cancel_token = None
+            # A cancelled token must stay observable: interrupted tool calls run
+            # in worker threads that can outlive arun() and still poll it. A
+            # fresh token is created on the next run().
+            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
+                self._cancel_token = None
             self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
