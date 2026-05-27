@@ -6,7 +6,18 @@ import time
 
 import pytest
 
+from openhands.tools.terminal.constants import (
+    HISTORY_LIMIT,
+    TMUX_SESSION_HEIGHT,
+    TMUX_SESSION_WIDTH,
+)
 from openhands.tools.terminal.terminal.tmux_pane_pool import TmuxPanePool
+
+
+def test_tmux_session_viewport_is_smaller_than_scrollback():
+    assert TMUX_SESSION_WIDTH <= 256
+    assert TMUX_SESSION_HEIGHT <= 200
+    assert HISTORY_LIMIT >= 10_000
 
 
 @pytest.fixture
