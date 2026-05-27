@@ -1088,6 +1088,32 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_interrupt(self, mock_ws_client):
+        """interrupt() must POST to /interrupt, not degrade to /pause."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.interrupt()
+
+        posts = [
+            call[0][1]
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST"
+        ]
+        assert any(
+            f"/api/conversations/{conversation_id}/interrupt" in url for url in posts
+        ), "Should have made a POST call to interrupt endpoint"
+        assert not any(
+            f"/api/conversations/{conversation_id}/pause" in url for url in posts
+        ), "interrupt() must not degrade to the pause endpoint"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_update_secrets(self, mock_ws_client):
         """Test updating secrets."""
         # Setup mocks

@@ -1230,6 +1230,13 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/pause",
         )
 
+    def interrupt(self) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/interrupt",
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 

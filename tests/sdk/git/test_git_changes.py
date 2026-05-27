@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
@@ -212,8 +212,6 @@ def test_get_changes_in_repo_staged_and_unstaged():
 
 def test_get_changes_in_repo_non_git_directory():
     """Test get_changes_in_repo with a non-git directory."""
-    from openhands.sdk.git.exceptions import GitRepositoryError
-
     with tempfile.TemporaryDirectory() as temp_dir:
         # Don't initialize git repo
         (Path(temp_dir) / "file.txt").write_text("Content")
@@ -224,8 +222,6 @@ def test_get_changes_in_repo_non_git_directory():
 
 def test_get_changes_in_repo_nonexistent_directory():
     """Test get_changes_in_repo with a nonexistent directory."""
-    from openhands.sdk.git.exceptions import GitRepositoryError
-
     # The function will raise an exception for nonexistent directories
     with pytest.raises(GitRepositoryError):
         get_changes_in_repo("/nonexistent/directory")
@@ -382,11 +378,37 @@ def test_get_git_changes_skips_vanished_nested_repo():
         ):
             changes = get_git_changes(temp_dir)
 
-        paths = {str(c.path) for c in changes}
+        paths = {c.path.as_posix() for c in changes}
         assert "main.txt" in paths
         assert "goodrepo/nested.txt" in paths
         # vanished repo should be skipped, not crash
         assert all("vanished/" not in p for p in paths)
+
+
+def test_get_changes_in_repo_rejects_broken_gitfile():
+    """A .git file is not enough if git cannot resolve it."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+
+        with pytest.raises(GitRepositoryError):
+            get_changes_in_repo(temp_dir)
+
+
+def test_get_git_changes_skips_broken_nested_gitfile():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        nested = Path(temp_dir) / "broken"
+        nested.mkdir()
+        (nested / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+        (nested / "nested.txt").write_text("nested file")
+
+        changes = get_git_changes(temp_dir)
+
+        paths = {c.path.as_posix() for c in changes}
+        assert "main.txt" in paths
+        assert all("broken/" not in p for p in paths)
 
 
 def test_git_changes_with_binary_files():

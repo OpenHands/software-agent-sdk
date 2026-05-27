@@ -1308,6 +1308,48 @@ class TestEventServiceSaveMeta:
         loaded = StoredConversation.model_validate_json(meta_file.read_text())
         assert loaded.updated_at == original_updated_at
 
+    @pytest.mark.asyncio
+    async def test_switch_acp_model_persists_to_meta(self, tmp_path):
+        """switch_acp_model mirrors the new model into meta.json.
+
+        start() rebuilds the runtime agent from meta.json (self.stored.agent),
+        and ConversationState.create() copies that agent over the persisted
+        base_state.json on resume. So the switched model must also be written
+        to meta.json, otherwise a restart silently reverts to the old model.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stand in for a live conversation; the protocol-level switch is
+        # covered elsewhere — here we only assert the meta.json mirroring.
+        service._conversation = MagicMock()
+
+        await service.switch_acp_model("new-model")
+
+        # Live switch was delegated to the conversation...
+        service._conversation.switch_acp_model.assert_called_once_with("new-model")
+        # ...the in-memory stored agent was updated...
+        assert isinstance(service.stored.agent, ACPAgent)
+        assert service.stored.agent.acp_model == "new-model"
+        # ...and the new model was persisted to meta.json so it survives a
+        # restart.
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert isinstance(loaded.agent, ACPAgent)
+        assert loaded.agent.acp_model == "new-model"
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""

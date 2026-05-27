@@ -34,7 +34,11 @@ class TestACPProviderInfo:
         assert info.base_url_env_var == "ANTHROPIC_BASE_URL"
         assert info.default_session_mode == "bypassPermissions"
         assert "claude-agent" in info.agent_name_patterns
+        # claude-agent-acp selects its *initial* model via _meta (session_meta_key),
+        # so it does NOT use set_session_model at session creation ...
         assert info.supports_set_session_model is False
+        # ... but it DOES support session/set_model for mid-conversation switches.
+        assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "claude-opus-4-7"
         assert any(m.id == "claude-opus-4-7" for m in info.available_models)
@@ -49,6 +53,7 @@ class TestACPProviderInfo:
         assert info.default_session_mode == "full-access"
         assert "codex-acp" in info.agent_name_patterns
         assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
         assert info.default_model == "gpt-5.5/medium"
         assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
@@ -63,6 +68,7 @@ class TestACPProviderInfo:
         assert info.default_session_mode == "yolo"
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
+        assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
         assert info.default_model == "auto-gemini-2.5"
         assert any(m.id == "auto-gemini-2.5" for m in info.available_models)
