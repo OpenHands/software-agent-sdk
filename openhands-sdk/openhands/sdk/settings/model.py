@@ -433,7 +433,7 @@ def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     persisted payloads carried ``agent_kind: 'llm'``. The two classes are
     field-compatible (``LLMAgentSettings`` is a subclass of
     ``OpenHandsAgentSettings`` that only narrows the discriminator literal),
-    and ``LLMAgentSettings`` is scheduled for removal in v1.24.0. Rewriting
+    and ``LLMAgentSettings`` is scheduled for removal in v1.25.0. Rewriting
     the discriminator on read lets callers that explicitly validate as
     ``OpenHandsAgentSettings`` (the canonical class) accept legacy data
     without losing any fields.
@@ -1260,7 +1260,7 @@ class LLMAgentSettings(OpenHandsAgentSettings):
 
     Use :class:`OpenHandsAgentSettings` for all new code.
 
-    Scheduled for removal in v1.24.0.
+    Scheduled for removal in v1.25.0.
     """
 
     # Keep agent_kind as Literal["llm"] so the API-breakage checker sees no
