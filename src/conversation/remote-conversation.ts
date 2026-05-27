@@ -311,6 +311,17 @@ export class RemoteConversation implements IConversation {
   }
 
   /**
+   * Switch the model of a running ACP conversation in place (the ACP analog of
+   * {@link switchLlm}). Calls the wrapper's `session/set_model` on the live
+   * session with context preserved. Only valid once the session exists — the
+   * server returns 409 before the first message and 400 for non-ACP
+   * conversations.
+   */
+  async switchAcpModel(model: string): Promise<void> {
+    await this.client.post(`/api/conversations/${this.id}/switch_acp_model`, { model });
+  }
+
+  /**
    * Fork the current conversation and return a new RemoteConversation instance.
    */
   async fork(

@@ -285,4 +285,33 @@ describe('Deterministic API Integration Tests', () => {
     },
     config.testTimeout
   );
+
+  it(
+    'switchAcpModel reaches the route and rejects a non-ACP conversation with 400',
+    async () => {
+      // Contract guard for switchAcpModel against a real agent-server. The
+      // route POST /api/conversations/{id}/switch_acp_model was added in
+      // software-agent-sdk #3390; a non-ACP conversation exercises it without
+      // ACP credentials or a real model switch. A 400 (not a 404) proves the
+      // route exists on the pinned image AND that the client targets the right
+      // path/body — catching client<->server contract drift the mocked unit
+      // tests cannot.
+      const conversation = await manager.createConversation(createDummyAgent(), {
+        workingDir: config.agentWorkspaceDir,
+      });
+      try {
+        let status: number | undefined;
+        try {
+          await conversation.switchAcpModel('claude-haiku-4-5');
+        } catch (error) {
+          expect(error).toBeInstanceOf(HttpError);
+          status = (error as HttpError).status;
+        }
+        expect(status).toBe(400);
+      } finally {
+        await manager.deleteConversation(conversation.id).catch(() => undefined);
+      }
+    },
+    config.testTimeout
+  );
 });

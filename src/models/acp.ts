@@ -49,8 +49,16 @@ export interface ACPProviderInfo {
   readonly default_session_mode: string;
   /** Lowercase substring fragments matched against the runtime agent name. */
   readonly agent_name_patterns: readonly string[];
-  /** `true` if this provider uses the `set_session_model` protocol call. */
+  /**
+   * `true` if this provider selects its *initial* model via the
+   * `set_session_model` protocol call (rather than session `_meta`).
+   */
   readonly supports_set_session_model: boolean;
+  /**
+   * `true` if this provider supports `set_session_model` for *runtime*,
+   * mid-conversation switching (the capability `switchAcpModel` relies on).
+   */
+  readonly supports_runtime_model_switch: boolean;
   /** Top-level `_meta` key for model selection, or `null`. */
   readonly session_meta_key: string | null;
   /**
