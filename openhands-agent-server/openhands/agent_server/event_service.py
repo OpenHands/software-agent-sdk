@@ -740,8 +740,9 @@ class EventService:
         immediately.  When possible, the conversation is driven via its native
         ``arun()`` coroutine so LLM I/O does not tie up a thread-pool worker.
         For conversations that do not expose ``arun()`` (e.g., custom
-        subclasses), the synchronous ``run()`` is executed in the thread pool as
-        before.
+        subclasses) or whose agent only implements sync ``step()`` (no
+        ``astep()`` override), the synchronous ``run()`` is executed
+        in the thread pool as before.
 
         Raises:
             ValueError: If the service is inactive or conversation is already running.
@@ -773,19 +774,23 @@ class EventService:
                     # loop is free during LLM I/O.  Fall back to thread-pool
                     # execution for backward compatibility.
                     #
-                    # Both guards are required:
+                    # All guards are required:
                     #  • iscoroutinefunction – filters out non-async objects
                     #    (e.g. MagicMock in tests).
-                    #  • override check – BaseConversation defines a default
-                    #    ``async def arun()`` that delegates to sync ``run()``,
-                    #    so iscoroutinefunction alone is always True for real
-                    #    subclasses.  We detect an *actual* override to avoid
-                    #    running a sync-only subclass on the event loop.
+                    #  • conversation override – BaseConversation's default
+                    #    ``arun()`` delegates to sync ``run()``, so we require an
+                    #    *actual* override to avoid running a sync-only subclass
+                    #    on the event loop.
+                    #  • agent override – ``LocalConversation`` always overrides
+                    #    ``arun()``, but an agent without an ``astep()`` override
+                    #    runs sync ``step()`` in a worker thread; route it
+                    #    through sync ``run()`` instead.
                     arun = getattr(conversation, "arun", None)
                     has_native_arun = (
                         arun is not None
                         and asyncio.iscoroutinefunction(arun)
                         and type(conversation).arun is not BaseConversation.arun
+                        and type(conversation.agent).astep is not AgentBase.astep
                     )
                     if has_native_arun:
                         await conversation.arun()
@@ -910,6 +915,29 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_security_analyzer, security_analyzer
         )
+
+    async def switch_acp_model(self, model: str) -> None:
+        """Switch the model on a running ACP conversation, mid-conversation.
+
+        Runs the (blocking) protocol-level ``session/set_model`` round-trip in a
+        worker thread, then mirrors the new model into ``meta.json`` so the
+        switch survives an agent-server restart: ``start()`` rebuilds the agent
+        from ``self.stored.agent`` and ``ConversationState.create()`` copies
+        that over the persisted base_state.json on resume. Only ``acp_model``
+        needs updating — ``model_post_init`` re-derives the sentinel
+        ``llm.model`` on reload.
+        """
+        if self._conversation is None:
+            raise RuntimeError(
+                "Conversation is not active; it has not been started or has "
+                "been closed."
+            )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
+        self.stored = self.stored.model_copy(
+            update={"agent": self.stored.agent.model_copy(update={"acp_model": model})}
+        )
+        await self.save_meta()
 
     async def close(self):
         if self._lease_task is not None:

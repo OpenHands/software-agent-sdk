@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk import LLM
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
@@ -182,6 +183,54 @@ class _ConversationInfoBase(BaseModel):
         description=(
             "Key-value tags for the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters."
+        ),
+    )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the agent is actually using for this session. For ACP "
+            "agents, this is lifted off ``ACPAgent.current_model_id`` "
+            "(populated from the ``models.currentModelId`` field on the "
+            "ACP session response, or from ``acp_model`` when the caller "
+            "forced an override). May be an opaque alias (e.g. "
+            'claude-agent-acp\'s ``"default"``); match it against '
+            "``available_models`` to get a display label. ``None`` for older "
+            "ACP servers that don't surface the field, or while the agent is "
+            "still initializing. Native OpenHands agents leave this ``None`` — "
+            "consumers should read ``agent.llm.model`` for those."
+        ),
+    )
+    available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            "Models the ACP server offers for this session, lifted off "
+            "``ACPAgent.available_models`` (the ``models.availableModels`` "
+            "field on the ACP session response). Each entry carries a "
+            "``model_id`` plus an optional ``name``/``description``. Surfaced "
+            "verbatim so clients can render a model picker and resolve "
+            "``current_model_id`` to a display label themselves — the server "
+            "does no name curation. Empty for ACP servers that don't surface "
+            "the (UNSTABLE) capability and for native OpenHands agents. "
+            "Client contract: ``current_model_id`` is NOT guaranteed to be a "
+            "member — a forced ``acp_model`` override may name a model absent "
+            "from the list — so treat a miss as 'show the raw id'. Some "
+            "entries are opaque aliases whose human identity lives in "
+            '``description`` (e.g. claude-agent-acp\'s ``"default"`` -> '
+            '``"Opus 4.7 with 1M context · ..."``).'
+        ),
+    )
+    supports_runtime_model_switch: bool = Field(
+        default=False,
+        description=(
+            "Whether a live, mid-conversation model switch (via "
+            "``session/set_model``) will be attempted for this conversation — "
+            "tells the inline picker whether to offer a live-switch control. "
+            "Mirrors the SDK's switch gate: ``True`` for known switch-capable "
+            "providers; ``True`` for unknown/custom ACP servers too, since "
+            "OpenHands attempts the switch optimistically rather than refusing "
+            "(a rejection then surfaces as an error). ``False`` for native "
+            "OpenHands agents, for a known provider that declares no support, "
+            "and before the conversation has started a session."
         ),
     )
 

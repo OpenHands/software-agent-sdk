@@ -22,7 +22,7 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import Subscriber
-from openhands.sdk import LLM, Agent, Conversation, Message
+from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -1308,6 +1308,48 @@ class TestEventServiceSaveMeta:
         loaded = StoredConversation.model_validate_json(meta_file.read_text())
         assert loaded.updated_at == original_updated_at
 
+    @pytest.mark.asyncio
+    async def test_switch_acp_model_persists_to_meta(self, tmp_path):
+        """switch_acp_model mirrors the new model into meta.json.
+
+        start() rebuilds the runtime agent from meta.json (self.stored.agent),
+        and ConversationState.create() copies that agent over the persisted
+        base_state.json on resume. So the switched model must also be written
+        to meta.json, otherwise a restart silently reverts to the old model.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        conv_dir = tmp_path / stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Stand in for a live conversation; the protocol-level switch is
+        # covered elsewhere — here we only assert the meta.json mirroring.
+        service._conversation = MagicMock()
+
+        await service.switch_acp_model("new-model")
+
+        # Live switch was delegated to the conversation...
+        service._conversation.switch_acp_model.assert_called_once_with("new-model")
+        # ...the in-memory stored agent was updated...
+        assert isinstance(service.stored.agent, ACPAgent)
+        assert service.stored.agent.acp_model == "new-model"
+        # ...and the new model was persisted to meta.json so it survives a
+        # restart.
+        loaded = StoredConversation.model_validate_json(
+            (conv_dir / "meta.json").read_text()
+        )
+        assert isinstance(loaded.agent, ACPAgent)
+        assert loaded.agent.acp_model == "new-model"
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""
@@ -1982,6 +2024,17 @@ class TestSearchEventsBlockedByRunLoop:
         )
 
 
+class _SyncOnlyAgent(AgentBase):
+    """Agent that only implements sync step() (no astep override).
+
+    Defined at module level (not inside a test) because ``AgentBase`` is a
+    discriminated-union member and local classes cannot be registered.
+    """
+
+    def step(self, conversation, on_event, on_token=None):
+        pass
+
+
 class TestEventServiceClose:
     """Tests for EventService.close() awaiting conversation teardown."""
 
@@ -2211,6 +2264,65 @@ class TestEventServiceClose:
         assert run_thread_id is not None, "run() was never called"
         assert run_thread_id != event_loop_thread, (
             "run() executed on the event loop thread — expected thread-pool"
+        )
+
+    async def test_run_uses_executor_for_sync_only_agent(self, event_service):
+        """EventService.run() must use the thread-pool executor when the
+        agent only implements sync step() (no astep() override), even if the
+        conversation overrides arun().  ``LocalConversation`` always overrides
+        arun(), so the conversation-level guard alone would route sync-only
+        custom agents through the native async path, running their sync
+        step() in a worker thread while arun() holds the state lock on the
+        event-loop thread (B5)."""
+        from openhands.sdk.conversation.base import BaseConversation
+
+        run_called = False
+        arun_called = False
+        agent = _SyncOnlyAgent(llm=LLM(model="gpt-4o", usage_id="sync-only"))
+
+        # Stand-in conversation that overrides arun() (like LocalConversation)
+        # but wraps a sync-only agent.  Only the dispatch-relevant members are
+        # implemented.
+        class AsyncConvSyncAgent:
+            def __init__(self):
+                self.agent = agent
+
+            async def arun(self):
+                nonlocal arun_called
+                arun_called = True
+
+            def run(self):
+                nonlocal run_called
+                run_called = True
+
+        conv = AsyncConvSyncAgent()
+        event_service._conversation = conv  # type: ignore[assignment]
+
+        # Sanity: conversation overrides arun() but the agent inherits the
+        # default astep(), so the native async path must NOT be taken.
+        assert type(conv).arun is not BaseConversation.arun
+        assert type(conv.agent).astep is AgentBase.astep
+
+        with (
+            patch.object(
+                type(event_service),
+                "_get_execution_status",
+                new_callable=AsyncMock,
+                return_value=ConversationExecutionStatus.PAUSED,
+            ),
+            patch.object(
+                type(event_service),
+                "_publish_state_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await event_service.run()
+            # Give the background task a moment to execute
+            await asyncio.sleep(0.3)
+
+        assert run_called, "sync run() was never called"
+        assert not arun_called, (
+            "arun() was used for a sync-only agent — expected sync run()"
         )
 
 
