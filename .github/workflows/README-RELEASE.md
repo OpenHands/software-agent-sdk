@@ -35,6 +35,7 @@ The created PR will include a checklist. Complete the following:
 - [ ] Fix any deprecation deadlines if they exist
 - [ ] Verify integration tests pass (triggered by `integration-tests` label)
 - [ ] Verify example checks pass (triggered by `test-examples` label)
+- [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes
 - [ ] Review and approve the PR
 
 ### Step 3: Create the GitHub Release

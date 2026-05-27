@@ -34,6 +34,40 @@ a human maintainer has commented confirming the results (e.g., "Human review don
 follow the normal approval policy. The eval monitor link is authoritative proof of
 benchmark validation for this repository.
 
+### Review decision policy (release PR workflow validation)
+
+For release PRs (for example branches like `rel-1.23.0`, or diffs that bump package versions
+across the distributable packages), do **NOT** approve until you have checked the latest PR-specific
+results for all three of these workflows:
+
+- `Run tests`
+- `Run Examples Scripts`
+- `Run Integration Tests`
+
+The standard review prompt does not inline ordinary PR issue comments, so use the
+GitHub API / `gh` from the terminal to inspect the latest PR comments and workflow
+results before deciding.
+
+For each workflow:
+
+1. Verify it actually ran for **this PR**, not only on `main`, on a scheduled run,
+   or on an older PR head commit.
+2. Read the latest PR comment from that workflow. In this repo those comments
+   normally look like:
+   - `Run tests`: the coverage report comment containing
+     `<!-- Pytest Coverage Comment: coverage-report -->`
+   - `Run Examples Scripts`: a comment starting with
+     `## 🔄 Running Examples`
+   - `Run Integration Tests`: a comment starting with
+     `# 🧪 Integration Tests Results`
+3. Cross-check the corresponding workflow/check result and make sure the comment
+   still matches the current PR state.
+
+If any of the three workflows is missing, skipped, stale, ambiguous, or failing,
+do **NOT** approve. Leave a **COMMENT** review that names the missing/failing
+validation and explicitly asks for human maintainer review instead.
+
+
 ### Default approval policy
 
 **Default to APPROVE**: If your review finds no issues at "important" level or higher,

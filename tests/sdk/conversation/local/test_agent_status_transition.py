@@ -98,12 +98,10 @@ def test_execution_status_transitions_to_running_from_idle():
     """Test that agent status transitions to RUNNING when run() is called from IDLE."""
     status_during_execution: list[ConversationExecutionStatus] = []
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(
-            executor=StatusCheckingExecutor(status_during_execution)
-        )
-
-    register_tool("test_tool", _make_tool)
+    test_tool = StatusTransitionTestTool.create(
+        executor=StatusCheckingExecutor(status_during_execution)
+    )[0]
+    register_tool("test_tool", test_tool)
 
     # Use TestLLM with a scripted response
     llm = TestLLM.from_messages(
@@ -153,10 +151,8 @@ def test_execution_status_is_running_during_execution_from_idle():
                 status_during_execution.append(conversation.state.execution_status)
             return StatusTransitionMockObservation(result=f"Executed: {action.command}")
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(executor=SignalingExecutor())
-
-    register_tool("test_tool", _make_tool)
+    test_tool = StatusTransitionTestTool.create(executor=SignalingExecutor())[0]
+    register_tool("test_tool", test_tool)
 
     # Use TestLLM with scripted responses: first a tool call, then completion
     llm = TestLLM.from_messages(
@@ -256,10 +252,8 @@ def test_execution_status_transitions_from_waiting_for_confirmation():
     """Test WAITING_FOR_CONFIRMATION -> RUNNING transition when run() is called."""
     from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
-
-    register_tool("test_tool", _make_tool)
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
 
     # Use TestLLM with scripted responses: first a tool call, then completion
     llm = TestLLM.from_messages(
@@ -422,12 +416,10 @@ def test_execution_status_error_on_max_iterations():
     status_during_execution: list[ConversationExecutionStatus] = []
     events_received: list = []
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(
-            executor=StatusCheckingExecutor(status_during_execution)
-        )
-
-    register_tool("test_tool", _make_tool)
+    test_tool = StatusTransitionTestTool.create(
+        executor=StatusCheckingExecutor(status_during_execution)
+    )[0]
+    register_tool("test_tool", test_tool)
 
     # Create a tool call message that will be returned repeatedly
     tool_call_message = Message(
@@ -487,10 +479,8 @@ def test_execution_status_finished_on_final_iteration():
 
     events_received: list = []
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
-
-    register_tool("test_tool", _make_tool)
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
 
     # Two tool-call iterations followed by a text response on the 3rd (final) iteration.
     # A text-only assistant message causes the agent to set status to FINISHED.

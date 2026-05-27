@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -1201,6 +1202,24 @@ def load_available_skills(
             logger.warning(f"Failed to load project skills: {e}")
 
     return available
+
+
+def merge_skills_by_name(
+    primary: Iterable[Skill], secondary: Iterable[Skill]
+) -> list[Skill]:
+    """Merge two skill collections by name.
+
+    ``primary`` skills are authoritative: they take precedence on name conflicts
+    and keep their order. Each ``secondary`` skill is appended only when its name
+    is not already provided by ``primary``.
+    """
+    merged = list(primary)
+    seen = {skill.name for skill in merged}
+    for skill in secondary:
+        if skill.name not in seen:
+            seen.add(skill.name)
+            merged.append(skill)
+    return merged
 
 
 def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:

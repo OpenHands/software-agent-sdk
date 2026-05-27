@@ -120,8 +120,10 @@ class Config(BaseModel):
     allow_cors_origins: list[str] = Field(
         default_factory=list,
         description=(
-            "Set of CORS origins permitted by this server (Anything from localhost is "
-            "always accepted regardless of what's in here)."
+            "CORS origins permitted by this server. Localhost / 127.0.0.1 "
+            "and ``DOCKER_HOST_ADDR`` are always allowed. Does not apply to "
+            "the workspace cookie routes, which accept any origin — see "
+            "``middleware.py``."
         ),
     )
     conversations_path: Path = Field(
@@ -135,6 +137,19 @@ class Config(BaseModel):
         description=(
             "The location of the directory where bash events are stored as files. "
             "Defaults to 'workspace/bash_events'."
+        ),
+    )
+    bash_events_retention_seconds: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How long bash event files are retained on disk, in seconds. "
+            "A background task purges events older than this window on a "
+            "rolling basis. None (default) retains events indefinitely. "
+            "Should be set higher than the longest expected command timeout: "
+            "a command whose BashCommand file is purged mid-execution will "
+            "complete normally, but its on-disk event history will be "
+            "incomplete. A value >= 2x max command timeout avoids this."
         ),
     )
     static_files_path: Path | None = Field(

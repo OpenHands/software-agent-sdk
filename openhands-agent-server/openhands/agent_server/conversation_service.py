@@ -245,12 +245,68 @@ def _compose_conversation_info(
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
+    #
+    # ACP model state is lifted onto top-level ConversationInfo fields because
+    # the agent holds it in PrivateAttrs (ACPAgent is frozen) which don't survive
+    # ``model_dump``. ``getattr`` keeps non-ACP agents a no-op. We read the live
+    # agent (fresh within a session) and fall back to ``state.agent_state`` —
+    # persisted to ``base_state.json`` by ``ACPAgent._init`` (and kept in sync by
+    # ``switch_acp_model``) — so cold list reads, where PrivateAttrs are still
+    # empty because ``init_state`` hasn't fired, still surface the last-known
+    # state. Persisted ``acp_available_models`` is a list of dicts that
+    # ``ConversationInfo`` coerces back into ``ACPModelInfo``.
+    agent_state = getattr(state, "agent_state", {}) or {}
+    agent = state.agent
+    # current_model_id: live PrivateAttr (fresh after a runtime switch) → the
+    # persisted hint → the authoritative ``acp_model`` the agent runs on resume.
+    #
+    # The ``acp_model`` fallback is gated on the agent NOT being a live,
+    # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
+    # authoritative resolved value — including ``None`` when an override couldn't
+    # be applied (unknown provider, or a resume whose ``set_session_model`` the
+    # server rejected) — so falling back to ``acp_model`` there would re-assert an
+    # override the live session isn't actually running. The fallback is only for
+    # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
+    # the serialized ``acp_model`` is the best last-known hint. The persisted
+    # ``acp_current_model_id`` hint is kept honest by ``ACPAgent.init_state`` (it
+    # clears the value whenever the override wasn't applied), so it's safe in
+    # both cases.
+    agent_initialized = bool(getattr(agent, "_initialized", False))
+    current_model_id = (
+        getattr(agent, "current_model_id", None)
+        or agent_state.get("acp_current_model_id")
+        or (None if agent_initialized else getattr(agent, "acp_model", None))
+    )
+    # available_models: the property returns ``[]`` (never ``None``) for *both* a
+    # cold-read agent (PrivateAttr default, init_state hasn't fired) and a live
+    # agent that genuinely has no models, so an ``is None`` check can't tell them
+    # apart — and would drop the persisted picker payload on every cold list
+    # read. The ``or`` chain is deliberate: an empty live list falls back to the
+    # persisted snapshot, which is exactly right on cold reads (surface the
+    # last-known list) and benign for a live empty session (the persisted value
+    # is itself empty/absent there).
+    available_models = (
+        getattr(agent, "available_models", None)
+        or agent_state.get("acp_available_models")
+        or []
+    )
+    # Static provider capability. Unlike the two fields above it has no
+    # meaningful live-vs-persisted distinction — it's derived from the stable
+    # provider identity and written once at session init — so we read the
+    # persisted value directly. Defaults False for non-ACP agents and
+    # conversations that haven't started a session.
+    supports_runtime_model_switch = bool(
+        agent_state.get("acp_supports_runtime_model_switch", False)
+    )
     return ConversationInfo(
         **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        current_model_id=current_model_id,
+        available_models=available_models,
+        supports_runtime_model_switch=supports_runtime_model_switch,
     )
 
 
@@ -642,6 +698,25 @@ class ConversationService:
         if event_service:
             await event_service.pause()
             # Notify conversation webhooks about the paused conversation
+            state = await event_service.get_state()
+            conversation_info = _compose_webhook_conversation_info(
+                event_service.stored, state
+            )
+            await self._notify_conversation_webhooks(conversation_info)
+        return bool(event_service)
+
+    async def interrupt_conversation(self, conversation_id: UUID) -> bool:
+        """Immediately cancel an in-flight LLM call for a conversation.
+
+        Unlike :meth:`pause_conversation`, which waits for the current
+        LLM request to finish, this cancels the running ``arun()`` task
+        so the interruption takes effect mid-stream.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service:
+            await event_service.interrupt()
             state = await event_service.get_state()
             conversation_info = _compose_webhook_conversation_info(
                 event_service.stored, state

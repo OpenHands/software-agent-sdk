@@ -23,6 +23,7 @@ from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
     load_available_skills,
+    merge_skills_by_name,
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
@@ -96,6 +97,22 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_project_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load project skills from the conversation "
+            "workspace (e.g. .openhands/skills/, AGENTS.md). Unlike "
+            "load_user_skills / load_public_skills, this flag is not resolved by "
+            "AgentContext itself (the workspace path is unknown at validation "
+            "time); LocalConversation resolves it lazily on the first "
+            "send_message() / run(), when the workspace is known. Also unlike "
+            "load_user_skills / load_public_skills (which yield to explicit "
+            "skills on a name conflict), resolved project skills are "
+            "authoritative: a project skill overrides a same-named skill already "
+            "present in `skills`."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -160,15 +177,14 @@ class AgentContext(BaseModel):
             marketplace_path=self.marketplace_path,
         )
 
-        existing_names = {skill.name for skill in self.skills}
-        for name, skill in auto_skills.items():
-            if name not in existing_names:
-                self.skills.append(skill)
-            else:
+        # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+        explicit_names = {skill.name for skill in self.skills}
+        for name in auto_skills:
+            if name in explicit_names:
                 logger.debug(
                     f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
                 )
-
+        self.skills = merge_skills_by_name(self.skills, auto_skills.values())
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:

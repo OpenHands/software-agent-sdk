@@ -665,6 +665,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -693,6 +694,7 @@ class RemoteConversation(BaseConversation):
             secrets: Optional secrets to initialize the conversation with
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            user_id: Optional user ID to associate with observability traces
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -882,7 +884,7 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id))
+        self._start_observability_span(str(self._id), user_id=user_id)
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
@@ -912,7 +914,7 @@ class RemoteConversation(BaseConversation):
                 log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
-                with open(log_path, "w") as f:
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write(event.log_data)
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:
@@ -1226,6 +1228,13 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"{self._conversation_action_base_path}/{self._id}/pause",
+        )
+
+    def interrupt(self) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/interrupt",
         )
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:

@@ -494,6 +494,74 @@ def test_get_llm_with_kwargs_override(monkeypatch):
         assert llm.api_key == "sk-persisted-key"
 
 
+def test_get_llm_with_profile_name(monkeypatch):
+    """Test get_llm can load a named LLM profile."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "name": "fast-model",
+        "config": {
+            "model": "openai/gpt-4o",
+            "api_key": "sk-profile-key",
+            "base_url": "https://litellm.example.com",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm(profile_name="fast-model", temperature=0.3)
+
+    assert llm.model == "openai/gpt-4o"
+    assert llm.temperature == 0.3
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-profile-key"
+    assert llm.base_url == "https://litellm.example.com"
+    assert llm.usage_id == "profile:fast-model"
+
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert call_args[0][0] == "/api/profiles/fast-model"
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+    llm_with_override = workspace.get_llm(
+        profile_name="fast-model", usage_id="custom-usage"
+    )
+
+    assert llm_with_override.usage_id == "custom-usage"
+
+
+def test_get_llm_with_missing_profile_raises(monkeypatch):
+    """Test get_llm raises FileNotFoundError for a missing profile."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        workspace.get_llm(profile_name="missing")
+
+
 def test_get_llm_raises_on_undefined_host():
     """Test get_llm raises RuntimeError when host is undefined."""
     workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")

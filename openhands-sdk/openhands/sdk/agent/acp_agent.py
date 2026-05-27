@@ -44,7 +44,9 @@ from acp.schema import (
 from acp.transports import default_environment
 from pydantic import Field, PrivateAttr, SecretStr, field_serializer
 
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -174,6 +176,10 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "gemini-api-key": "GEMINI_API_KEY",
 }
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
+# Gemini CLI personal (Google OAuth) login, cached by ``gemini login`` /
+# ``gemini --acp``. Its presence lets us select the server's ``oauth-personal``
+# auth method without an API key (mirrors the ChatGPT subscription path).
+_GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
 def _select_auth_method(
@@ -185,15 +191,23 @@ def _select_auth_method(
     Returns the ``id`` of the first matching method, or ``None`` if no
     supported credential source is available (the server may not require auth).
 
-    ChatGPT subscription login (device-code flow stored in
-    ``~/.codex/auth.json``) is checked first so it takes precedence over
-    explicit API keys, which serve as the fallback.
+    Subscription / OAuth logins (whose cached credential file is present) are
+    checked first so they take precedence over explicit API keys, which serve
+    as the fallback:
+
+    - ``chatgpt`` (codex-acp) — ``~/.codex/auth.json``
+    - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json``
+
+    In a server image these files are absent (no interactive login), so the
+    API-key fallback (e.g. ``GEMINI_API_KEY``) is used instead.
     """
     method_ids = {m.id for m in auth_methods}
-    # Prefer ChatGPT subscription login when the auth file is present.
-    if "chatgpt" in method_ids:
-        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
-            return "chatgpt"
+    # Prefer subscription / OAuth logins when their cached credential file is
+    # present.
+    if "chatgpt" in method_ids and (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+        return "chatgpt"
+    if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
+        return "oauth-personal"
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
@@ -201,24 +215,127 @@ def _select_auth_method(
     return None
 
 
+def _extract_session_models(
+    response: Any,
+) -> tuple[str | None, list[ACPModelInfo] | None]:
+    """Extract the model state off a session response.
+
+    Returns a ``(current_model_id, available_models)`` pair, both best-effort.
+    ``available_models`` is normalized into our own stable :class:`ACPModelInfo`
+    type at this boundary so nothing downstream depends on the vendored
+    ``acp.schema`` shape.
+
+    The second element distinguishes **absent** from **empty** — this matters
+    for resume persistence (preserve the last-known list when the server didn't
+    report one; clear it when the server explicitly says it has none):
+
+    - ``None``  — the (UNSTABLE) ``models`` block was absent from the response
+      (older agent, opted out, or ``load_session`` not carrying it).
+    - ``[]``    — the server *did* report ``models`` but offers no (usable)
+      models this session.
+    - ``[...]`` — the reported models, minus any with an unusable ``model_id``.
+
+    ``getattr`` keeps the helper tolerant of agents that emit a partial
+    structure.
+    """
+    if response is None:
+        return None, None
+    models = getattr(response, "models", None)
+    if models is None:
+        return None, None
+    current = getattr(models, "current_model_id", None)
+    current = current if isinstance(current, str) and current else None
+    raw = getattr(models, "available_models", None) or []
+    # Drop entries without a usable id: an empty/missing ``model_id`` is an
+    # invalid picker option and an unusable ``set_session_model`` target, so we
+    # filter it out rather than surfacing ``model_id=""``.
+    available = [
+        info for info in (ACPModelInfo.from_protocol(m) for m in raw) if info.model_id
+    ]
+    return current, available
+
+
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
     session_id: str,
     acp_model: str | None,
-) -> None:
-    """Apply a protocol-level session model override when the server supports it.
+) -> bool:
+    """Apply the *initial* session model right after session creation.
 
-    Uses :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
-    to check whether the server supports ``set_session_model``.
-    claude-agent-acp uses session ``_meta`` via
-    :func:`~openhands.sdk.settings.acp_providers.build_session_model_meta` instead.
+    This is the session-creation path only, gated on
+    :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.supports_set_session_model`.
+    Providers that select their initial model via session ``_meta``
+    (claude-agent-acp, ``supports_set_session_model=False``) already received
+    the model in ``new_session()``, so this is a no-op for them. Providers that
+    use the protocol call for initial selection (codex-acp, gemini-cli) get a
+    one-shot ``set_session_model`` call here.
+
+    Runtime, mid-conversation switches go through
+    :meth:`ACPAgent.set_acp_model` instead, which always uses
+    ``set_session_model`` and is gated on the separate
+    ``supports_runtime_model_switch`` capability flag.
+
+    Returns ``True`` only when this issued a ``set_session_model`` call — i.e.
+    the override was actually pushed to the server via *this* path. ``False``
+    when there is nothing to apply (no ``acp_model``) or the provider selects
+    its model another way (``_meta``) or not at all (unknown/custom server), so
+    the caller can tell whether the live session is really running ``acp_model``.
     """
     if not acp_model:
-        return
+        return False
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        return True
+    return False
+
+
+async def _reapply_session_model_on_resume(
+    conn: ClientSideConnection,
+    agent_name: str,
+    session_id: str,
+    acp_model: str | None,
+) -> bool:
+    """Reapply the persisted model to a *resumed* session.
+
+    ``load_session()`` carries no model ``_meta``, so a session resumed after a
+    runtime switch (or with any persisted ``acp_model``) would otherwise run on
+    the ACP server's default. This issues ``set_session_model`` so the resumed
+    live session matches the serialized ``acp_model``.
+
+    The gating mirrors :meth:`ACPAgent.set_acp_model` (attempt for custom/unknown
+    servers and known providers that support runtime switching; skip only known
+    providers that don't), deliberately differing from the initial-selection
+    gate: claude-agent-acp selects its initial model via ``_meta`` yet supports
+    ``set_session_model`` for later switches. A server that rejects the call is
+    tolerated (logged) — like the ``load_session`` fallback above — so resume
+    can't break; the session keeps the server default until the next switch.
+
+    Returns ``True`` only when ``set_session_model`` was issued and accepted, so
+    the caller knows the resumed live session is actually running ``acp_model``.
+    ``False`` when there is nothing to reapply, the provider doesn't support the
+    switch, or the server rejected the call (swallowed) — in those cases the
+    session keeps the server default and the override must not be surfaced as
+    the current model.
+    """
+    if not acp_model:
+        return False
+    provider = detect_acp_provider_by_agent_name(agent_name)
+    if provider is not None and not provider.supports_runtime_model_switch:
+        return False
+    try:
+        await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        return True
+    except ACPRequestError as e:
+        logger.warning(
+            "Could not reapply model %r on resumed session %s (%s); the live "
+            "session may run on the server default until the next switch",
+            acp_model,
+            session_id,
+            e,
+        )
+        return False
 
 
 def _extract_token_usage(
@@ -749,6 +866,37 @@ class ACPAgent(AgentBase):
     _agent_version: str = PrivateAttr(
         default=""
     )  # ACP server version from InitializeResponse
+    # The model the ACP server reported as active for this session, captured
+    # from ``models.currentModelId`` on the new_session / load_session
+    # response.  Overridden by ``self.acp_model`` when the caller explicitly
+    # chose one (either via ``set_session_model`` or via session ``_meta``).
+    # ``None`` when the server doesn't surface model state — the field is
+    # marked UNSTABLE in the ACP spec, so older agents may omit it.
+    #
+    # Kept as a PrivateAttr (not a Pydantic field) because ``AgentBase`` is
+    # frozen and this is per-session runtime state, not config.  The
+    # agent-server lifts it onto ``ConversationInfo`` so the value can cross
+    # the API boundary even though the agent itself doesn't serialize it.
+    _current_model_id: str | None = PrivateAttr(default=None)
+    # ``models.availableModels`` from the same session response, normalized
+    # to our stable ``ACPModelInfo`` type.  Surfaced verbatim via the
+    # ``available_models`` property (and ``ConversationInfo.available_models``)
+    # so clients can render a picker and resolve ``current_model_id`` to a
+    # display label themselves — the SDK does no name curation.
+    # ``None`` encodes "the server didn't report a ``models`` block this launch"
+    # (distinct from ``[]`` = "reported, but no models"); the persistence logic
+    # in ``init_state`` uses that distinction to preserve vs clear the stored
+    # list on resume. The public ``available_models`` property coerces to ``[]``.
+    _available_models: list[ACPModelInfo] | None = PrivateAttr(default=None)
+    # Whether the caller's ``acp_model`` was actually pushed to the server in
+    # the most recent session init (via session ``_meta`` or ``set_session_model``).
+    # ``False`` when there's no override, the provider can't apply it (unknown
+    # server on a fresh session), or the server rejected the call on resume — in
+    # those cases the live session runs its own default, so neither
+    # ``_current_model_id`` nor the ``ConversationInfo`` fallback may surface
+    # ``acp_model`` as the active model. Read by ``init_state`` to decide whether
+    # a stale persisted ``acp_current_model_id`` must be cleared.
+    _model_override_applied: bool = PrivateAttr(default=False)
     # Callback to signal that the ACP subprocess is actively working.
     # Injected by the agent-server to call update_last_execution_time().
     _on_activity: Any = PrivateAttr(default=None)  # Callable[[], None] | None
@@ -869,6 +1017,64 @@ class ACPAgent(AgentBase):
         """Version of the ACP server (from InitializeResponse.agent_info)."""
         return self._agent_version
 
+    @property
+    def current_model_id(self) -> str | None:
+        """The model the ACP server is currently using for this session.
+
+        Captured from ``models.currentModelId`` on the
+        ``new_session`` / ``load_session`` response when the server surfaces
+        it (UNSTABLE ACP capability), or ``self.acp_model`` when the caller
+        explicitly chose one.  ``None`` for older servers that don't report
+        model state and when no override was set — callers should treat the
+        value as best-effort.
+
+        Note: this is in-process runtime state; it does not round-trip
+        through ``model_dump()``.  Consumers that need to read it across the
+        API boundary should look at ``ConversationInfo.current_model_id``,
+        which the agent-server lifts off the agent into the response.
+        """
+        return self._current_model_id
+
+    @property
+    def available_models(self) -> list[ACPModelInfo]:
+        """Models the ACP server offers for this session.
+
+        Captured verbatim from ``models.availableModels`` on the
+        ``new_session`` / ``load_session`` response (UNSTABLE ACP capability);
+        empty for servers that don't surface it.  Each entry carries the
+        server's ``model_id`` plus an optional ``name``/``description`` —
+        enough for a client to render a model picker and resolve
+        ``current_model_id`` to a display label without any server-side
+        curation.  ``current_model_id`` is the value to pass to
+        ``set_session_model`` to switch.
+
+        Same lifecycle and serialization caveats as ``current_model_id``:
+        in-process runtime state, lifted onto
+        ``ConversationInfo.available_models`` by the agent-server for
+        cross-process consumers. Always a list (the internal ``None``
+        "not-reported" sentinel is coerced to ``[]`` here).
+        """
+        return list(self._available_models or [])
+
+    @property
+    def supports_runtime_model_switch(self) -> bool:
+        """Whether a live, mid-conversation model switch will be attempted.
+
+        Tells a client whether to offer the inline picker's live-switch control.
+        Kept in lockstep with :meth:`set_acp_model`, which refuses the switch
+        only for a *known* provider that declares no support and otherwise
+        attempts it optimistically — so a custom/unknown ACP server that does
+        support ``session/set_model`` isn't needlessly blocked from the picker.
+        ``False`` before a session exists (nothing to switch yet).
+
+        See
+        :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`.
+        """
+        if self._session_id is None:
+            return False
+        provider = detect_acp_provider_by_agent_name(self._agent_name)
+        return provider is None or provider.supports_runtime_model_switch
+
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
 
@@ -909,10 +1115,22 @@ class ACPAgent(AgentBase):
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
         self._installed_suffix = self._render_suffix(state)
-        # A prior session id in agent_state means we are resuming; the suffix
-        # is already in the subprocess's persisted history from the original
-        # session, so no re-injection is needed.
-        resumed = state.agent_state.get("acp_session_id") is not None
+        # A prior session id in agent_state means we may be resuming; used by
+        # ``truly_resumed`` below to decide whether the model state reported
+        # for this launch describes the resumed session or a fresh one.
+        prior_session_id = state.agent_state.get("acp_session_id")
+        # ``acp_suffix_installed`` is persisted by
+        # ``_commit_suffix_installation`` only after the first prompt has
+        # actually returned successfully, so on resume we know whether the
+        # ACP subprocess received the suffix.  ``acp_session_id`` alone is
+        # not a reliable signal — it is persisted at session-creation time
+        # regardless of whether the first prompt succeeded, so inferring
+        # "installed" from session id presence would skip suffix injection
+        # for sessions whose first turn was cancelled mid-prompt.  Older
+        # persisted state (from before this PR introduced the marker)
+        # will re-inject the suffix on the first turn after upgrade, which
+        # is benign — the suffix is additive LLM-context guidance.
+        suffix_already_installed = bool(state.agent_state.get("acp_suffix_installed"))
 
         try:
             self._start_acp_server(state)
@@ -920,6 +1138,15 @@ class ACPAgent(AgentBase):
             logger.error("Failed to start ACP server: %s", e)
             self._cleanup()
             raise
+
+        # A successful resume keeps the prior id; cwd mismatch and load_session
+        # failure both fall back to ``new_session``, which mints a fresh one.
+        # The session-id comparison is the only authoritative signal — the
+        # decision happens inside ``_start_acp_server`` and isn't otherwise
+        # observable here.
+        truly_resumed = (
+            prior_session_id is not None and self._session_id == prior_session_id
+        )
 
         self._initialized = True
 
@@ -933,17 +1160,93 @@ class ACPAgent(AgentBase):
         # in a different working directory would at best silently miss the
         # prior session and at worst load a different session that happens to
         # exist at the new cwd.
-        state.agent_state = {
+        # Persist the model state the ACP server reported for this session
+        # (current id + the available_models list) into ``agent_state`` for
+        # the same reason as ``acp_session_id`` / ``acp_session_cwd``: it's
+        # per-session state that needs to survive agent-server restarts and
+        # cold reads of the conversation list, but it lives on the frozen
+        # ACPAgent as a PrivateAttr (so doesn't serialize via ``model_dump``).
+        # The list rides along so clients can still resolve the current id to a
+        # display label (and render a picker) on cold reads; without it,
+        # ``ConversationInfo.current_model_id`` / ``available_models`` would
+        # only be populated while the subprocess is alive — i.e. the chip would
+        # vanish from idle / restored conversations in the sidebar.
+        #
+        # On resume, ``load_session`` may not surface ``models`` (the
+        # capability is UNSTABLE, and some servers only attach it to
+        # ``new_session`` responses) — in that case ``_current_model_id`` is
+        # ``None`` here even though we *did* know the model on the previous
+        # launch.  Preserve the persisted ``agent_state`` values for that
+        # case so the chip survives the resume.  But when ``_start_acp_server``
+        # fell back to a fresh ``new_session`` (cwd mismatch or load_session
+        # failure) and the response also omits ``models``, the persisted
+        # values describe the *previous* session — clear them so we don't
+        # mislabel the new one.
+        new_agent_state = {
             **state.agent_state,
             "acp_agent_name": self._agent_name,
             "acp_agent_version": self._agent_version,
             "acp_session_id": self._session_id,
             "acp_session_cwd": self._working_dir,
+            # Static provider capability — persisted so cold reads of the
+            # conversation list can tell the picker whether to offer live
+            # switching without re-detecting the provider server-side.
+            "acp_supports_runtime_model_switch": self.supports_runtime_model_switch,
         }
+        # ``current_model_id`` is known whenever the caller forced ``acp_model``
+        # (e.g. a prior runtime switch) or the server reported one, even on a
+        # resume whose ``load_session`` omitted the UNSTABLE ``models`` block.
+        # When it is *not* known (``None``), drop any stale persisted id unless
+        # we're in the one case where the persisted value is still our best
+        # guess: a true resume where the server didn't report a ``models`` block
+        # AND no override was attempted (so the server is presumably still on the
+        # model it had last launch).  Clear it otherwise —
+        #   - ``not truly_resumed``: the session was replaced, so the persisted id
+        #     describes a dead session;
+        #   - ``_available_models is not None``: the server reported a ``models``
+        #     block but no usable current id (``currentModelId: ""``), so it
+        #     explicitly has none;
+        #   - override attempted but not applied (``acp_model`` set yet
+        #     ``_model_override_applied`` is False): we tried to force a model and
+        #     the server rejected/ignored it, so the persisted id (which named
+        #     that override) no longer reflects reality.
+        # This mirrors the ``acp_available_models`` gating below so the two fields
+        # can't disagree, and keeps the chip/picker from advertising a model the
+        # live session isn't actually running.
+        override_attempted_not_applied = bool(self.acp_model) and (
+            not self._model_override_applied
+        )
+        if self._current_model_id is not None:
+            new_agent_state["acp_current_model_id"] = self._current_model_id
+        elif (
+            not truly_resumed
+            or self._available_models is not None
+            or override_attempted_not_applied
+        ):
+            new_agent_state.pop("acp_current_model_id", None)
+        # The list is gated *independently* on whether the server actually
+        # reported a ``models`` block this launch (``None`` = absent), NOT on
+        # whether the list is non-empty — so we can tell "server didn't report"
+        # apart from "server reported it has no models":
+        #   - reported (incl. an explicit ``[]``): overwrite, so a server that
+        #     dropped its models clears the now-stale picker options.
+        #   - not reported on a true resume: preserve the persisted list (the
+        #     UNSTABLE block is often omitted from ``load_session`` responses)
+        #     so the picker survives the restore even though ``current_model_id``
+        #     may be set from a forced ``acp_model``.
+        #   - not reported on a fresh (non-resumed) replacement: clear, since the
+        #     persisted list describes the previous session.
+        if self._available_models is not None:
+            new_agent_state["acp_available_models"] = [
+                m.model_dump() for m in self._available_models
+            ]
+        elif not truly_resumed:
+            new_agent_state.pop("acp_available_models", None)
+        state.agent_state = new_agent_state
 
         if self._installed_suffix:
             self._suffix_install_state = (
-                "installed" if resumed else "pending_first_prompt"
+                "installed" if suffix_already_installed else "pending_first_prompt"
             )
 
         # Emit a placeholder system prompt so the visualizer shows a section
@@ -968,10 +1271,31 @@ class ACPAgent(AgentBase):
         )
 
     def _render_suffix(self, state: ConversationState) -> str | None:
-        """Render the system suffix once, including secrets from the registry."""
-        if not self.agent_context:
-            return None
+        """Render the system suffix once, including secrets from the registry.
+
+        The ``<CUSTOM_SECRETS>`` block lists every secret the ACP subprocess
+        will receive, so the agent knows which env vars are available without
+        them being inlined in the prompt. We render it from
+        ``state.secret_registry`` even when ``agent_context`` is absent —
+        otherwise a conversation that only ships secrets through the
+        ``StartConversationRequest.secrets`` channel (the canonical path)
+        would silently drop the advertisement, leaving the agent ignorant of
+        secrets that are nonetheless about to land in its env via
+        ``_start_acp_server``.
+        """
         secret_infos = state.secret_registry.get_secret_infos()
+        if self.agent_context is None:
+            # No caller-supplied context. Only synthesize an empty one for the
+            # renderer if we actually have a registry-secret advertisement to
+            # emit — otherwise return None so we don't start injecting other
+            # parts of the empty AgentContext's defaults (current_datetime, …)
+            # that the old "agent_context is None ⇒ no suffix" rule used to
+            # suppress.
+            if not secret_infos:
+                return None
+            return AgentContext(current_datetime=None).to_acp_prompt_context(
+                additional_secret_infos=secret_infos
+            )
         return self.agent_context.to_acp_prompt_context(
             additional_secret_infos=secret_infos
         )
@@ -981,24 +1305,34 @@ class ACPAgent(AgentBase):
         client = _OpenHandsACPBridge()
         self._client = client
 
-        # Build environment: inherit current env + ACP extras
+        # Build the subprocess environment top-down, highest precedence first:
+        #   acp_env > os.environ > default_environment >
+        #   state.secret_registry > agent_context.secrets
+        #
+        # Secret tiers fill-if-absent. The ``name in env`` guard does double
+        # duty: it preserves higher-precedence values and avoids calling
+        # SecretSource.get_value() for keys already satisfied — important
+        # because LookupSecret can make an HTTP request.
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
-        # Inject secrets from agent_context. acp_env entries take precedence
-        # (already set above), so we only fill keys not already present.
-        # SecretSource.get_value() is synchronous; calling it here is safe
-        # because _start_acp_server is a regular (non-async) method.
+        for name in state.secret_registry.secret_sources:
+            if name in env:
+                continue
+            value = state.secret_registry.get_secret_value(name)
+            if value:
+                env[name] = value
         if self.agent_context and self.agent_context.secrets:
             for name, secret in self.agent_context.secrets.items():
-                if name not in env:
-                    value = (
-                        secret.get_value()
-                        if isinstance(secret, SecretSource)
-                        else str(secret)
-                    )
-                    if value:
-                        env[name] = value
+                if name in env:
+                    continue
+                value = (
+                    secret.get_value()
+                    if isinstance(secret, SecretSource)
+                    else str(secret)
+                )
+                if value:
+                    env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -1036,7 +1370,9 @@ class ACPAgent(AgentBase):
             )
             prior_session_id = None
 
-        async def _init() -> tuple[Any, Any, Any, str, str, str]:
+        async def _init() -> tuple[
+            str, str, str, str | None, list[ACPModelInfo] | None, bool
+        ]:
             # Spawn the subprocess directly so we can install a
             # filtering reader that skips non-JSON-RPC lines some
             # ACP servers (e.g. claude-code-acp v0.1.x) write to
@@ -1065,6 +1401,17 @@ class ACPAgent(AgentBase):
                 process.stdin,  # write to subprocess
                 filtered_reader,  # read filtered output
             )
+
+            # Track the subprocess/connection on self as soon as they exist, so
+            # that if a *later* init step fails (e.g. the resume model reapply
+            # times out or the server errors), init_state()'s _cleanup() can
+            # still tear them down instead of leaking the subprocess/connection.
+            # The "session initialized" gating keys off _session_id (assigned
+            # last, on full success), so an early _conn here does not make the
+            # agent look ready before _init completes.
+            self._process = process
+            self._conn = conn
+            self._filtered_reader = filtered_reader
 
             # Initialize the protocol and discover server identity
             init_response = await conn.initialize(protocol_version=1)
@@ -1119,14 +1466,24 @@ class ACPAgent(AgentBase):
             # subprocess crash) propagate — there is no working connection to
             # fall back on, and the outer init_state handler cleans up.
             session_id: str | None = None
+            # Model state reported by whichever session call we end up making
+            # (new_session for fresh, load_session for resume). Defaults stand
+            # for agents that don't surface the UNSTABLE ``models`` field.
+            reported_model_id: str | None = None
+            # ``None`` until a session call reports a ``models`` block; stays
+            # ``None`` for servers that never surface it (preserve-on-resume).
+            available_models: list[ACPModelInfo] | None = None
             if prior_session_id is not None:
                 try:
-                    await conn.load_session(
+                    load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
                         mcp_servers=[],
                     )
                     session_id = prior_session_id
+                    reported_model_id, available_models = _extract_session_models(
+                        load_response
+                    )
                     logger.info(
                         "Resumed ACP session: %s (cwd=%s)",
                         session_id,
@@ -1139,18 +1496,59 @@ class ACPAgent(AgentBase):
                         e,
                     )
 
+            # Track whether ``acp_model`` was actually pushed to the server so
+            # ``current_model_id`` below can stay honest: a caller override that
+            # never reached the server (unknown provider on a fresh session, or
+            # a resume whose ``set_session_model`` the server rejected) must not
+            # be surfaced as the live model.
+            override_applied = False
             if session_id is None:
-                # Build _meta content for session options (e.g. model selection).
-                # Extra kwargs to new_session() become the _meta dict in the
-                # JSON-RPC request — do NOT wrap in _meta= (that double-nests).
+                # Fresh session. Build _meta content for session options (e.g.
+                # model selection). Extra kwargs to new_session() become the
+                # _meta dict in the JSON-RPC request — do NOT wrap in _meta=
+                # (that double-nests).
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
                 response = await conn.new_session(cwd=working_dir, **session_meta)
                 session_id = response.session_id
-            await _maybe_set_session_model(
-                conn,
-                agent_name,
-                session_id,
-                self.acp_model,
+                reported_model_id, available_models = _extract_session_models(response)
+                # Initial-selection protocol call for providers that use it
+                # (codex-acp, gemini-cli); no-op for claude, which selected its
+                # model via the _meta above.
+                applied_via_call = await _maybe_set_session_model(
+                    conn,
+                    agent_name,
+                    session_id,
+                    self.acp_model,
+                )
+                # The override actually reached the server iff it rode in via the
+                # session ``_meta`` (claude — non-empty ``session_meta``) or the
+                # protocol call was issued (codex/gemini).  An unknown/custom
+                # provider gets neither, so ``acp_model`` is set on the agent but
+                # the server is running its own default.
+                override_applied = bool(session_meta) or applied_via_call
+            else:
+                # Resumed session. load_session() does not carry model _meta, so
+                # reapply the persisted (possibly runtime-switched) acp_model via
+                # the runtime-switch capability — otherwise the resumed live
+                # session would run on the server default while serialized state
+                # claims the switched model.
+                override_applied = await _reapply_session_model_on_resume(
+                    conn,
+                    agent_name,
+                    session_id,
+                    self.acp_model,
+                )
+
+            # Resolve the model the agent will actually use.  Prefer the caller's
+            # ``acp_model`` only when it was actually applied to the server above;
+            # otherwise the server is running its own model, so surface what it
+            # reported in ``models.currentModelId`` (``None`` for older agents
+            # that don't surface the field).  Trusting ``acp_model`` on paths
+            # where it never reached the server would mislabel the chip/picker.
+            current_model_id = (
+                self.acp_model
+                if (self.acp_model and override_applied)
+                else reported_model_id
             )
 
             # Resolve the permission mode.  Known providers each have their
@@ -1165,17 +1563,26 @@ class ACPAgent(AgentBase):
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
-            return conn, process, filtered_reader, session_id, agent_name, agent_version
+            return (
+                session_id,
+                agent_name,
+                agent_version,
+                current_model_id,
+                available_models,
+                override_applied,
+            )
 
-        result = self._executor.run_async(_init)
+        # _conn / _process / _filtered_reader are assigned inside _init() (right
+        # after creation) so a mid-init failure can be cleaned up; only the
+        # success-only fields (including the resolved model state) are returned.
         (
-            self._conn,
-            self._process,
-            self._filtered_reader,
             self._session_id,
             self._agent_name,
             self._agent_version,
-        ) = result
+            self._current_model_id,
+            self._available_models,
+            self._model_override_applied,
+        ) = self._executor.run_async(_init)
         self._working_dir = working_dir
 
     def _reset_client_for_turn(
@@ -1261,10 +1668,208 @@ class ACPAgent(AgentBase):
             and self._installed_suffix
         ):
             blocks.append(text_block(self._installed_suffix))
-            self._suffix_install_state = "installed"
+            # NOTE: do NOT flip ``_suffix_install_state`` here.  If the
+            # caller (step/astep) is cancelled or fails before the ACP
+            # server persists this first turn (more likely on the async
+            # path, where ``asyncio.wait_for`` / ``task.cancel()`` can
+            # land between block construction and the await), the local
+            # state would say "installed" while the server never received
+            # the suffix — and the next turn would skip it.  The actual
+            # transition happens in ``_commit_suffix_installation``,
+            # called from ``_finalize_successful_turn`` once the prompt
+            # has returned successfully.
         if not blocks:
             return None
         return blocks
+
+    def _commit_suffix_installation(self, state: ConversationState) -> None:
+        """Mark the suffix as installed once a turn has completed.
+
+        Called from ``_finalize_successful_turn`` so the transition only
+        happens after the ACP server has actually received the suffix.
+        Persists ``acp_suffix_installed=True`` into ``state.agent_state``
+        so a subsequent agent-server restart, reading back the same
+        ``ConversationState``, can tell whether the suffix was actually
+        installed (rather than inferring it from the mere presence of
+        ``acp_session_id``, which is persisted at session-creation time
+        regardless of whether the first prompt succeeded).  Idempotent:
+        safe to call when already ``installed`` or when there is no
+        suffix to install.
+        """
+        if self._suffix_install_state == "pending_first_prompt":
+            self._suffix_install_state = "installed"
+            state.agent_state = {
+                **state.agent_state,
+                "acp_suffix_installed": True,
+            }
+
+    async def _do_acp_prompt(self, prompt_blocks: list[Any]) -> PromptResponse | None:
+        """One ACP ``conn.prompt`` round-trip + UsageUpdate sync.
+
+        Always runs on the portal loop (where ``self._conn`` lives).  No
+        retry / timeout — callers wrap with their own per-attempt
+        strategy so they can pick ``time.sleep`` (sync) or
+        ``asyncio.sleep`` (async).
+
+        Return type allows ``None`` because the ACP server is permitted
+        to return an empty body (and test mocks do); downstream
+        ``_finalize_successful_turn`` already accepts ``PromptResponse | None``.
+        """
+        usage_sync = self._client.prepare_usage_sync(self._session_id or "")
+        response = await self._conn.prompt(prompt_blocks, self._session_id)
+        if self._client.get_turn_usage_update(self._session_id or "") is None:
+            try:
+                await asyncio.wait_for(usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT)
+            except TimeoutError:
+                logger.warning(
+                    "UsageUpdate not received within %.1fs for session %s",
+                    _USAGE_UPDATE_TIMEOUT,
+                    self._session_id,
+                )
+        return response
+
+    def _finalize_successful_turn(
+        self,
+        response: PromptResponse | None,
+        elapsed: float,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Post-prompt bookkeeping + FinishAction/Observation emission."""
+        # ACP server has acknowledged the prompt; commit any pending
+        # first-turn suffix install so a subsequent turn doesn't try to
+        # re-send it (and so a future cancellation can't unmark it).
+        self._commit_suffix_installation(state)
+
+        session_id = self._session_id or ""
+        usage_update = self._client.pop_turn_usage_update(session_id)
+        self._record_usage(
+            response,
+            session_id,
+            elapsed=elapsed,
+            usage_update=usage_update,
+        )
+
+        # ACPToolCallEvents were already emitted live from
+        # _OpenHandsACPBridge.session_update as each ToolCallStart /
+        # ToolCallProgress notification arrived — no end-of-turn fan-out
+        # here. FinishAction closes out the turn below.
+        response_text = "".join(self._client.accumulated_text)
+        thought_text = "".join(self._client.accumulated_thoughts)
+        if not response_text:
+            response_text = "(No response from ACP server)"
+
+        # ACP step() boundaries are full remote assistant turns, not
+        # partial planning steps. Emit FinishAction to delimit that
+        # completed turn for eval/remote consumers, matching #2190.
+        finish_action = FinishAction(message=response_text)
+        tc_id = str(uuid.uuid4())
+        action_event = ActionEvent(
+            source="agent",
+            thought=[],
+            reasoning_content=thought_text or None,
+            action=finish_action,
+            tool_name="finish",
+            tool_call_id=tc_id,
+            tool_call=MessageToolCall(
+                id=tc_id,
+                name="finish",
+                arguments=json.dumps({"message": response_text}),
+                origin="completion",
+            ),
+            llm_response_id=str(uuid.uuid4()),
+        )
+        on_event(action_event)
+        on_event(
+            ObservationEvent(
+                observation=FinishObservation.from_text(text=response_text),
+                action_id=action_event.id,
+                tool_name="finish",
+                tool_call_id=tc_id,
+            )
+        )
+        state.execution_status = ConversationExecutionStatus.FINISHED
+
+    def _emit_turn_timeout(
+        self,
+        elapsed: float,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Error path when ``conn.prompt`` exceeded ``acp_prompt_timeout``."""
+        logger.error(
+            "ACP prompt timed out after %.1fs (limit=%.0fs). "
+            "The ACP server may have completed its work but failed to "
+            "send the JSON-RPC response. Accumulated %d text chunks, "
+            "%d tool calls.",
+            elapsed,
+            self.acp_prompt_timeout,
+            len(self._client.accumulated_text),
+            len(self._client.accumulated_tool_calls),
+        )
+        error_message = Message(
+            role="assistant",
+            content=[
+                TextContent(
+                    text=(
+                        f"ACP prompt timed out after {elapsed:.0f}s. "
+                        "The agent may have completed its work but "
+                        "the response was not received."
+                    )
+                )
+            ],
+        )
+        # Close any tool cards left in flight from the timed-out attempt.
+        self._cancel_inflight_tool_calls()
+        on_event(MessageEvent(source="agent", llm_message=error_message))
+        state.execution_status = ConversationExecutionStatus.ERROR
+
+    def _emit_turn_error(
+        self,
+        exc: BaseException,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Error path for non-timeout exceptions raised out of the prompt."""
+        logger.error("ACP prompt failed: %s", exc, exc_info=True)
+        error_str = str(exc)
+        # Close any tool cards left in flight before surfacing the error.
+        self._cancel_inflight_tool_calls()
+        # Emit error as an agent message (preserved for consumers that
+        # inspect MessageEvents).
+        on_event(
+            MessageEvent(
+                source="agent",
+                llm_message=Message(
+                    role="assistant",
+                    content=[TextContent(text=f"ACP error: {exc}")],
+                ),
+            )
+        )
+        # Emit typed ConversationErrorEvent so RemoteConversation surfaces
+        # the actual detail instead of falling back to
+        # "Remote conversation ended with error".
+        is_aup = (
+            "usage policy" in error_str.lower() or "content policy" in error_str.lower()
+        )
+        on_event(
+            ConversationErrorEvent(
+                source="agent",
+                code="UsagePolicyRefusal" if is_aup else "ACPPromptError",
+                detail=error_str[:500],
+            )
+        )
+        state.execution_status = ConversationExecutionStatus.ERROR
+
+    def _clear_turn_callbacks(self) -> None:
+        """Unwire per-turn bridge callbacks so trailing ``session_update``
+        between turns is a no-op (fires on the portal thread with no
+        FIFOLock held by anyone — without unwiring, a stale ``on_event``
+        there would race with other threads mutating ``state.events``).
+        """
+        self._client.on_event = None
+        self._client.on_token = None
+        self._client.on_activity = None
 
     @observe(name="acp_agent.step", ignore_inputs=["conversation", "on_event"])
     def step(
@@ -1273,19 +1878,24 @@ class ACPAgent(AgentBase):
         on_event: ConversationCallbackType,
         on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
-        """Send the latest user message to the ACP server and emit the response."""
+        """Send the latest user message to the ACP server and emit the response.
+
+        Sync entry point — used by ``LocalConversation.run`` (sync path),
+        the CLI, and the eval harness.  The async path
+        (``LocalConversation.arun``) goes through :meth:`astep`, which
+        avoids the cross-thread state-lock deadlock described in #3348.
+        """
         state = conversation.state
 
-        # Find the latest user message. Conversation implementations already
-        # attach per-turn AgentContext extensions to MessageEvent.extended_content;
-        # MessageEvent.to_llm_message() merges those extensions with the user text.
-        prompt_blocks = None
+        # Conversation implementations already attach per-turn AgentContext
+        # extensions to MessageEvent.extended_content; MessageEvent.to_llm_message()
+        # merges those extensions with the user text.
+        prompt_blocks: list[Any] | None = None
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
                 prompt_blocks = self._build_acp_prompt(event)
                 if prompt_blocks:
                     break
-
         if prompt_blocks is None:
             logger.warning("No user message found; finishing conversation")
             state.execution_status = ConversationExecutionStatus.FINISHED
@@ -1295,37 +1905,18 @@ class ACPAgent(AgentBase):
 
         t0 = time.monotonic()
         try:
-
-            async def _prompt() -> PromptResponse:
-                usage_sync = self._client.prepare_usage_sync(self._session_id or "")
-                response = await self._conn.prompt(
-                    prompt_blocks,
-                    self._session_id,
-                )
-                if self._client.get_turn_usage_update(self._session_id or "") is None:
-                    try:
-                        await asyncio.wait_for(
-                            usage_sync.wait(), timeout=_USAGE_UPDATE_TIMEOUT
-                        )
-                    except TimeoutError:
-                        logger.warning(
-                            "UsageUpdate not received within %.1fs for session %s",
-                            _USAGE_UPDATE_TIMEOUT,
-                            self._session_id,
-                        )
-                return response
-
-            # Send prompt to ACP server with retry logic for connection errors.
-            # Transient connection failures (network blips, server restarts) are
-            # retried to preserve session state and avoid losing progress.
             logger.info(
                 "Sending ACP prompt (timeout=%.0fs, blocks=%d)",
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
-
             response: PromptResponse | None = None
             max_retries = _ACP_PROMPT_MAX_RETRIES
+
+            async def _prompt() -> PromptResponse | None:
+                # Thin closure so existing mocks of ``_executor.run_async``
+                # that take a single positional callable keep working.
+                return await self._do_acp_prompt(prompt_blocks)
 
             for attempt in range(max_retries + 1):
                 try:
@@ -1341,8 +1932,8 @@ class ACPAgent(AgentBase):
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
                         ]
                         logger.warning(
-                            "ACP prompt failed with retriable error (attempt %d/%d), "
-                            "retrying in %.0fs: %s",
+                            "ACP prompt failed with retriable error "
+                            "(attempt %d/%d), retrying in %.0fs: %s",
                             attempt + 1,
                             max_retries + 1,
                             delay,
@@ -1355,8 +1946,8 @@ class ACPAgent(AgentBase):
                         raise
                 except ACPRequestError as e:
                     # Retry transient server errors (e.g. "Internal Server
-                    # Error" from Gemini).  These are JSON-RPC -32603 errors
-                    # that indicate a server-side failure, not a client bug.
+                    # Error" from Gemini).  JSON-RPC -32603 = server-side
+                    # failure, not a client bug.
                     if (
                         e.code in _RETRIABLE_SERVER_ERROR_CODES
                         and attempt < max_retries
@@ -1365,8 +1956,8 @@ class ACPAgent(AgentBase):
                             min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
                         ]
                         logger.warning(
-                            "ACP prompt failed with server error (attempt %d/%d), "
-                            "retrying in %.0fs: [%d] %s",
+                            "ACP prompt failed with server error "
+                            "(attempt %d/%d), retrying in %.0fs: [%d] %s",
                             attempt + 1,
                             max_retries + 1,
                             delay,
@@ -1381,135 +1972,172 @@ class ACPAgent(AgentBase):
 
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs", elapsed)
-
-            session_id = self._session_id or ""
-            usage_update = self._client.pop_turn_usage_update(session_id)
-            self._record_usage(
-                response,
-                session_id,
-                elapsed=elapsed,
-                usage_update=usage_update,
-            )
-
-            # ACPToolCallEvents were already emitted live from
-            # _OpenHandsACPBridge.session_update as each ToolCallStart /
-            # ToolCallProgress notification arrived — no end-of-turn fan-out
-            # here. FinishAction closes out the turn below.
-
-            # Build response message
-            response_text = "".join(self._client.accumulated_text)
-            thought_text = "".join(self._client.accumulated_thoughts)
-
-            if not response_text:
-                response_text = "(No response from ACP server)"
-
-            # ACP step() boundaries are full remote assistant turns, not
-            # partial planning steps. Emit FinishAction to delimit that
-            # completed turn for eval/remote consumers, matching #2190.
-            finish_action = FinishAction(message=response_text)
-            tc_id = str(uuid.uuid4())
-            action_event = ActionEvent(
-                source="agent",
-                thought=[],
-                reasoning_content=thought_text or None,
-                action=finish_action,
-                tool_name="finish",
-                tool_call_id=tc_id,
-                tool_call=MessageToolCall(
-                    id=tc_id,
-                    name="finish",
-                    arguments=json.dumps({"message": response_text}),
-                    origin="completion",
-                ),
-                llm_response_id=str(uuid.uuid4()),
-            )
-            on_event(action_event)
-            on_event(
-                ObservationEvent(
-                    observation=FinishObservation.from_text(text=response_text),
-                    action_id=action_event.id,
-                    tool_name="finish",
-                    tool_call_id=tc_id,
-                )
-            )
-
-            state.execution_status = ConversationExecutionStatus.FINISHED
-
+            self._finalize_successful_turn(response, elapsed, state, on_event)
         except TimeoutError:
-            elapsed = time.monotonic() - t0
-            logger.error(
-                "ACP prompt timed out after %.1fs (limit=%.0fs). "
-                "The ACP server may have completed its work but failed to "
-                "send the JSON-RPC response. Accumulated %d text chunks, "
-                "%d tool calls.",
-                elapsed,
-                self.acp_prompt_timeout,
-                len(self._client.accumulated_text),
-                len(self._client.accumulated_tool_calls),
-            )
-            error_message = Message(
-                role="assistant",
-                content=[
-                    TextContent(
-                        text=(
-                            f"ACP prompt timed out after {elapsed:.0f}s. "
-                            "The agent may have completed its work but "
-                            "the response was not received."
-                        )
-                    )
-                ],
-            )
-            # Close any tool cards left in flight from the timed-out attempt.
-            self._cancel_inflight_tool_calls()
-            on_event(MessageEvent(source="agent", llm_message=error_message))
-            state.execution_status = ConversationExecutionStatus.ERROR
+            self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
         except Exception as e:
-            logger.error("ACP prompt failed: %s", e, exc_info=True)
-            error_str = str(e)
-
-            # Close any tool cards left in flight before surfacing the error.
-            self._cancel_inflight_tool_calls()
-
-            # Emit error as an agent message (existing behavior, preserved for
-            # consumers that inspect MessageEvents)
-            error_message = Message(
-                role="assistant",
-                content=[TextContent(text=f"ACP error: {e}")],
-            )
-            on_event(MessageEvent(source="agent", llm_message=error_message))
-
-            # Emit typed ConversationErrorEvent so RemoteConversation can
-            # report the actual error detail via _get_last_error_detail()
-            # instead of falling back to "Remote conversation ended with error"
-            is_aup = (
-                "usage policy" in error_str.lower()
-                or "content policy" in error_str.lower()
-            )
-            on_event(
-                ConversationErrorEvent(
-                    source="agent",
-                    code="UsagePolicyRefusal" if is_aup else "ACPPromptError",
-                    detail=error_str[:500],
-                )
-            )
-
-            state.execution_status = ConversationExecutionStatus.ERROR
-
+            self._emit_turn_error(e, state, on_event)
             # Re-raise so LocalConversation.run()'s outer except handler
             # breaks the loop, emits ConversationErrorEvent, and raises
-            # ConversationRunError — matching how the regular Agent works
+            # ConversationRunError — matching how the regular Agent works.
             raise
         finally:
-            # Unwire the per-turn callbacks now that this step has finished
-            # emitting everything it's going to emit.  If the ACP subprocess
-            # later dispatches a trailing ``session_update`` (e.g. between
-            # turns), it fires on the portal thread with no FIFOLock held
-            # by anyone — firing a stale ``on_event`` there would race
-            # with other threads mutating ``state.events``.  Clearing the
-            # callbacks turns any such late update into a no-op emit.
-            self._client.on_event = None
-            self._client.on_token = None
-            self._client.on_activity = None
+            self._clear_turn_callbacks()
+
+    @observe(name="acp_agent.astep", ignore_inputs=["conversation", "on_event"])
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Native-async variant of :meth:`step`.
+
+        Schedules the ACP ``conn.prompt`` round-trip on the portal loop
+        (where ``self._conn`` lives) via ``BlockingPortal.start_task_soon``
+        and awaits the result back on the caller's loop via
+        ``asyncio.wrap_future``.  Post-prompt work — ``_record_usage``
+        (and the ``stats_callback`` it triggers), ``on_event(action)``,
+        ``on_event(observation)``, ``state.execution_status`` — runs
+        entirely on the caller's thread.
+
+        Why this matters: ``LocalConversation.arun`` holds the
+        conversation state's reentrant ``FIFOLock`` on its loop thread
+        across ``await self.agent.astep(...)``.  The default
+        ``AgentBase.astep`` would wrap sync ``step`` in
+        ``loop.run_in_executor(None, self.step, ...)``, moving every
+        post-prompt callback to a worker thread.  Any ``with state:``
+        inside that chain (today: ``stats_callback``; tomorrow: any
+        callback added to LLM telemetry or the event pipeline) then
+        blocks on a lock owned by the loop thread that is itself
+        ``await``-ing ``astep`` to return.  Keeping post-prompt work on
+        the caller's thread sidesteps the whole class of cross-thread
+        state-lock deadlocks.  See #3348 / #3350 for the full diagnosis.
+
+        Bridge ``session_update`` notifications continue to fire on the
+        portal thread (no marshalling here) — they reach the user's
+        ``on_event`` chain via the agent-server's
+        ``_emit_event_from_thread`` queue, which already handles the
+        thread hop.  Real-time mid-turn delivery of those events is a
+        separate concern (the queue waits for ``arun()`` to release the
+        state lock between iterations); it is not part of the deadlock
+        this fix removes.
+        """
+        state = conversation.state
+
+        prompt_blocks: list[Any] | None = None
+        for event in reversed(list(state.events)):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                prompt_blocks = self._build_acp_prompt(event)
+                if prompt_blocks:
+                    break
+        if prompt_blocks is None:
+            logger.warning("No user message found; finishing conversation")
+            state.execution_status = ConversationExecutionStatus.FINISHED
+            return
+
+        self._reset_client_for_turn(on_token, on_event)
+
+        t0 = time.monotonic()
+        try:
+            logger.info(
+                "Sending ACP prompt (timeout=%.0fs, blocks=%d, async)",
+                self.acp_prompt_timeout,
+                len(prompt_blocks),
+            )
+            portal = self._executor.portal
+
+            response: PromptResponse | None = None
+            max_retries = _ACP_PROMPT_MAX_RETRIES
+            for attempt in range(max_retries + 1):
+                try:
+                    # Schedule the ACP prompt on the portal loop (where the
+                    # connection lives); await the future back on the caller
+                    # loop.  On timeout ``asyncio.wait_for`` cancels the
+                    # caller-side asyncio future; the portal task may run to
+                    # completion in the background (anyio starts it
+                    # immediately on ``start_task_soon`` and
+                    # ``concurrent.futures.Future.cancel()`` returns ``False``
+                    # for an already-running task), but
+                    # ``_clear_turn_callbacks()`` in ``finally`` ensures any
+                    # trailing ``session_update`` from that task is a no-op.
+                    future = portal.start_task_soon(self._do_acp_prompt, prompt_blocks)
+                    response = await asyncio.wait_for(
+                        asyncio.wrap_future(future),
+                        timeout=self.acp_prompt_timeout,
+                    )
+                    break
+                except TimeoutError as exc:
+                    # ``asyncio.TimeoutError`` is ``TimeoutError`` on 3.11+.
+                    # Re-raise as a clean TimeoutError so the outer handler
+                    # branches the same way as the sync path.
+                    raise TimeoutError(
+                        f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s"
+                    ) from exc
+                except _RETRIABLE_CONNECTION_ERRORS as e:
+                    if attempt < max_retries:
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with retriable error "
+                            "(attempt %d/%d), retrying in %.0fs: %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e,
+                        )
+                        await asyncio.sleep(delay)
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
+                    else:
+                        raise
+                except ACPRequestError as e:
+                    if (
+                        e.code in _RETRIABLE_SERVER_ERROR_CODES
+                        and attempt < max_retries
+                    ):
+                        delay = _ACP_PROMPT_RETRY_DELAYS[
+                            min(attempt, len(_ACP_PROMPT_RETRY_DELAYS) - 1)
+                        ]
+                        logger.warning(
+                            "ACP prompt failed with server error "
+                            "(attempt %d/%d), retrying in %.0fs: [%d] %s",
+                            attempt + 1,
+                            max_retries + 1,
+                            delay,
+                            e.code,
+                            e,
+                        )
+                        await asyncio.sleep(delay)
+                        self._cancel_inflight_tool_calls()
+                        self._reset_client_for_turn(on_token, on_event)
+                    else:
+                        raise
+
+            elapsed = time.monotonic() - t0
+            logger.info("ACP prompt returned in %.1fs (async)", elapsed)
+            self._finalize_successful_turn(response, elapsed, state, on_event)
+        except asyncio.CancelledError:
+            # ``asyncio.CancelledError`` inherits from ``BaseException``, not
+            # ``Exception`` — so it would otherwise bypass the generic handler
+            # and only run ``finally``, where ``_clear_turn_callbacks`` unwires
+            # the bridge.  Without closing in-flight tool cards here, any
+            # ``pending`` / ``in_progress`` ``ACPToolCallEvent`` streamed
+            # before cancellation stays live in the event log forever
+            # (``LocalConversation._emit_orphaned_action_errors`` only patches
+            # ``ActionEvent``s, not ``ACPToolCallEvent``s).  Cancel-emit on
+            # the caller thread while callbacks are still wired, then re-raise
+            # so ``arun()`` can transition to PAUSED.
+            self._cancel_inflight_tool_calls()
+            raise
+        except TimeoutError:
+            self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
+        except Exception as e:
+            self._emit_turn_error(e, state, on_event)
+            raise
+        finally:
+            self._clear_turn_callbacks()
 
     def ask_agent(self, question: str) -> str | None:
         """Fork the ACP session, prompt the fork, and return the response."""
@@ -1567,6 +2195,112 @@ class ACPAgent(AgentBase):
         with client._fork_lock:
             return self._executor.run_async(_fork_and_prompt)
 
+    def set_acp_model(self, model: str) -> None:
+        """Switch the model on the running ACP session (mid-conversation).
+
+        Issues a protocol-level ``session/set_model`` call on the live
+        connection so the new model takes effect for subsequent turns in the
+        *same* session — no subprocess restart, no loss of conversation
+        context. Verified against claude-agent-acp and codex-acp.
+
+        This is the low-level agent primitive; prefer
+        :meth:`LocalConversation.switch_acp_model` as the entry point. That
+        wrapper (a) holds the state lock so the switch cannot race a running
+        ``step()``, and (b) persists the new value by swapping in an agent
+        ``model_copy`` — ``acp_model`` is frozen, so this method updates only
+        the live session and the sentinel ``llm.model``/metrics, **not**
+        ``self.acp_model``. A direct caller therefore leaves ``acp_model``
+        (which ``_record_usage`` reads for cost attribution) stale and the
+        switch unpersisted; go through ``switch_acp_model`` instead.
+
+        Args:
+            model: Provider-specific model id to switch to (e.g.
+                ``"claude-haiku-4-5-20251001"`` or ``"gpt-5.4/low"``).
+
+        Raises:
+            ValueError: If ``model`` is empty or whitespace-only, if the
+                detected provider does not support runtime model switching, or
+                if the ACP server rejects the ``session/set_model`` call (e.g.
+                method-not-found on a custom server, or an invalid model id).
+            RuntimeError: If the ACP session has not been initialized yet
+                (i.e. before the first ``run()``).
+            TimeoutError: If the server does not answer within
+                ``acp_prompt_timeout`` seconds.
+
+        Note:
+            A timeout means the client stopped waiting, not that the switch was
+            rejected: the ``session/set_model`` request may already have been
+            written and could still be applied server-side. The connection and
+            session stay alive and the local sentinel model is intentionally
+            left unchanged, so a timed-out switch leaves the server-side model
+            indeterminate. The conservative choice (treat it as failed locally)
+            keeps cost/token accounting on the previously-known model and
+            self-heals on the next successful switch; the agent itself always
+            runs whatever model the live ACP session holds.
+        """
+        if not model or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        if self._conn is None or self._session_id is None or self._executor is None:
+            raise RuntimeError(
+                "ACP session is not initialized; the model can only be switched "
+                "after the conversation has started (first run())."
+            )
+        provider = detect_acp_provider_by_agent_name(self._agent_name)
+        if provider is not None and not provider.supports_runtime_model_switch:
+            raise ValueError(
+                f"ACP provider '{provider.key}' does not support runtime model "
+                "switching via set_session_model."
+            )
+        # Bounded round-trip: this runs while LocalConversation.switch_acp_model
+        # holds the state lock, so a server that accepts the call but never
+        # answers must not wedge the lock indefinitely. On timeout / protocol
+        # error we propagate *before* mutating any local state, so the sentinel
+        # LLM is only updated once the live session has actually switched.
+        try:
+            self._executor.run_async(
+                self._conn.set_session_model(
+                    model_id=model, session_id=self._session_id
+                ),
+                timeout=self.acp_prompt_timeout,
+            )
+        except ACPRequestError as e:
+            # Server-internal failures (JSON-RPC -32603) are not the caller's
+            # fault, and the prompt path already treats them as retriable. Let
+            # them propagate (-> 5xx) instead of mislabeling them as a 400
+            # client error.
+            if e.code in _RETRIABLE_SERVER_ERROR_CODES:
+                raise
+            # acp.exceptions.RequestError derives from Exception (not
+            # RuntimeError); surface a true client/protocol rejection (e.g.
+            # method-not-found, invalid model id) as a ValueError so callers —
+            # and the agent-server route — treat it as a 400-class client error
+            # rather than an opaque 500.
+            raise ValueError(
+                f"ACP server rejected set_session_model(model={model!r}): {e}"
+            ) from e
+        # Reflect the live model on the sentinel LLM + metrics so cost/token
+        # accounting and serialized state show the model actually in use
+        # (mirrors model_post_init). The ``acp_model`` field is frozen, so the
+        # authoritative current model is persisted by
+        # :meth:`LocalConversation.switch_acp_model` via an agent ``model_copy``.
+        self.llm.model = model
+        self.llm.metrics.model_name = model
+        if self.llm.metrics.accumulated_token_usage is not None:
+            self.llm.metrics.accumulated_token_usage.model = model
+        # Refresh the surfaced model state so the chip/picker
+        # (``ConversationInfo.current_model_id``) reflects the switch instead
+        # of the stale session-start value. ``_current_model_id`` is a
+        # PrivateAttr, so ``switch_acp_model``'s shallow ``model_copy`` carries
+        # this updated value onto the persisted agent. ``available_models`` is
+        # unchanged by a model switch, so it is intentionally left alone.
+        self._current_model_id = model
+        logger.info(
+            "Switched ACP session model to %s (provider=%s, session=%s)",
+            model,
+            provider.key if provider else "unknown",
+            self._session_id,
+        )
+
     def close(self) -> None:
         """Terminate the ACP subprocess and clean up resources."""
         if self._closed:
@@ -1602,6 +2336,25 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error closing executor: %s", e)
             self._executor = None
+
+    def release_runtime(self) -> None:
+        """Disarm this agent's finalizer after handing its live ACP runtime to a
+        shallow :meth:`~pydantic.BaseModel.model_copy`.
+
+        The copy shares this agent's ``_conn`` / ``_executor`` / ``_process``
+        references (``model_copy`` is shallow). Marking this now-stale instance
+        closed makes its ``__del__`` -> :meth:`close` a no-op, so dropping it
+        cannot tear down the runtime the copy now owns.
+
+        The runtime references are intentionally left intact: an in-flight
+        :meth:`ask_agent` fork — which is thread-safe and may still hold this
+        pre-switch agent — keeps a valid connection until it finishes. Sole
+        ownership for teardown passes to the copy (the live ``self.agent``
+        going forward), which is closed on conversation shutdown.
+
+        See :meth:`LocalConversation.switch_acp_model`.
+        """
+        self._closed = True
 
     def __del__(self) -> None:
         try:

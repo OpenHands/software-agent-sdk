@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 import mcp.types
 from litellm import ChatCompletionToolParam
+from openai.types.responses import FunctionToolParam
 from pydantic import Field, ValidationError
 
 from openhands.sdk.logger import get_logger
@@ -296,6 +297,36 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         assert self.name == self.mcp_tool.name
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_openai_tool(
+            add_security_risk_prediction=add_security_risk_prediction,
+            action_type=mcp_action_type,
+        )
+
+    def to_responses_tool(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,
+    ) -> FunctionToolParam:
+        """Convert a Tool to a Responses API function tool.
+
+        For MCP, we dynamically create the action_type (type: Schema)
+        from the MCP tool input schema, and pass it to the parent method.
+        It will use the .model_fields from this pydantic model to
+        generate the Responses-compatible tool schema.
+
+        Args:
+            add_security_risk_prediction: Whether to add a `security_risk` field
+                to the action schema for LLM to predict. This is useful for
+                tools that may have safety risks, so the LLM can reason about
+                the risk level before calling the tool.
+        """
+        if action_type is not None:
+            raise ValueError(
+                "MCPTool.to_responses_tool does not support overriding action_type"
+            )
+
+        assert self.name == self.mcp_tool.name
+        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
+        return super().to_responses_tool(
             add_security_risk_prediction=add_security_risk_prediction,
             action_type=mcp_action_type,
         )

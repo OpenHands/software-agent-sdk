@@ -15,7 +15,7 @@ Usage:
 
     # Run against specific models
     uv run python tests/integration/api_compliance/run_compliance.py \
-        --models claude-sonnet-4-5-20250929,gpt-5.2
+        --models claude-sonnet-4-5,gpt-5.5
 
     # Output to specific directory
     uv run python tests/integration/api_compliance/run_compliance.py \
@@ -52,8 +52,8 @@ DEFAULT_MODELS: dict[str, dict[str, Any]] = {
         "temperature": 0.0,
         "_display": "claude",
     },
-    "gpt-5.2": {
-        "model": "litellm_proxy/openai/gpt-5.2-2025-12-11",
+    "gpt-5.5": {
+        "model": "litellm_proxy/openai/gpt-5.5",
         "_display": "gpt",
     },
     "gemini-3.1-pro": {

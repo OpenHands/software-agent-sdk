@@ -48,6 +48,7 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import TerminalAction, TerminalObservation
 
@@ -134,6 +135,82 @@ def conversation_service():
         # Initialize the _event_services dict to simulate an active service
         service._event_services = {}
         yield service
+
+
+@pytest.mark.asyncio
+async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
+    conversation_service, tmp_path
+):
+    cipher = Cipher("mcp-env-test-key")
+    conversation_service.cipher = cipher
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    encrypted_llm_key = cipher.encrypt(SecretStr("sk-plaintext"))
+    encrypted_mcp_token = cipher.encrypt(SecretStr("ghp-plaintext"))
+    request = StartConversationRequest(
+        agent_settings={
+            "schema_version": 1,
+            "agent_kind": "llm",
+            "llm": {
+                "model": "gpt-4o",
+                "usage_id": "test-llm",
+                "api_key": encrypted_llm_key,
+            },
+            "tools": [],
+            "mcp_config": {
+                "mcpServers": {
+                    "github": {
+                        "command": "npx",
+                        "env": {
+                            "GITHUB_PERSONAL_ACCESS_TOKEN": encrypted_mcp_token,
+                        },
+                    }
+                }
+            },
+        },
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        secrets_encrypted=True,
+    )
+    assert (
+        request.agent.mcp_config["mcpServers"]["github"]["env"][
+            "GITHUB_PERSONAL_ACCESS_TOKEN"
+        ]
+        == encrypted_mcp_token
+    )
+
+    captured: dict[str, StoredConversation] = {}
+
+    async def fake_start_event_service(stored: StoredConversation):
+        captured["stored"] = stored
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    stored = captured["stored"]
+    assert isinstance(stored.agent.llm.api_key, SecretStr)
+    assert stored.agent.llm.api_key.get_secret_value() == "sk-plaintext"
+    assert (
+        stored.agent.mcp_config["mcpServers"]["github"]["env"][
+            "GITHUB_PERSONAL_ACCESS_TOKEN"
+        ]
+        == "ghp-plaintext"
+    )
 
 
 @pytest.mark.asyncio
