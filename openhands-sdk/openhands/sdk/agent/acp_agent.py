@@ -175,6 +175,10 @@ _AUTH_METHOD_ENV_MAP: dict[str, str] = {
     "gemini-api-key": "GEMINI_API_KEY",
 }
 _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
+# Gemini CLI personal (Google OAuth) login, cached by ``gemini login`` /
+# ``gemini --acp``. Its presence lets us select the server's ``oauth-personal``
+# auth method without an API key (mirrors the ChatGPT subscription path).
+_GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
 def _select_auth_method(
@@ -186,15 +190,23 @@ def _select_auth_method(
     Returns the ``id`` of the first matching method, or ``None`` if no
     supported credential source is available (the server may not require auth).
 
-    ChatGPT subscription login (device-code flow stored in
-    ``~/.codex/auth.json``) is checked first so it takes precedence over
-    explicit API keys, which serve as the fallback.
+    Subscription / OAuth logins (whose cached credential file is present) are
+    checked first so they take precedence over explicit API keys, which serve
+    as the fallback:
+
+    - ``chatgpt`` (codex-acp) — ``~/.codex/auth.json``
+    - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json``
+
+    In a server image these files are absent (no interactive login), so the
+    API-key fallback (e.g. ``GEMINI_API_KEY``) is used instead.
     """
     method_ids = {m.id for m in auth_methods}
-    # Prefer ChatGPT subscription login when the auth file is present.
-    if "chatgpt" in method_ids:
-        if (Path.home() / _CHATGPT_AUTH_PATH).is_file():
-            return "chatgpt"
+    # Prefer subscription / OAuth logins when their cached credential file is
+    # present.
+    if "chatgpt" in method_ids and (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+        return "chatgpt"
+    if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
+        return "oauth-personal"
     # Fall back to explicit API key env vars.
     for method_id, env_var in _AUTH_METHOD_ENV_MAP.items():
         if method_id in method_ids and env_var in env:
