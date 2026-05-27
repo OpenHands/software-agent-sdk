@@ -16,7 +16,7 @@ import tempfile
 import pytest
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import Message, TextContent
@@ -24,17 +24,19 @@ from openhands.sdk.llm.exceptions import LLMAuthenticationError
 from openhands.sdk.testing import TestLLM
 
 _RAW_LITELLM_ERROR = (
-    'litellm.AuthenticationError: AnthropicException - {"type":"error","error":'
-    '{"type":"authentication_error","message":"invalid x-api-key"},'
+    "litellm.AuthenticationError: AnthropicException - "
+    '{"type":"error","error":{"type":"authentication_error",'
+    '"message":"invalid x-api-key"},'
     '"request_id":"req_011CbTfF4jtKVAB95FSH6ESb"}'
 )
 _FRIENDLY_SUBSTRING = "invalid or has expired"
 
 
-def _make_auth_failing_conversation(tmpdir: str) -> Conversation:
+def _make_auth_failing_conversation(tmpdir: str) -> LocalConversation:
     llm = TestLLM.from_messages([LLMAuthenticationError(_RAW_LITELLM_ERROR)])
     agent = Agent(llm=llm, tools=[])
     conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
+    assert isinstance(conv, LocalConversation)
     conv.send_message(Message(role="user", content=[TextContent(text="hello")]))
     return conv
 
