@@ -680,7 +680,9 @@ def test_split_breaking_changes_separates_three_buckets():
             # Enum value on an ordinary (non-discriminator) property -> breaking.
             "id": "response-property-enum-value-added",
             "details": {},
-            "text": "added the new `archived` enum value to the `status` response property",
+            "text": (
+                "added the new `archived` enum value to the `status` response property"
+            ),
         },
         {
             "id": "response-property-removed",
