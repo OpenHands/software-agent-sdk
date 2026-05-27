@@ -3161,6 +3161,54 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "chatgpt"
 
+    def test_gemini_oauth_personal_when_creds_file_present(self, tmp_path):
+        """gemini-cli's OAuth login is selected when ~/.gemini/oauth_creds.json
+        exists, with no GEMINI_API_KEY needed."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) == "oauth-personal"
+
+    def test_gemini_oauth_preferred_over_api_key(self, tmp_path):
+        """OAuth login takes precedence over GEMINI_API_KEY (mirrors chatgpt)."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+
+        env = {"GEMINI_API_KEY": "g-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "oauth-personal"
+
+    def test_gemini_api_key_fallback_when_no_oauth_file(self, tmp_path):
+        """Falls back to GEMINI_API_KEY when oauth-personal is offered but the
+        creds file is absent (e.g. in a server image)."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": "g-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+    def test_gemini_oauth_offered_but_no_creds_no_key(self, tmp_path):
+        """oauth-personal offered, no creds file and no API key -> None."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) is None
+
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 
