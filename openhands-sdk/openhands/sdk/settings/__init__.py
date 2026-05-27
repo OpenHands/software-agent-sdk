@@ -37,7 +37,6 @@ if TYPE_CHECKING:
         AgentSettingsConfig,
         CondenserSettings,
         ConversationSettings,
-        LLMAgentSettings,
         OpenHandsAgentSettings,
         SettingsChoice,
         SettingsFieldSchema,
@@ -86,7 +85,6 @@ __all__ = [
     "AgentSettingsConfig",
     "CondenserSettings",
     "ConversationSettings",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "SETTINGS_METADATA_KEY",
     "SETTINGS_SECTION_METADATA_KEY",
@@ -116,30 +114,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "LLMAgentSettings":
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        # NOTE: keep the first arg the bare literal "LLMAgentSettings" (not an
-        # f-string). The api-breakage checker (.github/scripts/
-        # check_sdk_api_breakage.py) statically scans warn_deprecated("Literal")
-        # / @deprecated to learn which exports are sanctioned for removal; an
-        # f-string feature name is invisible to it. This literal is what lets the
-        # eventual v1.25.0 removal pass the breakage gate.
-        warn_deprecated(
-            "LLMAgentSettings",
-            deprecated_in="1.19.0",
-            removed_in="1.25.0",
-            details=(
-                "Import ``OpenHandsAgentSettings`` instead — ``LLMAgentSettings`` "
-                "was renamed in v1.19.0. The ``openhands.sdk`` and "
-                "``openhands.sdk.settings`` import aliases are scheduled for "
-                "removal in v1.25.0."
-            ),
-            stacklevel=3,
-        )
-        from . import model
-
-        return getattr(model, name)
     if name in _MODEL_EXPORTS:
         from . import model
 

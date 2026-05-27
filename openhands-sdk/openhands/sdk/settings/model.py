@@ -433,7 +433,7 @@ def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     persisted payloads carried ``agent_kind: 'llm'``. The two classes are
     field-compatible (``LLMAgentSettings`` is a subclass of
     ``OpenHandsAgentSettings`` that only narrows the discriminator literal),
-    and ``LLMAgentSettings`` is scheduled for removal in v1.25.0. Rewriting
+    and ``LLMAgentSettings``'s import aliases were removed in v1.24.0. Rewriting
     the discriminator on read lets callers that explicitly validate as
     ``OpenHandsAgentSettings`` (the canonical class) accept legacy data
     without losing any fields.
@@ -1250,17 +1250,18 @@ class ACPAgentSettings(AgentSettingsBase):
 
 
 class LLMAgentSettings(OpenHandsAgentSettings):
-    """Deprecated name for :class:`OpenHandsAgentSettings`.
+    """Legacy ``agent_kind='llm'`` variant of :class:`OpenHandsAgentSettings`.
 
     ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
-    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
-    callers keep working. Importing this name from ``openhands.sdk.settings``
-    (or ``openhands.sdk``) emits a :class:`DeprecationWarning` via the
-    module-level ``__getattr__`` — no construction-time overhead.
+    The public import aliases (``from openhands.sdk import LLMAgentSettings`` and
+    ``from openhands.sdk.settings import LLMAgentSettings``) were removed in
+    v1.24.0 — use :class:`OpenHandsAgentSettings` for all new code.
 
-    Use :class:`OpenHandsAgentSettings` for all new code.
-
-    Scheduled for removal in v1.25.0.
+    The class itself is retained (reachable at
+    ``openhands.sdk.settings.model.LLMAgentSettings``) because it remains a
+    member of the settings discriminated union: it keeps ``agent_kind='llm'`` so
+    persisted legacy payloads still deserialize and the API-breakage checker
+    sees no field-value change versus the published release.
     """
 
     # Keep agent_kind as Literal["llm"] so the API-breakage checker sees no
