@@ -3232,11 +3232,15 @@ class TestMaybeSetSessionModel:
     @pytest.mark.asyncio
     async def test_codex_agent_uses_protocol_model_override(self):
         conn = AsyncMock()
-        await _maybe_set_session_model(conn, "codex-acp", "session-1", "gpt-5.4")
+        applied = await _maybe_set_session_model(
+            conn, "codex-acp", "session-1", "gpt-5.4"
+        )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gpt-5.4",
             session_id="session-1",
         )
+        # The override was actually pushed to the server via the protocol call.
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_meta_key_provider_skips_protocol_override_at_init(self):
@@ -3244,19 +3248,34 @@ class TestMaybeSetSessionModel:
         # one-shot init set_session_model call is skipped (even though the
         # provider now supports the protocol call for runtime switches).
         conn = AsyncMock()
-        await _maybe_set_session_model(
+        applied = await _maybe_set_session_model(
             conn,
             "claude-agent-acp",
             "session-1",
             "claude-opus-4-6",
         )
         conn.set_session_model.assert_not_called()
+        # Not applied *via this call* — claude rode the model in via _meta on
+        # new_session, which the caller accounts for separately.
+        assert applied is False
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
         conn = AsyncMock()
-        await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        applied = await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
         conn.set_session_model.assert_not_called()
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_does_not_apply_override_at_init(self):
+        # An unknown/custom server gets neither _meta nor the protocol call on a
+        # fresh session, so the override never reaches the server.
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "some-custom-acp", "session-1", "whatever"
+        )
+        conn.set_session_model.assert_not_called()
+        assert applied is False
 
 
 class TestReapplySessionModelOnResume:
@@ -3270,28 +3289,33 @@ class TestReapplySessionModelOnResume:
         # be reapplied via the runtime-switch gate — _maybe_set_session_model
         # would skip it.
         conn = AsyncMock()
-        await _reapply_session_model_on_resume(
+        applied = await _reapply_session_model_on_resume(
             conn, "claude-agent-acp", "sess-1", "claude-haiku-4-5-20251001"
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
         )
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_codex_reapplies_persisted_model_on_resume(self):
         conn = AsyncMock()
-        await _reapply_session_model_on_resume(
+        applied = await _reapply_session_model_on_resume(
             conn, "codex-acp", "sess-1", "gpt-5.4/low"
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gpt-5.4/low", session_id="sess-1"
         )
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
         conn = AsyncMock()
-        await _reapply_session_model_on_resume(conn, "claude-agent-acp", "sess-1", None)
+        applied = await _reapply_session_model_on_resume(
+            conn, "claude-agent-acp", "sess-1", None
+        )
         conn.set_session_model.assert_not_called()
+        assert applied is False
 
     @pytest.mark.asyncio
     async def test_unknown_provider_attempts_reapply(self):
@@ -3300,12 +3324,13 @@ class TestReapplySessionModelOnResume:
         # resume must mirror that and attempt the reapply too (otherwise the
         # resumed session would silently revert to the server default).
         conn = AsyncMock()
-        await _reapply_session_model_on_resume(
+        applied = await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="whatever", session_id="sess-1"
         )
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_known_unsupported_provider_skips_reapply(self):
@@ -3328,8 +3353,11 @@ class TestReapplySessionModelOnResume:
             "openhands.sdk.agent.acp_agent.detect_acp_provider_by_agent_name",
             return_value=unsupported,
         ):
-            await _reapply_session_model_on_resume(conn, "legacy-acp", "sess-1", "x")
+            applied = await _reapply_session_model_on_resume(
+                conn, "legacy-acp", "sess-1", "x"
+            )
         conn.set_session_model.assert_not_called()
+        assert applied is False
 
     @pytest.mark.asyncio
     async def test_client_rejection_is_swallowed_on_resume(self):
@@ -3340,10 +3368,13 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
-        await _reapply_session_model_on_resume(
+        applied = await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
         conn.set_session_model.assert_awaited_once()
+        # Rejected => the live session kept the server default, so the override
+        # must NOT be reported as applied.
+        assert applied is False
 
     @pytest.mark.asyncio
     async def test_any_request_error_is_swallowed_on_resume(self):
@@ -3354,10 +3385,11 @@ class TestReapplySessionModelOnResume:
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
         )
-        await _reapply_session_model_on_resume(
+        applied = await _reapply_session_model_on_resume(
             conn, "codex-acp", "sess-1", "gpt-5.4/low"
         )
         conn.set_session_model.assert_awaited_once()
+        assert applied is False
 
 
 class TestSetACPModel:
@@ -4236,6 +4268,58 @@ class TestACPSessionIdPersistence:
 
         # The stale list is cleared (overwritten with []), not preserved.
         assert state.agent_state["acp_available_models"] == []
+        # ...and the stale current id is cleared in lock-step: the server
+        # reported a ``models`` block with no usable current id, so leaving the
+        # old id would render a chip that points at a model absent from the
+        # (now-empty) picker list.
+        assert "acp_current_model_id" not in state.agent_state
+
+    def test_resume_with_reported_models_but_no_current_clears_stale_id(self, tmp_path):
+        """Resume where the server reports a non-empty ``availableModels`` list
+        but no usable ``currentModelId`` must CLEAR the stale persisted current
+        id while adopting the freshly reported list.
+
+        This is the asymmetric-gating case: ``_available_models`` is reported
+        (so the list is overwritten) while ``_current_model_id`` is ``None``.
+        The current id must follow the list's "reported" signal, not silently
+        keep a stale value the server no longer claims.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "model-a",
+            "acp_available_models": [
+                {"model_id": "model-a", "name": "Model A", "description": None},
+            ],
+        }
+        # load_session carries a models block listing models, but with no
+        # current selection (e.g. the server cleared its current model).
+        conn = self._make_conn()
+        load_response = MagicMock()
+        load_response.models = MagicMock()
+        load_response.models.current_model_id = ""
+        model_x = MagicMock()
+        model_x.model_id = "model-x"
+        model_x.name = "Model X"
+        model_x.description = None
+        load_response.models.available_models = [model_x]
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # The stale current id is dropped (server reported none)...
+        assert "acp_current_model_id" not in state.agent_state
+        # ...while the freshly reported picker list replaces the stale one.
+        assert [m["model_id"] for m in state.agent_state["acp_available_models"]] == [
+            "model-x"
+        ]
 
     def test_fresh_replacement_clears_stale_model_when_new_session_omits_models(
         self, tmp_path
@@ -4374,6 +4458,96 @@ class TestACPSessionIdPersistence:
             mode_id="full-access",
             session_id="stored-sess",
         )
+
+    @staticmethod
+    def _models_block(current_model_id: str, model_ids: list[str]):
+        """Build a response ``.models`` block mock for the resolution tests."""
+        models = MagicMock()
+        models.current_model_id = current_model_id
+        entries = []
+        for mid in model_ids:
+            m = MagicMock()
+            m.model_id = mid
+            m.name = mid
+            m.description = None
+            entries.append(m)
+        models.available_models = entries
+        return models
+
+    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
+        self, tmp_path
+    ):
+        """Fresh session on an unknown/custom provider with ``acp_model`` set:
+        the override is never pushed to the server (no ``_meta``, no protocol
+        call), so ``current_model_id`` must reflect what the server reported —
+        not the override the live session isn't actually running.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        new_response = MagicMock()
+        new_response.session_id = "fresh-sess"
+        new_response.models = self._models_block("server-model", ["server-model"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "some-custom-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        # Unknown provider => the override never reached the server.
+        conn.set_session_model.assert_not_awaited()
+        assert agent.current_model_id == "server-model"
+
+    def test_known_provider_surfaces_applied_override(self, tmp_path):
+        """Fresh session on a provider that applies the override via the
+        protocol call (codex): ``current_model_id`` reflects the override, since
+        it was actually pushed to the server.  Guards the precedence the QA
+        verified — the fix must not regress the happy override path.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        new_response = MagicMock()
+        new_response.session_id = "fresh-sess"
+        new_response.models = self._models_block("server-old", ["server-old"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
+
+    def test_resume_rejected_override_surfaces_server_model(self, tmp_path):
+        """Resume where ``set_session_model`` is rejected: the live session keeps
+        the server default, so ``current_model_id`` must fall back to what the
+        server reported on ``load_session`` rather than claiming the override.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        load_response = MagicMock()
+        load_response.models = self._models_block("server-resumed", ["server-resumed"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.load_session = AsyncMock(return_value=load_response)
+        # Server rejects the reapply — swallowed, session keeps its own model.
+        conn.set_session_model = AsyncMock(
+            side_effect=ACPRequestError(code=-32601, message="method not found")
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        assert agent.current_model_id == "server-resumed"
 
     def test_roundtrip_via_conversation_state_persistence(self, tmp_path):
         """End-to-end round-trip through ConversationState persistence:

@@ -260,7 +260,7 @@ async def _maybe_set_session_model(
     agent_name: str,
     session_id: str,
     acp_model: str | None,
-) -> None:
+) -> bool:
     """Apply the *initial* session model right after session creation.
 
     This is the session-creation path only, gated on
@@ -275,12 +275,20 @@ async def _maybe_set_session_model(
     :meth:`ACPAgent.set_acp_model` instead, which always uses
     ``set_session_model`` and is gated on the separate
     ``supports_runtime_model_switch`` capability flag.
+
+    Returns ``True`` only when this issued a ``set_session_model`` call — i.e.
+    the override was actually pushed to the server via *this* path. ``False``
+    when there is nothing to apply (no ``acp_model``) or the provider selects
+    its model another way (``_meta``) or not at all (unknown/custom server), so
+    the caller can tell whether the live session is really running ``acp_model``.
     """
     if not acp_model:
-        return
+        return False
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        return True
+    return False
 
 
 async def _reapply_session_model_on_resume(
@@ -288,7 +296,7 @@ async def _reapply_session_model_on_resume(
     agent_name: str,
     session_id: str,
     acp_model: str | None,
-) -> None:
+) -> bool:
     """Reapply the persisted model to a *resumed* session.
 
     ``load_session()`` carries no model ``_meta``, so a session resumed after a
@@ -303,14 +311,22 @@ async def _reapply_session_model_on_resume(
     ``set_session_model`` for later switches. A server that rejects the call is
     tolerated (logged) — like the ``load_session`` fallback above — so resume
     can't break; the session keeps the server default until the next switch.
+
+    Returns ``True`` only when ``set_session_model`` was issued and accepted, so
+    the caller knows the resumed live session is actually running ``acp_model``.
+    ``False`` when there is nothing to reapply, the provider doesn't support the
+    switch, or the server rejected the call (swallowed) — in those cases the
+    session keeps the server default and the override must not be surfaced as
+    the current model.
     """
     if not acp_model:
-        return
+        return False
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is not None and not provider.supports_runtime_model_switch:
-        return
+        return False
     try:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        return True
     except ACPRequestError as e:
         logger.warning(
             "Could not reapply model %r on resumed session %s (%s); the live "
@@ -319,6 +335,7 @@ async def _reapply_session_model_on_resume(
             session_id,
             e,
         )
+        return False
 
 
 def _extract_token_usage(
@@ -1170,9 +1187,18 @@ class ACPAgent(AgentBase):
         # ``current_model_id`` is known whenever the caller forced ``acp_model``
         # (e.g. a prior runtime switch) or the server reported one, even on a
         # resume whose ``load_session`` omitted the UNSTABLE ``models`` block.
+        # The clear branch mirrors the ``acp_available_models`` gating below so
+        # the two fields can't disagree: drop the persisted id when either the
+        # session was replaced (``not truly_resumed``) OR the server *did*
+        # report a ``models`` block this launch but with no usable current id
+        # (``_available_models is not None`` while ``_current_model_id is None``,
+        # e.g. ``currentModelId: ""`` / ``availableModels: []``).  Without the
+        # second clause a stale id would survive a resume even though the server
+        # explicitly reported no current model, leaving a chip that points at a
+        # model absent from the (now-cleared) picker list.
         if self._current_model_id is not None:
             new_agent_state["acp_current_model_id"] = self._current_model_id
-        elif not truly_resumed:
+        elif not truly_resumed or self._available_models is not None:
             new_agent_state.pop("acp_current_model_id", None)
         # The list is gated *independently* on whether the server actually
         # reported a ``models`` block this launch (``None`` = absent), NOT on
@@ -1446,6 +1472,12 @@ class ACPAgent(AgentBase):
                         e,
                     )
 
+            # Track whether ``acp_model`` was actually pushed to the server so
+            # ``current_model_id`` below can stay honest: a caller override that
+            # never reached the server (unknown provider on a fresh session, or
+            # a resume whose ``set_session_model`` the server rejected) must not
+            # be surfaced as the live model.
+            override_applied = False
             if session_id is None:
                 # Fresh session. Build _meta content for session options (e.g.
                 # model selection). Extra kwargs to new_session() become the
@@ -1458,30 +1490,42 @@ class ACPAgent(AgentBase):
                 # Initial-selection protocol call for providers that use it
                 # (codex-acp, gemini-cli); no-op for claude, which selected its
                 # model via the _meta above.
-                await _maybe_set_session_model(
+                applied_via_call = await _maybe_set_session_model(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                 )
+                # The override actually reached the server iff it rode in via the
+                # session ``_meta`` (claude — non-empty ``session_meta``) or the
+                # protocol call was issued (codex/gemini).  An unknown/custom
+                # provider gets neither, so ``acp_model`` is set on the agent but
+                # the server is running its own default.
+                override_applied = bool(session_meta) or applied_via_call
             else:
                 # Resumed session. load_session() does not carry model _meta, so
                 # reapply the persisted (possibly runtime-switched) acp_model via
                 # the runtime-switch capability — otherwise the resumed live
                 # session would run on the server default while serialized state
                 # claims the switched model.
-                await _reapply_session_model_on_resume(
+                override_applied = await _reapply_session_model_on_resume(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                 )
 
-            # Resolve the model the agent will actually use.  If the caller
-            # forced one via ``acp_model``, trust that; otherwise fall back to
-            # whatever the server reported in ``models.currentModelId``.  Older
-            # agents that don't surface the field leave it ``None``.
-            current_model_id = self.acp_model or reported_model_id
+            # Resolve the model the agent will actually use.  Prefer the caller's
+            # ``acp_model`` only when it was actually applied to the server above;
+            # otherwise the server is running its own model, so surface what it
+            # reported in ``models.currentModelId`` (``None`` for older agents
+            # that don't surface the field).  Trusting ``acp_model`` on paths
+            # where it never reached the server would mislabel the chip/picker.
+            current_model_id = (
+                self.acp_model
+                if (self.acp_model and override_applied)
+                else reported_model_id
+            )
 
             # Resolve the permission mode.  Known providers each have their
             # own mode ID (bypassPermissions, full-access, yolo …).
