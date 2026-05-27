@@ -36,10 +36,7 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
-from openhands.sdk.conversation.types import (
-    ConversationObservabilityMetadata,
-    TraceMetadataValue,
-)
+from openhands.sdk.conversation.types import ConversationObservabilityMetadata
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
