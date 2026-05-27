@@ -265,6 +265,10 @@ def render_resume_transcript(
 
     Returns ``None`` when no event in ``events`` produces visible output
     (e.g. a fresh conversation, or only filtered placeholder tool events).
+    Also returns ``None`` when ``max_chars < len(marker)``: a budget too
+    small to hold the complete marker would force a partial marker, which
+    would break ``out.startswith(marker)`` double-resume detection — so the
+    caller should treat that case as a fresh conversation.
 
     ``MessageEvent``s become ``[USER]: …`` / ``[ASSISTANT]: …`` blocks
     (including ``extended_content`` from ``to_llm_message()``),
