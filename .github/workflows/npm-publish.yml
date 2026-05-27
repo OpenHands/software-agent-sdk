@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual re-publish for an already-pushed tag (e.g. when a prior run failed
+  # before the publish step). Publishes the given version from the default
+  # branch — the published tarball excludes .github/, so it is identical to the
+  # tag's package contents.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish to npmjs.org (no leading "v"), e.g. 1.24.0'
+        required: true
 
 concurrency:
   group: npm-publish-${{ github.ref }}
@@ -32,6 +41,12 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
+      # Node 22 bundles npm 10.x, but trusted publishing (OIDC) needs npm
+      # 11.5.1+. setup-node does not upgrade the bundled npm, so do it
+      # explicitly — without this the version guard below always fails.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
       - name: Verify npm version supports trusted publishing
         run: |
           echo "Node version: $(node --version)"
@@ -56,13 +71,18 @@ jobs:
       - name: Run tests
         run: npm test
 
-      # Set version from tag BEFORE build so any source that reads
-      # package.json at compile time picks up the correct version.
-      - name: Extract and set version from tag
+      # Set the version BEFORE build so any source that reads package.json at
+      # compile time picks up the correct value. Supports a tag push (version
+      # from the tag) and a manual re-run (version from the input).
+      - name: Extract and set version
         run: |
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Publishing version: $TAG_VERSION"
-          npm version "$TAG_VERSION" --no-git-tag-version
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+          else
+            TARGET_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "Publishing version: $TARGET_VERSION"
+          npm version "$TARGET_VERSION" --no-git-tag-version
 
       - name: Build package
         run: npm run build
@@ -73,12 +93,16 @@ jobs:
       - name: Validate version was set
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION=${GITHUB_REF#refs/tags/v}
-          if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
-            echo "Error: package.json version ($PACKAGE_VERSION) doesn't match tag ($TAG_VERSION)"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+          else
+            TARGET_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          if [ "$PACKAGE_VERSION" != "$TARGET_VERSION" ]; then
+            echo "Error: package.json version ($PACKAGE_VERSION) doesn't match target ($TARGET_VERSION)"
             exit 1
           fi
-          echo "✓ Version $PACKAGE_VERSION matches release tag"
+          echo "✓ Version $PACKAGE_VERSION matches target"
 
       - name: Publish to npm with provenance
         run: npm publish --access public --provenance --tag latest
