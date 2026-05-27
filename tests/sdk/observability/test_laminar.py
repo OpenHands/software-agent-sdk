@@ -378,6 +378,63 @@ def test_observe_calls_use_span_with_owner_root_span_on_async():
         os.environ.pop("LMNR_PROJECT_API_KEY", None)
 
 
+def test_root_span_sets_user_id():
+    """RootSpan must call Laminar.set_trace_user_id when user_id is provided."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            root = lam.RootSpan("conversation", session_id="sess-1", user_id="user-42")
+            assert root.span is mock_span
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_called_once_with("user-42")
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_skips_user_id_when_none():
+    """RootSpan must not call set_trace_user_id when user_id is None."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            lam.RootSpan("conversation", session_id="sess-1")
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_not_called()
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
 def test_two_concurrent_conversations_do_not_collide():
     """Each conversation must own its own root span (no global stack).
 

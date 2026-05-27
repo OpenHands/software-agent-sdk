@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any, TypeAlias
 from uuid import UUID, uuid4
 
@@ -54,7 +54,7 @@ class ServerErrorEvent(Event):
     detail: str = Field(description="Details about the error")
 
 
-class ConversationSortOrder(str, Enum):
+class ConversationSortOrder(StrEnum):
     """Enum for conversation sorting options."""
 
     CREATED_AT = "CREATED_AT"
@@ -63,7 +63,7 @@ class ConversationSortOrder(str, Enum):
     UPDATED_AT_DESC = "UPDATED_AT_DESC"
 
 
-class EventSortOrder(str, Enum):
+class EventSortOrder(StrEnum):
     """Enum for event sorting options."""
 
     TIMESTAMP = "TIMESTAMP"
@@ -198,6 +198,57 @@ class ConversationInfo(_ConversationInfoBase):
 class ConversationPage(BaseModel):
     items: list[ConversationInfo]
     next_page_id: str | None = None
+
+
+INCLUDE_SKILLS_PARAM_TITLE = (
+    "Whether to include ``agent.agent_context.skills`` in the response. "
+    "Default ``false`` (breaking change as of this release): skills are "
+    "trimmed to ``[]`` on the wire because no known consumer reads them "
+    "from HTTP responses, and a stock agent inlines ~260 KB of skill "
+    "content per fetch. Pass ``true`` to opt back into the legacy "
+    "full-payload shape — useful only for callers that still rely on "
+    "``RemoteConversation.agent.agent_context.skills`` round-tripping "
+    "over the wire. The persisted conversation state on disk and the "
+    "in-memory runtime copy are untouched either way."
+)
+
+
+def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInfo:
+    """Return ``info`` with ``agent.agent_context.skills`` set to ``[]``.
+
+    Applied **by default** on every route that emits ``ConversationInfo``
+    (search, get, batch-get, start, fork, and the deprecated ACP
+    equivalents). Callers that still need the legacy shape can opt in
+    with ``?include_skills=true``.
+
+    The trim exists because when an ``AgentContext`` is constructed
+    with ``load_user_skills=True`` / ``load_public_skills=True``, its
+    model_validator resolves the entire skill catalog (~40 entries in
+    stock setups) and persists them inline. Every conversation fetch
+    therefore carried ~260 KB of skill content that no known client
+    actually reads from the HTTP response (agent-canvas, OpenHands
+    app-server, SDK examples all ignore the field on
+    ``ConversationInfo`` — they either use the in-process
+    ``LocalConversation`` directly or read other fields like
+    ``agent.llm.model``).
+
+    The persisted ``ConversationState`` on disk and the in-memory copy
+    held by the agent's runtime are untouched.
+
+    A ``model_copy`` chain is enough because ``BaseModel.model_copy``
+    is shallow on default — we replace the leaf ``skills`` list with
+    an empty list without touching any other field. The returned
+    object is a fresh ``ConversationInfo`` instance; callers that
+    hold the input reference observe no mutation.
+    """
+    agent_ctx = getattr(info.agent, "agent_context", None)
+    if agent_ctx is None or not agent_ctx.skills:
+        return info
+    trimmed_agent_context = agent_ctx.model_copy(update={"skills": []})
+    trimmed_agent = info.agent.model_copy(
+        update={"agent_context": trimmed_agent_context}
+    )
+    return info.model_copy(update={"agent": trimmed_agent})
 
 
 # Deprecated compatibility aliases for the old ACP-specific response names.

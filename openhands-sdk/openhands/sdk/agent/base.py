@@ -610,6 +610,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Async variant of :meth:`step`.
+
+        Default implementation runs the synchronous ``step()`` in a
+        thread via :func:`asyncio.loop.run_in_executor` so that
+        blocking tool I/O does not starve the event loop.
+        Subclasses that perform async LLM calls should override this.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.step, conversation, on_event, on_token)
+
     def verify(
         self,
         persisted: AgentBase,

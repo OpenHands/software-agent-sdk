@@ -66,9 +66,9 @@ class SettingsResponse(BaseModel):
             The validated agent settings as either ``OpenHandsAgentSettings``
             or ``ACPAgentSettings`` depending on the ``agent_kind`` discriminator.
         """
-        from .model import AgentSettings
+        from .model import validate_agent_settings
 
-        return AgentSettings.from_persisted(self.agent_settings)
+        return validate_agent_settings(self.agent_settings)
 
     def get_conversation_settings(self) -> ConversationSettings:
         """Parse and validate ``conversation_settings`` into a typed model.

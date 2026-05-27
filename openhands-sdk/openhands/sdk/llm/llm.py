@@ -46,6 +46,7 @@ from litellm import (
     ChatCompletionToolParam,
     CustomStreamWrapper,
     ResponseInputParam,
+    acompletion as litellm_acompletion,
     completion as litellm_completion,
 )
 from litellm.exceptions import (
@@ -55,8 +56,14 @@ from litellm.exceptions import (
     ServiceUnavailableError,
     Timeout as LiteLLMTimeout,
 )
-from litellm.responses.main import responses as litellm_responses
-from litellm.responses.streaming_iterator import SyncResponsesAPIStreamingIterator
+from litellm.responses.main import (
+    aresponses as litellm_aresponses,
+    responses as litellm_responses,
+)
+from litellm.responses.streaming_iterator import (
+    ResponsesAPIStreamingIterator,
+    SyncResponsesAPIStreamingIterator,
+)
 from litellm.types.llms.openai import (
     OutputTextDeltaEvent,
     ReasoningSummaryTextDeltaEvent,
@@ -92,7 +99,9 @@ from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
+    AnyTokenCallbackType,
     TokenCallbackType,
+    _invoke_token_callback,
 )
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
@@ -711,6 +720,377 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise mapped from error
         raise
 
+    async def _ahandle_error(
+        self,
+        error: Exception,
+        fallback_call_fn: Callable[[LLM], LLMResponse],
+    ) -> LLMResponse:
+        """Async variant of :meth:`_handle_error`.
+
+        The *fallback_call_fn* is synchronous (it calls the fallback LLM's
+        sync ``completion``/``responses``), so the fallback attempt is
+        offloaded to a thread via :func:`asyncio.loop.run_in_executor` to
+        avoid blocking the event loop.
+        """
+        import asyncio
+
+        assert self._telemetry is not None
+        self._telemetry.on_error(error)
+        if self.fallback_strategy and self.fallback_strategy.should_fallback(error):
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                self.fallback_strategy.try_fallback,
+                self.model,
+                error,
+                self.metrics,
+                fallback_call_fn,
+            )
+            if result is not None:
+                return result
+        mapped = map_provider_exception(error)
+        if mapped is not error:
+            raise mapped from error
+        raise
+
+    # =========================================================================
+    # Shared helpers for completion / acompletion / responses / aresponses
+    # =========================================================================
+
+    def _current_metrics_snapshot(self) -> MetricsSnapshot:
+        """Snapshot current LLM metrics for an :class:`LLMResponse`."""
+        return MetricsSnapshot(
+            model_name=self.metrics.model_name,
+            accumulated_cost=self.metrics.accumulated_cost,
+            max_budget_per_task=self.metrics.max_budget_per_task,
+            accumulated_token_usage=self.metrics.accumulated_token_usage,
+        )
+
+    def _make_retry_decorator(
+        self,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Return a configured retry decorator using this LLM's retry settings."""
+        return self.retry_decorator(
+            num_retries=self.num_retries,
+            retry_exceptions=LLM_RETRY_EXCEPTIONS,
+            retry_min_wait=self.retry_min_wait,
+            retry_max_wait=self.retry_max_wait,
+            retry_multiplier=self.retry_multiplier,
+            retry_listener=self._retry_listener_fn,
+        )
+
+    def _build_completion_result(self, resp: ModelResponse) -> LLMResponse:
+        """Convert a raw :class:`ModelResponse` into an :class:`LLMResponse`."""
+        first_choice = resp["choices"][0]
+        message = Message.from_llm_chat_message(first_choice["message"])
+        return LLMResponse(
+            message=message,
+            metrics=self._current_metrics_snapshot(),
+            raw_response=resp,
+        )
+
+    def _build_responses_result(self, resp: ResponsesAPIResponse) -> LLMResponse:
+        """Convert a raw :class:`ResponsesAPIResponse` into an :class:`LLMResponse`."""
+        output_seq = cast(Sequence[Any], resp.output or [])
+        message = Message.from_llm_responses_output(output_seq)
+        return LLMResponse(
+            message=message,
+            metrics=self._current_metrics_snapshot(),
+            raw_response=resp,
+        )
+
+    def _build_responses_call_kwargs(
+        self,
+        input_items: list[dict[str, Any]],
+        instructions: str | None,
+        resp_tools: list[Any] | None,
+        final_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the shared kwargs dict for litellm_responses / litellm_aresponses."""
+        typed_input: ResponseInputParam | str = (
+            cast(ResponseInputParam, input_items) if input_items else ""
+        )
+        api_key_value = self._get_litellm_api_key_value()
+        return {
+            "model": self.model,
+            "input": typed_input,
+            "instructions": instructions,
+            "tools": resp_tools,
+            "api_key": api_key_value,
+            "api_base": self.base_url,
+            "api_version": self.api_version,
+            "timeout": self.timeout,
+            "drop_params": self.drop_params,
+            "seed": self.seed,
+            **self._aws_kwargs(),
+            **final_kwargs,
+        }
+
+    def _process_stream_event(
+        self, event: Any, *, emit_deltas: bool = True
+    ) -> tuple[Any | None, ModelResponseStream | None]:
+        """Extract output item and delta chunk from a Responses stream event.
+
+        Args:
+            event: A single Responses streaming event.
+            emit_deltas: When ``False`` the delta chunk is never built — skip
+                the allocation when there is no stream callback to receive it.
+
+        Returns:
+            (output_item, delta_chunk) — either or both may be ``None``.
+        """
+        output_item: Any | None = None
+        delta_chunk: ModelResponseStream | None = None
+
+        # Collect finished output items
+        evt_type = getattr(event, "type", None)
+        if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+            item = getattr(event, "item", None)
+            if item is not None:
+                output_item = item
+
+        if emit_deltas and isinstance(
+            event,
+            (
+                OutputTextDeltaEvent,
+                RefusalDeltaEvent,
+                ReasoningSummaryTextDeltaEvent,
+            ),
+        ):
+            delta = event.delta
+            if delta:
+                delta_chunk = ModelResponseStream(
+                    choices=[StreamingChoices(delta=Delta(content=delta))]
+                )
+
+        return output_item, delta_chunk
+
+    def _finalize_stream_response(
+        self,
+        completed_response: Any,
+        collected_output_items: list[Any],
+    ) -> ResponsesAPIResponse:
+        """Validate and patch the completed response from a Responses stream.
+
+        Raises:
+            LLMNoResponseError: If the stream finished without a completed
+                response or with an unexpected event type.
+        """
+        if completed_response is None:
+            raise LLMNoResponseError(
+                "Responses stream finished without a completed response"
+            )
+        if not isinstance(completed_response, ResponseCompletedEvent):
+            raise LLMNoResponseError(
+                f"Unexpected completed event: {type(completed_response)}"
+            )
+
+        completed_resp = completed_response.response
+        # Patch empty output with items collected from stream
+        if not completed_resp.output and collected_output_items:
+            completed_resp.output = collected_output_items
+
+        assert self._telemetry is not None
+        self._telemetry.on_response(completed_resp)
+        return completed_resp
+
+    def _prepare_completion_params(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[ChatCompletionToolParam],
+        bool,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Shared setup for :meth:`completion` and :meth:`acompletion`.
+
+        Returns:
+            (formatted_messages, cc_tools, use_mock_tools, call_kwargs,
+             telemetry_ctx)
+        """
+        # Defensive copy — this method mutates kwargs (e.g. kwargs["tools"])
+        # and the caller should not observe those side-effects.
+        kwargs = dict(kwargs)
+
+        # 1) serialize messages
+        formatted_messages = self.format_messages_for_llm(messages)
+
+        # 2) choose function-calling strategy
+        use_native_fc = self.native_tool_calling
+        original_fncall_msgs = copy.deepcopy(formatted_messages)
+
+        # Convert Tool objects to ChatCompletionToolParam once here
+        cc_tools: list[ChatCompletionToolParam] = []
+        if tools:
+            cc_tools = [
+                t.to_openai_tool(
+                    add_security_risk_prediction=add_security_risk_prediction,
+                )
+                for t in tools
+            ]
+
+        use_mock_tools = self.should_mock_tool_calls(cc_tools)
+        if use_mock_tools:
+            logger.debug(
+                "LLM.completion: mocking function-calling via prompt "
+                f"for model {self.model}"
+            )
+            formatted_messages, kwargs = self.pre_request_prompt_mock(
+                formatted_messages,
+                cc_tools or [],
+                kwargs,
+                include_security_params=add_security_risk_prediction,
+            )
+
+        # 3) normalize provider params
+        # Only pass tools when native FC is active
+        kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
+        has_tools_flag = bool(cc_tools) and use_native_fc
+        # Behavior-preserving: delegate to select_chat_options
+        call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
+
+        # 4) request context for telemetry (always include context_window for metrics)
+        # Always pass context_window so metrics are tracked even when
+        # logging is disabled.
+        assert self._telemetry is not None
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
+        if self._telemetry.log_enabled:
+            telemetry_ctx.update(
+                {
+                    "messages": formatted_messages[:],  # already simple dicts
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
+            if tools and not use_native_fc:
+                telemetry_ctx["raw_messages"] = original_fncall_msgs
+
+        return (
+            formatted_messages,
+            cc_tools,
+            use_mock_tools,
+            call_kwargs,
+            telemetry_ctx,
+        )
+
+    def _prepare_responses_params(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+        include: list[str] | None,
+        store: bool | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        str | None,
+        list[dict[str, Any]],
+        list[Any] | None,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Shared setup for :meth:`responses` and :meth:`aresponses`.
+
+        Returns:
+            (instructions, input_items, resp_tools, call_kwargs,
+             telemetry_ctx)
+        """
+        # Defensive copy — select_responses_options may mutate kwargs.
+        kwargs = dict(kwargs)
+
+        # Build instructions + input list using dedicated Responses formatter
+        instructions, input_items = self.format_messages_for_responses(messages)
+
+        # Convert Tool objects to Responses ToolParam
+        # (Responses path always supports function tools)
+        resp_tools = (
+            [
+                t.to_responses_tool(
+                    add_security_risk_prediction=add_security_risk_prediction,
+                )
+                for t in tools
+            ]
+            if tools
+            else None
+        )
+
+        # Normalize/override Responses kwargs consistently
+        call_kwargs = select_responses_options(
+            self, kwargs, include=include, store=store
+        )
+
+        # Request context for telemetry (always include context_window for metrics)
+        # Always pass context_window so metrics are tracked even when
+        # logging is disabled.
+        assert self._telemetry is not None
+        telemetry_ctx: dict[str, Any] = {
+            "context_window": self.effective_max_input_tokens or 0
+        }
+        if self._telemetry.log_enabled:
+            telemetry_ctx.update(
+                {
+                    "llm_path": "responses",
+                    "instructions": instructions,
+                    "input": input_items[:],
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
+
+        return instructions, input_items, resp_tools, call_kwargs, telemetry_ctx
+
+    def _validate_chat_response(
+        self,
+        resp: ModelResponse,
+        *,
+        use_mock_tools: bool,
+        formatted_messages: list[dict[str, Any]],
+        cc_tools: list[ChatCompletionToolParam],
+        add_security_risk_prediction: bool,
+    ) -> ModelResponse:
+        """Post-process a chat completion response inside the retry boundary.
+
+        The raw (pre-mock) response is consumed internally by
+        ``Telemetry.on_response`` and is not returned to the caller.
+
+        Raises:
+            LLMNoResponseError: If the response has no choices
+                (Gemini sometimes returns empty choices; raising here
+                inside the retry boundary ensures it is retried).
+        """
+        raw_resp: ModelResponse | None = None
+        if use_mock_tools:
+            raw_resp = copy.deepcopy(resp)
+            resp = self.post_response_prompt_mock(
+                resp,
+                nonfncall_msgs=formatted_messages,
+                tools=cc_tools,
+                include_security_params=add_security_risk_prediction,
+            )
+
+        # 6) telemetry
+        assert self._telemetry is not None
+        self._telemetry.on_response(resp, raw_resp=raw_resp)
+
+        # Ensure at least one choice.
+        # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
+        # inside the retry boundary so it is retried.
+        if not resp.get("choices") or len(resp["choices"]) < 1:
+            raise LLMNoResponseError(
+                "Response choices is less than 1. Response: " + str(resp)
+            )
+        return resp
+
+    # =========================================================================
+    # Chat Completion API
+    # =========================================================================
+
     def completion(
         self,
         messages: list[Message],
@@ -758,73 +1138,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 raise ValueError("Streaming requires an on_token callback")
             kwargs["stream"] = True
 
-        # 1) serialize messages
-        formatted_messages = self.format_messages_for_llm(messages)
-
-        # 2) choose function-calling strategy
-        use_native_fc = self.native_tool_calling
-        original_fncall_msgs = copy.deepcopy(formatted_messages)
-
-        # Convert Tool objects to ChatCompletionToolParam once here
-        cc_tools: list[ChatCompletionToolParam] = []
-        if tools:
-            cc_tools = [
-                t.to_openai_tool(
-                    add_security_risk_prediction=add_security_risk_prediction,
-                )
-                for t in tools
-            ]
-
-        use_mock_tools = self.should_mock_tool_calls(cc_tools)
-        if use_mock_tools:
-            logger.debug(
-                "LLM.completion: mocking function-calling via prompt "
-                f"for model {self.model}"
-            )
-            formatted_messages, kwargs = self.pre_request_prompt_mock(
-                formatted_messages,
-                cc_tools or [],
-                kwargs,
-                include_security_params=add_security_risk_prediction,
-            )
-
-        # 3) normalize provider params
-        # Only pass tools when native FC is active
-        kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
-        has_tools_flag = bool(cc_tools) and use_native_fc
-        # Behavior-preserving: delegate to select_chat_options
-        call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
-
-        # 4) request context for telemetry (always include context_window for metrics)
-        assert self._telemetry is not None
-        # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
-        }
-        if self._telemetry.log_enabled:
-            telemetry_ctx.update(
-                {
-                    "messages": formatted_messages[:],  # already simple dicts
-                    "tools": tools,
-                    "kwargs": {k: v for k, v in call_kwargs.items()},
-                }
-            )
-            if tools and not use_native_fc:
-                telemetry_ctx["raw_messages"] = original_fncall_msgs
-
-        # 5) do the call with retries
-        @self.retry_decorator(
-            num_retries=self.num_retries,
-            retry_exceptions=LLM_RETRY_EXCEPTIONS,
-            retry_min_wait=self.retry_min_wait,
-            retry_max_wait=self.retry_max_wait,
-            retry_multiplier=self.retry_multiplier,
-            retry_listener=self._retry_listener_fn,
+        (
+            formatted_messages,
+            cc_tools,
+            use_mock_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._prepare_completion_params(
+            messages, tools, add_security_risk_prediction, kwargs
         )
-        def _one_attempt(**retry_kwargs) -> ModelResponse:
+
+        @self._make_retry_decorator()
+        def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
-            # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(
                 messages=formatted_messages,
@@ -832,47 +1159,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 enable_streaming=enable_streaming,
                 on_token=on_token,
             )
-            raw_resp: ModelResponse | None = None
-            if use_mock_tools:
-                raw_resp = copy.deepcopy(resp)
-                resp = self.post_response_prompt_mock(
-                    resp,
-                    nonfncall_msgs=formatted_messages,
-                    tools=cc_tools,
-                    include_security_params=add_security_risk_prediction,
-                )
-            # 6) telemetry
-            self._telemetry.on_response(resp, raw_resp=raw_resp)
-
-            # Ensure at least one choice.
-            # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
-            # inside the retry boundary so it is retried.
-            if not resp.get("choices") or len(resp["choices"]) < 1:
-                raise LLMNoResponseError(
-                    "Response choices is less than 1. Response: " + str(resp)
-                )
-
+            resp = self._validate_chat_response(
+                resp,
+                use_mock_tools=use_mock_tools,
+                formatted_messages=formatted_messages,
+                cc_tools=cc_tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
             return resp
 
         try:
-            resp = _one_attempt()
-
-            # Convert the first choice to an OpenHands Message
-            first_choice = resp["choices"][0]
-            message = Message.from_llm_chat_message(first_choice["message"])
-
-            # Get current metrics snapshot
-            metrics_snapshot = MetricsSnapshot(
-                model_name=self.metrics.model_name,
-                accumulated_cost=self.metrics.accumulated_cost,
-                max_budget_per_task=self.metrics.max_budget_per_task,
-                accumulated_token_usage=self.metrics.accumulated_token_usage,
-            )
-
-            # Create and return LLMResponse
-            return LLMResponse(
-                message=message, metrics=metrics_snapshot, raw_response=resp
-            )
+            return self._build_completion_result(_one_attempt())
         except Exception as e:
             return self._handle_error(
                 e,
@@ -882,6 +1179,76 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                ),
+            )
+
+    # =========================================================================
+    # Async Chat Completion API
+    # =========================================================================
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`completion`.
+
+        Uses ``litellm.acompletion`` under the hood, freeing the event loop
+        while waiting for the LLM provider response.
+        """
+        enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if enable_streaming:
+            if on_token is None:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
+
+        (
+            formatted_messages,
+            cc_tools,
+            use_mock_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._prepare_completion_params(
+            messages, tools, add_security_risk_prediction, kwargs
+        )
+
+        @self._make_retry_decorator()
+        async def _one_attempt(**retry_kwargs: Any) -> ModelResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            final_kwargs = {**call_kwargs, **retry_kwargs}
+            resp = await self._atransport_call(
+                messages=formatted_messages,
+                **final_kwargs,
+                enable_streaming=enable_streaming,
+                on_token=on_token,
+            )
+            resp = self._validate_chat_response(
+                resp,
+                use_mock_tools=use_mock_tools,
+                formatted_messages=formatted_messages,
+                cc_tools=cc_tools,
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
+            return resp
+
+        try:
+            return self._build_completion_result(await _one_attempt())
+        except Exception as e:
+            # Fallback is synchronous; cast the token callback since the
+            # fallback LLM's sync path accepts TokenCallbackType.
+            _fb_token = cast("TokenCallbackType | None", on_token)
+            return await self._ahandle_error(
+                e,
+                lambda fb: fb.completion(
+                    messages,
+                    tools,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    _fb_token,
                 ),
             )
 
@@ -919,182 +1286,81 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
+            # We allow on_token to be None for subscription mode
             if on_token is None and not self.is_subscription:
-                # We allow on_token to be None for subscription mode
                 raise ValueError("Streaming requires an on_token callback")
             kwargs["stream"] = True
 
-        # Build instructions + input list using dedicated Responses formatter
-        instructions, input_items = self.format_messages_for_responses(messages)
-
-        # Convert Tool objects to Responses ToolParam
-        # (Responses path always supports function tools)
-        resp_tools = (
-            [
-                t.to_responses_tool(
-                    add_security_risk_prediction=add_security_risk_prediction,
-                )
-                for t in tools
-            ]
-            if tools
-            else None
+        (
+            instructions,
+            input_items,
+            resp_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._prepare_responses_params(
+            messages, tools, include, store, add_security_risk_prediction, kwargs
         )
 
-        # Normalize/override Responses kwargs consistently
-        call_kwargs = select_responses_options(
-            self, kwargs, include=include, store=store
-        )
-
-        # Request context for telemetry (always include context_window for metrics)
-        assert self._telemetry is not None
-        # Always pass context_window so metrics are tracked even when logging disabled
-        telemetry_ctx: dict[str, Any] = {
-            "context_window": self.effective_max_input_tokens or 0
-        }
-        if self._telemetry.log_enabled:
-            telemetry_ctx.update(
-                {
-                    "llm_path": "responses",
-                    "instructions": instructions,
-                    "input": input_items[:],
-                    "tools": tools,
-                    "kwargs": {k: v for k, v in call_kwargs.items()},
-                }
-            )
-
-        # Perform call with retries
-        @self.retry_decorator(
-            num_retries=self.num_retries,
-            retry_exceptions=LLM_RETRY_EXCEPTIONS,
-            retry_min_wait=self.retry_min_wait,
-            retry_max_wait=self.retry_max_wait,
-            retry_multiplier=self.retry_multiplier,
-            retry_listener=self._retry_listener_fn,
-        )
-        def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+        @self._make_retry_decorator()
+        def _one_attempt(**retry_kwargs: Any) -> ResponsesAPIResponse:
             assert self._telemetry is not None
             self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
-                    typed_input: ResponseInputParam | str = (
-                        cast(ResponseInputParam, input_items) if input_items else ""
+                    litellm_kwargs = self._build_responses_call_kwargs(
+                        input_items, instructions, resp_tools, final_kwargs
                     )
-                    api_key_value = self._get_litellm_api_key_value()
+                    ret = litellm_responses(**litellm_kwargs)
 
-                    ret = litellm_responses(
-                        model=self.model,
-                        input=typed_input,
-                        instructions=instructions,
-                        tools=resp_tools,
-                        api_key=api_key_value,
-                        api_base=self.base_url,
-                        api_version=self.api_version,
-                        timeout=self.timeout,
-                        drop_params=self.drop_params,
-                        seed=self.seed,
-                        **{**self._aws_kwargs(), **final_kwargs},
-                    )
                     if isinstance(ret, ResponsesAPIResponse):
                         if user_enable_streaming:
                             logger.warning(
-                                "Responses streaming was requested, but the provider "
-                                "returned a non-streaming response; no on_token deltas "
-                                "will be emitted."
+                                "Responses streaming was requested, but the "
+                                "provider returned a non-streaming response; "
+                                "no on_token deltas will be emitted."
                             )
                         self._telemetry.on_response(ret)
                         return ret
 
-                    # When stream=True, LiteLLM returns a streaming iterator rather than
-                    # a single ResponsesAPIResponse. Drain the iterator and use the
-                    # completed response.
+                    # When stream=True, LiteLLM returns a streaming
+                    # iterator rather than a single ResponsesAPIResponse.
+                    # Drain the iterator and use the completed response.
                     if final_kwargs.get("stream", False):
                         if not isinstance(ret, SyncResponsesAPIStreamingIterator):
                             raise AssertionError(
                                 f"Expected Responses stream iterator, got {type(ret)}"
                             )
-
                         stream_callback = on_token if user_enable_streaming else None
                         # Collect output items from streaming events.
-                        # Some endpoints (e.g., Codex subscription) send output
-                        # items as separate events but the final response.completed
-                        # event has output=[].  We accumulate them here and patch
-                        # the completed response if needed.
+                        # Some endpoints (e.g., Codex subscription) send
+                        # output items as separate events but the final
+                        # response.completed event has output=[].  We
+                        # accumulate them here and patch the completed
+                        # response if needed.
                         collected_output_items: list[Any] = []
                         for event in ret:
                             if event is None:
                                 continue
-                            # Collect finished output items
-                            evt_type = getattr(event, "type", None)
-                            if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
-                                item = getattr(event, "item", None)
-                                if item is not None:
-                                    collected_output_items.append(item)
-                            if stream_callback is None:
-                                continue
-                            if isinstance(
-                                event,
-                                (
-                                    OutputTextDeltaEvent,
-                                    RefusalDeltaEvent,
-                                    ReasoningSummaryTextDeltaEvent,
-                                ),
-                            ):
-                                delta = event.delta
-                                if delta:
-                                    stream_callback(
-                                        ModelResponseStream(
-                                            choices=[
-                                                StreamingChoices(
-                                                    delta=Delta(content=delta)
-                                                )
-                                            ]
-                                        )
-                                    )
-
-                        completed_event = ret.completed_response
-                        if completed_event is None:
-                            raise LLMNoResponseError(
-                                "Responses stream finished without a completed response"
+                            output_item, delta_chunk = self._process_stream_event(
+                                event, emit_deltas=stream_callback is not None
                             )
-                        if not isinstance(completed_event, ResponseCompletedEvent):
-                            raise LLMNoResponseError(
-                                f"Unexpected completed event: {type(completed_event)}"
-                            )
+                            if output_item is not None:
+                                collected_output_items.append(output_item)
+                            if stream_callback is not None and delta_chunk is not None:
+                                stream_callback(delta_chunk)
 
-                        completed_resp = completed_event.response
-
-                        # Patch empty output with items collected from stream
-                        if not completed_resp.output and collected_output_items:
-                            completed_resp.output = collected_output_items
-
-                        self._telemetry.on_response(completed_resp)
-                        return completed_resp
+                        return self._finalize_stream_response(
+                            ret.completed_response, collected_output_items
+                        )
 
                     raise AssertionError(
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
 
         try:
-            resp: ResponsesAPIResponse = _one_attempt()
-
-            # Parse output -> Message (typed)
-            # Cast to a typed sequence
-            # accepted by from_llm_responses_output
-            output_seq = cast(Sequence[Any], resp.output or [])
-            message = Message.from_llm_responses_output(output_seq)
-
-            metrics_snapshot = MetricsSnapshot(
-                model_name=self.metrics.model_name,
-                accumulated_cost=self.metrics.accumulated_cost,
-                max_budget_per_task=self.metrics.max_budget_per_task,
-                accumulated_token_usage=self.metrics.accumulated_token_usage,
-            )
-
-            return LLMResponse(
-                message=message, metrics=metrics_snapshot, raw_response=resp
-            )
+            return self._build_responses_result(_one_attempt())
         except Exception as e:
             return self._handle_error(
                 e,
@@ -1106,6 +1372,120 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     _return_metrics,
                     add_security_risk_prediction,
                     on_token,
+                ),
+            )
+
+    # =========================================================================
+    # Async Responses API
+    # =========================================================================
+    async def aresponses(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        include: list[str] | None = None,
+        store: bool | None = None,
+        _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        **kwargs,
+    ) -> LLMResponse:
+        """Async variant of :meth:`responses`.
+
+        Uses ``litellm.aresponses`` under the hood, freeing the event loop
+        while waiting for the LLM provider response.
+        """
+        user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if user_enable_streaming:
+            # We allow on_token to be None for subscription mode
+            if on_token is None and not self.is_subscription:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
+
+        (
+            instructions,
+            input_items,
+            resp_tools,
+            call_kwargs,
+            telemetry_ctx,
+        ) = self._prepare_responses_params(
+            messages, tools, include, store, add_security_risk_prediction, kwargs
+        )
+
+        @self._make_retry_decorator()
+        async def _one_attempt(
+            **retry_kwargs: Any,
+        ) -> ResponsesAPIResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
+            final_kwargs = {**call_kwargs, **retry_kwargs}
+            with self._litellm_modify_params_ctx(self.modify_params):
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=DeprecationWarning)
+                    litellm_kwargs = self._build_responses_call_kwargs(
+                        input_items, instructions, resp_tools, final_kwargs
+                    )
+                    ret = await litellm_aresponses(**litellm_kwargs)
+
+                    if isinstance(ret, ResponsesAPIResponse):
+                        if user_enable_streaming:
+                            logger.warning(
+                                "Responses streaming was requested, but the "
+                                "provider returned a non-streaming response; "
+                                "no on_token deltas will be emitted."
+                            )
+                        self._telemetry.on_response(ret)
+                        return ret
+
+                    # When stream=True, LiteLLM returns a streaming
+                    # iterator rather than a single ResponsesAPIResponse.
+                    # Drain the iterator and use the completed response.
+                    if final_kwargs.get("stream", False):
+                        if not isinstance(ret, ResponsesAPIStreamingIterator):
+                            raise AssertionError(
+                                "Expected Responses async stream "
+                                f"iterator, got {type(ret)}"
+                            )
+                        stream_cb = on_token if user_enable_streaming else None
+                        # Collect output items from streaming events.
+                        # Some endpoints (e.g., Codex subscription) send
+                        # output items as separate events but the final
+                        # response.completed event has output=[].  We
+                        # accumulate them here and patch the completed
+                        # response if needed.
+                        collected_output_items: list[Any] = []
+                        async for event in ret:
+                            if event is None:
+                                continue
+                            output_item, delta_chunk = self._process_stream_event(
+                                event, emit_deltas=stream_cb is not None
+                            )
+                            if output_item is not None:
+                                collected_output_items.append(output_item)
+                            if stream_cb is not None and delta_chunk is not None:
+                                await _invoke_token_callback(stream_cb, delta_chunk)
+
+                        return self._finalize_stream_response(
+                            ret.completed_response, collected_output_items
+                        )
+
+                    raise AssertionError(
+                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+                    )
+
+        try:
+            return self._build_responses_result(await _one_attempt())
+        except Exception as e:
+            _fb_token = cast("TokenCallbackType | None", on_token)
+            return await self._ahandle_error(
+                e,
+                lambda fb: fb.responses(
+                    messages,
+                    tools,
+                    include,
+                    store,
+                    _return_metrics,
+                    add_security_risk_prediction,
+                    _fb_token,
                 ),
             )
 
@@ -1203,6 +1583,65 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     chunks = []
                     for chunk in ret:
                         on_token(chunk)
+                        chunks.append(chunk)
+                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+
+                assert isinstance(ret, ModelResponse), (
+                    f"Expected ModelResponse, got {type(ret)}"
+                )
+                return ret
+
+    async def _atransport_call(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool = False,
+        on_token: AnyTokenCallbackType | None = None,
+        **kwargs,
+    ) -> ModelResponse:
+        """Async variant of :meth:`_transport_call`."""
+        with self._litellm_modify_params_ctx(self.modify_params):
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module="httpx.*"
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r".*content=.*upload.*",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"There is no current event loop",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings("ignore", category=UserWarning)
+                warnings.filterwarnings(
+                    "ignore",
+                    category=DeprecationWarning,
+                    message="Accessing the 'model_fields' attribute.*",
+                )
+                api_key_value = self._get_litellm_api_key_value()
+
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
+
+                ret = await litellm_acompletion(
+                    model=self.model,
+                    api_key=api_key_value,
+                    api_base=self.base_url,
+                    api_version=self.api_version,
+                    timeout=self.timeout,
+                    drop_params=self.drop_params,
+                    seed=self.seed,
+                    messages=messages,
+                    **{**self._aws_kwargs(), **kwargs},
+                )
+                if enable_streaming and on_token is not None:
+                    assert isinstance(ret, CustomStreamWrapper)
+                    chunks = []
+                    async for chunk in ret:
+                        await _invoke_token_callback(on_token, chunk)
                         chunks.append(chunk)
                     ret = litellm.stream_chunk_builder(chunks, messages=messages)
 

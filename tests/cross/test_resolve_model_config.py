@@ -659,3 +659,13 @@ def test_deepseek_v4_flash_config():
     assert model["id"] == "deepseek-v4-flash"
     assert model["display_name"] == "DeepSeek V4 Flash"
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
+
+
+def test_amber_vector_3542_config():
+    """Test that amber-vector-3542 has correct configuration."""
+    model = MODELS["amber-vector-3542"]
+
+    assert model["id"] == "amber-vector-3542"
+    assert model["display_name"] == "Amber Vector 3542"
+    assert model["llm_config"]["model"] == "litellm_proxy/amber-vector-3542"
+    assert model["llm_config"]["temperature"] == 0.0

@@ -543,6 +543,22 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         else:
             return self._execute_single_session(action, conversation)
 
+    def interrupt(self) -> None:
+        """Send Ctrl+C to all active terminal sessions.
+
+        Called from a different thread when the conversation is
+        interrupted, so the blocking ``session.execute()`` poll loop
+        sees the command terminate and the worker thread can exit.
+        """
+        if self._pool is not None:
+            with self._sessions_lock:
+                for session in self._sessions.values():
+                    with suppress(Exception):
+                        session.interrupt()
+        elif self._session is not None:
+            with suppress(Exception):
+                self._session.interrupt()
+
     def close(self) -> None:
         """Close the terminal session and clean up resources."""
         if self._pool is not None:

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from .acp_providers import (
     ACP_PROVIDERS,
+    ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
@@ -32,7 +33,6 @@ if TYPE_CHECKING:
         CONVERSATION_SETTINGS_SCHEMA_VERSION,
         ACPAgentSettings,
         AgentKind,
-        AgentSettings,
         AgentSettingsBase,
         AgentSettingsConfig,
         CondenserSettings,
@@ -56,7 +56,6 @@ _MODEL_EXPORTS = {
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",
@@ -76,13 +75,13 @@ _MODEL_EXPORTS = {
 
 __all__ = [
     "ACP_PROVIDERS",
+    "ACPModelOption",
     "ACPProviderInfo",
     "build_session_model_meta",
     "AGENT_SETTINGS_SCHEMA_VERSION",
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
     "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",

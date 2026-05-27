@@ -24,8 +24,10 @@ jobs:
         steps:
             - name: Extract version from branch name
               id: version
+              env:
+                  PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
               run: |
-                  BRANCH="${{ github.event.pull_request.head.ref }}"
+                  BRANCH="$PR_HEAD_REF"
                   VERSION="${BRANCH#rel-}"
 
                   if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
