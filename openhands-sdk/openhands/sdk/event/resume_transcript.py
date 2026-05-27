@@ -154,8 +154,8 @@ def _render_content_block(block: Any) -> str | None:
         return "[Image]"
     if block_type == "audio":
         return "[Audio]"
-    if block_type in ("resource", "resource_link"):
-        return f"[{block_type}]"
+    # Any other named variant (resource, resource_link, …) renders as a
+    # ``[<type>]`` placeholder.
     if block_type:
         return f"[{block_type}]"
     return None
