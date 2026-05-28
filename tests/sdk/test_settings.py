@@ -1767,6 +1767,90 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
     assert loaded.is_subscription is True
 
 
+def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        assert llm.model == "gpt-5.2-codex"
+        return runtime_llm
+
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
+    monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.load_from_env()
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+
+    class UnexpectedAuth:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("runtime subscription LLM should not be rehydrated")
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
+    runtime_llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm._is_subscription = True
+
+    assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+@pytest.mark.asyncio
+async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        async def refresh_if_needed(self):
+            return credentials
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("async transport must not sync-refresh credentials")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+
+    assert await llm._aget_litellm_api_key_value() == "access-token"
+    assert llm.extra_headers is not None
+    assert llm.extra_headers["chatgpt-account-id"] == "account-id"
+
+
 def test_openai_subscription_create_llm_serializes_subscription_auth(
     monkeypatch,
 ) -> None:
