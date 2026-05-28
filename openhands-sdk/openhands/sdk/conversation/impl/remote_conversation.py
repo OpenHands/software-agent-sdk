@@ -66,10 +66,9 @@ LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 @dataclass(frozen=True)
 class _RunCompletionSignal:
     status: str
-    # from_post_run_snapshot is retained for debugger inspection; it is not
-    # read by _wait_for_run_completion because ERROR/STUCK signals always raise
-    # before reaching the log/reconcile/return path, and all other signals
-    # originate from the authoritative post-run full-state snapshot.
+    # True for full-state snapshot signals (from the post-run ConversationStateUpdateEvent);
+    # False for per-field ERROR/STUCK signals (which raise before reaching reconcile).
+    # Asserted in _wait_for_run_completion to catch future regressions.
     from_post_run_snapshot: bool
 
 
@@ -1112,7 +1111,7 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
-        consecutive_terminal_polls = 0
+        terminal_poll_count = 0
         # Log a warning after this many consecutive REST terminal polls without a
         # post-run WS snapshot. This is a health signal, not a return path —
         # returning immediately on REST FINISHED would reintroduce the stop-hook race.
@@ -1148,6 +1147,12 @@ class RemoteConversation(BaseConversation):
                 # (from_post_run_snapshot=True) are the only signals that reach
                 # the log/reconcile/return below.
                 self._handle_conversation_status(ws_status)
+                # Invariant: only full-state snapshot signals reach this point.
+                # ERROR/STUCK raise above; all other enqueued signals originate
+                # from the authoritative post-run full-state snapshot.
+                assert signal.from_post_run_snapshot, (
+                    f"Unexpected non-snapshot signal reached reconcile path: {signal!r}"
+                )
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
@@ -1170,7 +1175,7 @@ class RemoteConversation(BaseConversation):
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
-                consecutive_terminal_polls = 0  # Reset on error
+                terminal_poll_count = 0  # Reset on error
                 terminal_first_seen_at = None
             else:
                 # Raises ConversationRunError for ERROR/STUCK states
@@ -1180,18 +1185,18 @@ class RemoteConversation(BaseConversation):
                     # ERROR/STUCK have already been handled above. FINISHED from
                     # REST is advisory because stop hooks can still veto it;
                     # prefer waiting for the server's post-run WebSocket state update.
-                    consecutive_terminal_polls += 1
+                    terminal_poll_count += 1
                     now = time.monotonic()
                     if terminal_first_seen_at is None:
                         terminal_first_seen_at = now
-                    if consecutive_terminal_polls == TERMINAL_POLL_WARNING_THRESHOLD:
+                    if terminal_poll_count == TERMINAL_POLL_WARNING_THRESHOLD:
                         logger.warning(
                             "REST has reported terminal status %s for %d polls "
                             "without a post-run WebSocket snapshot; continuing "
                             "to wait for the authoritative snapshot "
                             "(elapsed: %.1fs)",
                             status,
-                            consecutive_terminal_polls,
+                            terminal_poll_count,
                             elapsed,
                         )
                     terminal_secs = now - terminal_first_seen_at
@@ -1209,7 +1214,7 @@ class RemoteConversation(BaseConversation):
                         self._state.events.reconcile()
                         return
                 else:
-                    consecutive_terminal_polls = 0
+                    terminal_poll_count = 0
                     terminal_first_seen_at = None
 
     def _drain_terminal_status_queue(self) -> None:
