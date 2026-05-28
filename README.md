@@ -377,14 +377,14 @@ Integration tests require a running agent-server in Docker with a mounted worksp
    chmod 777 /tmp/agent-workspace
    ```
 
-2. Start the agent-server container (software-agent-sdk v1.23.1):
+2. Start the agent-server container (software-agent-sdk v1.24.0):
 
    ```bash
    docker run -d \
      --name agent-server \
      -p 8010:8000 \
      -v /tmp/agent-workspace:/workspace \
-     ghcr.io/openhands/agent-server:71b070d-python
+     ghcr.io/openhands/agent-server:1.24.0-python
    ```
 
 3. Wait for the server to be ready:
