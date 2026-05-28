@@ -199,7 +199,7 @@ def _verify_response_for_exception(exc: Exception, llm: LLM) -> VerifyLLMRespons
         return VerifyLLMResponse(status=VerifyLLMStatus.UNREACHABLE, message=message)
     if isinstance(exc, LLMBadRequestError):
         return VerifyLLMResponse(status=VerifyLLMStatus.BAD_REQUEST, message=message)
-    logger.exception("llm.verify failed with an unmapped exception")
+    logger.error("llm.verify failed with an unmapped exception: %s", message)
     return VerifyLLMResponse(status=VerifyLLMStatus.UNKNOWN_ERROR, message=message)
 
 
@@ -228,7 +228,10 @@ async def verify_llm_config(llm: LLM) -> VerifyLLMResponse:
     300 s default. A timeout is reported as ``status=TIMEOUT``.
     """
     provider = None
-    timeout = min(llm.timeout or _VERIFY_TIMEOUT_S, _VERIFY_TIMEOUT_S)
+    timeout = min(
+        llm.timeout if llm.timeout is not None else _VERIFY_TIMEOUT_S,
+        _VERIFY_TIMEOUT_S,
+    )
     try:
         provider = infer_litellm_provider(model=llm.model, api_base=llm.base_url)
         await asyncio.wait_for(llm.averify(), timeout=timeout)
