@@ -69,6 +69,18 @@ class _RunCompletionSignal:
     from_post_run_snapshot: bool
 
 
+# Statuses that are immediately terminal for per-field WS updates.
+# FINISHED is intentionally excluded: stop hooks can flip a freshly-set
+# FINISHED back to RUNNING within the same server-side iteration, so FINISHED
+# is only accepted from the server's authoritative post-run full-state snapshot.
+_IMMEDIATE_TERMINAL_STATUSES: frozenset[str] = frozenset(
+    {
+        ConversationExecutionStatus.ERROR.value,
+        ConversationExecutionStatus.STUCK.value,
+    }
+)
+
+
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
     return (
         f"Conversation {conversation_id} was started with a different agent kind. "
@@ -883,7 +895,7 @@ class RemoteConversation(BaseConversation):
             if event.key == "execution_status":
                 try:
                     status = ConversationExecutionStatus(event.value)
-                    if status.value in self._immediate_terminal_statuses():
+                    if status.value in _IMMEDIATE_TERMINAL_STATUSES:
                         self._terminal_status_queue.put(
                             _RunCompletionSignal(
                                 status=status.value,
@@ -1127,13 +1139,11 @@ class RemoteConversation(BaseConversation):
             try:
                 signal = self._terminal_status_queue.get(timeout=poll_interval)
                 ws_status = signal.status
-                # Raises ConversationRunError on ERROR/STUCK; returns otherwise.
-                # _immediate_terminal_statuses() == {ERROR, STUCK}; if ws_status
-                # were in that set, _handle_conversation_status would have raised
-                # above, so execution only continues for non-immediate statuses.
+                # Raises ConversationRunError on ERROR/STUCK; no-op otherwise.
+                # Per-field ERROR/STUCK signals raise here; full-state snapshots
+                # (from_post_run_snapshot=True) are the only signals that reach
+                # the log/reconcile/return below.
                 self._handle_conversation_status(ws_status)
-                if not signal.from_post_run_snapshot:
-                    continue
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
@@ -1198,29 +1208,11 @@ class RemoteConversation(BaseConversation):
                     consecutive_terminal_polls = 0
                     terminal_first_seen_at = None
 
-    @staticmethod
-    def _immediate_terminal_statuses() -> frozenset[str]:
-        """Statuses that the WS path may treat as authoritative termination.
-
-        FINISHED is intentionally excluded for per-field state updates: stop hooks
-        can flip a freshly-set FINISHED back to RUNNING within the same server-side
-        iteration. FINISHED is accepted only from the server's full post-run state
-        snapshot.
-        """
-        return frozenset(
-            {
-                ConversationExecutionStatus.ERROR.value,
-                ConversationExecutionStatus.STUCK.value,
-            }
-        )
-
     def _drain_terminal_status_queue(self) -> None:
         """Empty the WS terminal-status hint queue.
 
-        Called both when a new run is triggered (drop stale notifications
-        from a previous run) and when REST polling sees a non-terminal
-        status after a WS terminal hint (the hint was transient — e.g. a
-        stop-hook block that flipped FINISHED back to RUNNING).
+        Called at the start of run() (before arming) to discard any stale
+        signals left over from a previous run invocation.
         """
         while True:
             try:
