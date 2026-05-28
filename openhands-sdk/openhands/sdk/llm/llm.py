@@ -1325,7 +1325,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             probe,
             tools=None,
             add_security_risk_prediction=False,
-            kwargs={"max_completion_tokens": 1},
+            kwargs={"max_completion_tokens": 1024},
         )
         return formatted_messages, call_kwargs
 
