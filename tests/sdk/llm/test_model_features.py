@@ -385,24 +385,3 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
     """Test that models like kimi-k2-thinking require send_reasoning_content."""
     features = get_features(model)
     assert features.send_reasoning_content is expected_send_reasoning
-
-
-@pytest.mark.parametrize(
-    "model,expected_vision",
-    [
-        # Claude Opus 4.8 is vision-capable per Anthropic docs but may not yet
-        # be registered in LiteLLM's capability table.
-        ("claude-opus-4-8", True),
-        ("anthropic/claude-opus-4-8", True),
-        ("litellm_proxy/anthropic/claude-opus-4-8", True),
-        # Other models are not in the VISION_MODELS fallback list (vision
-        # support for them comes from LiteLLM, not from this allowlist).
-        ("claude-opus-4-7", False),
-        ("gpt-4o", False),
-        ("unknown-model", False),
-    ],
-)
-def test_supports_vision_feature(model, expected_vision):
-    """VISION_MODELS fallback is exposed via ModelFeatures.supports_vision."""
-    features = get_features(model)
-    assert features.supports_vision is expected_vision

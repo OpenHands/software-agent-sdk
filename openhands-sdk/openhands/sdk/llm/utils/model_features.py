@@ -50,7 +50,6 @@ class ModelFeatures:
     force_string_serializer: bool
     send_reasoning_content: bool
     supports_prompt_cache_retention: bool
-    supports_vision: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -180,16 +179,6 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
     "openrouter/minimax",
 ]
 
-# Vision-capable models that LiteLLM may not yet recognize via
-# `litellm.supports_vision` or `model_info["supports_vision"]`. Used as a
-# fallback in `LLM._supports_vision()` so new releases work out-of-the-box.
-# Only add models whose provider documentation confirms vision/image input.
-VISION_MODELS: list[str] = [
-    # Anthropic Claude Opus 4.8 supports image input per Anthropic docs:
-    # https://platform.claude.com/docs/en/build-with-claude/vision
-    "claude-opus-4-8",
-]
-
 # Models that we should send full reasoning content
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
@@ -217,5 +206,4 @@ def get_features(model: str) -> ModelFeatures:
         supports_prompt_cache_retention=apply_ordered_model_rules(
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
-        supports_vision=model_matches(model, VISION_MODELS),
     )
