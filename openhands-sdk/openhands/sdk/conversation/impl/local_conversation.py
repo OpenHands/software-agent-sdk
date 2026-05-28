@@ -1018,8 +1018,7 @@ class LocalConversation(BaseConversation):
                         source="environment",
                         code="LLMAuthenticationError",
                         detail=(
-                            "Your LLM API key appears to be invalid or has expired. "
-                            "Please update it in Settings."
+                            "Your LLM API key appears to be invalid or has expired."
                         ),
                     )
                 )
@@ -1190,8 +1189,7 @@ class LocalConversation(BaseConversation):
                         source="environment",
                         code="LLMAuthenticationError",
                         detail=(
-                            "Your LLM API key appears to be invalid or has expired. "
-                            "Please update it in Settings."
+                            "Your LLM API key appears to be invalid or has expired."
                         ),
                     )
                 )
