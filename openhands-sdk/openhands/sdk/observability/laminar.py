@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import contextlib
 import functools
 import inspect
 import sys
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
 
 
 if TYPE_CHECKING:
-    pass
+    from openhands.sdk.conversation.types import TraceMetadataValue
 
 
 logger = get_logger(__name__)
@@ -253,7 +255,7 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
     ) -> None:
         from lmnr import Laminar
@@ -275,7 +277,9 @@ class RootSpan:
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
                     if metadata:
-                        Laminar.set_trace_metadata(metadata)
+                        # cast: list[T] satisfies Sequence[T]; dict invariance
+                        # prevents direct assignment without the explicit cast.
+                        Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
                     if tags:
                         Laminar.set_span_tags(tags)
         self._ended = False
@@ -295,7 +299,7 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, TraceMetadataValue] | None = None,
     tags: list[str] | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.

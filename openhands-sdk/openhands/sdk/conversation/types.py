@@ -1,6 +1,6 @@
 import re
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, Field
@@ -45,14 +45,7 @@ Keys must be lowercase alphanumeric. Values are arbitrary strings up to 256 char
 """
 
 type TraceMetadataValue = (
-    str
-    | bool
-    | int
-    | float
-    | Sequence[str]
-    | Sequence[bool]
-    | Sequence[int]
-    | Sequence[float]
+    str | bool | int | float | list[str] | list[bool] | list[int] | list[float]
 )
 
 
@@ -68,7 +61,7 @@ def _validate_observability_metadata(
             raise ValueError("Observability metadata keys must be non-empty strings")
         if isinstance(value, str | bool | int | float):
             continue
-        if isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        if isinstance(value, list):
             if all(isinstance(item, str) for item in value):
                 continue
             if all(isinstance(item, bool) for item in value):
