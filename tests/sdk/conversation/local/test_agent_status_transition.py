@@ -135,6 +135,9 @@ def test_execution_status_is_running_during_execution_from_idle():
     """Test that agent status is RUNNING during execution when started from IDLE."""
     status_during_execution: list[ConversationExecutionStatus] = []
     execution_started = threading.Event()
+    # Barrier lets the main thread observe RUNNING before the executor returns,
+    # preventing the race where the run-loop moves on before we can check.
+    main_thread_observed = threading.Event()
 
     class SignalingExecutor(
         ToolExecutor[StatusTransitionMockAction, StatusTransitionMockObservation]
@@ -144,9 +147,11 @@ def test_execution_status_is_running_during_execution_from_idle():
         def __call__(
             self, action: StatusTransitionMockAction, conversation=None
         ) -> StatusTransitionMockObservation:
-            # Signal that execution has started
+            # Signal that execution has started, then wait for the main thread to
+            # observe the status before returning so there is no race.
             execution_started.set()
-            # Capture the agent status during execution
+            main_thread_observed.wait(timeout=2.0)
+            # Capture the agent status during execution (before returning)
             if conversation:
                 status_during_execution.append(conversation.state.execution_status)
             return StatusTransitionMockObservation(result=f"Executed: {action.command}")
@@ -200,8 +205,11 @@ def test_execution_status_is_running_during_execution_from_idle():
     # Wait for execution to start
     assert execution_started.wait(timeout=2.0), "Execution never started"
 
-    # Check status while running
+    # Check status while the executor is still holding (no race)
     status_during_run[0] = conversation.state.execution_status
+
+    # Release the executor
+    main_thread_observed.set()
 
     # Wait for run to complete
     assert run_complete.wait(timeout=2.0), "Run did not complete"
