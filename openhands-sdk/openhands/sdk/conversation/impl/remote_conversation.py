@@ -1150,9 +1150,11 @@ class RemoteConversation(BaseConversation):
                 # Invariant: only full-state snapshot signals reach this point.
                 # ERROR/STUCK raise above; all other enqueued signals originate
                 # from the authoritative post-run full-state snapshot.
-                assert signal.from_post_run_snapshot, (
-                    f"Unexpected non-snapshot signal reached reconcile path: {signal!r}"
-                )
+                if not signal.from_post_run_snapshot:
+                    raise AssertionError(
+                        "Unexpected non-snapshot signal reached "
+                        f"reconcile path: {signal!r}"
+                    )
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",

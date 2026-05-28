@@ -1361,7 +1361,10 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)
 
         assert poll_count[0] >= 1
-        assert conversation.state.stats.usage_to_metrics
+        assert "test-llm" in conversation.state.stats.usage_to_metrics
+        assert conversation.state.stats.usage_to_metrics[
+            "test-llm"
+        ].accumulated_cost == pytest.approx(1.25)
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
