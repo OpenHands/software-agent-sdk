@@ -81,7 +81,8 @@ def _validate_observability_metadata(
                 continue
         raise ValueError(
             f"Observability metadata value for '{key}' must be a scalar "
-            "or a sequence of strings, booleans, integers, or floats"
+            "or a homogeneous sequence of strings, booleans, integers, or floats "
+            "(mixed numeric types such as [1, 1.5] are not supported by OpenTelemetry)"
         )
     return v
 

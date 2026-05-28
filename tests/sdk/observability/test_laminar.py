@@ -502,11 +502,9 @@ def test_root_span_sets_trace_metadata_and_tags():
     from openhands.sdk.observability.laminar import RootSpan
 
     fake_span = MagicMock()
-    fake_context = MagicMock()
 
     with patch("lmnr.Laminar") as mock_laminar:
         mock_laminar.start_span.return_value = fake_span
-        mock_laminar.use_span.return_value.__enter__.return_value = fake_context
 
         RootSpan(
             "conversation",

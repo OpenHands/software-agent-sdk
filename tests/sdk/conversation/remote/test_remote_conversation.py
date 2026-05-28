@@ -236,10 +236,14 @@ class TestRemoteConversation:
         )
 
         create_call = next(
-            call
-            for call in mock_client_instance.request.call_args_list
-            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+            (
+                call
+                for call in mock_client_instance.request.call_args_list
+                if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+            ),
+            None,
         )
+        assert create_call is not None, "No POST /api/conversations call found"
         payload = create_call.kwargs["json"]
         assert payload["observability_metadata"] == {
             "repo": "OpenHands/software-agent-sdk"
