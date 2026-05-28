@@ -106,6 +106,10 @@ class TaskManager:
         # when the parent persists, otherwise a temporary directory.
         self._persistence_dir: Path | None = None
 
+    def attach_parent(self, conversation: LocalConversation) -> None:
+        """Attach the parent conversation used to create sub-agent tasks."""
+        self._ensure_parent(conversation)
+
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation

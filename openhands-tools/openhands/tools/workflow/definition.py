@@ -16,6 +16,7 @@ from openhands.sdk.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.tools.workflow.impl import WorkflowExecutor
 
 
 class WorkflowAction(Action):
@@ -140,6 +141,3 @@ class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
 
 register_tool(WorkflowToolSet.name, WorkflowToolSet)
 register_tool(WorkflowTool.name, WorkflowTool)
-
-if TYPE_CHECKING:
-    from openhands.tools.workflow.impl import WorkflowExecutor

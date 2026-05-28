@@ -103,6 +103,46 @@ async def main(wf):
     ]
 
 
+def test_map_agents_reports_all_sub_agent_failures() -> None:
+    class FailingTaskManager(_FakeTaskManager):
+        def start_task(
+            self,
+            prompt: str,
+            subagent_type: str = "default",
+            resume: str | None = None,
+            description: str | None = None,
+            conversation: LocalConversation | None = None,
+        ) -> _FakeTask:
+            self.prompts.append(f"{subagent_type}: {prompt}")
+            if prompt in {"inspect bad", "inspect worse"}:
+                return _FakeTask(error=f"failed {prompt}")
+            return _FakeTask(result=f"result:{prompt}")
+
+    script = """
+async def main(wf):
+    return await wf.map_agents(
+        items=["good", "bad", "worse"],
+        prompt="inspect {item}",
+        subagent_type="researcher",
+    )
+"""
+    manager = FailingTaskManager()
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        execute_workflow_script(script, _context(manager))
+
+    assert "map_agents" in str(exc_info.value)
+    assert [str(exc) for exc in exc_info.value.exceptions] == [
+        "failed inspect bad",
+        "failed inspect worse",
+    ]
+    assert set(manager.prompts) == {
+        "researcher: inspect good",
+        "researcher: inspect bad",
+        "researcher: inspect worse",
+    }
+
+
 def test_validate_workflow_script_rejects_missing_async_main() -> None:
     with pytest.raises(WorkflowScriptError, match="async main"):
         validate_workflow_script("def main(wf):\n    return 'nope'\n")

@@ -80,7 +80,7 @@ class WorkflowContext:
         self._max_concurrency = max_concurrency
         if manager is None:
             task_manager = TaskManager()
-            task_manager._ensure_parent(parent_conversation)
+            task_manager.attach_parent(parent_conversation)
             self._manager = task_manager
         else:
             self._manager = manager
@@ -141,8 +141,7 @@ class WorkflowContext:
         )
 
         async def run_one(item: Any) -> str:
-            rendered_prompt = _render_template(prompt, item)
-            assert rendered_prompt is not None
+            rendered_prompt = _render_required_template(prompt, item)
             rendered_description = _render_template(description, item)
             async with semaphore:
                 return await self._run_agent_task(
@@ -151,7 +150,23 @@ class WorkflowContext:
                     description=rendered_description,
                 )
 
-        return list(await asyncio.gather(*(run_one(item) for item in items)))
+        results = await asyncio.gather(
+            *(run_one(item) for item in items),
+            return_exceptions=True,
+        )
+        failures = [result for result in results if isinstance(result, BaseException)]
+        if failures:
+            exceptions = [
+                failure
+                if isinstance(failure, Exception)
+                else RuntimeError(str(failure))
+                for failure in failures
+            ]
+            raise ExceptionGroup(
+                "map_agents: one or more sub-agents failed",
+                exceptions,
+            )
+        return [str(result) for result in results]
 
     async def reduce_agent(
         self,
@@ -181,14 +196,18 @@ class WorkflowContext:
         self._manager.close()
 
 
+def _render_required_template(template: Callable[[Any], str] | str, item: Any) -> str:
+    if callable(template):
+        return str(template(item))
+    return template.format(item=item)
+
+
 def _render_template(
     template: Callable[[Any], str] | str | None, item: Any
 ) -> str | None:
     if template is None:
         return None
-    if callable(template):
-        return str(template(item))
-    return template.format(item=item)
+    return _render_required_template(template, item)
 
 
 def _format_value(value: Any) -> str:
