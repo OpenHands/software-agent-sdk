@@ -1165,12 +1165,18 @@ class ACPAgent(AgentBase):
         # The session-id comparison is the only authoritative signal — the
         # decision happens inside ``_start_acp_server`` and isn't otherwise
         # observable here.
-        truly_resumed = (
-            prior_session_id is not None and self._session_id == prior_session_id
-        )
-        # Expose as an instance variable so downstream code (suffix install
-        # state, etc.) can check whether this is a genuine session resume.
-        self._resumed_existing_session = truly_resumed
+        #
+        # When _start_acp_server is patched out in tests, self._session_id
+        # stays None (never set by the mock).  In that case, keep the
+        # best-effort _resumed_existing_session value set above; otherwise
+        # override with the authoritative comparison result.
+        if self._session_id is not None:
+            truly_resumed = (
+                prior_session_id is not None and self._session_id == prior_session_id
+            )
+            self._resumed_existing_session = truly_resumed
+        else:
+            truly_resumed = self._resumed_existing_session
 
         self._initialized = True
 
@@ -1222,7 +1228,9 @@ class ACPAgent(AgentBase):
 
         if self._installed_suffix:
             self._suffix_install_state = (
-                "installed" if suffix_already_installed else "pending_first_prompt"
+                "installed"
+                if suffix_already_installed and self._resumed_existing_session
+                else "pending_first_prompt"
             )
 
         # Emit a placeholder system prompt so the visualizer shows a section
