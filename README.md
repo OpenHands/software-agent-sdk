@@ -384,7 +384,7 @@ Integration tests require a running agent-server in Docker with a mounted worksp
      --name agent-server \
      -p 8010:8000 \
      -v /tmp/agent-workspace:/workspace \
-     ghcr.io/openhands/agent-server:fdc2bdf-python
+     ghcr.io/openhands/agent-server:1.24.0-python
    ```
 
 3. Wait for the server to be ready:

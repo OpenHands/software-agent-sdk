@@ -16,7 +16,7 @@ env:
   AGENT_SERVER_PORT: 8010
   HOST_WORKSPACE_DIR: /tmp/agent-workspace
   AGENT_WORKSPACE_DIR: /workspace
-  AGENT_SERVER_IMAGE: ghcr.io/openhands/agent-server:fdc2bdf-python
+  AGENT_SERVER_IMAGE: ghcr.io/openhands/agent-server:1.24.0-python
 
 jobs:
   integration-test:
