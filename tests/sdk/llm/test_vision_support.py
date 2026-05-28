@@ -18,6 +18,10 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
         "litellm_proxy/gemini-3.1-pro-preview",
+        # Vision support via SDK-local VISION_MODELS fallback (LiteLLM may
+        # not yet recognize this model id).
+        "claude-opus-4-8",
+        "litellm_proxy/anthropic/claude-opus-4-8",
     ],
 )
 def test_vision_is_active_supported_models(model):

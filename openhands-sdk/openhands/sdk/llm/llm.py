@@ -1804,6 +1804,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 self._model_info is not None
                 and self._model_info.get("supports_vision", False)
             )
+            # Fallback to SDK-local vision allowlist for models that LiteLLM
+            # has not yet registered (see VISION_MODELS in model_features).
+            or get_features(model_for_caps).supports_vision
             or False  # fallback to False if model_info is None
         )
 
