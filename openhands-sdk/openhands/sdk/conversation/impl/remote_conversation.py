@@ -6,7 +6,6 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import urlparse
@@ -61,27 +60,6 @@ from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
-
-
-@dataclass(frozen=True)
-class _RunCompletionSignal:
-    status: str
-    # True for full-state snapshot signals (post-run ConversationStateUpdateEvent);
-    # False for per-field ERROR/STUCK signals (which raise before reconcile).
-    # Asserted in _wait_for_run_completion to catch future regressions.
-    from_post_run_snapshot: bool
-
-
-# Statuses that are immediately terminal for per-field WS updates.
-# FINISHED is intentionally excluded: stop hooks can flip a freshly-set
-# FINISHED back to RUNNING within the same server-side iteration, so FINISHED
-# is only accepted from the server's authoritative post-run full-state snapshot.
-_IMMEDIATE_TERMINAL_STATUSES: frozenset[str] = frozenset(
-    {
-        ConversationExecutionStatus.ERROR.value,
-        ConversationExecutionStatus.STUCK.value,
-    }
-)
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -663,7 +641,7 @@ class RemoteConversation(BaseConversation):
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
-    _terminal_status_queue: Queue[_RunCompletionSignal]
+    _terminal_status_queue: Queue[str]
     _run_armed: threading.Event
     _conversation_info_base_path: str
     _conversation_action_base_path: str
@@ -728,7 +706,7 @@ class RemoteConversation(BaseConversation):
         self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
         self._conversation_action_base_path = LEGACY_CONVERSATIONS_PATH
         self._cleanup_initiated = False
-        self._terminal_status_queue: Queue[_RunCompletionSignal] = Queue()
+        self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
 
         should_create = conversation_id is None
@@ -857,56 +835,34 @@ class RemoteConversation(BaseConversation):
             self._visualizer = None
 
         # Add a callback that signals when run completes via WebSocket.
-        # Per-field ERROR/STUCK updates are terminal immediately. FINISHED is
-        # authoritative only in the full post-run state snapshot emitted by the
-        # server after conversation.run()/arun() exits and pending events flush.
-        # That snapshot may also report non-terminal-but-not-running statuses
-        # such as paused or waiting_for_confirmation, which still mean this
-        # run invocation has yielded control back to the caller.
+        # The server's post-run full-state snapshot is the only authoritative
+        # WebSocket completion signal. Per-field execution_status updates are
+        # hints only: FINISHED can still be reverted by stop hooks, and ERROR/STUCK
+        # are surfaced by the REST health-check path below.
         def run_complete_callback(event: Event) -> None:
             if not isinstance(event, ConversationStateUpdateEvent):
                 return
-
-            if event.key == FULL_STATE_KEY:
-                # Only accept full-state snapshots as run-completion signals
-                # when a run is actually in progress. The WS subscription
-                # delivers an initial full-state snapshot during connect(); if
-                # that snapshot carries a non-RUNNING status (e.g. "idle"), it
-                # could be picked up by _wait_for_run_completion() as the
-                # completion signal for the *next* run() invocation, causing
-                # blocking=True to return before the server has actually
-                # finished. Gating on _run_armed (set after POST /run)
-                # ensures only post-run snapshots are treated as authoritative.
-                if not self._run_armed.is_set():
-                    return
-                raw_status = event.value.get("execution_status")
-                if raw_status is not None:
-                    try:
-                        status = ConversationExecutionStatus(raw_status)
-                    except ValueError:
-                        pass  # Unknown status value, ignore
-                    else:
-                        if status != ConversationExecutionStatus.RUNNING:
-                            self._terminal_status_queue.put(
-                                _RunCompletionSignal(
-                                    status=status.value,
-                                    from_post_run_snapshot=True,
-                                )
-                            )
+            if event.key != FULL_STATE_KEY:
                 return
 
-            if event.key == "execution_status":
-                try:
-                    status = ConversationExecutionStatus(event.value)
-                    if status.value in _IMMEDIATE_TERMINAL_STATUSES:
-                        self._terminal_status_queue.put(
-                            _RunCompletionSignal(
-                                status=status.value,
-                                from_post_run_snapshot=False,
-                            )
-                        )
-                except ValueError:
-                    pass  # Unknown status value, ignore
+            # Only accept full-state snapshots as run-completion signals when a
+            # run is actually in progress. The WS subscription delivers an
+            # initial full-state snapshot during connect(); if that snapshot
+            # carries a non-RUNNING status (e.g. "idle"), it could be picked up
+            # by _wait_for_run_completion() as the completion signal for the
+            # *next* run() invocation, causing blocking=True to return before the
+            # server has actually finished.
+            if not self._run_armed.is_set():
+                return
+
+            raw_status = event.value.get("execution_status")
+            try:
+                status = ConversationExecutionStatus(raw_status)
+            except ValueError:
+                return
+
+            if status != ConversationExecutionStatus.RUNNING:
+                self._terminal_status_queue.put(status.value)
 
         # Compose all callbacks into a single callback
         all_callbacks = self._callbacks + [run_complete_callback]
@@ -1140,21 +1096,9 @@ class RemoteConversation(BaseConversation):
             # 1. WebSocket delivers a run-completion signal
             # 2. Poll interval expires (fall through to REST poll)
             try:
-                signal = self._terminal_status_queue.get(timeout=poll_interval)
-                ws_status = signal.status
+                ws_status = self._terminal_status_queue.get(timeout=poll_interval)
                 # Raises ConversationRunError on ERROR/STUCK; no-op otherwise.
-                # Per-field ERROR/STUCK signals raise here; full-state snapshots
-                # (from_post_run_snapshot=True) are the only signals that reach
-                # the log/reconcile/return below.
                 self._handle_conversation_status(ws_status)
-                # Invariant: only full-state snapshot signals reach this point.
-                # ERROR/STUCK raise above; all other enqueued signals originate
-                # from the authoritative post-run full-state snapshot.
-                if not signal.from_post_run_snapshot:
-                    raise AssertionError(
-                        "Unexpected non-snapshot signal reached "
-                        f"reconcile path: {signal!r}"
-                    )
                 logger.info(
                     "Run completed via post-run WebSocket state update "
                     "(status: %s, elapsed: %.1fs)",
