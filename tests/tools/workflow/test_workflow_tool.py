@@ -14,6 +14,7 @@ from openhands.tools.workflow import (
     execute_workflow_script,
     validate_workflow_script,
 )
+from openhands.tools.workflow.impl import _format_exception
 
 
 @dataclass
@@ -86,7 +87,7 @@ async def main(wf):
     assert manager.descriptions == ["job alpha", "job beta", "final summary"]
 
 
-def test_map_agents_uses_default_concurrency_without_deadlock() -> None:
+def test_map_agents_uses_context_default_concurrency_when_none_given() -> None:
     manager = _FakeTaskManager()
     script = """
 async def main(wf):
@@ -141,6 +142,19 @@ async def main(wf):
         "researcher: inspect bad",
         "researcher: inspect worse",
     }
+
+
+def test_format_exception_includes_exception_group_details() -> None:
+    error = ExceptionGroup(
+        "map_agents: one or more sub-agents failed",
+        [RuntimeError("first failure"), RuntimeError("second failure")],
+    )
+
+    assert _format_exception(error) == (
+        "map_agents: one or more sub-agents failed:\n"
+        "  [1] first failure\n"
+        "  [2] second failure"
+    )
 
 
 def test_validate_workflow_script_rejects_missing_async_main() -> None:

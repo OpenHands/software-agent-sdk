@@ -131,7 +131,11 @@ class WorkflowContext:
         max_concurrency: int | None = None,
         description: Callable[[Any], str] | str | None = None,
     ) -> list[str]:
-        """Run one sub-agent task per item and return results in item order."""
+        """Run one sub-agent task per item and return results in item order.
+
+        A per-call ``max_concurrency`` overrides the context default for this map
+        operation only; it is not a nested subset of the context-wide limit.
+        """
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
         semaphore = (
@@ -282,7 +286,16 @@ def _attribute_root_name(node: ast.Attribute) -> str | None:
 
 
 def execute_workflow_script(script: str, context: WorkflowContext) -> Any:
-    """Validate and execute a workflow script against a workflow context."""
+    """Validate and execute a workflow script from a synchronous context."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise WorkflowScriptError(
+            "Workflow scripts must be executed from a synchronous context"
+        )
+
     validate_workflow_script(script)
     namespace: dict[str, Any] = {}
     exec(compile(script, "<dynamic-workflow>", "exec"), _safe_globals(), namespace)
@@ -290,6 +303,16 @@ def execute_workflow_script(script: str, context: WorkflowContext) -> Any:
     if not inspect.iscoroutinefunction(main):
         raise WorkflowScriptError("Workflow entry point must be async")
     return asyncio.run(main(context))
+
+
+def _format_exception(error: Exception) -> str:
+    if isinstance(error, ExceptionGroup):
+        details = "\n".join(
+            f"  [{index}] {exception}"
+            for index, exception in enumerate(error.exceptions, start=1)
+        )
+        return f"{error.args[0]}:\n{details}"
+    return str(error)
 
 
 def _safe_globals() -> dict[str, Any]:
@@ -346,9 +369,10 @@ class WorkflowExecutor(ToolExecutor["WorkflowAction", WorkflowObservation]):
                 status="completed",
             )
         except Exception as e:
+            error_text = _format_exception(e)
             logger.warning("Workflow '%s' failed: %s", action.name, e, exc_info=True)
             return WorkflowObservation.from_text(
-                text=str(e),
+                text=error_text,
                 name=action.name,
                 status="error",
                 is_error=True,
