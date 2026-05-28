@@ -41,6 +41,7 @@ export interface AgentContext {
   skills?: unknown[];
   system_message_suffix?: string | null;
   user_message_suffix?: string | null;
+  load_project_skills?: boolean;
   [key: string]: unknown;
 }
 
