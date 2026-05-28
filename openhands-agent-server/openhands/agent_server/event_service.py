@@ -482,7 +482,7 @@ class EventService:
         """
         if not self._conversation:
             return (False, False)
-        if self._run_task is None:
+        if self._run_task is None or self._run_task.done():
             return (False, False)
         if not isinstance(self._conversation.agent, ACPAgent):
             return (False, False)
