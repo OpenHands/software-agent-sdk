@@ -1222,9 +1222,7 @@ class ACPAgent(AgentBase):
 
         if self._installed_suffix:
             self._suffix_install_state = (
-                "installed"
-                if suffix_already_installed and self._resumed_existing_session
-                else "pending_first_prompt"
+                "installed" if suffix_already_installed else "pending_first_prompt"
             )
 
         # Emit a placeholder system prompt so the visualizer shows a section
