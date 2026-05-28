@@ -1089,6 +1089,38 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_run_ws_error_still_terminates_immediately(
+        self, mock_ws_client
+    ):
+        """ERROR via WS still raises immediately (not subject to hook reverts)."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_client.return_value = Mock()
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation._get_last_error_detail = Mock(return_value="boom")
+        ws_callback = mock_ws_client.call_args.kwargs["callback"]
+
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def post_run_seeds_error(method, url, **kwargs):
+            resp = original_side_effect(method, url, **kwargs)
+            if method == "POST" and url.endswith("/run"):
+                ws_callback(
+                    ConversationStateUpdateEvent(key="execution_status", value="error")
+                )
+            return resp
+
+        mock_client_instance.request.side_effect = post_run_seeds_error
+
+        with pytest.raises(Exception) as excinfo:
+            conversation.run(blocking=True, poll_interval=10.0)
+
+        assert "boom" in str(excinfo.value) or "error" in str(excinfo.value).lower()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_run_stale_pre_run_snapshot_is_ignored(
         self, mock_ws_client
     ):

@@ -836,12 +836,24 @@ class RemoteConversation(BaseConversation):
 
         # Add a callback that signals when run completes via WebSocket.
         # The server's post-run full-state snapshot is the only authoritative
-        # WebSocket completion signal. Per-field execution_status updates are
-        # hints only: FINISHED can still be reverted by stop hooks, and ERROR/STUCK
-        # are surfaced by the REST health-check path below.
+        # WebSocket success signal. Per-field FINISHED is a hint because stop
+        # hooks can still revert it; per-field ERROR/STUCK remain immediate.
         def run_complete_callback(event: Event) -> None:
             if not isinstance(event, ConversationStateUpdateEvent):
                 return
+
+            if event.key == "execution_status":
+                try:
+                    status = ConversationExecutionStatus(event.value)
+                except ValueError:
+                    return
+                if status in (
+                    ConversationExecutionStatus.ERROR,
+                    ConversationExecutionStatus.STUCK,
+                ):
+                    self._terminal_status_queue.put(status.value)
+                return
+
             if event.key != FULL_STATE_KEY:
                 return
 
