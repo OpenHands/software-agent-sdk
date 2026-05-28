@@ -1520,18 +1520,23 @@ class ACPAgent(AgentBase):
                     session_id,
                     self.acp_model,
                 )
+                # The override rode in via the session ``_meta`` (claude —
+                # non-empty ``session_meta``); ``new_session`` has already
+                # processed it, so ``reported_model_id`` reflects the server's
+                # *post-override* selection.
+                applied_via_meta = bool(session_meta)
                 # The override actually reached the server iff it rode in via the
-                # session ``_meta`` (claude — non-empty ``session_meta``) or the
-                # protocol call was issued (codex/gemini).  An unknown/custom
-                # provider gets neither, so ``acp_model`` is set on the agent but
-                # the server is running its own default.
-                override_applied = bool(session_meta) or applied_via_call
+                # ``_meta`` above or the protocol call was issued (codex/gemini).
+                # An unknown/custom provider gets neither, so ``acp_model`` is set
+                # on the agent but the server is running its own default.
+                override_applied = applied_via_meta or applied_via_call
             else:
                 # Resumed session. load_session() does not carry model _meta, so
                 # reapply the persisted (possibly runtime-switched) acp_model via
                 # the runtime-switch capability — otherwise the resumed live
                 # session would run on the server default while serialized state
                 # claims the switched model.
+                applied_via_meta = False
                 override_applied = await _reapply_session_model_on_resume(
                     conn,
                     agent_name,
@@ -1539,17 +1544,30 @@ class ACPAgent(AgentBase):
                     self.acp_model,
                 )
 
-            # Resolve the model the agent will actually use.  Prefer the caller's
-            # ``acp_model`` only when it was actually applied to the server above;
-            # otherwise the server is running its own model, so surface what it
-            # reported in ``models.currentModelId`` (``None`` for older agents
-            # that don't surface the field).  Trusting ``acp_model`` on paths
-            # where it never reached the server would mislabel the chip/picker.
-            current_model_id = (
-                self.acp_model
-                if (self.acp_model and override_applied)
-                else reported_model_id
-            )
+            # Resolve the model the agent will actually use.
+            #
+            # ``_meta`` path: ``new_session`` already returned the server's actual
+            # ``models.currentModelId`` *after* applying the override, so trust
+            # that reported id — the server may normalize, alias, or silently
+            # ignore the request (e.g. claude-agent-acp reports ``"default"`` even
+            # when a specific model was requested). Surfacing ``self.acp_model``
+            # here would claim a model the server isn't on and mismatch the picker
+            # (``available_models`` is keyed by the server's ids). Fall back to the
+            # requested id only when the server surfaced no model state at all.
+            #
+            # ``set_session_model`` path (codex/gemini fresh, or any resume reapply):
+            # the protocol call happens *after* the new_session/load_session
+            # response, so ``reported_model_id`` predates the switch — the
+            # requested ``acp_model`` is what the live session now runs.
+            #
+            # Not applied (or no override): the server runs its own model, so
+            # surface what it reported (``None`` for agents that omit the field).
+            if applied_via_meta:
+                current_model_id = reported_model_id or self.acp_model
+            elif self.acp_model and override_applied:
+                current_model_id = self.acp_model
+            else:
+                current_model_id = reported_model_id
 
             # Resolve the permission mode.  Known providers each have their
             # own mode ID (bypassPermissions, full-access, yolo …).

@@ -4568,6 +4568,51 @@ class TestACPSessionIdPersistence:
         )
         assert agent.current_model_id == "caller-model"
 
+    def test_meta_path_prefers_server_reported_id_over_requested(self, tmp_path):
+        """``_meta`` provider (claude): ``new_session`` applies the override and
+        reports the server's actual ``currentModelId`` in the same response. When
+        the server normalizes/ignores the request (e.g. reports ``"default"``
+        even though a specific model was requested), ``current_model_id`` must
+        surface the server's reported id — not the requested one — so the chip
+        matches the picker (``available_models`` is keyed by the server's ids).
+
+        Reproduces real claude-agent-acp@0.30.0 behaviour: requesting
+        ``claude-opus-4-7`` yields ``currentModelId='default'``.
+        """
+        agent = _make_agent(acp_model="claude-opus-4-7")
+        state = _make_state(tmp_path)
+        new_response = MagicMock()
+        new_response.session_id = "fresh-sess"
+        new_response.models = self._models_block(
+            "default", ["default", "sonnet", "haiku", "claude-opus-4-7"]
+        )
+        conn = self._make_conn()  # default agent_info.name == "claude-agent-acp"
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        # claude selects via _meta, so no protocol set_session_model call fires.
+        conn.set_session_model.assert_not_awaited()
+        # The server's reported id wins over the requested override.
+        assert agent.current_model_id == "default"
+
+    def test_meta_path_falls_back_to_requested_when_server_omits_models(self, tmp_path):
+        """``_meta`` provider where ``new_session`` omits the ``models`` block:
+        with no server-reported id to trust, fall back to the requested
+        ``acp_model`` (it was embedded in the session and accepted).
+        """
+        agent = _make_agent(acp_model="claude-opus-4-7")
+        state = _make_state(tmp_path)
+        new_response = MagicMock(spec=["session_id"])  # no .models attribute
+        new_response.session_id = "fresh-sess"
+        conn = self._make_conn()  # claude-agent-acp
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_session_model.assert_not_awaited()
+        assert agent.current_model_id == "claude-opus-4-7"
+
     def test_resume_rejected_override_surfaces_server_model(self, tmp_path):
         """Resume where ``set_session_model`` is rejected: the live session keeps
         the server default, so ``current_model_id`` must fall back to what the

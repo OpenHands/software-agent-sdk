@@ -258,24 +258,27 @@ def _compose_conversation_info(
     agent_state = getattr(state, "agent_state", {}) or {}
     agent = state.agent
     # current_model_id: live PrivateAttr (fresh after a runtime switch) → the
-    # persisted hint → the authoritative ``acp_model`` the agent runs on resume.
+    # persisted hint → the serialized ``acp_model`` the agent was asked to run.
     #
-    # The ``acp_model`` fallback is gated on the agent NOT being a live,
-    # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
-    # authoritative resolved value — including ``None`` when an override couldn't
-    # be applied (unknown provider, or a resume whose ``set_session_model`` the
-    # server rejected) — so falling back to ``acp_model`` there would re-assert an
-    # override the live session isn't actually running. The fallback is only for
-    # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
-    # the serialized ``acp_model`` is the best last-known hint. The persisted
-    # ``acp_current_model_id`` hint is kept honest by ``ACPAgent.init_state`` (it
-    # clears the value whenever the override wasn't applied), so it's safe in
-    # both cases.
-    agent_initialized = bool(getattr(agent, "_initialized", False))
+    # The ``acp_model`` fallback is gated on NO ACP session having been started
+    # yet (no persisted ``acp_session_id``). Once a session exists, a launch of
+    # ``ACPAgent.init_state`` has authoritatively recorded the resolved model
+    # into ``acp_current_model_id`` — *present* = the model the live session
+    # actually ran, *absent* = deliberately cleared because the override was
+    # rejected/unapplied. Either way the persisted hint is the source of truth,
+    # so we must NOT fall back to ``acp_model`` (the merely-requested override),
+    # which would re-advertise a model the server isn't running. Crucially this
+    # holds across agent-server restarts too: a cold read reconstructs the agent
+    # with ``acp_model`` set and PrivateAttrs reset, so an ``_initialized``-based
+    # gate would wrongly resurrect a cleared id — keying on the persisted session
+    # id instead keeps a cleared id cleared. The fallback applies only *before*
+    # the first session, where ``acp_model`` is the best (and only) hint for what
+    # the conversation will run.
+    has_acp_session = bool(agent_state.get("acp_session_id"))
     current_model_id = (
         getattr(agent, "current_model_id", None)
         or agent_state.get("acp_current_model_id")
-        or (None if agent_initialized else getattr(agent, "acp_model", None))
+        or (None if has_acp_session else getattr(agent, "acp_model", None))
     )
     # available_models: the property returns ``[]`` (never ``None``) for *both* a
     # cold-read agent (PrivateAttr default, init_state hasn't fired) and a live

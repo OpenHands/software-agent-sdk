@@ -140,12 +140,12 @@ def test_current_model_id_propagates_init_resolution(
     assert info.current_model_id == expected
 
 
-def test_cold_read_falls_back_to_acp_model_override():
-    """Cold list read (``init_state`` not fired): with no live/persisted current
-    id, the serialized ``acp_model`` is the best last-known hint and is surfaced.
+def test_presession_cold_read_falls_back_to_acp_model_override():
+    """Pre-session cold read (no ACP session started yet): with no live/persisted
+    current id, the serialized ``acp_model`` is the best last-known hint.
     """
     agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-x")
-    # _initialized defaults to False (cold read); _current_model_id defaults None.
+    # No acp_session_id => never started; _current_model_id defaults None.
     state = _make_state(agent)
     stored = _make_stored(state)
 
@@ -155,23 +155,63 @@ def test_cold_read_falls_back_to_acp_model_override():
 
 
 def test_live_agent_does_not_fall_back_to_unapplied_override():
-    """Live initialized agent whose override was NOT applied (e.g. a resume whose
-    ``set_session_model`` the server rejected): ``current_model_id`` is the
-    authoritative ``None`` and must NOT fall back to ``acp_model`` — that would
-    re-assert an override the live session isn't running.
+    """Live agent whose override was NOT applied (e.g. a resume whose
+    ``set_session_model`` the server rejected): the persisted current id was
+    cleared by ``init_state`` and must NOT be resurrected from ``acp_model`` —
+    that would re-assert an override the live session isn't running.
     """
     agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-x")
-    # init_state has fired; the override resolved to None (rejected) and was
-    # recorded as not applied. The persisted hint was cleared by init_state.
-    agent._initialized = True
-    agent._current_model_id = None
-    agent._model_override_applied = False
+    agent._current_model_id = None  # override resolved to None (rejected)
     state = _make_state(agent)
+    # A session was started (so init_state ran) and it CLEARED the current id.
+    state.agent_state = {**state.agent_state, "acp_session_id": "sess-1"}
     stored = _make_stored(state)
 
     info = _compose_conversation_info(stored, state)
 
     assert info.current_model_id is None
+
+
+def test_cold_read_after_restart_keeps_cleared_override_cleared():
+    """Cold read after an agent-server restart of a conversation whose override
+    was rejected. PrivateAttrs reset (``_current_model_id`` None) and the agent
+    still carries ``acp_model``, but a prior ``init_state`` cleared
+    ``acp_current_model_id`` while persisting ``acp_session_id``. The cleared id
+    must STAY cleared — the ``acp_model`` fallback is suppressed once a session
+    exists, so it can't resurrect the model the live session wasn't running.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-x")
+    # Cold read: _current_model_id default None (PrivateAttrs reset on restart).
+    state = _make_state(agent)
+    state.agent_state = {
+        **state.agent_state,
+        "acp_session_id": "prior-sess",  # a session was started before restart
+        # acp_current_model_id deliberately ABSENT (cleared by prior init_state)
+    }
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_model_id is None
+
+
+def test_cold_read_after_restart_surfaces_persisted_applied_model():
+    """Counterpart: when the override WAS applied, the persisted
+    ``acp_current_model_id`` survives the restart cold read (not dropped by the
+    session-gating, which only suppresses the ``acp_model`` fallback).
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-x")
+    state = _make_state(agent)
+    state.agent_state = {
+        **state.agent_state,
+        "acp_session_id": "prior-sess",
+        "acp_current_model_id": "model-x",  # was applied, persisted
+    }
+    stored = _make_stored(state)
+
+    info = _compose_conversation_info(stored, state)
+
+    assert info.current_model_id == "model-x"
 
 
 def test_available_models_lifted_from_acp_agent():
