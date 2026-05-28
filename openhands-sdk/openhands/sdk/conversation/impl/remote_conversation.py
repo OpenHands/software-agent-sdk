@@ -1177,7 +1177,13 @@ class RemoteConversation(BaseConversation):
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
-                terminal_poll_count = 0  # Reset on error
+                # Reset on error: we cannot confirm the server is still in a
+                # terminal state after a failed poll, so conservatively restart
+                # the hard-fallback timer. In the degenerate case where polls
+                # alternate between terminal and exception, the 30 s threshold
+                # slides; this is intentional — we prefer a false-negative wait
+                # over a false-positive early return.
+                terminal_poll_count = 0
                 terminal_first_seen_at = None
             else:
                 # Raises ConversationRunError for ERROR/STUCK states
