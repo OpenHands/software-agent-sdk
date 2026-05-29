@@ -510,10 +510,16 @@ async def activate_profile(
                 }
             else:
                 llm = profile_store.load(name, cipher=cipher)
+                # ``agent_kind: "openhands"`` flips the kind back when the
+                # current settings are ACP — without it the ``{"llm": ...}``
+                # diff would deep-merge into the ACP settings and stay ``acp``,
+                # leaving an OpenHands profile unable to take effect. Validated
+                # as OpenHandsAgentSettings, the leftover acp_* keys are ignored.
                 agent_diff = {
+                    "agent_kind": "openhands",
                     "llm": llm.model_dump(
                         mode="json", context={"expose_secrets": "plaintext"}
-                    )
+                    ),
                 }
     except FileNotFoundError:
         raise HTTPException(

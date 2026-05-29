@@ -1318,3 +1318,26 @@ def test_acp_profile_cipher_roundtrip(client_with_cipher):
     assert (
         settings["agent_settings"]["acp_env"]["ANTHROPIC_API_KEY"] == "sk-secret-value"
     )
+
+
+def test_activate_openhands_profile_flips_kind_back_from_acp(client):
+    """Activating an OpenHands profile must reset agent_kind from acp."""
+    # Start with an ACP default.
+    client.post(
+        "/api/profiles/acp-default",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    client.post("/api/profiles/acp-default/activate")
+    assert client.get("/api/settings").json()["agent_settings"]["agent_kind"] == "acp"
+
+    # Now activate an OpenHands (LLM) profile — kind must flip back.
+    client.post(
+        "/api/profiles/oh-llm",
+        json={"llm": {"model": "openai/gpt-4o"}},
+    )
+    resp = client.post("/api/profiles/oh-llm/activate")
+    assert resp.status_code == 200
+
+    agent_settings = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "openhands"
+    assert agent_settings["llm"]["model"] == "openai/gpt-4o"
