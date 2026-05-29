@@ -233,8 +233,8 @@ def _render_required_template(template: Callable[[Any], str] | str, item: Any) -
             "map_agents string template does not contain '{item}'; "
             "all sub-agents will receive the same prompt."
         )
-    # Use json.dumps for non-str items so dicts/lists are consistently serialised
-    # with double-quoted JSON syntax, matching the reduce_agent serialisation path.
+    # Use json.dumps for non-str items so dicts/lists and scalars are consistently
+    # serialised as JSON (booleans → true/false, None → null), matching reduce_agent.
     serialised = item if isinstance(item, str) else jsonlib.dumps(item, default=str)
     return template.replace("{item}", serialised)
 
