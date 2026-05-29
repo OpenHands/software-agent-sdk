@@ -700,10 +700,20 @@ class LocalConversation(BaseConversation):
             # both serialised with usage_id="default".
             self.llm_registry.subscribe(self._state.stats.register_llm)
             registered = set(self.llm_registry.list_usage_ids())
+            session_id = str(self._state.id)
             for llm in list(self.agent.get_all_llms()):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
+                # Inject session ID for LiteLLM session affinity routing.
+                # Ensures all LLM calls in this conversation carry the same
+                # x-litellm-session-id header so the proxy pins to one deployment.
+                existing = llm.extra_headers or {}
+                if "x-litellm-session-id" not in existing:
+                    llm.extra_headers = {
+                        "x-litellm-session-id": session_id,
+                        **existing,
+                    }
 
             self._agent_ready = True
 
