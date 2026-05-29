@@ -70,7 +70,7 @@ Available `wf` methods:
 - `await wf.run_agent(...)`
 - `await wf.map_agents(...)`
 - `await wf.reduce_agent(...)`
-- `wf.flatten(values)`
+- `wf.flatten(values)` — flatten one level of nesting (not recursive)
 
 `map_agents` accepts either a callable prompt, such as
 `lambda item: f"Review this finding: {item}"`, or a string template containing

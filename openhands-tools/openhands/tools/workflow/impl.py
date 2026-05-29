@@ -204,7 +204,9 @@ class WorkflowContext:
 def _render_required_template(template: Callable[[Any], str] | str, item: Any) -> str:
     if callable(template):
         return str(template(item))
-    return template.format(item=item)
+    # Plain replace avoids Python's format mini-language attribute traversal
+    # (e.g. "{item._manager}"), which would bypass the AST private-attribute guard.
+    return template.replace("{item}", str(item))
 
 
 def _render_template(

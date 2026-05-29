@@ -251,3 +251,25 @@ def test_workflow_context_helper_flattens_one_level() -> None:
     context = _context(_FakeTaskManager())
 
     assert context.flatten([[1, 2], 3, [4]]) == [1, 2, 3, 4]
+
+
+def test_workflow_executor_success_path() -> None:
+    @dataclass
+    class _FakeState:
+        persistence_dir: str | None = None
+
+    @dataclass
+    class _FakeConv:
+        state: _FakeState
+
+    conv = cast(LocalConversation, _FakeConv(state=_FakeState()))
+    action = WorkflowAction(
+        name="trivial",
+        script="async def main(wf):\n    return 'done'",
+    )
+
+    obs = WorkflowExecutor()(action, conversation=conv)
+
+    assert not obs.is_error
+    assert obs.status == "completed"
+    assert obs.text == "done"
