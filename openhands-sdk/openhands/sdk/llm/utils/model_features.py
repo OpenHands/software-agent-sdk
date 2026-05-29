@@ -93,6 +93,11 @@ EXTENDED_THINKING_MODELS: list[str] = [
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
+    # Opus 4.8 is a reasoning model: Anthropic rejects requests with
+    # `temperature`/`top_p` ("`temperature` is deprecated for this model"),
+    # so it must go through the extended-thinking path which strips those
+    # params and enables the thinking budget header.
+    "claude-opus-4-8",
 ]
 
 PROMPT_CACHE_MODELS: list[str] = [
@@ -111,6 +116,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-6",
     # Gemini uses the same cache_control marker format. LiteLLM handles
     # Vertex/Gemini context-cache creation when these markers are present.
