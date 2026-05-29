@@ -152,8 +152,9 @@ def test_claude_opus_4_8_strips_temp_and_top_p():
 
     Anthropic rejects requests to Claude Opus 4.8 with `temperature`/`top_p`:
     ``"`temperature` is deprecated for this model."``. Routing the model
-    through the extended-thinking path strips both params (and enables the
-    thinking budget header) so requests succeed.
+    through the extended-thinking path strips both params so requests
+    succeed. (The legacy thinking block is deliberately NOT emitted for
+    opus-4-8 -- see test_claude_opus_4_8_skips_legacy_thinking_block.)
     """
     llm = DummyLLM(
         model="litellm_proxy/anthropic/claude-opus-4-8",
@@ -164,6 +165,53 @@ def test_claude_opus_4_8_strips_temp_and_top_p():
 
     assert "temperature" not in out
     assert "top_p" not in out
+
+
+def test_claude_opus_4_8_skips_legacy_thinking_block():
+    """claude-opus-4-8 must not be sent the legacy ``thinking.type=enabled``
+    block. Anthropic rejects it with:
+    ``"thinking.type.enabled" is not supported for this model. Use
+    "thinking.type.adaptive" and "output_config.effort" to control thinking
+    behavior.`` Until the SDK builds that newer schema, the legacy block (and
+    the ``interleaved-thinking-2025-05-14`` beta header that goes with it)
+    must be omitted, even when ``extended_thinking_budget`` is set.
+
+    Sibling models in EXTENDED_THINKING_MODELS (e.g. sonnet-4-5/4-6) still
+    accept the legacy block, so this test also pins that those models are
+    NOT affected by the opus-4-8 skip.
+    """
+    # opus-4-8: thinking block + beta header must be omitted, even with a
+    # configured budget.
+    opus = DummyLLM(
+        model="litellm_proxy/anthropic/claude-opus-4-8",
+        max_output_tokens=8192,
+        extended_thinking_budget=4096,
+    )
+    out = select_chat_options(opus, user_kwargs={}, has_tools=True)
+
+    assert "thinking" not in out
+    assert "anthropic-beta" not in (out.get("extra_headers") or {})
+    # The whole point of routing opus-4-8 through this path is to strip
+    # temperature/top_p; make sure that side effect still happens.
+    assert "temperature" not in out
+    assert "top_p" not in out
+
+    # sonnet-4-5 still gets the legacy thinking block; the opus-4-8 skip
+    # must not regress other extended-thinking models.
+    sonnet = DummyLLM(
+        model="claude-sonnet-4-5",
+        max_output_tokens=8192,
+        extended_thinking_budget=4096,
+    )
+    sonnet_out = select_chat_options(sonnet, user_kwargs={}, has_tools=True)
+
+    assert sonnet_out.get("thinking") == {
+        "type": "enabled",
+        "budget_tokens": 4096,
+    }
+    assert (sonnet_out.get("extra_headers") or {}).get(
+        "anthropic-beta"
+    ) == "interleaved-thinking-2025-05-14"
 
 
 def test_extended_thinking_budget_clamped_below_max_tokens():

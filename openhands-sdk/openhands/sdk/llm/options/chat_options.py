@@ -3,7 +3,22 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import get_features, model_matches
+
+
+# Models that are listed in EXTENDED_THINKING_MODELS for the side effect of
+# stripping `temperature`/`top_p` (which Anthropic reasoning models reject),
+# but that do NOT accept the legacy
+# ``thinking: {"type": "enabled", "budget_tokens": N}`` block.
+#
+# claude-opus-4-8 uses Anthropic's newer adaptive reasoning schema
+# (``thinking: {"type": "adaptive"}`` + ``output_config.effort``) and returns
+# a 400 ``"thinking.type.enabled" is not supported for this model`` if we send
+# the legacy block. Until the SDK builds the new schema, just skip emitting
+# the legacy block for these models; temp/top_p stripping still runs below.
+_MODELS_WITHOUT_LEGACY_THINKING_BLOCK: list[str] = [
+    "claude-opus-4-8",
+]
 
 
 def select_chat_options(
@@ -56,7 +71,14 @@ def select_chat_options(
 
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
-        if llm.extended_thinking_budget and max_output_tokens:
+        skip_legacy_thinking_block = model_matches(
+            llm.model, _MODELS_WITHOUT_LEGACY_THINKING_BLOCK
+        )
+        if (
+            not skip_legacy_thinking_block
+            and llm.extended_thinking_budget
+            and max_output_tokens
+        ):
             # Anthropic throws errors if thinking budget equals or exceeds max output
             # tokens -- force the thinking budget lower if there's a conflict
             budget_tokens = min(
