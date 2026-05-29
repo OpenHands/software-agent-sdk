@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import cast
 
@@ -291,3 +292,29 @@ def test_workflow_context_close_is_idempotent() -> None:
     context.close()
     context.close()  # second call must not raise
     assert manager.closed
+
+
+def test_run_agent_raises_after_close() -> None:
+    manager = _FakeTaskManager()
+    context = _context(manager)
+    context.close()
+
+    with pytest.raises(WorkflowScriptError, match="already closed"):
+        asyncio.run(context.run_agent("any prompt"))
+
+
+def test_map_agents_respects_context_concurrency_cap() -> None:
+    """Per-call max_concurrency must be silently capped at context max."""
+    script = """
+async def main(wf):
+    results = await wf.map_agents(
+        items=["a", "b"],
+        prompt="ping {item}",
+        subagent_type="researcher",
+        max_concurrency=1000,
+    )
+    return results
+"""
+    manager = _FakeTaskManager()
+    context = _context(manager)
+    execute_workflow_script(script, context)

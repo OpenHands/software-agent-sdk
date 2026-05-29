@@ -111,7 +111,12 @@ running a workflow as approving generated code execution.
 
 
 class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
-    """Tool for running a dynamic Python workflow."""
+    """Low-level tool for explicit executor injection.
+
+    Prefer ``WorkflowToolSet`` for standard SDK auto-create usage.
+    Use ``WorkflowTool`` when you need to inject a custom executor
+    (e.g., in tests or extensions).
+    """
 
     @classmethod
     def create(
