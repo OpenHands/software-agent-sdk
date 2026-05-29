@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 from typing import cast
 
@@ -49,10 +50,10 @@ class _FakeTaskManager:
         self.closed = True
 
 
-def _context(manager: _FakeTaskManager) -> WorkflowContext:
+def _context(manager: _FakeTaskManager, max_concurrency: int = 4) -> WorkflowContext:
     return WorkflowContext(
         parent_conversation=cast(LocalConversation, object()),
-        max_concurrency=4,
+        max_concurrency=max_concurrency,
         manager=manager,
     )
 
@@ -305,16 +306,48 @@ def test_run_agent_raises_after_close() -> None:
 
 def test_map_agents_respects_context_concurrency_cap() -> None:
     """Per-call max_concurrency must be silently capped at context max."""
+
+    class _PeakTrackingManager(_FakeTaskManager):
+        def __init__(self) -> None:
+            super().__init__()
+            self._active = 0
+            self.peak_active = 0
+            self._lock = threading.Lock()
+
+        def start_task(
+            self,
+            prompt: str,
+            subagent_type: str = "default",
+            resume: str | None = None,
+            description: str | None = None,
+            conversation: LocalConversation | None = None,
+        ) -> _FakeTask:
+            with self._lock:
+                self._active += 1
+                self.peak_active = max(self.peak_active, self._active)
+            try:
+                return super().start_task(
+                    prompt,
+                    subagent_type=subagent_type,
+                    resume=resume,
+                    description=description,
+                    conversation=conversation,
+                )
+            finally:
+                with self._lock:
+                    self._active -= 1
+
+    # Context capped at 3; per-call max_concurrency=1000 should be min'd to 3
+    context_cap = 3
+    manager = _PeakTrackingManager()
+    context = _context(manager, max_concurrency=context_cap)
     script = """
 async def main(wf):
-    results = await wf.map_agents(
-        items=["a", "b"],
-        prompt="ping {item}",
-        subagent_type="researcher",
+    return await wf.map_agents(
+        items=list(range(10)),
+        prompt="task {item}",
         max_concurrency=1000,
     )
-    return results
 """
-    manager = _FakeTaskManager()
-    context = _context(manager)
     execute_workflow_script(script, context)
+    assert manager.peak_active <= context_cap

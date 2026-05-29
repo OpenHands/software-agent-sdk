@@ -374,7 +374,6 @@ def _safe_globals() -> dict[str, Any]:
         "IndexError": IndexError,
         "int": int,
         "isinstance": isinstance,
-        "type": type,
         "KeyError": KeyError,
         "len": len,
         "list": list,
