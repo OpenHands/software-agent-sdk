@@ -263,7 +263,13 @@ def _format_value(value: Any) -> str:
 
 
 def validate_workflow_script(script: str) -> None:
-    """Perform best-effort validation for generated workflow scripts."""
+    """Perform best-effort validation for generated workflow scripts.
+
+    Note: The private-attribute guard checks the literal name ``wf``, so aliasing
+    (e.g. ``x = wf; x._attr``) can bypass the check. The attributes accessible
+    through ``WorkflowContext`` do not expose dangerous capabilities, so this is
+    a documentation gap rather than a security gap.
+    """
     if len(script) > _MAX_SCRIPT_CHARS:
         raise WorkflowScriptError(
             f"Workflow script is too large: {len(script)} > {_MAX_SCRIPT_CHARS}"
@@ -403,10 +409,11 @@ def _safe_globals() -> dict[str, Any]:
         "str": str,
         "sum": sum,
         "tuple": tuple,
-        # type() is included for 1-arg introspection (e.g. type(x).__name__); the
-        # 3-arg class-creation form is safe because method bodies execute in the same
-        # restricted globals AND the AST validator blocks __dunder__ attribute access,
-        # which closes the classic __subclasses__()-based sandbox escape path.
+        # type() is included for 1-arg introspection (e.g. type(x).__name__).
+        # 3-arg class creation is permitted; methods DEFINED IN THE SCRIPT execute in
+        # restricted globals, and the AST validator blocks __dunder__ attribute access
+        # (closing __subclasses__()-based escapes). Calls to pre-existing injected
+        # objects such as wf are not re-sandboxed, but those expose only public wf API.
         "type": type,
         "TypeError": TypeError,
         "ValueError": ValueError,
