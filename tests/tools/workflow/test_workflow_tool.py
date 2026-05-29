@@ -148,8 +148,8 @@ async def main(wf):
 
     assert "map_agents" in str(exc_info.value)
     assert [str(exc) for exc in exc_info.value.exceptions] == [
-        "[item 1] failed inspect bad",
-        "[item 2] failed inspect worse",
+        "[item 2] failed inspect bad",
+        "[item 3] failed inspect worse",
     ]
     assert set(manager.prompts) == {
         "researcher: inspect good",

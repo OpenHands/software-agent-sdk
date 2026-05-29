@@ -107,7 +107,11 @@ class TaskManager:
         self._persistence_dir: Path | None = None
 
     def attach_parent(self, conversation: LocalConversation) -> None:
-        """Attach the parent conversation used to create sub-agent tasks."""
+        """Attach the parent conversation used to create sub-agent tasks.
+
+        Idempotent: if a parent conversation is already attached, subsequent
+        calls with the same or a different conversation have no effect.
+        """
         self._ensure_parent(conversation)
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:

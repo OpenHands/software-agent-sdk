@@ -161,7 +161,7 @@ class WorkflowContext:
                         description=rendered_description,
                     )
                 except Exception as exc:
-                    raise RuntimeError(f"[item {index}] {exc}") from exc
+                    raise RuntimeError(f"[item {index + 1}] {exc}") from exc
 
         results = await asyncio.gather(
             *(run_one(i, item) for i, item in enumerate(items)),
