@@ -73,6 +73,13 @@ def _deep_merge(
 
     ``unset_nulls`` is ``False`` for the top-level call and ``True`` for every
     recursive (nested) call — that's what draws the field-vs-entry line above.
+
+    Corner case: a key **absent from** ``base`` whose overlay value is a dict
+    is assigned wholesale (no recursion), so any ``null`` entries inside that
+    dict are stored as-is rather than treated as deletes. This is intentional
+    — you can't delete an entry from a map that doesn't exist yet — but it
+    means "initialize a new map and unset a key within it" in one diff won't
+    strip the null; downstream validation handles the resulting value.
     """
     result = dict(base)
     for key, value in overlay.items():
