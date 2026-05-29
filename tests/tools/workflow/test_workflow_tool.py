@@ -273,3 +273,21 @@ def test_workflow_executor_success_path() -> None:
     assert not obs.is_error
     assert obs.status == "completed"
     assert obs.text == "done"
+
+
+def test_workflow_context_close_propagates_to_manager() -> None:
+    manager = _FakeTaskManager()
+    context = _context(manager)
+
+    assert not manager.closed
+    context.close()
+    assert manager.closed
+
+
+def test_workflow_context_close_is_idempotent() -> None:
+    manager = _FakeTaskManager()
+    context = _context(manager)
+
+    context.close()
+    context.close()  # second call must not raise
+    assert manager.closed

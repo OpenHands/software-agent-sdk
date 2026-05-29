@@ -142,13 +142,13 @@ class WorkflowContext:
     ) -> list[str]:
         """Run one sub-agent task per item and return results in item order.
 
-        A per-call ``max_concurrency`` overrides the context default for this map
-        operation only; it is not a nested subset of the context-wide limit.
+        A per-call ``max_concurrency`` caps concurrency for this map operation
+        only; it is silently capped at the context's ``max_concurrency`` limit.
         """
         if max_concurrency is not None and max_concurrency < 1:
             raise ValueError("max_concurrency must be at least 1")
         semaphore = (
-            asyncio.Semaphore(max_concurrency)
+            asyncio.Semaphore(min(max_concurrency, self._max_concurrency))
             if max_concurrency is not None
             else self._default_semaphore
         )
