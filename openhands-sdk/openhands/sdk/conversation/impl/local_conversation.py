@@ -1217,7 +1217,7 @@ class LocalConversation(BaseConversation):
                         # *unrelated* state mutator may run concurrently while
                         # the lock is held: because FIFOLock is thread- (not
                         # task-) reentrant, any unrelated state-mutating
-                        # coroutine awaited on this event-loop thread would 
+                        # coroutine awaited on this event-loop thread would
                         # silently re-enter the lock and corrupt history. Such
                         # unrelated mutators must be dispatched via
                         # run_in_executor onto a worker thread.
