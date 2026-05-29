@@ -561,16 +561,18 @@ def test_patch_settings_deep_merges(client_with_settings):
 # ── JSON Merge Patch (RFC 7386) unset semantics ─────────────────────────
 
 
-def test_deep_merge_null_deletes_key():
-    """A ``None`` overlay value removes the key (the unset primitive)."""
+def test_deep_merge_top_level_null_is_set_not_delete():
+    """A ``None`` on a top-level *field* is left as-is (set), NOT deleted —
+    so it flows to validation and fails loudly instead of silently resetting
+    the field to its default."""
     from openhands.agent_server.persistence.models import _deep_merge
 
-    merged = _deep_merge({"KEEP": "a", "DROP": "b"}, {"DROP": None})
-    assert merged == {"KEEP": "a"}
+    merged = _deep_merge({"confirmation_mode": True}, {"confirmation_mode": None})
+    assert merged == {"confirmation_mode": None}
 
 
-def test_deep_merge_null_deletes_nested_key():
-    """``None`` removes a key inside a nested object; siblings survive."""
+def test_deep_merge_nested_null_deletes_entry():
+    """A ``None`` *inside a nested map* removes that entry; siblings survive."""
     from openhands.agent_server.persistence.models import _deep_merge
 
     merged = _deep_merge(
@@ -580,16 +582,16 @@ def test_deep_merge_null_deletes_nested_key():
     assert merged == {"acp_env": {"KEEP": "a"}}
 
 
-def test_deep_merge_null_on_absent_key_is_noop():
-    """Deleting a key that isn't present is a no-op (RFC 7386), not an error."""
+def test_deep_merge_nested_null_on_absent_key_is_noop():
+    """Unsetting a nested key that isn't present is a no-op, not an error."""
     from openhands.agent_server.persistence.models import _deep_merge
 
-    merged = _deep_merge({"KEEP": "a"}, {"MISSING": None})
-    assert merged == {"KEEP": "a"}
+    merged = _deep_merge({"acp_env": {"KEEP": "a"}}, {"acp_env": {"MISSING": None}})
+    assert merged == {"acp_env": {"KEEP": "a"}}
 
 
 def test_deep_merge_non_null_still_wins():
-    """Regression: non-null values still set/overwrite as before."""
+    """Regression: non-null values still set/overwrite and merge as before."""
     from openhands.agent_server.persistence.models import _deep_merge
 
     merged = _deep_merge({"a": 1, "b": {"x": 1}}, {"a": 2, "b": {"y": 2}})
@@ -649,6 +651,35 @@ def test_patch_settings_unset_then_add_acp_env_key(
     )
     assert response.status_code == 200
     assert set(response.json()["agent_settings"]["acp_env"]) == {"OLD", "NEW"}
+
+
+def test_patch_settings_null_on_acp_env_field_itself_is_rejected(
+    client_with_settings, temp_persistence_dir
+):
+    """A ``null`` on the ``acp_env`` *field* (not an entry) is not an unset —
+    it flows to validation. ``acp_env`` is a non-optional dict, so it 422s
+    rather than wiping the map; clients clear a map by sending ``{}``."""
+    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": None}},
+    )
+    assert response.status_code == 422
+    # The pre-existing value is untouched (atomic validate-then-apply).
+    after = client_with_settings.get("/api/settings").json()
+    assert set(after["agent_settings"]["acp_env"]) == {"KEEP_ME"}
+
+
+def test_patch_settings_null_on_scalar_field_fails_loudly(client_with_settings):
+    """Regression guard against the silent-reset footgun: ``null`` on a
+    non-optional scalar like ``confirmation_mode`` is rejected (422), not
+    silently reverted to its (unsafe) default."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"conversation_settings_diff": {"confirmation_mode": None}},
+    )
+    assert response.status_code == 422
 
 
 # ── Secrets CRUD tests ──────────────────────────────────────────────────

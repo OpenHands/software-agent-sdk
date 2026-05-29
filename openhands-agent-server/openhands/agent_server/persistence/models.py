@@ -34,11 +34,12 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 class SettingsUpdatePayload(TypedDict, total=False):
     """Typed payload for PersistedSettings.update() method.
 
-    The ``*_diff`` dicts are applied with JSON Merge Patch (RFC 7386)
-    semantics via :func:`_deep_merge`: nested objects merge recursively, and
-    a ``None`` value deletes that key (the "unset" primitive). This means a
-    single map entry can be removed by sending ``{"acp_env": {"NAME": None}}``
-    rather than re-sending the whole map.
+    The ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
+    objects merge recursively, and a ``None`` value *inside a nested map*
+    deletes that entry (the "unset" primitive) — e.g. send
+    ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
+    whole map. A ``None`` on a top-level *field* is not treated as delete; it
+    flows to validation as before.
     """
 
     agent_settings_diff: dict[str, Any]
@@ -46,33 +47,45 @@ class SettingsUpdatePayload(TypedDict, total=False):
     active_profile: str | None
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge ``overlay`` into ``base`` with JSON Merge Patch
-    (RFC 7386) semantics.
+def _deep_merge(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    unset_nulls: bool = False,
+) -> dict[str, Any]:
+    """Recursively merge ``overlay`` into ``base``.
 
     - Nested dicts are merged recursively.
-    - A ``None`` value in the overlay **removes** that key from the result —
-      this is the "unset" primitive a plain deep-merge lacks. It lets a
-      ``PATCH /api/settings`` diff delete a single map entry (e.g. one
-      ``acp_env`` / MCP ``env`` key) without having to round-trip and
-      re-send the whole redacted map.
+    - **Inside a nested map** a ``None`` value **removes** that key — the
+      "unset" primitive a plain deep-merge lacks. It lets a
+      ``PATCH /api/settings`` diff delete a single map entry (one
+      ``acp_env`` / MCP ``env`` key) without round-tripping the whole map::
+
+          {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+
+    - **At the top level** (a settings *field* like ``confirmation_mode`` or
+      ``acp_env`` itself) a ``None`` is left as-is and flows to model
+      validation — exactly as before this primitive existed. So a stray
+      ``{"confirmation_mode": null}`` still fails loudly (422) instead of
+      silently resetting a field to its default. This scoping is deliberate:
+      ``unset`` is for *entries within* a map, not for nulling whole fields.
     - For any other scalar/list value, the overlay wins.
 
-    Deleting a key falls the field back to its model default on the next
-    validation pass (e.g. ``acp_env`` -> ``{}``). Note: because ``None``
-    means "remove", a client cannot use this path to *set* a field to a
-    literal ``null``; nothing in the settings models relies on that.
+    ``unset_nulls`` is ``False`` for the top-level call and ``True`` for every
+    recursive (nested) call — that's what draws the field-vs-entry line above.
     """
     result = dict(base)
     for key, value in overlay.items():
-        if value is None:
-            # RFC 7386: a null member removes the target key (no-op if absent).
+        if value is None and unset_nulls:
+            # Nested map entry: a null member removes the key (no-op if absent).
             result.pop(key, None)
         elif (
             key in result and isinstance(result[key], dict) and isinstance(value, dict)
         ):
-            result[key] = _deep_merge(result[key], value)
+            result[key] = _deep_merge(result[key], value, unset_nulls=True)
         else:
+            # Top-level null (unset_nulls=False) falls here: set as-is and let
+            # model validation decide (preserves pre-existing behavior).
             result[key] = value
     return result
 
