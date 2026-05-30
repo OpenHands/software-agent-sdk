@@ -320,7 +320,7 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    # https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-super-120b-a12b
+    # https://developer.nvidia.com/nemotron
     # NVIDIA recommends temperature=1.0 and top_p=0.95 for all Nemotron 3 models.
     "nemotron-3-ultra-550b-a55b": {
         "id": "nemotron-3-ultra-550b-a55b",
