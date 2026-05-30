@@ -39,11 +39,13 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
-from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     MissingCipherError,
+    decrypt_str_with_cipher_or_keep,
     resolve_expose_mode,
     serialize_secret,
+    validate_secret_dict,
 )
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
@@ -92,32 +94,13 @@ def _walk_mcp_secret_values(
     return config
 
 
-def _decrypt_secret_value_or_keep(
-    cipher: Cipher, value: str, *, value_description: str
-) -> str:
-    """Decrypt ``value`` with ``cipher``; return the original string if the
-    value isn't a Fernet token (legacy plaintext) or fails to decrypt
-    (cipher mismatch / corruption — logged once).
-    """
-    if not value.startswith(FERNET_TOKEN_PREFIX):
-        # Not encrypted (legacy plaintext) — passes through quietly so the
-        # next save can re-encrypt it.
-        return value
-    decrypted = cipher.try_decrypt_str(value)
-    if decrypted is None:
-        logger.warning(
-            f"{value_description} value looks encrypted but could not be "
-            "decrypted (cipher mismatch or corruption); leaving the "
-            "ciphertext in place."
-        )
-        return value
-    return decrypted
-
-
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    return _decrypt_secret_value_or_keep(
-        cipher, value, value_description="MCP env/headers"
-    )
+    """Decrypt a single MCP ``env`` / ``headers`` value when it is a
+    Fernet token. Thin local wrapper that binds the user-facing
+    log description; the leaf decryption lives in
+    :func:`decrypt_str_with_cipher_or_keep` and is shared with every
+    other dict-of-string secret-bearing field."""
+    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP env/headers")
 
 
 SettingsValueType = Literal[
@@ -1036,21 +1019,12 @@ class ACPAgentSettings(AgentSettingsBase):
         """Decrypt persisted ACP environment values when a cipher is available.
 
         Legacy plaintext values pass through unchanged so the next save can
-        re-encrypt them, matching MCP env/header handling.
+        re-encrypt them, matching MCP env/header handling. The matching
+        on-the-wire validator on :class:`~openhands.sdk.agent.ACPAgent`
+        handles the conversation-start round-trip; both delegate to the
+        shared :func:`validate_secret_dict` helper.
         """
-        if not isinstance(value, dict):
-            return value
-        cipher: Cipher | None = info.context.get("cipher") if info.context else None
-        if cipher is None:
-            return value
-        return {
-            k: (
-                _decrypt_secret_value_or_keep(cipher, v, value_description="ACP env")
-                if isinstance(v, str)
-                else v
-            )
-            for k, v in value.items()
-        }
+        return validate_secret_dict(value, info, description="ACP env")
 
     @field_serializer("acp_env", when_used="always")
     def _serialize_acp_env(self, value: dict[str, str], info):

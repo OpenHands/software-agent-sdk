@@ -28,6 +28,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
@@ -94,10 +95,10 @@ VERIFIED_QWEN_MODELS = [
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "gpt-5.5",

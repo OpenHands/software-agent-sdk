@@ -111,9 +111,21 @@ from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
+
+# Shared message for the no-op ``_return_metrics`` deprecation (Q1 of #3341).
+# Metrics are always returned via ``LLMResponse.metrics``; the parameter has no
+# effect and is scheduled for removal after the standard 5-minor-release runway.
+# NOTE: ``deprecated_in`` / ``removed_in`` must be passed as string literals at
+# each call site — ``check_deprecations.py`` reads them via static AST analysis
+# and cannot resolve module-level constants.
+_RETURN_METRICS_DETAILS: Final[str] = (
+    "The _return_metrics parameter has no effect; metrics are always available "
+    "via LLMResponse.metrics. Stop passing it."
+)
 
 __all__ = ["LLM"]
 
@@ -1100,7 +1112,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Args:
             messages: List of conversation messages.
             tools: Optional list of tools available to the model.
-            _return_metrics: Whether to return usage metrics.
+            _return_metrics: Deprecated and ignored; metrics are always returned
+                via ``LLMResponse.metrics``. Scheduled for removal in
+                ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas.
             on_token: Optional callback for streaming tokens.
             **kwargs: Additional arguments passed to the LLM API.
@@ -1124,6 +1138,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(response.content)
             ```
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.completion(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -1168,9 +1189,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 lambda fb: fb.completion(
                     messages,
                     tools,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    on_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
                 ),
             )
 
@@ -1191,6 +1211,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.acompletion(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -1238,9 +1265,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 lambda fb: fb.completion(
                     messages,
                     tools,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    _fb_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=_fb_token,
                 ),
             )
 
@@ -1352,7 +1378,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model
             include: Optional list of fields to include in response
             store: Whether to store the conversation
-            _return_metrics: Whether to return usage metrics
+            _return_metrics: Deprecated and ignored; metrics are always returned
+                via ``LLMResponse.metrics``. Scheduled for removal in ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
@@ -1361,6 +1388,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.responses(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             # We allow on_token to be None for subscription mode
@@ -1446,9 +1480,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     include,
                     store,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    on_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
                 ),
             )
 
@@ -1471,6 +1504,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.aresponses(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             # We allow on_token to be None for subscription mode
@@ -1560,9 +1600,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     include,
                     store,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    _fb_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=_fb_token,
                 ),
             )
 

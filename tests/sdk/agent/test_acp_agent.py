@@ -6,11 +6,15 @@ import asyncio
 import json
 import threading
 import uuid
+from base64 import urlsafe_b64encode
+from concurrent.futures import Future
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
+from acp.schema import PromptResponse
+from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -37,9 +41,11 @@ from openhands.sdk.event import (
     MessageEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -51,6 +57,11 @@ from openhands.sdk.workspace.local import LocalWorkspace
 
 def _make_agent(**kwargs) -> ACPAgent:
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
+
+
+def _make_cipher() -> Cipher:
+    """Deterministic Fernet cipher for round-trip tests."""
+    return Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -239,6 +250,104 @@ class TestACPAgentSerialization:
         agent = AgentBase.model_validate(data)
         assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "test"]
+
+    def test_acp_env_decrypts_ciphertext_with_cipher_in_context(self):
+        """Round-trip Fernet-encrypted ``acp_env`` values via cipher context.
+
+        Regression for a real production bug in v1.24.0: the on-disk →
+        ACPAgentSettings → ACPAgent path could leave Fernet ciphertext as
+        the field value because only the settings-side variant had a
+        decryption ``field_validator``. The conversation-start flow
+        validates the full :class:`StoredConversation` with cipher
+        context after the agent was already constructed (without cipher)
+        from ``StartConversationRequest.agent_settings`` — and without
+        the validator here, the ciphertext survives that re-validation
+        and reaches the ACP subprocess as the env-var value. The
+        provider call then fails (e.g. Anthropic reads the Fernet token
+        as ``ANTHROPIC_BASE_URL`` and 400s on URL parsing).
+        """
+        cipher = _make_cipher()
+        encrypted_key = cipher.encrypt(SecretStr("sk-real"))
+        encrypted_url = cipher.encrypt(SecretStr("https://api.example.com"))
+        assert encrypted_key is not None
+        assert encrypted_url is not None
+
+        # Build the wire payload an agent-server would receive: an
+        # ACPAgent dict whose ``acp_env`` values are Fernet ciphertext.
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {
+                "ANTHROPIC_API_KEY": encrypted_key,
+                "ANTHROPIC_BASE_URL": encrypted_url,
+            },
+        }
+
+        restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {
+            "ANTHROPIC_API_KEY": "sk-real",
+            "ANTHROPIC_BASE_URL": "https://api.example.com",
+        }
+
+    def test_acp_env_no_cipher_in_context_leaves_ciphertext_untouched(self):
+        """The ``cipher is None`` branch of the validator is exercised on
+        every code path that round-trips an agent dict without supplying
+        a cipher (e.g. test serialization helpers, JSON-only diagnostic
+        dumps). In that mode the ciphertext must survive verbatim — both
+        because there's nothing to decrypt with, and because mutating it
+        would defeat a downstream caller that *will* validate again with
+        the cipher present (the conversation-start re-validation step).
+        """
+        cipher = _make_cipher()
+        encrypted = cipher.encrypt(SecretStr("sk-real"))
+        assert encrypted is not None
+
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"ANTHROPIC_API_KEY": encrypted},
+        }
+        restored = AgentBase.model_validate(data)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"ANTHROPIC_API_KEY": encrypted}
+
+    def test_acp_env_plaintext_passes_through_with_cipher(self):
+        """First writes from clients that never went through the encryption
+        pipeline carry plaintext. They must still validate cleanly when the
+        server happens to have a cipher in context."""
+        cipher = _make_cipher()
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"FOO": "plaintext-value"},
+        }
+        restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"FOO": "plaintext-value"}
+
+    def test_acp_env_undecryptable_ciphertext_passes_through_with_warning(self, caplog):
+        """Cipher mismatch / corruption shouldn't crash agent construction.
+
+        Mirrors the MCP env/header pattern: a ciphertext we can't decrypt
+        is left in place with a logged warning so the operator can repair
+        it, rather than turning into a hard failure that bricks the
+        agent.
+        """
+        cipher = _make_cipher()
+        # Looks like a Fernet token (prefix matches) but isn't a valid
+        # one — try_decrypt_str returns None.
+        bogus = "gAAAAA" + ("x" * 80)
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"BUSTED": bogus},
+        }
+        with caplog.at_level("WARNING"):
+            restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"BUSTED": bogus}
+        assert any("could not be decrypted" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -1372,9 +1481,9 @@ class TestACPAgentStep:
 class TestACPAgentAstep:
     """Native ``ACPAgent.astep`` must not fall back to ``AgentBase.astep``
     (which wraps ``step`` in ``loop.run_in_executor``).  Doing so would
-    move post-prompt callbacks onto an executor worker thread,
-    deadlocking against ``LocalConversation.arun`` which holds the
-    state's reentrant ``FIFOLock`` on the loop thread.  See #3348.
+    move post-prompt callbacks and state updates onto an executor worker
+    thread, outside ``LocalConversation.arun``'s controlled event
+    serialization. See #3348.
     """
 
     def _make_conversation_with_message(self, tmp_path, text="Hello"):
@@ -1404,10 +1513,9 @@ class TestACPAgentAstep:
 
     def test_astep_runs_post_prompt_callbacks_on_caller_thread(self, tmp_path):
         """Post-prompt ``on_event`` callbacks must fire on the caller
-        thread (same thread that holds ``state.lock`` in ``arun``).
-        ``FIFOLock`` is reentrant per-thread; if astep schedules ``step``
-        on a worker thread (the buggy default), callbacks run cross-thread
-        and block on the lock owner forever — see #3348.
+        thread. If astep schedules ``step`` on a worker thread (the buggy
+        default), callbacks and final state updates run outside the async
+        run task's serialization model — see #3348.
         """
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -1518,6 +1626,82 @@ class TestACPAgentAstep:
         )
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
+    def test_astep_times_out_while_tool_call_is_inflight(self, tmp_path):
+        """A hard ACP prompt timeout still fires during an active tool call.
+
+        Mirroring OpenHands command handling, active output/heartbeats keep the
+        runtime alive but do not let a never-ending command suppress the hard
+        turn deadline. The timeout path must cancel the ACP session and close
+        any streamed tool cards as failed.
+        """
+        from concurrent.futures import Future
+
+        agent = _make_agent(acp_prompt_timeout=0.02)
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+        cancel_called = threading.Event()
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        class _FakePortal:
+            def __init__(self) -> None:
+                self.prompt_future: Future = Future()
+
+            def start_task_soon(self, fn, *args):  # noqa: ANN001, ANN202
+                if args:
+                    entry = {
+                        "tool_call_id": "git-1",
+                        "title": "git status",
+                        "tool_kind": "execute",
+                        "status": "in_progress",
+                        "raw_input": None,
+                        "raw_output": None,
+                        "content": None,
+                    }
+                    mock_client.accumulated_tool_calls.append(entry)
+                    mock_client._emit_tool_call_event(entry)
+                    return self.prompt_future
+
+                cancel_called.set()
+                cancel_future: Future = Future()
+                cancel_future.set_result(None)
+                return cancel_future
+
+        mock_executor = MagicMock()
+        mock_executor.portal = _FakePortal()
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT", 0.01):
+            asyncio.run(agent.astep(conversation, on_event=emitted.append))
+
+        assert cancel_called.is_set()
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+        assert any(
+            isinstance(e, ACPToolCallEvent)
+            and e.tool_call_id == "git-1"
+            and e.status == "failed"
+            and e.is_error
+            for e in emitted
+        )
+
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
+        assert any(
+            isinstance(e, MessageEvent)
+            and "ACP prompt timed out after" in _message_text(e)
+            for e in emitted
+        )
+        assert not any(
+            isinstance(e, ActionEvent) and isinstance(e.action, FinishAction)
+            for e in emitted
+        )
+
     def test_astep_emits_failed_tool_calls_on_cancellation(self, tmp_path):
         """``asyncio.CancelledError`` during astep must close in-flight
         ``ACPToolCallEvent``s as ``failed`` and re-raise.
@@ -1546,6 +1730,8 @@ class TestACPAgentAstep:
 
         async def _run_with_cancel() -> None:
             prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
             async def _fake_prompt(prompt_blocks, session_id):
@@ -1568,11 +1754,19 @@ class TestACPAgentAstep:
                 # Signal caller loop that we're holding inside the prompt
                 # so the cancel races deterministically.
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
-                # Block long enough for the cancel to land.
-                await asyncio.sleep(60)
+                # Block beyond the cancel-drain timeout so this test exercises
+                # the non-quiesced cancellation path that must synthesize
+                # failed ACP tool-call events.
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
                 return None
 
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+
             agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -1580,8 +1774,16 @@ class TestACPAgentAstep:
             )
             await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    with patch(
+                        "openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT",
+                        0.01,
+                    ):
+                        await task
+                await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+            finally:
+                prompt_released.set()
 
         try:
             agent._executor = executor
@@ -1601,6 +1803,290 @@ class TestACPAgentAstep:
             f"got: {[(type(e).__name__, getattr(e, 'status', None)) for e in emitted]}"
         )
         assert failed_tool_events[0].is_error is True
+
+    def test_astep_finalizes_and_reraises_completed_cancelled_prompt(self, tmp_path):
+        """If a cancelled ACP prompt drains successfully, keep the completed turn.
+
+        The ACP server may finish the prompt while ``session/cancel`` is being
+        delivered. In that case the remote session has accepted the assistant
+        turn, so OpenHands must finalize the same turn locally instead of
+        discarding the response and later resuming from diverged session history.
+        The original cancellation still propagates so explicit user stop intent
+        wins at the conversation layer.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                await mock_client.session_update(
+                    session_id,
+                    AgentMessageChunk(
+                        session_update="agent_message_chunk",
+                        content=TextContentBlock(type="text", text="done"),
+                    ),
+                )
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert any(
+            isinstance(e, ActionEvent)
+            and isinstance(e.action, FinishAction)
+            and e.action.message == "done"
+            for e in emitted
+        )
+
+    def test_astep_cancelled_prompt_error_pauses_without_turn_error(self, tmp_path):
+        """Explicit cancellation should not emit stale prompt errors."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                raise RuntimeError("late prompt failure")
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        assert not any(
+            isinstance(e, MessageEvent)
+            and e.source == "agent"
+            and any(
+                isinstance(c, TextContent) and c.text.startswith("ACP error:")
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+        assert not any(isinstance(e, ConversationErrorEvent) for e in emitted)
+        assert agent._restart_session_on_next_turn is True
+
+    def test_astep_double_cancel_during_drain_restarts_next_turn(self, tmp_path):
+        """A second cancellation during drain should quarantine the live prompt."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_double_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+
+            async def _raise_during_drain(self, future):  # noqa: ARG001
+                assert future is not None
+                assert not future.done()
+                raise asyncio.CancelledError
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            with patch.object(
+                ACPAgent,
+                "_drain_cancelled_prompt",
+                new=_raise_during_drain,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                task.cancel()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                finally:
+                    prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_double_cancel())
+        finally:
+            executor.close()
+
+        assert agent._restart_session_on_next_turn is True
+
+    def test_astep_double_cancel_during_cancel_send_restarts_next_turn(self, tmp_path):
+        """A second cancellation during session/cancel should quarantine prompt."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancelled_cancel_send() -> None:
+            prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _raise_during_cancel_send(self):  # noqa: ARG001
+                raise asyncio.CancelledError
+
+            agent._conn.prompt = _fake_prompt
+            agent._session_id = "test-session"
+
+            with patch.object(
+                ACPAgent,
+                "_arequest_session_cancel",
+                new=_raise_during_cancel_send,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                task.cancel()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                finally:
+                    prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancelled_cancel_send())
+        finally:
+            executor.close()
+
+        assert agent._restart_session_on_next_turn is True
+
+    def test_cleanup_interruption_finalizes_completed_prompt(self, tmp_path):
+        """A completed prompt should be finalized if cleanup is cancelled."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._session_id = "test-session"
+
+        prompt_future: Future[PromptResponse | None] = Future()
+        prompt_future.set_result(None)
+        emitted = []
+
+        with conversation.state as state:
+            agent._handle_cancelled_cleanup_interruption(
+                prompt_future,
+                0.1,
+                state,
+                emitted.append,
+            )
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert agent._restart_session_on_next_turn is False
+        assert any(isinstance(event, ActionEvent) for event in emitted)
 
     def test_astep_cancellation_does_not_mark_suffix_installed(self, tmp_path):
         """Cancellation before a turn completes must leave
@@ -1633,14 +2119,20 @@ class TestACPAgentAstep:
 
         async def _run_with_cancel() -> None:
             prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
             caller_loop = asyncio.get_running_loop()
 
             async def _fake_prompt(prompt_blocks, session_id):
                 caller_loop.call_soon_threadsafe(prompt_entered.set)
-                await asyncio.sleep(60)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
                 return None
 
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+
             agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
             agent._session_id = "test-session"
 
             task = asyncio.create_task(
@@ -1648,8 +2140,15 @@ class TestACPAgentAstep:
             )
             await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    with patch(
+                        "openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT",
+                        0.01,
+                    ):
+                        await task
+            finally:
+                prompt_released.set()
 
         try:
             agent._executor = executor
@@ -1676,12 +2175,11 @@ class TestACPAgentAstep:
     def test_astep_does_not_deadlock_under_reentrant_state_lock(self, tmp_path):
         """End-to-end shape of the #3348 bug.
 
-        Mirrors ``LocalConversation.arun``: holds ``state.lock`` on the
-        loop thread across ``await astep(...)``, while a post-prompt
-        callback re-acquires it (same shape as ``stats_callback``'s
-        ``with state:``).  With astep overridden, the callback runs on
-        the same thread as the lock owner — FIFOLock's reentrancy lets
-        it through.  Without the override, this hangs.
+        Covers direct callers that hold ``state.lock`` on the loop thread
+        across ``await astep(...)`` while a post-prompt callback
+        re-acquires it. With astep overridden, the callback runs on the
+        same thread as the lock owner — FIFOLock's reentrancy lets it
+        through. Without the override, this hangs.
         """
         from openhands.sdk.utils.async_executor import AsyncExecutor
 
@@ -4017,6 +4515,20 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
 
+    def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
+        """A failed replacement session should leave the deferred restart armed."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        agent._restart_session_on_next_turn = True
+
+        with patch.object(ACPAgent, "init_state", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                agent._restart_session_after_drain_timeout(
+                    state, on_event=lambda _: None
+                )
+
+        assert agent._restart_session_on_next_turn is True
+
     def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
         """init_state lands the session id in state.agent_state so
         ConversationState's base_state.json persistence carries it forward.
@@ -4053,6 +4565,34 @@ class TestACPSessionIdPersistence:
         assert kwargs["cwd"] == str(tmp_path)
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "stored-sess"
+
+    def test_cancel_drain_restart_preserves_session_id_for_resume(self, tmp_path):
+        """A cancelled-prompt drain timeout restarts the subprocess, but should
+        still load the persisted ACP session so the server keeps conversation
+        memory.
+        """
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_suffix_installed": True,
+        }
+        conn = self._make_conn()
+
+        with self._transport_patches(conn):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "stored-sess"
+        assert state.agent_state["acp_session_id"] == "stored-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+        assert state.agent_state["acp_suffix_installed"] is True
+        assert agent._suffix_install_state == "installed"
 
     def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
         """ACPRequestError on load_session → new_session is called."""
@@ -4472,6 +5012,35 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         assert state.agent_state["acp_session_id"] == "replacement-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_fallback_replacement_clears_suffix_marker(self, tmp_path):
+        """If load_session fails, the replacement session has not seen any
+        suffix yet, even if the stale session had persisted the marker.
+        """
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_suffix_installed": True,
+        }
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+        assert state.agent_state.get("acp_suffix_installed") is not True
+        assert agent._suffix_install_state == "pending_first_prompt"
 
     def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
         """load_session must be followed by the same set_session_model and

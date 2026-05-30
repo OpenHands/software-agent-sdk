@@ -170,7 +170,22 @@ async def update_settings(
     """Update settings with partial changes.
 
     Accepts ``agent_settings_diff`` and/or ``conversation_settings_diff``
-    for incremental updates. Values are deep-merged with existing settings.
+    for incremental updates. Diffs are deep-merged; nested objects merge
+    recursively, and a ``null`` value **inside a nested map deletes that
+    entry** — the "unset" primitive that lets a client remove a single map
+    key without round-tripping the whole map. To drop one ACP env-var::
+
+        PATCH /api/settings
+        {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+
+    or to remove one MCP server's header::
+
+        {"agent_settings_diff":
+            {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
+
+    A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
+    is **not** an unset — it flows to model validation as before, so it still
+    fails loudly rather than silently resetting the field to its default.
 
     Uses file locking to prevent concurrent updates from overwriting each other.
 
