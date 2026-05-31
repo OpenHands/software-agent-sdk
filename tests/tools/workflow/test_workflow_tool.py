@@ -178,6 +178,43 @@ async def main(wf):
     )
 
 
+def test_workflow_script_can_catch_exception_group_with_plain_except() -> None:
+    class _ErrorManager(_FakeTaskManager):
+        def start_task(
+            self,
+            prompt: str,
+            subagent_type: str = "default",
+            resume: str | None = None,
+            description: str | None = None,
+            conversation: LocalConversation | None = None,
+        ) -> _FakeTask:
+            super().start_task(
+                prompt=prompt,
+                subagent_type=subagent_type,
+                resume=resume,
+                description=description,
+                conversation=conversation,
+            )
+            return _FakeTask(error=f"failed {prompt}")
+
+    script = """
+async def main(wf):
+    try:
+        await wf.map_agents(items=["one", "two"], prompt="inspect {item}")
+    except Exception as exc:
+        return str(exc)
+"""
+    manager = _ErrorManager()
+
+    assert execute_workflow_script(script, _context(manager)) == (
+        "map_agents: one or more sub-agents failed (2 sub-exceptions)"
+    )
+    assert manager.prompts == [
+        "general-purpose: inspect one",
+        "general-purpose: inspect two",
+    ]
+
+
 def test_format_value_truncates_large_intermediate_results() -> None:
     value = _format_value("x" * 12_050)
 

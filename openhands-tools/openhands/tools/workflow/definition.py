@@ -171,5 +171,7 @@ class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
         return WorkflowTool.create(executor=WorkflowExecutor())
 
 
+# WorkflowToolSet is for standard SDK auto-create usage.
+# WorkflowTool is for explicit executor injection in tests/extensions.
 register_tool(WorkflowToolSet.name, WorkflowToolSet)
 register_tool(WorkflowTool.name, WorkflowTool)
