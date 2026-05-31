@@ -300,7 +300,7 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     agent_llm.model = "gpt-4"
 
     # Mock get_token_count to return predictable values based on message content length
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         # Simple heuristic: count characters in all text content
         # Each character = 0.25 tokens (roughly 4 chars per token)
         total_chars = 0
@@ -398,7 +398,7 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     agent_llm.model = "gpt-4"
 
     # Mock get_token_count to return predictable values
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:
@@ -445,7 +445,7 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
 
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:
@@ -491,7 +491,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     agent_llm = MagicMock(spec=LLM)
     agent_llm.model = "gpt-4"
 
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         total_chars = 0
         for msg in messages:
             for content in msg.content:

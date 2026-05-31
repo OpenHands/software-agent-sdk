@@ -30,7 +30,7 @@ def mock_llm() -> LLM:
     mock_llm.model = "test-model"
 
     # Mock get_token_count to return predictable values based on message content length
-    def mock_token_count(messages):
+    def mock_token_count(messages, **_kwargs):
         # Simple heuristic: count characters in all text content
         # Each character = 0.25 tokens (roughly 4 chars per token)
         total_chars = 0
