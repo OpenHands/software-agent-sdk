@@ -310,7 +310,7 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create events that exceed token limit
     # Each event has 40 chars = 10 tokens
@@ -406,7 +406,7 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events with 40 chars each = 10 tokens each = 200 total tokens
     # This exceeds max_tokens of 100 (triggers TOKENS)
@@ -453,7 +453,7 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events (exceeds max_size of 15) with 40 chars each
     # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)
@@ -499,7 +499,7 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
                     total_chars += len(content.text)
         return total_chars // 4
 
-    agent_llm.get_token_count.side_effect = mock_token_count
+    cast(MagicMock, agent_llm.get_token_count).side_effect = mock_token_count
 
     # Create 20 events (exceeds max_size of 15) with 40 chars each
     # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)

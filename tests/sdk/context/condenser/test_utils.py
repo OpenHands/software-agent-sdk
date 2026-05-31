@@ -1,3 +1,4 @@
+from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,7 +9,10 @@ from openhands.sdk.context.condenser.utils import (
     get_total_token_count,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool.builtins.finish import FinishTool
 
 
 def message_event(content: str) -> MessageEvent:
@@ -77,6 +81,27 @@ class TestGetTotalTokenCount:
         call_args = mock_llm.get_token_count.call_args[0][0]  # type: ignore
         assert isinstance(call_args, list)
         assert all(isinstance(msg, Message) for msg in call_args)
+
+    def test_system_prompt_tools_are_counted(self, mock_llm: LLM):
+        """Test that agent tool schemas are included in token counting."""
+        tools = cast(list[ToolDefinition], list(FinishTool.create()))
+        events = [
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="system"),
+                tools=tools,
+            ),
+            message_event("Test"),
+        ]
+
+        mock_llm.get_token_count.side_effect = None  # type: ignore
+        mock_llm.get_token_count.return_value = 7  # type: ignore
+
+        assert get_total_token_count(events, mock_llm) == 7
+
+        kwargs = mock_llm.get_token_count.call_args.kwargs  # type: ignore
+        assert kwargs["tools"] == tools
+        assert kwargs["add_security_risk_prediction"] is True
 
 
 class TestGetShortestPrefixAboveTokenCount:

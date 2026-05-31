@@ -2009,16 +2009,38 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
 
-    def get_token_count(self, messages: list[Message]) -> int:
+    def get_token_count(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+    ) -> int:
         logger.debug(
             "Message objects now include serialized tool calls in token counting"
         )
         formatted_messages = self.format_messages_for_llm(messages)
+        cc_tools = [
+            tool.to_openai_tool(
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
+            for tool in tools or []
+        ]
+        use_mock_tools = self.should_mock_tool_calls(cc_tools)
+        if use_mock_tools:
+            formatted_messages, _ = self.pre_request_prompt_mock(
+                formatted_messages,
+                cc_tools,
+                {},
+                include_security_params=add_security_risk_prediction,
+            )
+            cc_tools = []
+
         try:
             return int(
                 token_counter(
                     model=self.model,
                     messages=formatted_messages,
+                    tools=cc_tools or None,
                     custom_tokenizer=self._tokenizer,
                 )
             )
