@@ -312,6 +312,22 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
 
 
+# Per-provider CLI auth-status fallback for servers whose ACP handshake can't
+# report login state (``supports_auth_status_probe=False``). These args are
+# appended to the provider's launch command to invoke the CLI's own auth-status
+# subcommand, which prints JSON containing a ``loggedIn`` boolean
+# (see ``ACPAgent.probe_cli_auth_status``). For ``claude-agent-acp`` the ``--cli``
+# flag re-exposes the bundled Claude CLI's ``auth status`` so no separate
+# ``claude`` binary need be installed.
+#
+# Kept as a module constant rather than an ``ACPProviderInfo`` field so the
+# dataclass — and its exact mirror in typescript-client's ``acp-providers.json``
+# (enforced by the drift check) — stays unchanged.
+ACP_CLI_AUTH_STATUS_ARGS: dict[str, tuple[str, ...]] = {
+    "claude-code": ("--cli", "auth", "status", "--json"),
+}
+
+
 def get_acp_provider(key: str) -> ACPProviderInfo | None:
     """Return the :class:`ACPProviderInfo` for ``key``, or ``None`` if unknown."""
     return ACP_PROVIDERS.get(key)

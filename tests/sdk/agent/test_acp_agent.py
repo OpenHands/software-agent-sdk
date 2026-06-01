@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
 import threading
 import uuid
 from base64 import urlsafe_b64encode
 from concurrent.futures import Future
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -6227,6 +6228,116 @@ class TestACPProbeAuth:
         with stack:
             with pytest.raises(TimeoutError):
                 ACPAgent.probe_auth(["echo", "test"], cwd=str(tmp_path), timeout=0.2)
+
+
+class TestACPProbeCliAuthStatus:
+    """``ACPAgent.probe_cli_auth_status`` reads ``loggedIn`` from a CLI's
+    ``auth status --json`` output for providers the handshake can't classify
+    (e.g. claude-agent-acp). ``subprocess.run`` is mocked — no real CLI is run.
+    """
+
+    _CMD: ClassVar[list[str]] = ["npx", "-y", "@agentclientprotocol/claude-agent-acp"]
+    _ARGS: ClassVar[list[str]] = ["--cli", "auth", "status", "--json"]
+
+    @staticmethod
+    def _completed(stdout: str, returncode: int = 0):
+        proc = MagicMock()
+        proc.stdout = stdout
+        proc.stderr = ""
+        proc.returncode = returncode
+        return proc
+
+    def test_empty_command_raises(self):
+        with pytest.raises(ValueError, match="non-empty command"):
+            ACPAgent.probe_cli_auth_status([], self._ARGS)
+
+    def test_authenticated_when_logged_in(self):
+        payload = {
+            "loggedIn": True,
+            "authMethod": "claude.ai",
+            "subscriptionType": "max",
+        }
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed(json.dumps(payload)),
+        ) as run:
+            result = ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS)
+
+        assert isinstance(result, ACPAuthProbeResult)
+        assert result.authenticated is True
+        # ``authMethod`` is surfaced via auth_methods for display.
+        assert result.auth_methods == ["claude.ai"]
+        # The status args are appended to the launch command.
+        assert run.call_args.args[0] == self._CMD + self._ARGS
+
+    def test_unauthenticated_even_when_exit_nonzero(self):
+        # Logged out: the CLI may exit non-zero, but ``loggedIn: false`` is the
+        # signal — classify as unauthenticated, not unknown.
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed(json.dumps({"loggedIn": False}), returncode=1),
+        ):
+            result = ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS)
+
+        assert result.authenticated is False
+        assert result.auth_methods == []
+
+    def test_missing_logged_in_raises(self):
+        # No boolean ``loggedIn`` ⇒ can't determine ⇒ raise (caller → unknown).
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed(json.dumps({"authMethod": "claude.ai"})),
+        ):
+            with pytest.raises(ValueError, match="loggedIn"):
+                ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS)
+
+    def test_unparseable_output_raises(self):
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed("command not found: npx"),
+        ):
+            with pytest.raises(ValueError, match="no JSON object"):
+                ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS)
+
+    def test_tolerates_surrounding_noise(self):
+        # A banner/log line around the JSON object is recovered via the
+        # first-{ … last-} slice.
+        noisy = 'starting…\n{"loggedIn": true}\nbye\n'
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed(noisy),
+        ):
+            result = ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS)
+        assert result.authenticated is True
+
+    def test_timeout_propagates(self):
+        # A hung CLI raises TimeoutExpired, which must propagate so the caller
+        # reports "unknown" rather than "not logged in".
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=self._CMD, timeout=1.0),
+        ):
+            with pytest.raises(subprocess.TimeoutExpired):
+                ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS, timeout=1.0)
+
+    def test_env_conflict_rules_applied(self):
+        # The same env stripping as probe_auth: CLAUDECODE removed, and
+        # ANTHROPIC_API_KEY removed when CLAUDE_CONFIG_DIR selects the OAuth flow.
+        env = {
+            "CLAUDECODE": "1",
+            "CLAUDE_CONFIG_DIR": "/tmp/claude",
+            "ANTHROPIC_API_KEY": "sk-should-be-stripped",
+        }
+        with patch(
+            "openhands.sdk.agent.acp_agent.subprocess.run",
+            return_value=self._completed(json.dumps({"loggedIn": True})),
+        ) as run:
+            ACPAgent.probe_cli_auth_status(self._CMD, self._ARGS, env=env)
+
+        passed_env = run.call_args.kwargs["env"]
+        assert "CLAUDECODE" not in passed_env
+        assert "ANTHROPIC_API_KEY" not in passed_env
+        assert passed_env["CLAUDE_CONFIG_DIR"] == "/tmp/claude"
 
 
 class TestTeardownACPConnection:

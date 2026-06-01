@@ -20,10 +20,14 @@ from openhands.agent_server.persistence import (
 )
 from openhands.sdk.agent.acp_agent import ACPAuthProbeResult
 from openhands.sdk.settings import ACPAgentSettings
-from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+from openhands.sdk.settings.acp_providers import (
+    ACP_CLI_AUTH_STATUS_ARGS,
+    ACP_PROVIDERS,
+)
 
 
 PROBE_PATH = "openhands.agent_server.acp_auth_router.ACPAgent.probe_auth"
+CLI_PROBE_PATH = "openhands.agent_server.acp_auth_router.ACPAgent.probe_cli_auth_status"
 
 
 @pytest.fixture
@@ -133,19 +137,70 @@ def test_unknown_status_on_timeout(client):
     assert response.json()["status"] == "unknown"
 
 
-def test_claude_code_returns_unknown_without_probing(client):
-    # claude-agent-acp doesn't validate auth at session/new, so the protocol
-    # probe would false-positive. The router must short-circuit to 'unknown'
-    # WITHOUT spawning a probe.
-    with patch(PROBE_PATH) as mock_probe:
+def test_claude_code_authenticated_via_cli_status(client):
+    # claude-agent-acp can't be classified by the handshake (it accepts
+    # session/new unauthenticated), so the router uses the CLI auth-status
+    # fallback — and must NOT call the handshake probe.
+    cli_result = _result(authenticated=True, auth_methods=["claude.ai"])
+    with (
+        patch(PROBE_PATH) as handshake,
+        patch(CLI_PROBE_PATH, return_value=cli_result) as cli,
+    ):
         response = client.get("/api/acp/auth-status", params={"server": "claude-code"})
 
     assert response.status_code == 200
     body = response.json()
     assert body["server"] == "claude-code"
+    assert body["status"] == "authenticated"
+    assert body["auth_methods"] == ["claude.ai"]
+    handshake.assert_not_called()
+    # Invoked with the registry command + the claude CLI auth-status args.
+    cli.assert_called_once()
+    assert cli.call_args.args[0] == list(ACP_PROVIDERS["claude-code"].default_command)
+    assert cli.call_args.args[1] == list(ACP_CLI_AUTH_STATUS_ARGS["claude-code"])
+
+
+def test_claude_code_unauthenticated_via_cli_status(client):
+    with (
+        patch(PROBE_PATH),
+        patch(CLI_PROBE_PATH, return_value=_result(authenticated=False)),
+    ):
+        response = client.get("/api/acp/auth-status", params={"server": "claude-code"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unauthenticated"
+
+
+def test_claude_code_cli_status_error_returns_unknown(client):
+    # If the CLI status command can't run / parse, fall back to 'unknown' so the
+    # canvas shows the API-key fields rather than falsely claiming "not logged in".
+    with (
+        patch(PROBE_PATH),
+        patch(CLI_PROBE_PATH, side_effect=RuntimeError("npx not found")),
+    ):
+        response = client.get("/api/acp/auth-status", params={"server": "claude-code"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "unknown"
+
+
+def test_provider_with_no_strategy_returns_unknown(client):
+    # A provider that neither supports the handshake nor has a CLI fallback
+    # short-circuits to 'unknown' without spawning anything. Simulate by clearing
+    # the CLI fallback for claude (whose handshake is already unsupported).
+    with (
+        patch("openhands.agent_server.acp_auth_router.ACP_CLI_AUTH_STATUS_ARGS", {}),
+        patch(PROBE_PATH) as handshake,
+        patch(CLI_PROBE_PATH) as cli,
+    ):
+        response = client.get("/api/acp/auth-status", params={"server": "claude-code"})
+
+    assert response.status_code == 200
+    body = response.json()
     assert body["status"] == "unknown"
     assert body["detail"]  # explains why it can't be probed
-    mock_probe.assert_not_called()
+    handshake.assert_not_called()
+    cli.assert_not_called()
 
 
 def test_resolves_default_command_for_server(client):

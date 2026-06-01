@@ -37,7 +37,10 @@ from openhands.sdk.agent.acp_agent import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import ACPAgentSettings
-from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
+from openhands.sdk.settings.acp_providers import (
+    ACP_CLI_AUTH_STATUS_ARGS,
+    ACP_PROVIDERS,
+)
 from openhands.sdk.settings.model import ACPServerKind
 
 
@@ -132,12 +135,17 @@ async def get_acp_auth_status(
             ),
         )
 
-    # Some providers (e.g. claude-agent-acp) accept ``session/new`` without
-    # validating credentials — auth is enforced later, at prompt time — so the
-    # handshake probe can't tell logged-in from logged-out and would
-    # false-positive. Report ``unknown`` for those instead of guessing; the
-    # canvas then shows the API-key fields rather than a misleading banner.
-    if not ACP_PROVIDERS[server].supports_auth_status_probe:
+    # Pick a detection strategy. Most providers (codex, gemini) are detected via
+    # the ACP handshake (``probe_auth``). Some — notably claude-agent-acp — accept
+    # ``session/new`` without validating credentials (auth is enforced later, at
+    # prompt time), so the handshake can't tell logged-in from logged-out; for
+    # those we fall back to the CLI's own ``auth status`` subcommand
+    # (``probe_cli_auth_status``) when one is registered. A provider with neither
+    # strategy reports ``unknown`` so the canvas shows the API-key fields rather
+    # than a misleading banner.
+    provider = ACP_PROVIDERS[server]
+    cli_status_args = ACP_CLI_AUTH_STATUS_ARGS.get(server)
+    if not provider.supports_auth_status_probe and cli_status_args is None:
         logger.info("ACP auth-status probe skipped (unsupported provider): %s", server)
         return ACPAuthStatusResponse(
             server=server,
@@ -179,25 +187,39 @@ async def get_acp_auth_status(
         extra={"acp_server": server, "client_host": client_host},
     )
 
-    # ``session/new`` keys persistence by cwd; a throwaway directory keeps the
-    # probe from leaving session state in any real workspace.
+    # Forward the SDK's probe timeout explicitly (single source of truth,
+    # env-overridable via ACP_AUTH_PROBE_TIMEOUT) so a slow/hung CLI can't pin a
+    # FastAPI threadpool worker past that ceiling.
     try:
-        with tempfile.TemporaryDirectory(prefix="acp-auth-probe-") as cwd:
-            # Forward the SDK's probe timeout explicitly (single source of
-            # truth, env-overridable via ACP_AUTH_PROBE_TIMEOUT) so a slow/hung
-            # CLI can't pin a FastAPI threadpool worker past that ceiling.
-            result: ACPAuthProbeResult = await run_in_threadpool(
-                ACPAgent.probe_auth,
+        if provider.supports_auth_status_probe:
+            # ``session/new`` keys persistence by cwd; a throwaway directory keeps
+            # the probe from leaving session state in any real workspace.
+            with tempfile.TemporaryDirectory(prefix="acp-auth-probe-") as cwd:
+                result: ACPAuthProbeResult = await run_in_threadpool(
+                    ACPAgent.probe_auth,
+                    command,
+                    env=env,
+                    cwd=cwd,
+                    timeout=_ACP_AUTH_PROBE_TIMEOUT,
+                )
+        else:
+            # Handshake can't classify this provider; use its CLI auth-status
+            # subcommand instead. ``cli_status_args`` is non-None here — the
+            # early return above filtered out providers with neither strategy.
+            assert cli_status_args is not None
+            result = await run_in_threadpool(
+                ACPAgent.probe_cli_auth_status,
                 command,
+                list(cli_status_args),
                 env=env,
-                cwd=cwd,
                 timeout=_ACP_AUTH_PROBE_TIMEOUT,
             )
     except Exception as e:
-        # Any failure to even run the handshake (subprocess won't start, the
-        # server hangs past the timeout, a protocol error other than
-        # auth_required) is reported as 'unknown' so the canvas falls back to
-        # the API-key fields rather than falsely claiming "not logged in".
+        # Any failure to even run the probe (subprocess won't start, the server
+        # hangs past the timeout, a protocol error other than auth_required, or
+        # unparseable auth-status output) is reported as 'unknown' so the canvas
+        # falls back to the API-key fields rather than falsely claiming
+        # "not logged in".
         logger.warning(
             "ACP auth-status probe failed for %s: %s",
             server,

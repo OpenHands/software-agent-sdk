@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import json
 import os
+import subprocess
 import threading
 import time
 import uuid
@@ -179,6 +180,29 @@ def _apply_env_conflict_rules(env: dict[str, str]) -> None:
         if dominant in env:
             for conflict in conflicts:
                 env.pop(conflict, None)
+
+
+def _parse_cli_auth_status(stdout: str) -> dict[str, Any]:
+    """Extract the JSON object printed by a CLI ``auth status --json`` command.
+
+    Used by :meth:`ACPAgent.probe_cli_auth_status`. Tolerates leading/trailing
+    noise (banners, log lines) the CLI may interleave on stdout by falling back
+    to the first ``{`` … last ``}`` slice. Raises ``ValueError`` if no JSON
+    object can be recovered — the caller treats that as "unknown".
+    """
+    text = stdout.strip()
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end == -1 or end < start:
+            raise ValueError(
+                f"no JSON object in auth-status output: {text[:200]!r}"
+            ) from None
+        obj = json.loads(text[start : end + 1])
+    if not isinstance(obj, dict):
+        raise ValueError("auth-status output was not a JSON object")
+    return obj
 
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
@@ -1935,6 +1959,80 @@ class ACPAgent(AgentBase):
             return executor.run_async(_probe)
         finally:
             executor.close()
+
+    @staticmethod
+    def probe_cli_auth_status(
+        command: list[str],
+        status_args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        timeout: float = _ACP_AUTH_PROBE_TIMEOUT,
+    ) -> ACPAuthProbeResult:
+        """Probe login state via the CLI's own ``auth status`` subcommand.
+
+        A fallback for ACP servers whose protocol handshake can't report login
+        state — notably ``claude-agent-acp``, which accepts ``session/new``
+        without validating credentials (auth is enforced later, at prompt time),
+        so :meth:`probe_auth` would false-positive ``authenticated``. Instead of
+        the handshake, this runs ``command + status_args`` — e.g.
+        ``npx -y @agentclientprotocol/claude-agent-acp --cli auth status --json``
+        — and reads the ``loggedIn`` boolean from the JSON it prints.
+
+        The CLI resolves credentials from wherever it stores them (macOS
+        Keychain, ``~/.claude/.credentials.json``, …), so detection stays OS-
+        and topology-agnostic without the agent-server reading those stores
+        itself, and reflects wherever the agent-server runs. No prompt is sent ⇒
+        no model tokens are spent.
+
+        The subcommand may exit non-zero when logged out, so the result is taken
+        from the parsed ``loggedIn`` field, not the exit code. A command that
+        can't run, times out, or whose output has no boolean ``loggedIn`` raises
+        — callers should treat that as "unknown", not "not logged in".
+
+        Args:
+            command: The ACP server launch command (``command[0]`` executable).
+            status_args: Args appended to invoke the CLI's auth-status mode.
+            env: Extra environment overlaid on the inherited process env, with
+                the same conflict-stripping as :meth:`probe_auth`.
+            timeout: Hard cap in seconds for the subprocess.
+
+        Returns:
+            An :class:`ACPAuthProbeResult` (``authenticated`` from ``loggedIn``;
+            ``auth_methods`` carries the reported ``authMethod`` when present).
+        """
+        if not command:
+            raise ValueError("probe_cli_auth_status() requires a non-empty command")
+
+        # Mirror probe_auth's environment construction so the status check sees
+        # the same credentials a real conversation would.
+        full_env = default_environment()
+        full_env.update(os.environ)
+        full_env.update(env or {})
+        _apply_env_conflict_rules(full_env)
+
+        full_command = list(command) + list(status_args)
+        proc = subprocess.run(
+            full_command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=full_env,
+            check=False,
+        )
+        payload = _parse_cli_auth_status(proc.stdout)
+        logged_in = payload.get("loggedIn")
+        if not isinstance(logged_in, bool):
+            raise ValueError(
+                "auth-status output missing a boolean 'loggedIn' "
+                f"(exit={proc.returncode}, stdout={proc.stdout[:200]!r})"
+            )
+        auth_method = payload.get("authMethod")
+        return ACPAuthProbeResult(
+            authenticated=logged_in,
+            auth_methods=(
+                [auth_method] if isinstance(auth_method, str) and auth_method else []
+            ),
+        )
 
     def _reset_client_for_turn(
         self,
