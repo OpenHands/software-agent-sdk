@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pydantic import PrivateAttr, ValidationError, model_validator
 
@@ -108,7 +108,17 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
 
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
-INIT_STATE_PREFIX_SCAN_WINDOW = 3
+INIT_STATE_PREFIX_SCAN_WINDOW: Final[int] = 3
+
+# LLM errors a step can recover from. Shared by the ``except`` clauses in
+# ``step``/``astep`` and the ``match`` cases in ``_handle_step_error`` so the
+# caught set and the handled set cannot drift apart. Must stay a tuple: ``except``
+# only accepts a class or a tuple of classes, not a set/frozenset.
+_RECOVERABLE_STEP_ERRORS: Final = (
+    FunctionCallValidationError,
+    LLMMalformedConversationHistoryError,
+    LLMContextWindowExceedError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,6 +561,99 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             ),
         )
 
+    def _handle_blocked_user_message(self, state: ConversationState) -> bool:
+        """Check whether the last user message was blocked by a hook.
+
+        Shared by :meth:`step` and :meth:`astep`. Returns ``True`` (and marks
+        the conversation ``FINISHED``) when the message was blocked by a
+        ``UserPromptSubmit`` hook and the step should stop; ``False`` otherwise.
+        """
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return True
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
+        return False
+
+    def _can_condense(self) -> bool:
+        """Return True if a condenser is configured and handles requests."""
+        return (
+            self.condenser is not None
+            and self.condenser.handles_condensation_requests()
+        )
+
+    def _handle_step_error(
+        self,
+        error: Exception,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Handle a recoverable LLM error raised during a step.
+
+        Shared by :meth:`step` and :meth:`astep` so the sync and async paths
+        recover identically. Either emits a recovery event and returns (the
+        caller should then return from its step), or re-raises ``error`` when
+        no recovery is possible.
+
+        Every member of :data:`_RECOVERABLE_STEP_ERRORS` should have a
+        corresponding ``case`` below; any error not explicitly matched falls
+        through to ``case _: raise error``.
+        """
+        match error:
+            case FunctionCallValidationError():
+                # Malformed tool call: feed the validation error back to the
+                # model as a user message so it can correct itself next step.
+                logger.warning(f"LLM generated malformed function call: {error}")
+                on_event(
+                    MessageEvent(
+                        source="user",
+                        llm_message=Message(
+                            role="user",
+                            content=[TextContent(text=str(error))],
+                        ),
+                    )
+                )
+            case LLMMalformedConversationHistoryError():
+                # The provider rejected the current message history as
+                # structurally invalid (for example, broken tool_use/tool_result
+                # pairing). Route this into condensation recovery, but keep the
+                # logs distinct from true context-window exhaustion so upstream
+                # event-stream bugs remain visible.
+                if self._can_condense():
+                    logger.warning(
+                        "LLM raised malformed conversation history error, "
+                        "triggering condensation retry with condensed history: "
+                        f"{error}"
+                    )
+                    on_event(CondensationRequest())
+                else:
+                    logger.warning(
+                        "LLM raised malformed conversation history error but no "
+                        "condenser can handle condensation requests. This usually "
+                        "indicates an upstream event-stream or resume bug: "
+                        f"{error}"
+                    )
+                    raise error
+            case LLMContextWindowExceedError():
+                # Context window exhausted: trigger condensation if possible.
+                if self._can_condense():
+                    logger.warning(
+                        "LLM raised context window exceeded error, "
+                        "triggering condensation"
+                    )
+                    on_event(CondensationRequest())
+                else:
+                    # No condenser available or doesn't handle requests; warn.
+                    self._log_context_window_exceeded_warning()
+                    raise error
+            case _:
+                raise error
+
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
         self,
@@ -570,19 +673,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             self._execute_actions(conversation, pending_actions, on_event)
             return
 
-        # Check if the last user message was blocked by a UserPromptSubmit hook
-        # If so, skip processing and mark conversation as finished
-        if state.last_user_message_id is not None:
-            reason = state.pop_blocked_message(state.last_user_message_id)
-            if reason is not None:
-                logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
-                return
-        elif state.blocked_messages:
-            logger.debug(
-                "Blocked messages exist but last_user_message_id is None; "
-                "skipping hook check for legacy conversation state."
-            )
+        # Skip processing if the last user message was blocked by a hook
+        if self._handle_blocked_user_message(state):
+            return
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -608,78 +701,22 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
             )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            on_event(error_message)
+        except _RECOVERABLE_STEP_ERRORS as e:
+            self._handle_step_error(e, on_event)
             return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as structurally
-            # invalid (for example, broken tool_use/tool_result pairing). Route
-            # this into condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream bugs remain
-            # visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed history: "
-                    f"{e}"
-                )
-                on_event(CondensationRequest())
-                return
-            logger.warning(
-                "LLM raised malformed conversation history error but no "
-                "condenser can handle condensation requests. This usually "
-                "indicates an upstream event-stream or resume bug: "
-                f"{e}"
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available or doesn't handle requests; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
         response_type = classify_response(message)
 
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                self._handle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+        if response_type is LLMResponseType.TOOL_CALLS:
+            self._handle_tool_calls(
+                message, llm_response, conversation, state, on_event
+            )
+        else:
+            self._dispatch_non_tool_response(
+                message, llm_response, conversation, state, on_event, response_type
+            )
 
     async def astep(
         self,
@@ -707,17 +744,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             await self._aexecute_actions(conversation, pending_actions, on_event)
             return
 
-        if state.last_user_message_id is not None:
-            reason = state.pop_blocked_message(state.last_user_message_id)
-            if reason is not None:
-                logger.info(f"User message blocked by hook: {reason}")
-                state.execution_status = ConversationExecutionStatus.FINISHED
-                return
-        elif state.blocked_messages:
-            logger.debug(
-                "Blocked messages exist but last_user_message_id is None; "
-                "skipping hook check for legacy conversation state."
-            )
+        # Skip processing if the last user message was blocked by a hook
+        if self._handle_blocked_user_message(state):
+            return
 
         _messages_or_condensation = await aprepare_llm_messages(
             state.events, condenser=self.condenser, llm=self.llm
@@ -741,81 +770,21 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
             )
-        except FunctionCallValidationError as e:
-            logger.warning(f"LLM generated malformed function call: {e}")
-            error_message = MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user",
-                    content=[TextContent(text=str(e))],
-                ),
-            )
-            on_event(error_message)
+        except _RECOVERABLE_STEP_ERRORS as e:
+            self._handle_step_error(e, on_event)
             return
-        except LLMMalformedConversationHistoryError as e:
-            # The provider rejected the current message history as
-            # structurally invalid (for example, broken
-            # tool_use/tool_result pairing).  Route this into
-            # condensation recovery, but keep the logs distinct from
-            # true context-window exhaustion so upstream event-stream
-            # bugs remain visible.
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised malformed conversation history error, "
-                    "triggering condensation retry with condensed "
-                    "history: %s",
-                    e,
-                )
-                on_event(CondensationRequest())
-                return
-            logger.warning(
-                "LLM raised malformed conversation history error but "
-                "no condenser can handle condensation requests. This "
-                "usually indicates an upstream event-stream or resume "
-                "bug: %s",
-                e,
-            )
-            raise e
-        except LLMContextWindowExceedError as e:
-            # If condenser is available and handles requests, trigger
-            # condensation
-            if (
-                self.condenser is not None
-                and self.condenser.handles_condensation_requests()
-            ):
-                logger.warning(
-                    "LLM raised context window exceeded error, triggering condensation"
-                )
-                on_event(CondensationRequest())
-                return
-            # No condenser available; log helpful warning
-            self._log_context_window_exceeded_warning()
-            raise e
 
         message: Message = llm_response.message
         response_type = classify_response(message)
 
-        match response_type:
-            case LLMResponseType.TOOL_CALLS:
-                await self._ahandle_tool_calls(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.CONTENT:
-                self._handle_content_response(
-                    message, llm_response, conversation, state, on_event
-                )
-            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
-                self._handle_no_content_response(
-                    message,
-                    llm_response,
-                    conversation,
-                    state,
-                    on_event,
-                    response_type=response_type,
-                )
+        if response_type is LLMResponseType.TOOL_CALLS:
+            await self._ahandle_tool_calls(
+                message, llm_response, conversation, state, on_event
+            )
+        else:
+            self._dispatch_non_tool_response(
+                message, llm_response, conversation, state, on_event, response_type
+            )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]

@@ -184,64 +184,20 @@ class ResponseDispatchMixin:
             event: ActionEvent | MessageEvent,
         ) -> CriticResult | None: ...
 
-    def _handle_tool_calls(
+    def _prepare_tool_call_actions(
         self,
         message: Message,
         llm_response: LLMResponse,
         conversation: LocalConversation,
         state: ConversationState,
         on_event: ConversationCallbackType,
-    ) -> None:
-        """Handle LLM response containing tool calls."""
-        if not all(isinstance(c, TextContent) for c in message.content):
-            logger.warning(
-                "LLM returned tool calls but message content is not all "
-                "TextContent - ignoring non-text content"
-            )
+    ) -> list[ActionEvent] | None:
+        """Build the action events for a tool-call response.
 
-        thought_content = [c for c in message.content if isinstance(c, TextContent)]
-
-        action_events: list[ActionEvent] = []
-        assert message.tool_calls, "classify_response guarantees tool_calls"
-        for i, tool_call in enumerate(message.tool_calls):
-            action_event = self._get_action_event(
-                tool_call,
-                conversation=conversation,
-                llm_response_id=llm_response.id,
-                on_event=on_event,
-                security_analyzer=state.security_analyzer,
-                thought=thought_content if i == 0 else [],
-                reasoning_content=(message.reasoning_content if i == 0 else None),
-                thinking_blocks=(list(message.thinking_blocks) if i == 0 else []),
-                responses_reasoning_item=(
-                    message.responses_reasoning_item if i == 0 else None
-                ),
-            )
-            if action_event is None:
-                continue
-            action_events.append(action_event)
-
-        if self._requires_user_confirmation(state, action_events):
-            return
-
-        if action_events:
-            self._execute_actions(conversation, action_events, on_event)
-
-        self._maybe_emit_vllm_tokens(llm_response, on_event)
-
-    async def _ahandle_tool_calls(
-        self,
-        message: Message,
-        llm_response: LLMResponse,
-        conversation: LocalConversation,
-        state: ConversationState,
-        on_event: ConversationCallbackType,
-    ) -> None:
-        """Async variant of :meth:`_handle_tool_calls`.
-
-        Delegates tool execution to :meth:`_aexecute_actions` so each
-        tool call runs in its own thread and multiple calls are scheduled
-        concurrently via :func:`asyncio.gather`.
+        Shared by :meth:`_handle_tool_calls` and :meth:`_ahandle_tool_calls`;
+        only tool *execution* differs between the sync and async paths. Returns
+        the action events to execute (possibly empty), or ``None`` when user
+        confirmation is required and the caller should stop before executing.
         """
         if not all(isinstance(c, TextContent) for c in message.content):
             logger.warning(
@@ -272,6 +228,48 @@ class ResponseDispatchMixin:
             action_events.append(action_event)
 
         if self._requires_user_confirmation(state, action_events):
+            return None
+
+        return action_events
+
+    def _handle_tool_calls(
+        self,
+        message: Message,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Handle LLM response containing tool calls."""
+        action_events = self._prepare_tool_call_actions(
+            message, llm_response, conversation, state, on_event
+        )
+        if action_events is None:
+            return
+
+        if action_events:
+            self._execute_actions(conversation, action_events, on_event)
+
+        self._maybe_emit_vllm_tokens(llm_response, on_event)
+
+    async def _ahandle_tool_calls(
+        self,
+        message: Message,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Async variant of :meth:`_handle_tool_calls`.
+
+        Delegates tool execution to :meth:`_aexecute_actions` so each
+        tool call runs in its own thread and multiple calls are scheduled
+        concurrently via :func:`asyncio.gather`.
+        """
+        action_events = self._prepare_tool_call_actions(
+            message, llm_response, conversation, state, on_event
+        )
+        if action_events is None:
             return
 
         if action_events:
@@ -314,6 +312,42 @@ class ResponseDispatchMixin:
         self._emit_message_event(message, llm_response, conversation, on_event)
         self._maybe_emit_vllm_tokens(llm_response, on_event)
         self._send_corrective_nudge(on_event)
+
+    def _dispatch_non_tool_response(
+        self,
+        message: Message,
+        llm_response: LLMResponse,
+        conversation: LocalConversation,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+        response_type: LLMResponseType,
+    ) -> None:
+        """Dispatch a non-tool-call response to its handler.
+
+        Shared by :meth:`Agent.step` and :meth:`Agent.astep`. Tool-call
+        dispatch is the only colour-divergent branch (sync ``_handle_tool_calls``
+        vs awaited ``_ahandle_tool_calls``), so those methods handle it inline
+        and delegate every other response type here.
+        """
+        match response_type:
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
+                )
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
+                )
+            case _:
+                raise AssertionError(
+                    "_dispatch_non_tool_response called with unexpected type: "
+                    f"{response_type!r}"
+                )
 
     def _emit_message_event(
         self,
