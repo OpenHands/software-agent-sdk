@@ -1800,8 +1800,10 @@ class ACPAgent(AgentBase):
         instead uses a different error code, or lets ``session/new`` succeed and
         only fails at first prompt, would be misreported (``unknown`` is the safe
         outcome the router falls back on; a false ``authenticated`` is the risky
-        one). Validated against the real ``claude-code`` CLI; ``codex`` and
-        ``gemini`` auth_required paths are covered by mock-transport tests only.
+        one). Confirmed against the real CLIs for ``claude-code`` and
+        ``gemini-cli`` 0.43.0 (logged-out ``session/new`` → ``-32000``, and the
+        logged-in path → success); ``codex``'s explicit-``authenticate`` →
+        ``-32000`` path is covered by tests against a simulated server.
 
         This is the agent-server-side detection behind the ACP onboarding
         "you're already logged in" banner: the browser can't read the keychain
