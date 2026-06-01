@@ -704,6 +704,7 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
+                self._pin_session_affinity_header(llm)
 
             self._agent_ready = True
 
@@ -725,6 +726,20 @@ class LocalConversation(BaseConversation):
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
 
+    def _pin_session_affinity_header(self, llm: LLM) -> None:
+        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
+
+        Note: if a caller passes ``extra_headers`` as a kwarg directly to
+        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
+        entirely — the same limitation that affects OpenRouter headers.
+        """
+        existing = llm.extra_headers or {}
+        if "x-litellm-session-id" not in existing:
+            llm.extra_headers = {
+                "x-litellm-session-id": str(self._state.id),
+                **existing,
+            }
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -745,6 +760,7 @@ class LocalConversation(BaseConversation):
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
+            self._pin_session_affinity_header(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -1056,6 +1072,7 @@ class LocalConversation(BaseConversation):
         finally:
             self._cancel_token = None
 
+    @observe(name="conversation.arun")
     async def arun(self) -> None:
         """Async variant of :meth:`run`.
 
@@ -1476,7 +1493,11 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
         finally:
-            self._cancel_token = None
+            # A cancelled token must stay observable: interrupted tool calls run
+            # in worker threads that can outlive arun() and still poll it. A
+            # fresh token is created on the next run().
+            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
+                self._cancel_token = None
             self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
