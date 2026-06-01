@@ -852,7 +852,12 @@ async def _spawn_acp_connection(
     command: str,
     args: list[str],
     env: dict[str, str],
-) -> tuple[Any, ClientSideConnection, asyncio.StreamReader, asyncio.Task[None]]:
+) -> tuple[
+    asyncio.subprocess.Process,
+    ClientSideConnection,
+    asyncio.StreamReader,
+    asyncio.Task[None],
+]:
     """Spawn the ACP subprocess and wrap it in a JSON-RPC connection.
 
     Spawns ``command`` directly (rather than via the ACP helper) so a
@@ -995,6 +1000,7 @@ async def _teardown_acp_connection(
         # probe_auth returns) doesn't see a "Loop ... that handles pid ... is
         # closed" warning — the agent-server path avoids it only because its loop
         # stays alive.
+        reaped = False
         for stop in (process.terminate, process.kill):
             try:
                 stop()
@@ -1002,11 +1008,21 @@ async def _teardown_acp_connection(
                 logger.debug("Error stopping probe ACP process", exc_info=True)
             try:
                 await asyncio.wait_for(process.wait(), timeout=_ACP_TEARDOWN_TIMEOUT)
+                reaped = True
                 break  # exited; no need to escalate to SIGKILL
             except Exception:
                 logger.debug(
                     "Probe ACP process did not exit after signal", exc_info=True
                 )
+        if not reaped:
+            # Both SIGTERM and SIGKILL failed to reap it (extremely rare on
+            # POSIX). Surface it: the subprocess may be orphaned and its pid
+            # leaked rather than silently abandoning it.
+            logger.warning(
+                "Probe ACP subprocess (pid=%s) did not exit after SIGTERM+SIGKILL; "
+                "it may be orphaned",
+                getattr(process, "pid", "?"),
+            )
 
 
 class ACPAuthProbeResult(BaseModel):
@@ -1795,15 +1811,17 @@ class ACPAgent(AgentBase):
         (Claude omits it once authed; Gemini lists it even when authed), so it
         is returned for display only.
 
-        Reliability caveat: this assumes every supported CLI reports missing
-        credentials via the ``-32000`` ``auth_required`` code. A provider that
-        instead uses a different error code, or lets ``session/new`` succeed and
-        only fails at first prompt, would be misreported (``unknown`` is the safe
-        outcome the router falls back on; a false ``authenticated`` is the risky
-        one). Confirmed against the real CLIs for ``claude-code`` and
-        ``gemini-cli`` 0.43.0 (logged-out ``session/new`` → ``-32000``, and the
-        logged-in path → success); ``codex``'s explicit-``authenticate`` →
-        ``-32000`` path is covered by tests against a simulated server.
+        Reliability caveat: this only works for CLIs that actually validate
+        credentials at ``session/new`` (or ``authenticate``) and report a
+        missing-credential failure via the ``-32000`` ``auth_required`` code.
+        Verified against the real ``codex-acp`` and ``gemini-cli`` CLIs
+        (logged-out → ``-32000``, logged-in → success). It does **not** hold for
+        ``claude-agent-acp``: that server accepts ``session/new`` without
+        checking auth (it's enforced later, at prompt time), so the probe would
+        false-positive ``authenticated`` for a logged-out user. Callers must not
+        probe such providers — the agent-server gates them out via
+        ``ACPProviderInfo.supports_auth_status_probe`` (``False`` for
+        claude-code) and returns ``unknown`` instead.
 
         This is the agent-server-side detection behind the ACP onboarding
         "you're already logged in" banner: the browser can't read the keychain
@@ -1862,10 +1880,6 @@ class ACPAgent(AgentBase):
         working_dir = cwd if cwd is not None else os.getcwd()
 
         async def _handshake(conn: ClientSideConnection) -> ACPAuthProbeResult:
-            authenticated = True
-            agent_name = ""
-            agent_version = ""
-            auth_method_ids: list[str] = []
             # Capture the initialize metadata first and *outside* the auth_required
             # guard, so the not-logged-in result still reports the agent
             # name/version and offered methods. A single guard then wraps both
@@ -1875,6 +1889,7 @@ class ACPAgent(AgentBase):
             # unauthenticated instead of letting it bubble up to "unknown".
             agent_name, agent_version, auth_methods = await _acp_initialize(conn)
             auth_method_ids = [m.id for m in auth_methods]
+            authenticated = True
             try:
                 await _acp_authenticate(conn, full_env, agent_name, auth_methods)
                 await conn.new_session(cwd=working_dir, mcp_servers=[])

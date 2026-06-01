@@ -162,6 +162,24 @@ class ACPProviderInfo:
     signature break; the built-in providers set it explicitly.
     """
 
+    supports_auth_status_probe: bool = True
+    """``True`` if this provider's login state can be detected via the ACP
+    handshake behind ``GET /acp/auth-status`` (see ``ACPAgent.probe_auth``).
+
+    The probe infers login from ``session/new``: an ``auth_required`` (-32000)
+    error ⇒ not logged in, success ⇒ logged in. That only holds for servers
+    that actually validate credentials at session-creation time (codex-acp,
+    gemini-cli — both return -32000 when logged out, verified against the real
+    CLIs).
+
+    ``False`` for ``claude-agent-acp``: it does **not** gate auth at
+    ``session/new`` (the call always succeeds and auth is enforced later, at
+    prompt time), so a probe would false-positive ``authenticated`` for a
+    logged-out user. The endpoint returns ``unknown`` for such providers instead
+    of guessing. Detecting Claude login needs an out-of-band credential check
+    (env / ``~/.claude`` / keychain) — tracked separately, not done here.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -251,6 +269,10 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            # claude-agent-acp accepts session/new without validating creds
+            # (auth is enforced at prompt time), so the auth-status probe would
+            # false-positive — the endpoint returns "unknown" for it instead.
+            supports_auth_status_probe=False,
         ),
         "codex": ACPProviderInfo(
             key="codex",

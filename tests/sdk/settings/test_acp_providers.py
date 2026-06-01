@@ -42,6 +42,17 @@ class TestACPProviderInfo:
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "claude-opus-4-7"
         assert any(m.id == "claude-opus-4-7" for m in info.available_models)
+        # claude-agent-acp doesn't gate auth at session/new, so the auth-status
+        # probe can't detect its login state — it's opted out.
+        assert info.supports_auth_status_probe is False
+
+    def test_auth_status_probe_support(self):
+        # Only providers whose session/new actually validates credentials
+        # (codex, gemini — both return -32000 when logged out) can be probed;
+        # claude-agent-acp accepts the session regardless, so it opts out.
+        assert ACP_PROVIDERS["claude-code"].supports_auth_status_probe is False
+        assert ACP_PROVIDERS["codex"].supports_auth_status_probe is True
+        assert ACP_PROVIDERS["gemini-cli"].supports_auth_status_probe is True
 
     def test_codex_metadata(self):
         info = ACP_PROVIDERS["codex"]

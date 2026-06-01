@@ -17,7 +17,6 @@ will actually run, with no topology knowledge needed.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from typing import Annotated, Literal, cast
 
@@ -31,7 +30,11 @@ from openhands.agent_server.persistence import (
     get_secrets_store,
     get_settings_store,
 )
-from openhands.sdk.agent.acp_agent import ACPAgent, ACPAuthProbeResult
+from openhands.sdk.agent.acp_agent import (
+    _ACP_AUTH_PROBE_TIMEOUT,
+    ACPAgent,
+    ACPAuthProbeResult,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import ACPAgentSettings
 from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
@@ -57,13 +60,6 @@ _MAX_DETAIL_CHARS = 300
 # Only scrub env values at least this long, so redaction can't mangle a detail
 # string by blanking out short, non-secret tokens (e.g. "1", "true").
 _MIN_SECRET_LEN = 8
-
-# Hard ceiling for a single probe so a slow/hung ACP CLI can't pin a FastAPI
-# threadpool worker indefinitely. We forward this explicitly rather than relying
-# on probe_auth's default. 60s (overridable via ACP_AUTH_PROBE_TIMEOUT) is
-# deliberately generous: a cold ``npx -y`` first run downloads the CLI, and a
-# tighter cap would turn cold starts into false "unknown"s.
-_PROBE_TIMEOUT_SECONDS = float(os.environ.get("ACP_AUTH_PROBE_TIMEOUT", "60.0"))
 
 
 class ACPAuthStatusResponse(BaseModel):
@@ -136,6 +132,22 @@ async def get_acp_auth_status(
             ),
         )
 
+    # Some providers (e.g. claude-agent-acp) accept ``session/new`` without
+    # validating credentials — auth is enforced later, at prompt time — so the
+    # handshake probe can't tell logged-in from logged-out and would
+    # false-positive. Report ``unknown`` for those instead of guessing; the
+    # canvas then shows the API-key fields rather than a misleading banner.
+    if not ACP_PROVIDERS[server].supports_auth_status_probe:
+        logger.info("ACP auth-status probe skipped (unsupported provider): %s", server)
+        return ACPAuthStatusResponse(
+            server=server,
+            status="unknown",
+            detail=(
+                f"{server} does not report login state through the ACP handshake; "
+                "its credentials can't be probed server-side."
+            ),
+        )
+
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
     acp_settings = _resolve_acp_settings(server, settings)
@@ -171,12 +183,15 @@ async def get_acp_auth_status(
     # probe from leaving session state in any real workspace.
     try:
         with tempfile.TemporaryDirectory(prefix="acp-auth-probe-") as cwd:
+            # Forward the SDK's probe timeout explicitly (single source of
+            # truth, env-overridable via ACP_AUTH_PROBE_TIMEOUT) so a slow/hung
+            # CLI can't pin a FastAPI threadpool worker past that ceiling.
             result: ACPAuthProbeResult = await run_in_threadpool(
                 ACPAgent.probe_auth,
                 command,
                 env=env,
                 cwd=cwd,
-                timeout=_PROBE_TIMEOUT_SECONDS,
+                timeout=_ACP_AUTH_PROBE_TIMEOUT,
             )
     except Exception as e:
         # Any failure to even run the handshake (subprocess won't start, the
