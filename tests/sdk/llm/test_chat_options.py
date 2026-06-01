@@ -19,6 +19,16 @@ class DummyLLM:
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
     _prompt_cache_key: str | None = None
+    openrouter_site_url: str = ""
+    openrouter_app_name: str = ""
+
+    def _openrouter_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.openrouter_site_url:
+            headers["HTTP-Referer"] = self.openrouter_site_url
+        if self.openrouter_app_name:
+            headers["X-Title"] = self.openrouter_app_name
+        return headers
 
     @property
     def effective_max_output_tokens(self) -> int:
@@ -200,3 +210,36 @@ def test_chat_options_omits_prompt_cache_key_when_unset():
     assert "prompt_cache_key" not in select_chat_options(
         llm, user_kwargs={}, has_tools=True
     )
+
+
+def test_chat_options_injects_openrouter_headers_via_extra_headers():
+    """OpenRouter site/app must flow per-call (issue #3138), not via env."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+    assert out["extra_headers"]["X-Title"] == "ExampleApp"
+
+
+def test_chat_options_user_extra_headers_win_over_openrouter_defaults():
+    """User-supplied extra_headers must override per-call OpenRouter values."""
+    llm = DummyLLM(
+        model="openrouter/anthropic/claude-3-5-sonnet",
+        openrouter_site_url="https://app.example.com/",
+        openrouter_app_name="ExampleApp",
+        extra_headers={"X-Title": "UserOverride"},
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert out["extra_headers"]["X-Title"] == "UserOverride"
+    # Site URL still injected since user didn't override it
+    assert out["extra_headers"]["HTTP-Referer"] == "https://app.example.com/"
+
+
+def test_chat_options_omits_openrouter_headers_when_unset():
+    """Empty site/app must not add extra_headers."""
+    llm = DummyLLM(model="gpt-4o")
+    out = select_chat_options(llm, user_kwargs={}, has_tools=False)
+    assert "extra_headers" not in out

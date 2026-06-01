@@ -32,23 +32,67 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 class SettingsUpdatePayload(TypedDict, total=False):
-    """Typed payload for PersistedSettings.update() method."""
+    """Typed payload for PersistedSettings.update() method.
+
+    The ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
+    objects merge recursively, and a ``None`` value *inside a nested map*
+    deletes that entry (the "unset" primitive) — e.g. send
+    ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
+    whole map. A ``None`` on a top-level *field* is not treated as delete; it
+    flows to validation as before.
+    """
 
     agent_settings_diff: dict[str, Any]
     conversation_settings_diff: dict[str, Any]
     active_profile: str | None
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge overlay dict into base dict.
+def _deep_merge(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    unset_nulls: bool = False,
+) -> dict[str, Any]:
+    """Recursively merge ``overlay`` into ``base``.
 
-    For nested dicts, merges recursively. For other types, overlay wins.
+    - Nested dicts are merged recursively.
+    - **Inside a nested map** a ``None`` value **removes** that key — the
+      "unset" primitive a plain deep-merge lacks. It lets a
+      ``PATCH /api/settings`` diff delete a single map entry (one
+      ``acp_env`` / MCP ``env`` key) without round-tripping the whole map::
+
+          {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+
+    - **At the top level** (a settings *field* like ``confirmation_mode`` or
+      ``acp_env`` itself) a ``None`` is left as-is and flows to model
+      validation — exactly as before this primitive existed. So a stray
+      ``{"confirmation_mode": null}`` still fails loudly (422) instead of
+      silently resetting a field to its default. This scoping is deliberate:
+      ``unset`` is for *entries within* a map, not for nulling whole fields.
+    - For any other scalar/list value, the overlay wins.
+
+    ``unset_nulls`` is ``False`` for the top-level call and ``True`` for every
+    recursive (nested) call — that's what draws the field-vs-entry line above.
+
+    Corner case: a key **absent from** ``base`` whose overlay value is a dict
+    is assigned wholesale (no recursion), so any ``null`` entries inside that
+    dict are stored as-is rather than treated as deletes. This is intentional
+    — you can't delete an entry from a map that doesn't exist yet — but it
+    means "initialize a new map and unset a key within it" in one diff won't
+    strip the null; downstream validation handles the resulting value.
     """
     result = dict(base)
     for key, value in overlay.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
+        if value is None and unset_nulls:
+            # Nested map entry: a null member removes the key (no-op if absent).
+            result.pop(key, None)
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value, unset_nulls=True)
         else:
+            # Top-level null (unset_nulls=False) falls here: set as-is and let
+            # model validation decide (preserves pre-existing behavior).
             result[key] = value
     return result
 
@@ -376,6 +420,55 @@ class Secrets(BaseModel):
             data["custom_secrets"] = converted
 
         return data
+
+
+# ── Workspaces ───────────────────────────────────────────────────────────
+
+WORKSPACES_SCHEMA_VERSION = 1
+
+
+class WorkspaceItem(BaseModel):
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+    parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WorkspaceParentItem(BaseModel):
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+
+
+class PersistedWorkspaces(BaseModel):
+    schema_version: int = Field(default=WORKSPACES_SCHEMA_VERSION)
+    workspaces: list[WorkspaceItem] = Field(default_factory=list)
+    workspace_parents: list[WorkspaceParentItem] = Field(
+        default_factory=list, alias="workspaceParents"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedWorkspaces:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", WORKSPACES_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedWorkspaces schema_version must be an integer")
+        if version > WORKSPACES_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedWorkspaces schema_version {version} is newer than "
+                f"supported {WORKSPACES_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
+        return cls.model_validate(payload)
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────

@@ -277,7 +277,7 @@ jobs:
                             owner: context.repo.owner,
                             repo: context.repo.repo,
                             name: candidateLabel,
-                            color: 'C5DEF5',
+                            color: 'f97316',
                             description: 'Potential duplicate awaiting auto-close or maintainer review',
                           });
                         }

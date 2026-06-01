@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import json
 import logging
@@ -10,6 +12,7 @@ import textwrap
 import types
 from collections.abc import Collection, Sequence
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -25,6 +28,10 @@ from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.streaming import AnyTokenCallbackType
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -554,6 +561,67 @@ def make_llm_completion(
         )
     else:
         return llm.completion(
+            messages=messages,
+            tools=tools or [],
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Async variants
+# ---------------------------------------------------------------------------
+
+
+async def aprepare_llm_messages(
+    events: Sequence[Event],
+    condenser: CondenserBase | None = None,
+    additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
+) -> list[Message] | Condensation:
+    """Async variant of :func:`prepare_llm_messages`.
+
+    Calls ``condenser.acondense()`` so that condensers backed by an LLM can
+    use async completions without blocking the event loop.
+    """
+    view = View.from_events(events)
+    llm_convertible_events: list[LLMConvertibleEvent] = view.events
+
+    if condenser is not None:
+        condensation_result = await condenser.acondense(view, agent_llm=llm)
+
+        match condensation_result:
+            case View():
+                llm_convertible_events = condensation_result.events
+            case Condensation():
+                return condensation_result
+
+    messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
+
+    if additional_messages:
+        messages.extend(additional_messages)
+
+    return messages
+
+
+async def amake_llm_completion(
+    llm: LLM,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None = None,
+    on_token: AnyTokenCallbackType | None = None,
+) -> LLMResponse:
+    """Async variant of :func:`make_llm_completion`."""
+    if llm.uses_responses_api():
+        return await llm.aresponses(
+            messages=messages,
+            tools=tools or [],
+            include=None,
+            store=False,
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+    else:
+        return await llm.acompletion(
             messages=messages,
             tools=tools or [],
             add_security_risk_prediction=True,

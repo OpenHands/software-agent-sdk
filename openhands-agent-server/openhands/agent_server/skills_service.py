@@ -14,16 +14,29 @@ Precedence (later overrides earlier):
 sandbox < public < user < org < project
 """
 
+import json
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
+
+from pydantic import BaseModel, ValidationError
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace import Marketplace
 from openhands.sdk.skills import (
+    InstalledSkillInfo,
     Skill,
+    disable_skill,
+    enable_skill,
+    get_installed_skill,
+    install_skill,
+    list_installed_skills,
     load_available_skills,
+    uninstall_skill,
+    update_skill,
 )
 from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
@@ -37,6 +50,7 @@ from openhands.sdk.skills.utils import (
     update_skills_repository,
 )
 from openhands.sdk.utils import sanitized_env
+from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
@@ -388,3 +402,287 @@ def sync_public_skills() -> tuple[bool, str]:
     except Exception as e:
         logger.warning(f"Failed to sync skills repository: {e}")
         return (False, f"Sync failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Installed Skills Management (CRUD Operations)
+# ---------------------------------------------------------------------------
+
+
+def service_install_skill(
+    source: str,
+    ref: str | None = None,
+    repo_path: str | None = None,
+    force: bool = False,
+    installed_dir: Path | None = None,
+) -> InstalledSkillInfo:
+    """Install a skill from a source.
+
+    Args:
+        source: Skill source - git URL, GitHub shorthand, or local path.
+            Supports formats like:
+            - GitHub URL: https://github.com/OpenHands/extensions/tree/main/skills/github
+            - GitHub shorthand: github:OpenHands/extensions/skills/github
+            - Local path: /path/to/skill
+        ref: Optional branch, tag, or commit to install.
+        repo_path: Subdirectory path within the repository (for monorepos).
+        force: If True, overwrite existing installation.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        InstalledSkillInfo with details about the installation.
+
+    Raises:
+        FileExistsError: If skill is already installed and force=False.
+        SkillFetchError: If fetching the skill source fails.
+        SkillValidationError: If the skill is invalid.
+    """
+    return install_skill(
+        source=source,
+        ref=ref,
+        repo_path=repo_path,
+        force=force,
+        installed_dir=installed_dir,
+    )
+
+
+def service_uninstall_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Uninstall a skill by name.
+
+    Args:
+        name: Name of the skill to uninstall.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        True if the skill was uninstalled, False if it wasn't installed.
+    """
+    return uninstall_skill(name=name, installed_dir=installed_dir)
+
+
+def service_enable_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Enable an installed skill by name.
+
+    Args:
+        name: Name of the skill to enable.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        True if the skill was enabled, False if it wasn't found.
+    """
+    return enable_skill(name=name, installed_dir=installed_dir)
+
+
+def service_disable_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> bool:
+    """Disable an installed skill by name.
+
+    Args:
+        name: Name of the skill to disable.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        True if the skill was disabled, False if it wasn't found.
+    """
+    return disable_skill(name=name, installed_dir=installed_dir)
+
+
+def service_list_installed_skills(
+    installed_dir: Path | None = None,
+) -> list[InstalledSkillInfo]:
+    """List all installed skills.
+
+    Self-healing: reconciles metadata with what is on disk.
+
+    Args:
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        List of InstalledSkillInfo objects for all installed skills.
+    """
+    return list_installed_skills(installed_dir=installed_dir)
+
+
+def service_get_installed_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> InstalledSkillInfo | None:
+    """Get information about a specific installed skill.
+
+    Args:
+        name: Name of the skill to get.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        InstalledSkillInfo if found, None otherwise.
+    """
+    return get_installed_skill(name=name, installed_dir=installed_dir)
+
+
+def service_update_skill(
+    name: str,
+    installed_dir: Path | None = None,
+) -> InstalledSkillInfo | None:
+    """Update an installed skill to the latest version.
+
+    Args:
+        name: Name of the skill to update.
+        installed_dir: Directory for installed skills.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        Updated InstalledSkillInfo if successful, None if skill not found.
+    """
+    return update_skill(name=name, installed_dir=installed_dir)
+
+
+class MarketplaceSkillInfo(BaseModel):
+    """Information about a skill in the marketplace catalog."""
+
+    name: str
+    description: str | None
+    source: str
+    installed: bool
+
+
+# ---------------------------------------------------------------------------
+# Marketplace catalog cache
+# ---------------------------------------------------------------------------
+# Each call to service_get_marketplace_catalog triggers a git fetch via
+# update_skills_repository, which is a network-bound operation that takes
+# multiple seconds. A short TTL cache avoids that hit on every tab open.
+#
+# Only the catalog structure (name, description, source) is cached; the
+# `installed` field is always derived fresh from the local FS so that
+# install/uninstall actions are reflected immediately.
+#
+# Thread safety: concurrent cache misses (cold start or TTL expiry) may
+# trigger parallel git fetches, but each fetch is idempotent and produces
+# the same result (last writer wins). For this low-traffic endpoint the
+# thundering-herd risk is acceptable without an explicit lock.
+#
+# Type: (timestamp, list-of-(name, description, source)) or None
+_CatalogEntry = tuple[str, str | None, str]
+_catalog_cache: tuple[float, list[_CatalogEntry]] | None = None
+_CATALOG_TTL_SECONDS = 300  # 5 minutes
+
+
+def service_get_marketplace_catalog(
+    marketplace_path: str = DEFAULT_MARKETPLACE_PATH,
+    installed_dir: Path | None = None,
+) -> list[MarketplaceSkillInfo]:
+    """Get the marketplace catalog with installation status.
+
+    Loads the marketplace JSON from the public extensions repository and
+    enriches each entry with installation status.
+
+    The catalog structure (name, description, source) is cached for
+    _CATALOG_TTL_SECONDS to avoid a git fetch on every call. The
+    ``installed`` field is always resolved fresh from the local FS.
+
+    Args:
+        marketplace_path: Relative path to marketplace JSON file.
+            Defaults to marketplaces/default.json.
+        installed_dir: Directory for installed skills to check status.
+            Defaults to ~/.openhands/skills/installed/.
+
+    Returns:
+        List of MarketplaceSkillInfo with skill details and installation status.
+    """
+    global _catalog_cache
+
+    now = monotonic()
+    if _catalog_cache is not None and now - _catalog_cache[0] < _CATALOG_TTL_SECONDS:
+        entries = _catalog_cache[1]
+    else:
+        entries = _fetch_catalog_entries(marketplace_path)
+        _catalog_cache = (now, entries)
+
+    # Always-fresh installed check — local FS scan, not a network call.
+    installed_names = {
+        s.name for s in service_list_installed_skills(installed_dir=installed_dir)
+    }
+    return [
+        MarketplaceSkillInfo(
+            name=name, description=desc, source=src, installed=name in installed_names
+        )
+        for name, desc, src in entries
+    ]
+
+
+def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
+    """Fetch marketplace catalog entries from the public extensions repository.
+
+    This is the slow path: it does a git fetch + reads the marketplace JSON.
+    Results are cached by the caller.
+
+    Returns:
+        List of (name, description, source) tuples, or an empty list on error.
+    """
+    cache_dir = get_skills_cache_dir()
+    repo_path = update_skills_repository(
+        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
+    )
+
+    if repo_path is None:
+        logger.warning("Failed to access public skills repository")
+        return []
+
+    marketplace_file = repo_path / marketplace_path
+    if not marketplace_file.exists():
+        logger.warning(f"Marketplace file not found: {marketplace_file}")
+        return []
+
+    try:
+        marketplace = Marketplace.load(repo_path)
+    except (FileNotFoundError, ValueError) as e:
+        # Fallback to loading from specific path
+        try:
+            with open(marketplace_file, encoding="utf-8") as f:
+                data = json.load(f)
+            marketplace = Marketplace.model_validate(
+                {**data, "path": to_posix_path(repo_path)}
+            )
+        except (json.JSONDecodeError, ValidationError, OSError) as e2:
+            logger.warning(f"Failed to load marketplace: {e}, {e2}")
+            return []
+
+    # Build catalog from plugins and skills.
+    # Plugins take priority: if a name appears in both plugins and skills,
+    # the plugin version is used (since plugins are added first).
+    entries: dict[str, _CatalogEntry] = {}
+
+    for plugin in marketplace.plugins:
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
+        # Build full source string for marketplace catalog.
+        # Format: "github:owner/repo@ref/path" - the SDK's install_skill
+        # can parse this format, so frontends can pass it directly to the
+        # install endpoint's source field.
+        if ref:
+            source = f"{source}@{ref}"
+        if subpath:
+            source = f"{source}/{subpath}"
+        entries[plugin.name] = (plugin.name, plugin.description, source)
+
+    for skill_entry in marketplace.skills:
+        if skill_entry.name not in entries:
+            entries[skill_entry.name] = (
+                skill_entry.name,
+                skill_entry.description,
+                skill_entry.source,
+            )
+
+    return list(entries.values())

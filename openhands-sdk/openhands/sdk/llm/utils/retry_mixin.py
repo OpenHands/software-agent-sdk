@@ -22,22 +22,14 @@ RetryListener = Callable[[int, int, BaseException | None], None]
 class RetryMixin:
     """Mixin class for retry logic."""
 
-    def retry_decorator(
+    def _build_before_sleep(
         self,
-        num_retries: int = 5,
-        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
-        retry_min_wait: int = 8,
-        retry_max_wait: int = 64,
-        retry_multiplier: float = 2.0,
-        retry_listener: RetryListener | None = None,
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """
-        Create a LLM retry decorator with customizable parameters.
-        This is used for 429 errors, and a few other exceptions in LLM classes.
-        """
+        num_retries: int,
+        retry_listener: RetryListener | None,
+    ) -> Callable[[RetryCallState], None]:
+        """Build a ``before_sleep`` callback shared by sync and async decorators."""
 
         def before_sleep(retry_state: RetryCallState) -> None:
-            # Log first (also validates outcome as part of logging)
             self.log_retry_attempt(retry_state)
 
             if retry_listener is not None:
@@ -48,7 +40,6 @@ class RetryMixin:
                 )
                 retry_listener(retry_state.attempt_number, num_retries, exc)
 
-            # If there is no outcome or no exception, nothing to tweak.
             if retry_state.outcome is None:
                 return
             exc = retry_state.outcome.exception()
@@ -71,6 +62,23 @@ class RetryMixin:
                             f"LLMNoResponseError with temperature={current_temp}, "
                             "keeping original temperature"
                         )
+
+        return before_sleep
+
+    def retry_decorator(
+        self,
+        num_retries: int = 5,
+        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
+        retry_min_wait: int = 8,
+        retry_max_wait: int = 64,
+        retry_multiplier: float = 2.0,
+        retry_listener: RetryListener | None = None,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """
+        Create a LLM retry decorator with customizable parameters.
+        This is used for 429 errors, and a few other exceptions in LLM classes.
+        """
+        before_sleep = self._build_before_sleep(num_retries, retry_listener)
 
         retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,

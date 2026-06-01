@@ -163,6 +163,18 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         """
         pass
 
+    def interrupt(self) -> None:
+        """Interrupt any in-flight execution (e.g., send Ctrl+C).
+
+        Called from a *different* thread when a conversation interrupt
+        fires while this tool is still executing.  Implementations should
+        be thread-safe and idempotent.
+
+        The default is a no-op; tools with long-running operations
+        (terminal subprocesses, browser navigations, …) should override.
+        """
+        pass
+
 
 class ExecutableTool(Protocol):
     """Protocol for tools that are guaranteed to have a non-None executor.

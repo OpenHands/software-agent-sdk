@@ -70,3 +70,18 @@ def test_server_info_reports_usable_tools(client, monkeypatch: pytest.MonkeyPatc
 
     assert response.status_code == 200
     assert response.json()["usable_tools"] == ["terminal", "file_editor"]
+
+
+def test_server_info_reports_runtime_timeout_cap(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """/server_info should expose the idle-derived terminal timeout cap."""
+    monkeypatch.setenv("OH_RUNTIME_IDLE_TIMEOUT_SECONDS", "1200")
+
+    response = client.get("/server_info")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["runtime_idle_timeout_seconds"] == 1200
+    assert payload["max_foreground_terminal_timeout_seconds"] == 1080

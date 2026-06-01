@@ -6,11 +6,52 @@ when conversations are closed or destroyed.
 """
 
 import tempfile
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, ClassVar, Literal
 from unittest.mock import Mock
 
 from openhands.sdk import Agent, Conversation
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool, ToolExecutor, register_tool
 from openhands.tools.terminal import TerminalExecutor, TerminalTool
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
+
+
+class _InjectedExecutorTerminalTool(TerminalTool):
+    """TerminalTool variant that injects a test-provided executor at resolve time.
+
+    ``TerminalTool.create`` needs ``conv_state`` (for the working dir), so this
+    subclass builds the real tool from ``conv_state`` and then swaps in the
+    executor captured on the class attribute. Each test sets ``injected_executor``
+    before registering this subclass.
+    """
+
+    injected_executor: ClassVar[ToolExecutor | None] = None
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        username: str | None = None,
+        no_change_timeout_seconds: int | None = None,
+        terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
+        shell_path: str | None = None,
+        executor: ToolExecutor | None = None,
+    ) -> Sequence[TerminalTool]:
+        tools = TerminalTool.create(
+            conv_state,
+            username=username,
+            no_change_timeout_seconds=no_change_timeout_seconds,
+            terminal_type=terminal_type,
+            shell_path=shell_path,
+            executor=executor,
+        )
+        return [
+            tool.model_copy(update={"executor": cls.injected_executor})
+            for tool in tools
+        ]
 
 
 def test_conversation_close_calls_executor_close(mock_llm):
@@ -22,12 +63,8 @@ def test_conversation_close_calls_executor_close(mock_llm):
         )
         terminal_executor.close = Mock()
 
-        def _make_tool(conv_state, **params):
-            tools = TerminalTool.create(conv_state)
-            tool = tools[0]
-            return [tool.model_copy(update={"executor": terminal_executor})]
-
-        register_tool("test_terminal", _make_tool)
+        _InjectedExecutorTerminalTool.injected_executor = terminal_executor
+        register_tool("test_terminal", _InjectedExecutorTerminalTool)
 
         # Create agent and conversation
         agent = Agent(
@@ -56,12 +93,8 @@ def test_conversation_close_calls_executor_close_without_delete(mock_llm):
         )
         terminal_executor.close = Mock()
 
-        def _make_tool(conv_state, **params):
-            tools = TerminalTool.create(conv_state)
-            tool = tools[0]
-            return [tool.model_copy(update={"executor": terminal_executor})]
-
-        register_tool("test_terminal", _make_tool)
+        _InjectedExecutorTerminalTool.injected_executor = terminal_executor
+        register_tool("test_terminal", _InjectedExecutorTerminalTool)
 
         agent = Agent(
             llm=mock_llm,
@@ -85,12 +118,8 @@ def test_conversation_del_calls_close(mock_llm):
         )
         terminal_executor.close = Mock()
 
-        def _make_tool(conv_state, **params):
-            tools = TerminalTool.create(conv_state)
-            tool = tools[0]
-            return [tool.model_copy(update={"executor": terminal_executor})]
-
-        register_tool("test_terminal", _make_tool)
+        _InjectedExecutorTerminalTool.injected_executor = terminal_executor
+        register_tool("test_terminal", _InjectedExecutorTerminalTool)
 
         # Create agent and conversation
         agent = Agent(
@@ -123,12 +152,8 @@ def test_conversation_close_handles_executor_exceptions(mock_llm):
         )
         terminal_executor.close = Mock(side_effect=Exception("Test exception"))
 
-        def _make_tool(conv_state, **params):
-            tools = TerminalTool.create(conv_state)
-            tool = tools[0]
-            return [tool.model_copy(update={"executor": terminal_executor})]
-
-        register_tool("test_terminal", _make_tool)
+        _InjectedExecutorTerminalTool.injected_executor = terminal_executor
+        register_tool("test_terminal", _InjectedExecutorTerminalTool)
 
         # Create agent and conversation
         agent = Agent(
@@ -148,12 +173,8 @@ def test_conversation_close_skips_none_executors(mock_llm):
         # Create a mock LLM to avoid actual API calls
 
         # Create a tool with no executor
-        register_tool(
-            "test_terminal",
-            lambda conv_state, **params: [
-                TerminalTool.create(conv_state)[0].model_copy(update={"executor": None})
-            ],
-        )
+        _InjectedExecutorTerminalTool.injected_executor = None
+        register_tool("test_terminal", _InjectedExecutorTerminalTool)
 
         # Create agent and conversation
         agent = Agent(

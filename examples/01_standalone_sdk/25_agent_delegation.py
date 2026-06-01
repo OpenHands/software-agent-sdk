@@ -19,19 +19,16 @@ from openhands.sdk import (
 )
 from openhands.sdk.context import Skill
 from openhands.sdk.subagent import register_agent
-from openhands.sdk.tool import register_tool
 from openhands.tools import register_builtins_agents
-from openhands.tools.delegate import (
-    DelegateTool,
-    DelegationVisualizer,
-)
+from openhands.tools.delegate import DelegationVisualizer
+from openhands.tools.task import TaskToolSet
 
 
 logger = get_logger(__name__)
 
 # Configure LLM and agent
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.environ.get("LLM_BASE_URL", None),
     usage_id="agent",
@@ -99,12 +96,10 @@ register_agent(
 )
 register_builtins_agents()
 
-# Make the delegation tool available to the main agent
-register_tool("DelegateTool", DelegateTool)
-
 main_agent = Agent(
     llm=llm,
-    tools=[Tool(name="DelegateTool")],
+    tools=[Tool(name=TaskToolSet.name)],
+    tool_concurrency_limit=2,
 )
 conversation = Conversation(
     agent=main_agent,
@@ -122,7 +117,7 @@ Let's plan a trip to London. I have two specific areas to address:
 Lodging: What are the best areas to stay in while keeping a budget in mind?
 Activities: What are the top five must-see attractions and hidden gems?
 
-Please use delegation tools to handle these two tasks in parallel.
+Please use the task tool to handle these two tasks in parallel.
 Ensure the sub-agents use their own internal knowledge and do not
 rely on internet access. Keep the responses concise.
 Once you have the results, use the bash sub-agent to write a file

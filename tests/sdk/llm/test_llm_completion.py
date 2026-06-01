@@ -1,5 +1,6 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
+import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,7 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
+import openhands.sdk.llm.llm as llm_module
 from openhands.sdk.llm import (
     LLM,
     Message,
@@ -74,6 +76,61 @@ def default_config():
         retry_min_wait=1,
         retry_max_wait=2,
     )
+
+
+def test_litellm_modify_params_context_serializes_threads():
+    first_llm = LLM.model_construct(modify_params=True)
+    second_llm = LLM.model_construct(modify_params=False)
+    original = getattr(llm_module.litellm, "modify_params", None)
+
+    entered_first = threading.Event()
+    release_first = threading.Event()
+    started_second = threading.Event()
+    entered_second = threading.Event()
+    observed: list[tuple[str, bool]] = []
+    errors: list[BaseException] = []
+
+    def run_first():
+        try:
+            with first_llm._litellm_modify_params_ctx(True):
+                observed.append(("first", llm_module.litellm.modify_params))
+                entered_first.set()
+                release_first.wait(timeout=2)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_second():
+        entered_first.wait(timeout=2)
+        started_second.set()
+        try:
+            with second_llm._litellm_modify_params_ctx(False):
+                observed.append(("second", llm_module.litellm.modify_params))
+                entered_second.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    first_thread = threading.Thread(target=run_first)
+    second_thread = threading.Thread(target=run_second)
+    try:
+        first_thread.start()
+        assert entered_first.wait(timeout=2)
+
+        second_thread.start()
+        assert started_second.wait(timeout=2)
+        assert not entered_second.wait(timeout=0.2)
+
+        release_first.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+    finally:
+        release_first.set()
+        llm_module.litellm.modify_params = original
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert observed == [("first", True), ("second", False)]
+    assert llm_module.litellm.modify_params == original
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
