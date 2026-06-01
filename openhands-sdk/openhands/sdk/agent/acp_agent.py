@@ -892,18 +892,16 @@ async def _spawn_acp_connection(
 
 async def _acp_initialize(
     conn: ClientSideConnection,
-    env: dict[str, str],
-) -> tuple[str, str, list[str]]:
-    """Run the ACP ``initialize`` handshake and authenticate if required.
+) -> tuple[str, str, list[Any]]:
+    """Run the ACP ``initialize`` handshake and report what the server advertised.
 
-    Returns ``(agent_name, agent_version, auth_method_ids)`` discovered from
-    ``InitializeResponse``. Some servers (e.g. ``codex-acp``) require an
-    explicit ``authenticate`` call before session creation; the method is
-    auto-selected from the credentials present in ``env`` and the cached
-    subscription/OAuth files (see :func:`_select_auth_method`). When no method
-    matches, session creation may still succeed if the CLI has its own login.
-
-    Shared by :meth:`ACPAgent._start_acp_server` and
+    Returns ``(agent_name, agent_version, auth_methods)`` from
+    ``InitializeResponse`` — the *raw* advertised auth-method objects, to be
+    passed to :func:`_acp_authenticate`. The metadata is captured here, before
+    any authenticate step, so a caller can preserve it even when a later
+    ``authenticate`` / ``session/new`` fails (see :meth:`ACPAgent.probe_auth`,
+    which still wants the agent name/version + offered methods on the
+    not-logged-in path). Shared by :meth:`ACPAgent._start_acp_server` and
     :meth:`ACPAgent.probe_auth`.
     """
     init_response = await conn.initialize(protocol_version=1)
@@ -917,33 +915,48 @@ async def _acp_initialize(
         agent_name,
         agent_version,
     )
+    return agent_name, agent_version, list(init_response.auth_methods or [])
 
-    auth_methods = init_response.auth_methods or []
-    if auth_methods:
-        method_id = _select_auth_method(auth_methods, env)
-        if method_id is not None:
-            logger.info("Authenticating with ACP method: %s", method_id)
-            auth_kwargs: dict[str, Any] = {}
-            # gemini-cli: pass gateway baseUrl to route API calls through the
-            # LiteLLM proxy. claude-agent-acp and codex-acp read their provider
-            # base URL from env vars directly.
-            if method_id == "gemini-api-key":
-                provider = detect_acp_provider_by_agent_name(agent_name)
-                base_url_var = (
-                    provider.base_url_env_var if provider is not None else None
-                )
-                if base_url_var:
-                    base_url = env.get(base_url_var)
-                    if base_url:
-                        auth_kwargs["gateway"] = {"baseUrl": base_url}
-            await conn.authenticate(method_id=method_id, **auth_kwargs)
-        else:
-            logger.warning(
-                "ACP server offers auth methods %s but no matching "
-                "env var is set — session creation may fail",
-                [m.id for m in auth_methods],
-            )
-    return agent_name, agent_version, [m.id for m in auth_methods]
+
+async def _acp_authenticate(
+    conn: ClientSideConnection,
+    env: dict[str, str],
+    agent_name: str,
+    auth_methods: list[Any],
+) -> None:
+    """Authenticate against the ACP server when it advertised auth methods.
+
+    Some servers (e.g. ``codex-acp``) require an explicit ``authenticate`` call
+    before session creation; the method is auto-selected from the credentials
+    present in ``env`` and the cached subscription/OAuth files (see
+    :func:`_select_auth_method`). When no method matches this is a no-op — session
+    creation may still succeed via the CLI's own login. Split out from
+    :func:`_acp_initialize` so callers capture the initialize metadata *before* an
+    auth failure here can discard it.
+    """
+    if not auth_methods:
+        return
+    method_id = _select_auth_method(auth_methods, env)
+    if method_id is None:
+        logger.warning(
+            "ACP server offers auth methods %s but no matching "
+            "env var is set — session creation may fail",
+            [m.id for m in auth_methods],
+        )
+        return
+    logger.info("Authenticating with ACP method: %s", method_id)
+    auth_kwargs: dict[str, Any] = {}
+    # gemini-cli: pass gateway baseUrl to route API calls through the LiteLLM
+    # proxy. claude-agent-acp and codex-acp read their provider base URL from
+    # env vars directly.
+    if method_id == "gemini-api-key":
+        provider = detect_acp_provider_by_agent_name(agent_name)
+        base_url_var = provider.base_url_env_var if provider is not None else None
+        if base_url_var:
+            base_url = env.get(base_url_var)
+            if base_url:
+                auth_kwargs["gateway"] = {"baseUrl": base_url}
+    await conn.authenticate(method_id=method_id, **auth_kwargs)
 
 
 async def _teardown_acp_connection(
@@ -1639,9 +1652,8 @@ class ACPAgent(AgentBase):
             # Initialize the protocol, discover server identity, and
             # authenticate if the server requires it (auto-selected from the
             # credentials available in env / cached subscription files).
-            agent_name, agent_version, _auth_method_ids = await _acp_initialize(
-                conn, env
-            )
+            agent_name, agent_version, _auth_methods = await _acp_initialize(conn)
+            await _acp_authenticate(conn, env, agent_name, _auth_methods)
 
             # Resume the prior ACP session if we have its id.  If the server
             # has forgotten it (state wiped, new host, etc.) fall through to
@@ -1852,15 +1864,17 @@ class ACPAgent(AgentBase):
             agent_name = ""
             agent_version = ""
             auth_method_ids: list[str] = []
-            # A single auth_required guard around the whole handshake: some
-            # servers (e.g. codex-acp) surface "not logged in" from the explicit
-            # ``authenticate`` call inside _acp_initialize rather than from
-            # ``session/new``. Catching it in either place classifies as
+            # Capture the initialize metadata first and *outside* the auth_required
+            # guard, so the not-logged-in result still reports the agent
+            # name/version and offered methods. A single guard then wraps both
+            # authenticate and session/new: some servers (e.g. codex-acp) surface
+            # "not logged in" from the explicit ``authenticate`` call rather than
+            # from ``session/new`` — catching it in either place classifies as
             # unauthenticated instead of letting it bubble up to "unknown".
+            agent_name, agent_version, auth_methods = await _acp_initialize(conn)
+            auth_method_ids = [m.id for m in auth_methods]
             try:
-                agent_name, agent_version, auth_method_ids = await _acp_initialize(
-                    conn, full_env
-                )
+                await _acp_authenticate(conn, full_env, agent_name, auth_methods)
                 await conn.new_session(cwd=working_dir, mcp_servers=[])
             except ACPRequestError as e:
                 if e.code != _ACP_AUTH_REQUIRED_CODE:

@@ -6161,6 +6161,8 @@ class TestACPProbeAuth:
         with stack:
             with pytest.raises(BrokenPipeError):
                 ACPAgent.probe_auth(["echo", "test"], cwd=str(tmp_path))
+        # Teardown still runs on the spawn/initialize failure path.
+        conn.close.assert_awaited_once()
 
     def test_authenticates_when_method_credentials_present(self, tmp_path):
         # An offered API-key method whose env var is supplied gets an explicit
@@ -6207,6 +6209,11 @@ class TestACPProbeAuth:
         # session/new is never reached once authenticate reports auth_required.
         conn.new_session.assert_not_awaited()
         conn.close.assert_awaited_once()
+        # Metadata discovered at initialize must survive the auth failure — the
+        # not-logged-in result still reports the agent identity + offered methods.
+        assert result.agent_name == "codex-acp"
+        assert result.agent_version == "2.0"
+        assert result.auth_methods == ["openai-api-key"]
 
     def test_timeout_raises(self, tmp_path):
         # A handshake that never completes is capped by the timeout.
