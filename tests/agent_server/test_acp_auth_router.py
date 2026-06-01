@@ -144,6 +144,18 @@ def test_resolves_default_command_for_server(client):
     assert command == list(ACP_PROVIDERS["claude-code"].default_command)
 
 
+def test_forwards_explicit_probe_timeout(client):
+    # The router caps each probe explicitly so a hung CLI can't pin a threadpool
+    # worker for longer than the configured ceiling.
+    from openhands.agent_server.acp_auth_router import _PROBE_TIMEOUT_SECONDS
+
+    with patch(PROBE_PATH, return_value=_result()) as mock_probe:
+        response = client.get("/api/acp/auth-status", params={"server": "claude-code"})
+
+    assert response.status_code == 200
+    assert mock_probe.call_args.kwargs["timeout"] == _PROBE_TIMEOUT_SECONDS
+
+
 def test_uses_persisted_acp_command_override(client, config):
     # A persisted ACPAgentSettings whose acp_server matches the probe is reused,
     # so a user's custom launch command is honored.
