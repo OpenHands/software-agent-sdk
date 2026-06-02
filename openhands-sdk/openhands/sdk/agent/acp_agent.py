@@ -76,6 +76,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret_dict,
@@ -881,7 +882,12 @@ class ACPAgent(AgentBase):
     )
     acp_env: dict[str, str] = Field(
         default_factory=dict,
-        description="Additional environment variables for the ACP server process",
+        description=(
+            "DEPRECATED (removed in 1.29.0): additional environment variables for "
+            "the ACP server process. Route subprocess env/credentials through "
+            "state.secret_registry (e.g. agent_context.secrets / "
+            "StartConversationRequest.secrets) instead."
+        ),
     )
 
     @field_validator("acp_env", mode="before")
@@ -1399,26 +1405,50 @@ class ACPAgent(AgentBase):
         client = _OpenHandsACPBridge()
         self._client = client
 
-        # Build the subprocess environment top-down, highest precedence first:
-        #   acp_env > os.environ > default_environment >
-        #   state.secret_registry > agent_context.secrets
+        # Build the subprocess environment. Precedence, highest first:
+        #   acp_env > state.secret_registry > agent_context.secrets
+        #     > os.environ > default_environment
         #
-        # Secret tiers fill-if-absent. The ``name in env`` guard does double
-        # duty: it preserves higher-precedence values and avoids calling
-        # SecretSource.get_value() for keys already satisfied — important
-        # because LookupSecret can make an HTTP request.
+        # Conversation credentials (the registry and the agent_context drain)
+        # intentionally OVERRIDE ambient os.environ: an explicit per-conversation
+        # / provider secret must win over a same-named variable in the
+        # agent-server's own environment (os.environ is the wrong process for a
+        # remote server). acp_env (deprecated) stays highest.
+        #
+        # Two conversation channels, because an ACP subprocess is a black box we
+        # cannot name-scan per command (unlike the regular agent's bash tool), so
+        # credentials must be injected upfront:
+        #   - state.secret_registry: the canonical channel
+        #     (StartConversationRequest.secrets; also where create_request lifts
+        #     agent_context.secrets on the Python-caller path / OpenHands cloud).
+        #   - agent_context.secrets drain: the ONLY channel that delivers
+        #     agent_context.secrets on paths that do NOT call create_request —
+        #     notably canvas-local, which builds the request in TypeScript and
+        #     relies on the server's create_agent() to fold llm.api_key into
+        #     agent_context.secrets. There is no server-side agent_context.secrets
+        #     → registry lift, so keep this drain until one exists.
+        # On a key collision the registry wins over the drain.
         env = default_environment()
         env.update(os.environ)
-        env.update(self.acp_env)
-        for name in state.secret_registry.secret_sources:
-            if name in env:
-                continue
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                env[name] = value
+        if self.acp_env:
+            warn_deprecated(
+                "ACPAgent.acp_env",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=(
+                    "Route ACP subprocess env/credentials through "
+                    "state.secret_registry (e.g. agent_context.secrets / "
+                    "StartConversationRequest.secrets) instead."
+                ),
+            )
+        # agent_context.secrets drain (lower precedence than the registry).
+        # Skip keys a higher tier will set — acp_env (applied last) and the
+        # registry (applied next) — to avoid a wasted SecretSource.get_value()
+        # (LookupSecret can make an HTTP request).
+        registry_names = set(state.secret_registry.secret_sources)
         if self.agent_context and self.agent_context.secrets:
             for name, secret in self.agent_context.secrets.items():
-                if name in env:
+                if name in self.acp_env or name in registry_names:
                     continue
                 value = (
                     secret.get_value()
@@ -1427,6 +1457,16 @@ class ACPAgent(AgentBase):
                 )
                 if value:
                     env[name] = value
+        # state.secret_registry overrides the drain and ambient os.environ. Skip
+        # keys acp_env will set (avoids a redundant LookupSecret.get_value()).
+        for name in state.secret_registry.secret_sources:
+            if name in self.acp_env:
+                continue
+            value = state.secret_registry.get_secret_value(name)
+            if value:
+                env[name] = value
+        # acp_env (deprecated) has highest precedence.
+        env.update(self.acp_env)
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 

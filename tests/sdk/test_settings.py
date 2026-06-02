@@ -23,6 +23,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import (
@@ -241,6 +242,30 @@ def test_conversation_settings_create_request_with_acp_agent() -> None:
     assert request.max_iterations == 77
     assert isinstance(request.confirmation_policy, AlwaysConfirm)
     assert request.security_analyzer is None
+
+
+def test_acp_create_request_lifts_provider_creds_into_request_secrets() -> None:
+    # End-to-end: provider creds folded into agent_context.secrets by
+    # create_agent are lifted into request.secrets by create_request — the
+    # channel that lands them in state.secret_registry on the agent-server,
+    # from where _start_acp_server injects them into the subprocess env.
+    agent = ACPAgentSettings(
+        acp_server="claude-code",
+        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-provider")),
+        agent_context=AgentContext(
+            secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_x"))}
+        ),
+    ).create_agent()
+
+    request = ConversationSettings().create_request(
+        StartConversationRequest,
+        agent=agent,
+        workspace=LocalWorkspace(working_dir="/tmp"),
+    )
+
+    assert set(request.secrets) == {"ANTHROPIC_API_KEY", "GITHUB_TOKEN"}
+    assert request.secrets["ANTHROPIC_API_KEY"].get_value() == "sk-provider"
+    assert request.secrets["GITHUB_TOKEN"].get_value() == "ghp_x"
 
 
 # ---------------------------------------------------------------------------
@@ -641,28 +666,96 @@ def test_acp_resolve_provider_env_custom_server_empty() -> None:
     assert settings.resolve_provider_env() == {}
 
 
-def test_acp_resolve_acp_env_explicit_entries_override_provider_env() -> None:
+def test_acp_resolve_acp_env_returns_only_user_entries() -> None:
+    # Provider creds are no longer folded into acp_env; resolve_acp_env returns
+    # only the user's explicit env vars. The provider api_key now flows through
+    # agent_context.secrets instead (see create_agent).
     settings = ACPAgentSettings(
         acp_server="claude-code",
         llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
-        acp_env={"ANTHROPIC_API_KEY": "sk-explicit-override"},
+        acp_env={"MY_CUSTOM_VAR": "value"},
     )
 
-    assert settings.resolve_acp_env() == {"ANTHROPIC_API_KEY": "sk-explicit-override"}
+    assert settings.resolve_acp_env() == {"MY_CUSTOM_VAR": "value"}
 
 
-def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
+def test_acp_create_agent_folds_provider_creds_into_agent_context_secrets() -> None:
     context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
     settings = ACPAgentSettings(
         acp_server="codex",
         llm=LLM(model="gpt-5.4", api_key=SecretStr("sk-openai")),
         agent_context=context,
+        acp_env={"MY_VAR": "v"},
     )
 
     agent = settings.create_agent()
 
-    assert agent.acp_env == {"OPENAI_API_KEY": "sk-openai"}
-    assert agent.agent_context == context
+    # acp_env carries only the user's explicit env vars — not provider creds.
+    assert agent.acp_env == {"MY_VAR": "v"}
+    # Provider creds are folded into agent_context.secrets (wrapped as
+    # SecretSource) alongside the caller's secrets, so they ride the
+    # create_request → request.secrets → state.secret_registry channel and
+    # reach the subprocess from the registry.
+    assert agent.agent_context is not None
+    secrets = dict(agent.agent_context.secrets or {})
+    assert set(secrets) == {"OPENAI_API_KEY", "GITHUB_TOKEN"}
+    openai_secret = secrets["OPENAI_API_KEY"]
+    assert isinstance(openai_secret, StaticSecret)
+    assert openai_secret.get_value() == "sk-openai"
+    assert secrets["GITHUB_TOKEN"] == "ghp_test"
+
+
+def test_acp_create_agent_synthesizes_context_for_provider_creds() -> None:
+    # No caller agent_context, but provider creds exist → create_agent
+    # synthesizes a minimal AgentContext carrying them (current_datetime=None so
+    # it doesn't start injecting datetime the absent-context path suppressed).
+    settings = ACPAgentSettings(
+        acp_server="claude-code",
+        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
+    )
+
+    agent = settings.create_agent()
+
+    assert agent.acp_env == {}
+    assert agent.agent_context is not None
+    assert agent.agent_context.current_datetime is None
+    secrets = dict(agent.agent_context.secrets or {})
+    assert set(secrets) == {"ANTHROPIC_API_KEY"}
+    anthropic_secret = secrets["ANTHROPIC_API_KEY"]
+    assert isinstance(anthropic_secret, StaticSecret)
+    assert anthropic_secret.get_value() == "sk-ui-key"
+
+
+def test_acp_create_agent_no_provider_creds_keeps_context_none() -> None:
+    # Custom server (no api_key_env_var) → no provider secrets → agent_context
+    # stays None when the caller supplied none.
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["custom-acp"],
+        llm=LLM(model="m", api_key=SecretStr("sk-test")),
+    )
+
+    agent = settings.create_agent()
+
+    assert agent.agent_context is None
+
+
+def test_acp_env_emits_deprecation_warning() -> None:
+    # acp_env is deprecated (removed in 1.29.0); using it warns so callers
+    # migrate to the secret_registry channel before the field is deleted.
+    settings = ACPAgentSettings(acp_server="claude-code", acp_env={"MY_VAR": "v"})
+    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.acp_env"):
+        assert settings.resolve_acp_env() == {"MY_VAR": "v"}
+
+
+def test_acp_env_empty_does_not_warn() -> None:
+    import warnings
+
+    settings = ACPAgentSettings(acp_server="claude-code")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        settings.resolve_acp_env()
+    assert not [w for w in caught if "acp_env" in str(w.message)]
 
 
 def test_llm_agent_settings_public_alias_removed() -> None:
