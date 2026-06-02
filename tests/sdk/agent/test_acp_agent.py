@@ -5555,7 +5555,11 @@ class TestACPSecretsEnvInjection:
     """Tests for secret injection into the ACP subprocess environment.
 
     Secrets passed via ``agent_context.secrets`` must land in the subprocess
-    env so the ACP server (Claude Code, Codex CLI, etc.) can use them.
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them. This
+    drain is the only thing that delivers ``agent_context.secrets`` to the CLI
+    on paths that don't call ``create_request`` (e.g. canvas-local, which folds
+    ``llm.api_key`` into ``agent_context.secrets`` server-side via
+    ``create_agent`` but never lifts it into ``state.secret_registry``).
     ``acp_env`` entries take precedence over agent_context secrets.
     """
 
@@ -5603,6 +5607,11 @@ class TestACPSecretsEnvInjection:
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
+            # Hermetic: exclude the runner's ambient env (e.g. a real
+            # GITHUB_TOKEN / ANTHROPIC_API_KEY) so it can't shadow the
+            # registry/drain values under test — env.update(os.environ) runs
+            # before the fill-if-absent secret tiers in _start_acp_server.
+            stack.enter_context(patch.dict("os.environ", {}, clear=True))
             stack.enter_context(
                 patch(
                     "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -5632,7 +5641,12 @@ class TestACPSecretsEnvInjection:
         return captured
 
     def test_static_secret_injected_into_subprocess_env(self, tmp_path):
-        """A StaticSecret in agent_context.secrets lands in the subprocess env."""
+        """A StaticSecret in agent_context.secrets lands in the subprocess env.
+
+        This drain is what delivers ``agent_context.secrets`` to the CLI on
+        paths that don't lift them into ``state.secret_registry`` via
+        ``create_request`` (e.g. canvas-local).
+        """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
@@ -5662,7 +5676,8 @@ class TestACPSecretsEnvInjection:
                 secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
             ),
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
         assert env.get("MY_TOKEN") == "acp-env-wins"
 
     def test_none_value_secret_not_injected(self, tmp_path):
@@ -5691,6 +5706,23 @@ class TestACPSecretsEnvInjection:
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
 
+    def test_acp_env_still_injected(self, tmp_path):
+        """``acp_env`` (user arbitrary env vars) is still injected at spawn."""
+        agent = _make_agent(acp_env={"MY_TOKEN": "acp-env-value"})
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("MY_TOKEN") == "acp-env-value"
+
+    def test_empty_acp_env_does_not_warn(self, tmp_path):
+        """An empty ``acp_env`` must not emit the deprecation warning."""
+        import warnings
+
+        agent = _make_agent()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._run_start_capturing_env(agent, tmp_path)
+        assert not [w for w in caught if "acp_env" in str(w.message)]
+
 
 class TestACPSecretRegistryEnvInjection:
     """Tests for secret injection from the conversation's secret_registry.
@@ -5702,12 +5734,16 @@ class TestACPSecretRegistryEnvInjection:
     ``AgentContext(secrets=...)`` shim around the same data.
 
     Same-key precedence is
-    ``acp_env > existing base env > secret_registry > agent_context.secrets``.
-    Registry and context entries only fill genuine gaps in the base env.
+    ``acp_env > secret_registry > agent_context.secrets > os.environ``.
+    Conversation secrets (registry + the agent_context drain) override ambient
+    ``os.environ`` so an explicit per-conversation/provider secret wins over a
+    same-named server env var; the registry wins over the drain on collision.
     """
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path, *, registry_secrets=None) -> dict:
+    def _run_start_capturing_env(
+        agent, tmp_path, *, registry_secrets=None, extra_os_env=None
+    ) -> dict:
         """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
         state = _make_state(tmp_path)
         if registry_secrets:
@@ -5734,6 +5770,12 @@ class TestACPSecretRegistryEnvInjection:
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
+            # Hermetic: replace the runner's ambient env with extra_os_env (or
+            # nothing), so it can't shadow the registry values under test and so
+            # tests can inject a controlled ambient var to assert precedence.
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
             stack.enter_context(
                 patch(
                     "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -5844,15 +5886,12 @@ class TestACPSecretRegistryEnvInjection:
     def test_registry_secret_takes_precedence_over_agent_context_secret(self, tmp_path):
         """``secret_registry`` wins over ``agent_context.secrets`` on collision.
 
-        Precedence ladder for this collision:
-        ``acp_env > existing base env > secret_registry > agent_context.secrets``.
-        The registry is the canonical conversation-secret channel
-        (``StartConversationRequest.secrets`` lands here); ``agent_context.
-        secrets`` is the legacy direct-attach path. When both carry the same
-        key the canonical channel wins — that's also what lets OpenHands
-        eventually drop its ``AgentContext(secrets=...)`` shim without a
-        behaviour break for clients that still attach via both paths
-        during the migration.
+        Precedence: ``acp_env > secret_registry > agent_context.secrets >
+        os.environ``. The registry is the canonical conversation-secret channel
+        (``StartConversationRequest.secrets`` lands here). On a key collision the
+        registry value is used (the drain skips keys the registry will set); a
+        context-only key is still injected by the drain — proving the two
+        channels coexist without double-injecting.
         """
         from pydantic import SecretStr
 
@@ -5860,7 +5899,10 @@ class TestACPSecretRegistryEnvInjection:
 
         agent = _make_agent(
             agent_context=AgentContext(
-                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context")),
+                    "CONTEXT_ONLY": StaticSecret(value=SecretStr("ctx-value")),
+                }
             )
         )
         env = self._run_start_capturing_env(
@@ -5869,6 +5911,7 @@ class TestACPSecretRegistryEnvInjection:
             registry_secrets={"GITHUB_TOKEN": "from-registry"},
         )
         assert env.get("GITHUB_TOKEN") == "from-registry"
+        assert env.get("CONTEXT_ONLY") == "ctx-value"
 
     def test_empty_registry_does_not_change_behaviour(self, tmp_path):
         """An empty secret_registry must not raise or alter the spawn env."""
@@ -5898,6 +5941,40 @@ class TestACPSecretRegistryEnvInjection:
             registry_secrets={"BROKEN": _BrokenSecret()},
         )
         assert "BROKEN" not in env
+
+    def test_registry_secret_overrides_ambient_os_environ(self, tmp_path):
+        """A registry secret overrides a same-named ambient os.environ var.
+
+        Conversation/provider creds must win over the agent-server's own
+        environment (os.environ is the wrong process for a remote server).
+        Before this change the ambient value silently won.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "from-registry"},
+            extra_os_env={"ANTHROPIC_API_KEY": "ambient-should-lose"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "from-registry"
+
+    def test_agent_context_secret_overrides_ambient_os_environ(self, tmp_path):
+        """An agent_context.secrets drain value overrides ambient os.environ."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={"GITHUB_TOKEN": "ambient-should-lose"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-context"
 
 
 class TestACPEnvConflictSuppression:
@@ -5932,7 +6009,9 @@ class TestACPEnvConflictSuppression:
         return conn
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path, *, extra_os_env=None) -> dict:
+    def _run_start_capturing_env(
+        agent, tmp_path, *, extra_os_env=None, registry_secrets=None
+    ) -> dict:
         from contextlib import ExitStack
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -5952,6 +6031,8 @@ class TestACPEnvConflictSuppression:
             return None
 
         state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
@@ -5979,8 +6060,12 @@ class TestACPEnvConflictSuppression:
                     return_value=MagicMock(),
                 )
             )
-            if extra_os_env:
-                stack.enter_context(patch.dict("os.environ", extra_os_env, clear=False))
+            # Hermetic: clear the runner's ambient env so it can't shadow the
+            # values under test; extra_os_env is the only os.environ content
+            # (used by the test that injects ANTHROPIC_API_KEY via os.environ).
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
             agent._start_acp_server(state)
 
         return captured
@@ -6018,8 +6103,36 @@ class TestACPEnvConflictSuppression:
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
+    def test_claude_config_dir_suppresses_api_key_from_registry(self, tmp_path):
+        """ANTHROPIC_API_KEY injected via secret_registry is stripped too.
+
+        This is the channel provider creds now travel on (folded into
+        ``agent_context.secrets`` by ``create_agent`` → lifted into the
+        registry by ``create_request``).
+        """
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "ANTHROPIC_API_KEY": "sk-from-registry",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
     def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
-        """ANTHROPIC_API_KEY injected via agent_context.secrets is stripped too."""
+        """ANTHROPIC_API_KEY drained from agent_context.secrets is stripped too.
+
+        Covers the canvas-local channel: provider creds folded into
+        ``agent_context.secrets`` reach env via the drain, and must still be
+        stripped when CLAUDE_CONFIG_DIR is active.
+        """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
@@ -6037,7 +6150,8 @@ class TestACPEnvConflictSuppression:
                 }
             ),
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
 
         assert "CLAUDE_CONFIG_DIR" in env
         assert "ANTHROPIC_API_KEY" not in env

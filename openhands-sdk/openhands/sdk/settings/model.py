@@ -40,6 +40,7 @@ from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     MissingCipherError,
     decrypt_str_with_cipher_or_keep,
@@ -999,7 +1000,13 @@ class ACPAgentSettings(AgentSettingsBase):
     )
     acp_env: dict[str, str] = Field(
         default_factory=dict,
-        description="Extra environment variables passed to the ACP subprocess.",
+        description=(
+            "DEPRECATED (removed in 1.29.0): extra environment variables passed "
+            "to the ACP subprocess. Provide arbitrary subprocess env vars through "
+            "the conversation secrets channel (agent_context.secrets / "
+            "StartConversationRequest.secrets, which route through "
+            "state.secret_registry) instead."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP environment variables",
@@ -1103,8 +1110,14 @@ class ACPAgentSettings(AgentSettingsBase):
     agent_context: AgentContext | None = Field(
         default=None,
         description=(
-            "Prompt-only context for the ACP server. Secrets are injected into "
-            "the subprocess environment by ACPAgent."
+            "Prompt-only context for the ACP server. ``secrets`` here are "
+            "advertised to the agent (names/descriptions) and injected into the "
+            "subprocess env through two channels: ``state.secret_registry`` (on "
+            "the Python path, ``create_request`` lifts ``agent_context.secrets`` "
+            "into the registry) and a direct drain in "
+            "``ACPAgent._start_acp_server`` for callers that build the request "
+            "outside Python (e.g. canvas-local). ``create_agent`` also folds "
+            "provider credentials into these secrets."
         ),
     )
 
@@ -1164,21 +1177,34 @@ class ACPAgentSettings(AgentSettingsBase):
         return env
 
     def resolve_acp_env(self) -> dict[str, str]:
-        """Return the effective ACP subprocess environment.
+        """Return the user-supplied ACP subprocess env vars.
 
-        Explicit :attr:`acp_env` entries override provider-derived env vars.
-        The returned dict becomes ``ACPAgent.acp_env``; at spawn time
-        ``ACPAgent`` then fills still-missing keys from the conversation's
-        ``secret_registry`` (the canonical conversation-secret channel) and
-        finally from :attr:`agent_context` secrets, preserving the overall
-        priority:
+        Only the explicit :attr:`acp_env` entries — the user-facing
+        arbitrary-env-var input that becomes ``ACPAgent.acp_env``. Provider
+        credentials are **no longer** folded in here; :meth:`create_agent`
+        routes them through :attr:`agent_context` secrets →
+        ``state.secret_registry`` instead (the canonical, cipher-protected
+        channel the regular agent uses). At spawn time ``ACPAgent`` injects
+        ``acp_env`` and the registry secrets into the subprocess env.
 
-        ``acp_env > provider env > secret_registry > agent_context.secrets``.
+        .. deprecated:: 1.24.0
+            :attr:`acp_env` is deprecated and will be removed in 1.29.0. Pass
+            arbitrary subprocess env vars through the conversation secrets
+            channel instead.
         """
-        return {
-            **self.resolve_provider_env(),
-            **dict(self.acp_env),
-        }
+        if self.acp_env:
+            warn_deprecated(
+                "ACPAgentSettings.acp_env",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=(
+                    "Provide arbitrary ACP subprocess env vars through the "
+                    "conversation secrets channel (agent_context.secrets / "
+                    "StartConversationRequest.secrets, which route through "
+                    "state.secret_registry) instead."
+                ),
+            )
+        return dict(self.acp_env)
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
@@ -1208,18 +1234,59 @@ class ACPAgentSettings(AgentSettingsBase):
         The subprocess command is resolved via :meth:`resolve_acp_command`
         which maps :attr:`acp_server` to a default when no explicit
         :attr:`acp_command` is set.
+
+        Provider credentials (``llm.api_key`` → :attr:`api_key_env_var`,
+        ``llm.base_url`` → :attr:`base_url_env_var`) are folded into
+        :attr:`agent_context` secrets rather than ``acp_env``. They then ride
+        the canonical ``agent_context.secrets`` → ``create_request`` →
+        ``request.secrets`` → ``state.secret_registry`` channel (encrypted
+        across the conversation-start boundary), exactly like the regular
+        agent's credentials, and reach the subprocess from the registry.
+        ``acp_env`` carries only the user's explicit arbitrary env vars.
         """
         from openhands.sdk.agent import ACPAgent
+        from openhands.sdk.secret import StaticSecret
+
+        # Fold provider creds into agent_context.secrets (not acp_env): on
+        # acp_env they would be dropped to ``**********`` by stores that dump
+        # agent_settings without cipher context; on agent_context.secrets they
+        # ride the StoredConversation.secrets + agent-server Cipher boundary.
+        # Wrap as StaticSecret (a SecretSource) so they validate when
+        # create_request lifts agent_context.secrets into request.secrets
+        # (typed dict[str, SecretSource]).
+        provider_secrets: dict[str, StaticSecret] = {
+            name: StaticSecret(value=SecretStr(value))
+            for name, value in self.resolve_provider_env().items()
+        }
+        agent_context = self.agent_context
+        if provider_secrets:
+            existing = (
+                dict(agent_context.secrets)
+                if agent_context is not None and agent_context.secrets
+                else {}
+            )
+            # Explicit context secrets win over provider-derived ones.
+            merged_secrets = {**provider_secrets, **existing}
+            agent_context = (
+                agent_context.model_copy(update={"secrets": merged_secrets})
+                if agent_context is not None
+                else AgentContext(current_datetime=None, secrets=merged_secrets)
+            )
 
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
-            acp_env=self.resolve_acp_env(),
+            # Pass acp_env directly rather than via resolve_acp_env() so the
+            # deprecation warning is not emitted twice on the create_agent path:
+            # _start_acp_server already warns (ACPAgent.acp_env) at spawn, and
+            # resolve_acp_env()'s warning (ACPAgentSettings.acp_env) is reserved
+            # for explicit callers of that public method.
+            acp_env=dict(self.acp_env),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
-            agent_context=self.agent_context,
+            agent_context=agent_context,
         )
 
 
