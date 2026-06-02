@@ -138,6 +138,7 @@ class LocalConversation(BaseConversation):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        prompt_cache_key: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -179,6 +180,9 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            prompt_cache_key: Override for the prompt-cache shard key. Defaults
+                to the conversation's own ID. Sub-conversations set this to
+                the parent's ID to share the same cache shard.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -186,6 +190,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._prompt_cache_key = prompt_cache_key
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -724,39 +729,32 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
+    def get_llm_call_context(self) -> LLMCallContext:
+        """Build an :class:`LLMCallContext` for this conversation.
+
+        The ``prompt_cache_key`` uses the override supplied at construction
+        (for sub-agent cache-shard sharing) or defaults to the conversation's
+        own ID.  ``session_id`` is always the conversation's ID.
+        """
+        conv_id = str(self._state.id)
+        return LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+        )
+
     def _bind_conversation_context(self, llm: LLM) -> None:
-        """Bind per-conversation call context to *llm*.
+        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
 
-        Stores the conversation ID as the session-affinity header value and
-        prompt-cache shard key.  ``session_id`` is always set to the current
-        conversation.  ``prompt_cache_key`` is preserved when inherited from
-        a parent via ``model_copy()`` (sub-agent cache-shard sharing) but
-        overwritten when the same LLM object is reused across sequential
-        top-level conversations.
-
-        The distinction relies on ``source_llm_id``: after binding, the
-        context records ``id(llm)``.  A ``model_copy()``'d sub-agent LLM
-        has a different ``id()`` than the recorded source, so the inherited
-        key is kept.  The same LLM reused in a new conversation matches,
-        so the key is refreshed.
+        This sets the LLM's ``_call_context`` so that callers who don't
+        thread an explicit ``call_context`` through the completion call
+        (e.g. the condenser's dedicated LLM) still get correct per-
+        conversation state.  The primary agent completion path threads
+        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
+        → ``llm.completion(call_context=...)``.
 
         See #3443 for background.
         """
-        conv_id = str(self._state.id)
-        existing = llm._call_context
-        # Preserve prompt_cache_key only when inherited via model_copy()
-        # (sub-agent): the source_llm_id won't match this LLM's id().
-        # For sequential reuse of the same object, overwrite.
-        inherited = (
-            existing.prompt_cache_key is not None
-            and existing.source_llm_id is not None
-            and existing.source_llm_id != id(llm)
-        )
-        llm._call_context = LLMCallContext(
-            prompt_cache_key=existing.prompt_cache_key if inherited else conv_id,
-            session_id=conv_id,
-            source_llm_id=id(llm),
-        )
+        llm._call_context = self.get_llm_call_context()
 
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.

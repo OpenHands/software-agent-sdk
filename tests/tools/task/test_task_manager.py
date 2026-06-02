@@ -375,7 +375,7 @@ class TestTaskManager:
         """Sibling sub-agents share the parent's OpenAI prefix-cache shard."""
         manager, parent = _manager_with_parent(tmp_path)
         register_builtins_agents()
-        parent_key = parent.agent.llm._call_context.prompt_cache_key
+        parent_key = str(parent.state.id)
 
         sub_keys = []
         for _ in range(2):
@@ -388,7 +388,7 @@ class TestTaskManager:
                 conversation_id=conversation_id,
                 worker_agent=agent,
             )
-            sub_keys.append(conv.agent.llm._call_context.prompt_cache_key)
+            sub_keys.append(conv.get_llm_call_context().prompt_cache_key)
 
         assert sub_keys == [parent_key, parent_key]
 
