@@ -126,29 +126,33 @@ class LLMConvertibleEvent(Event, ABC):
         return messages
 
 
-def _append_message(messages: list[Message], message: Message) -> None:
-    """Append a message, merging adjacent user turns for strict alternation models."""
-    if messages and _can_merge_user_messages(messages[-1], message):
-        previous = messages[-1]
-        messages[-1] = previous.model_copy(
-            update={"content": list(previous.content) + list(message.content)}
-        )
-        return
-
-    messages.append(message)
+def _is_plain_user_message(message: Message) -> bool:
+    """A plain user turn with no tool-call metadata — safe to coalesce."""
+    return (
+        message.role == "user"
+        and message.tool_calls is None
+        and message.tool_call_id is None
+        and message.name is None
+    )
 
 
 def _can_merge_user_messages(previous: Message, current: Message) -> bool:
     """Return whether two user messages can be safely sent as one LLM turn."""
-    return (
-        previous.role == current.role == "user"
-        and previous.tool_calls is None
-        and current.tool_calls is None
-        and previous.tool_call_id is None
-        and current.tool_call_id is None
-        and previous.name is None
-        and current.name is None
-    )
+    return _is_plain_user_message(previous) and _is_plain_user_message(current)
+
+
+def _append_message(messages: list[Message], message: Message) -> None:
+    """Append a message, merging adjacent user turns for strict alternation models.
+
+    Merging is done via in-place mutation of the last message's content list
+    to avoid O(N²) copy-per-merge behaviour when multiple consecutive user
+    turns are coalesced.
+    """
+    if messages and _can_merge_user_messages(messages[-1], message):
+        messages[-1].content = list(messages[-1].content) + list(message.content)
+        return
+
+    messages.append(message)
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:
