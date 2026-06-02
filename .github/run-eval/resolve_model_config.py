@@ -343,7 +343,7 @@ MODELS = {
         "id": "nemotron-3-ultra-550b-a55b",
         "display_name": "NVIDIA Nemotron-3 Ultra 550B",
         "llm_config": {
-            "model": "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b",
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b",
             "temperature": 1.0,
             "top_p": 0.95,
         },
