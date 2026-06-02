@@ -860,7 +860,8 @@ def test_completion_retries_without_caching_on_prompt_cache_too_small(
     )
 
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
-    response = llm.completion(messages=messages)
+    # Pass a kwarg via **kwargs to verify _caller_kwargs preservation on retry.
+    response = llm.completion(messages=messages, metadata={"trace": "sync"})
 
     # Should succeed after retry without caching
     assert response.raw_response == mock_response
@@ -890,6 +891,10 @@ def test_completion_retries_without_caching_on_prompt_cache_too_small(
         )
     )
     assert not second_has_cache, "Retry should not include cache_control markers"
+
+    # Caller kwargs preserved on the retry — without _caller_kwargs the retry
+    # would silently drop them.
+    assert second_call_kwargs.get("metadata") == {"trace": "sync"}
 
 
 @pytest.mark.asyncio
