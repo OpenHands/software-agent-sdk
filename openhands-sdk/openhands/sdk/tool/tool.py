@@ -1,3 +1,4 @@
+import asyncio
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -387,6 +388,21 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             raise TypeError(
                 "Output must be dict or BaseModel when no output schema is defined"
             )
+
+    async def acall(
+        self, action: ActionT, conversation: "LocalConversation | None" = None
+    ) -> Observation:
+        """Run this tool asynchronously when called directly.
+
+        The default implementation runs :meth:`__call__` in a thread via the
+        event loop's executor, so callers can await a single tool invocation
+        without blocking the event loop.
+
+        The SDK's internal async dispatch path does not call this hook; it
+        dispatches through :meth:`__call__` directly from its own executor.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self, action, conversation)
 
     def to_mcp_tool(
         self,
