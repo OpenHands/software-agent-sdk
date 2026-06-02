@@ -313,12 +313,12 @@ MODELS = {
         },
     },
     # https://openai.com/index/introducing-gpt-oss/
-    # Routed via OpenRouter (openai/gpt-oss-120b), which is already configured
-    # on the LiteLLM proxy and is used by other models in this registry.
+    # Note: gpt-oss-20b uses a direct proxy alias (litellm_proxy/gpt-oss-20b);
+    # gpt-oss-120b requires OpenRouter because no equivalent proxy alias exists.
     # The Fireworks-specific path (fireworks_ai/accounts/fireworks/models/...)
     # is not registered as a model alias on the proxy, so preflight rejects it
-    # with "Invalid model name". OpenRouter routes to multiple backend providers
-    # (Fireworks, Together, etc.) automatically.
+    # with "Invalid model name". OpenRouter is already configured on the proxy
+    # and routes to multiple backend providers (Fireworks, Together, etc.).
     "gpt-oss-120b": {
         "id": "gpt-oss-120b",
         "display_name": "GPT OSS 120B",
