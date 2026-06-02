@@ -402,7 +402,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Moonshot's public Kimi endpoint reject URL-formatted images "
             "and require base64). Set this explicitly when the model is "
             "reached through a proxy alias that hides the underlying "
-            "provider (e.g. litellm_proxy/<custom-alias>)."
+            "provider (e.g. ``litellm_proxy/<custom-alias>``). Note: "
+            "inlining only runs when ``vision_is_active()`` is True, so "
+            "the alias must still be recognised as vision-capable by "
+            "litellm — otherwise images are not sent at all and there is "
+            "nothing to inline."
         ),
     )
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(

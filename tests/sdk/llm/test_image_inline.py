@@ -179,6 +179,22 @@ def test_fetch_failure_falls_back_to_original_url():
     assert img.image_urls == [url]
 
 
+def test_non_image_content_type_falls_back_to_original_url():
+    """A 200 OK with ``Content-Type: text/html`` (soft-404/auth wall) must
+    not be inlined as ``data:text/html;...`` — the original URL is sent
+    instead and the upstream produces its native error."""
+    url = "https://example.com/soft-404.png"
+    msg = Message(role="user", content=[ImageContent(image_urls=[url])])
+
+    image_inline._CACHE.clear()
+    with _stub_get(url, body=b"<html>not found</html>", content_type="text/html"):
+        out = maybe_inline_image_urls([msg], inline_required=True, vision_enabled=True)
+
+    img = out[0].content[0]
+    assert isinstance(img, ImageContent)
+    assert img.image_urls == [url]
+
+
 def test_cache_reuses_result_across_calls():
     url = "https://example.com/x.png"
     msg1 = Message(role="user", content=[ImageContent(image_urls=[url])])

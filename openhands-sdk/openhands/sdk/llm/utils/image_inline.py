@@ -71,6 +71,21 @@ _EXT_TO_MIME = {
     "webp": "image/webp",
 }
 
+# Only inline content the upstream model can actually decode as an image.
+# If the server returns ``200 OK`` with ``text/html`` (soft-404, auth wall,
+# CDN error page), inlining the bytes would produce ``data:text/html;...``
+# which the model silently rejects. We fall back to the original URL instead.
+_ALLOWED_IMAGE_MIMES = frozenset(
+    {
+        "image/jpeg",
+        "image/png",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+        "image/tiff",
+    }
+)
+
 
 class _DataUrlCache:
     """Bounded LRU cache mapping URL → ``data:`` URL.
@@ -249,7 +264,8 @@ def _fetch_and_encode(url: str, client: httpx.Client) -> str:
                     "location"
                 )
                 if not location:
-                    response.raise_for_status()
+                    # ``raise_for_status()`` is a no-op on 3xx, so raise
+                    # directly to surface a clear, logged error.
                     raise ValueError(f"Redirect without Location header: {current_url}")
                 current_url = urljoin(current_url, location)
                 continue
@@ -285,6 +301,13 @@ def _validate_url_target(url: str) -> None:
     ranges (both IPv4 and IPv6), plus syntactic shortcuts like ``localhost``
     and ``*.local`` mDNS hostnames. Called on the initial URL and on every
     redirect target.
+
+    Note (TOCTOU): httpx performs a second DNS resolution at connect time,
+    so a rogue short-TTL DNS server could serve a public IP during this
+    check and a private IP on the real connection. This is a known
+    limitation of the validate-then-connect pattern and is considered
+    acceptable for this threat model — inlining is bounded by size, MIME
+    type and timeout, and failures fall back to the original URL.
     """
     if _ALLOW_PRIVATE_HOSTS:
         return
@@ -370,9 +393,20 @@ def _is_disallowed_ip(
 
 
 def _derive_mime_type(content_type_header: str | None, url: str) -> str:
+    """Return a validated image MIME type for the response body.
+
+    If the server reports a non-image ``Content-Type`` (e.g. ``text/html``
+    from a soft-404 or auth wall), raise ``ValueError`` so the caller can
+    fall back to the original URL instead of inlining unusable bytes.
+    """
+    mime = ""
     if content_type_header:
-        return content_type_header.split(";", 1)[0].strip() or _mime_from_url(url)
-    return _mime_from_url(url)
+        mime = content_type_header.split(";", 1)[0].strip()
+    if not mime:
+        mime = _mime_from_url(url)
+    if mime not in _ALLOWED_IMAGE_MIMES:
+        raise ValueError(f"Unexpected Content-Type {mime!r} for image URL: {url}")
+    return mime
 
 
 def _mime_from_url(url: str) -> str:
