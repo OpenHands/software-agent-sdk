@@ -111,7 +111,6 @@ class _DataUrlCache:
         encoded_size = len(data_url)
         if encoded_size > self._max_bytes:
             # A single image larger than the cache budget: skip caching it.
-            # A single image larger than the cache budget: skip caching it.
             logger.debug(
                 "Image too large to cache (%d bytes > %d byte budget); will re-fetch. url=%s",
                 encoded_size,
