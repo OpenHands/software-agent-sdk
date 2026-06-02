@@ -356,14 +356,6 @@ MODELS = {
             "top_p": 0.95,
         },
     },
-    "amber-vector-3542": {
-        "id": "amber-vector-3542",
-        "display_name": "Amber Vector 3542",
-        "llm_config": {
-            "model": "litellm_proxy/amber-vector-3542",
-            "temperature": 0.0,
-        },
-    },
 }
 
 

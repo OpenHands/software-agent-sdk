@@ -675,16 +675,6 @@ def test_nemotron_3_ultra_550b_a55b_config():
     assert model["llm_config"]["top_p"] == 0.95
 
 
-def test_amber_vector_3542_config():
-    """Test that amber-vector-3542 has correct configuration."""
-    model = MODELS["amber-vector-3542"]
-
-    assert model["id"] == "amber-vector-3542"
-    assert model["display_name"] == "Amber Vector 3542"
-    assert model["llm_config"]["model"] == "litellm_proxy/amber-vector-3542"
-    assert model["llm_config"]["temperature"] == 0.0
-
-
 def test_claude_opus_4_8_config():
     """Test that claude-opus-4-8 has correct configuration."""
     model = MODELS["claude-opus-4-8"]
