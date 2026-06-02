@@ -1197,3 +1197,27 @@ def test_auto_created_profile_persists(client, store):
     assert loaded.temperature == 0.7
     assert loaded.api_key is not None
     assert loaded.api_key.get_secret_value() == "sk-persist-test"
+
+
+def test_list_profiles_no_auto_create_after_deleting_active_profile(client, store):
+    """Deleting all profiles must not auto-recreate one (regression).
+
+    Activating a profile copies its LLM (with API key) into agent_settings, so
+    after deleting every profile the lingering key would otherwise re-trigger
+    auto-creation. A previously-set active_profile must suppress that.
+    """
+    # Arrange: create and activate a profile (mirrors the GUI repro)
+    store.save(
+        "my-profile",
+        LLM(model="gpt-4o", api_key="sk-test"),
+        include_secrets=True,
+    )
+    client.post("/api/profiles/my-profile/activate")
+
+    # Act: delete the active profile, then list
+    client.delete("/api/profiles/my-profile")
+    response = client.get("/api/profiles")
+
+    # Assert: nothing is auto-recreated; the list stays empty
+    assert response.status_code == 200
+    assert response.json()["profiles"] == []

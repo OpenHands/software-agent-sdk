@@ -165,9 +165,12 @@ async def list_profiles(request: Request) -> ProfileListResponse:
 
     active_profile = settings.active_profile
 
-    # Auto-create profile from existing LLM settings if no profiles exist
-    # but an API key is configured. Use the model name as the profile name.
-    if not summaries and settings.llm_api_key_is_set:
+    # Auto-create a profile from existing LLM settings only for a genuinely
+    # first-time user (no profiles AND no profile has ever been active). A set
+    # active_profile means the user has engaged with profiles before — e.g.
+    # activated one and then deleted everything — so we must NOT resurrect a
+    # profile from the LLM/API key still lingering in agent_settings.
+    if not summaries and active_profile is None and settings.llm_api_key_is_set:
         llm = settings.agent_settings.llm
         profile_name = _model_to_profile_name(llm.model or "default")
         try:
