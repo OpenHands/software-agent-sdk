@@ -21,6 +21,9 @@ Each record captures the static properties that are known at configuration time
 - ``available_models``      curated list of selectable models for the provider's
                             model picker (``acp_model`` candidates)
 - ``default_model``         model preselected when none is configured (or ``None``)
+- ``file_secrets``          reserved "file-content" credential secrets the
+                            provider authenticates from (Codex ``auth.json``,
+                            Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
 
 Callers outside the SDK (e.g. ``openhands-agent-server``, the ``OpenHands``
 frontend, and the ``@openhands/typescript-client`` mirror) can import
@@ -33,7 +36,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,46 @@ class ACPModelOption:
 
     label: str
     """Human-readable label shown in the model picker (e.g. ``"Claude Opus 4.7"``)."""
+
+
+@dataclass(frozen=True)
+class ACPFileSecretSpec:
+    """Declarative mapping from a reserved "file-content" secret to a credential
+    file the ACP subprocess authenticates from.
+
+    Some providers read their credential from a *file on disk* rather than an
+    env var: Codex reads ``$CODEX_HOME/auth.json``; Gemini (Vertex AI) reads a
+    service-account JSON pointed at by ``GOOGLE_APPLICATION_CREDENTIALS``. The
+    user supplies that credential as a pasted blob — a reserved secret named
+    :attr:`secret_name` — and :class:`~openhands.sdk.agent.ACPAgent` materialises
+    it to :attr:`filename` under the conversation's durable per-conversation root
+    (seed-if-absent), then sets :attr:`env_var` so the CLI can find it.
+
+    Materialisation is keyed off :attr:`secret_name` (not the launch command),
+    so a custom or aliased ``acp_command`` still works as long as the reserved
+    secret is supplied.
+    """
+
+    secret_name: str
+    """Reserved secret whose value is the credential file's contents (looked up
+    in ``state.secret_registry`` / ``agent_context.secrets``)."""
+
+    filename: str
+    """Basename of the materialised file, written under the per-conversation
+    ``<conversations>/{id.hex}/acp/{provider}/`` directory."""
+
+    env_var: str
+    """Env var the CLI reads to locate the materialised credential."""
+
+    env_points_to: Literal["dir", "file"] = "file"
+    """Whether :attr:`env_var` is set to the file's parent *directory* (Codex's
+    ``CODEX_HOME``) or to the *file* path itself (Gemini's
+    ``GOOGLE_APPLICATION_CREDENTIALS``)."""
+
+    warn_if_unset: tuple[str, ...] = ()
+    """Companion env vars to warn about when this secret is materialised but
+    they are missing (e.g. ``GOOGLE_CLOUD_PROJECT`` / ``GOOGLE_CLOUD_LOCATION``
+    for Vertex AI). Advisory only — materialisation still proceeds."""
 
 
 @dataclass(frozen=True)
@@ -162,6 +205,16 @@ class ACPProviderInfo:
     signature break; the built-in providers set it explicitly.
     """
 
+    file_secrets: tuple[ACPFileSecretSpec, ...] = field(default=(), compare=False)
+    """Reserved file-content credential secrets this provider authenticates from.
+
+    Each entry maps a reserved secret name to the on-disk file (and the env var
+    pointing at it) that :class:`~openhands.sdk.agent.ACPAgent` materialises
+    before launching the subprocess. Empty for providers that authenticate
+    purely via env vars (e.g. Claude Code). Defaults to ``()`` so external
+    callers constructing this dataclass positionally keep working.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -232,6 +285,34 @@ _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Reserved file-content credential secrets for the built-in providers.
+#
+# Codex's ChatGPT-subscription ``auth.json`` relocates with ``CODEX_HOME`` (and
+# is rewritten in place on token refresh, so it must live on durable, writable
+# storage). Gemini's Vertex AI service-account JSON is pointed at directly by
+# ``GOOGLE_APPLICATION_CREDENTIALS``; Vertex also needs a project/location, so
+# warn when those are unset.
+# ---------------------------------------------------------------------------
+_CODEX_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    ACPFileSecretSpec(
+        secret_name="CODEX_AUTH_JSON",
+        filename="auth.json",
+        env_var="CODEX_HOME",
+        env_points_to="dir",
+    ),
+)
+_GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    ACPFileSecretSpec(
+        secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        filename="gcloud-credentials.json",
+        env_var="GOOGLE_APPLICATION_CREDENTIALS",
+        env_points_to="file",
+        warn_if_unset=("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+    ),
+)
+
+
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
     {
         "claude-code": ACPProviderInfo(
@@ -265,6 +346,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key=None,
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
+            file_secrets=_CODEX_FILE_SECRETS,
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -284,10 +366,28 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # make downstream clients persist a value that bypasses the CLI's
             # auto-routing.
             default_model="auto-gemini-2.5",
+            file_secrets=_GEMINI_FILE_SECRETS,
         ),
     }
 )
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
+
+
+ACP_FILE_SECRETS_BY_NAME: Mapping[str, tuple[str, ACPFileSecretSpec]] = (
+    MappingProxyType(
+        {
+            spec.secret_name: (key, spec)
+            for key, info in ACP_PROVIDERS.items()
+            for spec in info.file_secrets
+        }
+    )
+)
+"""Reserved file-content secret name → ``(provider_key, spec)``.
+
+Aggregates :attr:`ACPProviderInfo.file_secrets` across the built-in providers so
+materialisation can be driven by the reserved secret name alone — independent of
+which ``acp_command`` is configured.
+"""
 
 
 def get_acp_provider(key: str) -> ACPProviderInfo | None:

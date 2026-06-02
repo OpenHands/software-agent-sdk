@@ -8,6 +8,7 @@ import threading
 import uuid
 from base64 import urlsafe_b64encode
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,12 +20,14 @@ from pydantic import SecretStr
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _classify_acp_init_error,
+    _codex_auth_file,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
+    _present_acp_file_secret_names,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
@@ -4039,6 +4042,91 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    # -- CODEX_HOME-aware chatgpt detection (issue #1020) ------------------
+
+    def test_chatgpt_detected_under_relocated_codex_home(self, tmp_path):
+        """chatgpt is selected when auth.json lives under a relocated CODEX_HOME,
+        even though ~/.codex/auth.json does not exist."""
+        codex_home = tmp_path / "conv" / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        methods = [self._make_auth_method("chatgpt")]
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert (
+                _select_auth_method(methods, {"CODEX_HOME": str(codex_home)})
+                == "chatgpt"
+            )
+
+    def test_codex_home_without_auth_file_falls_back(self, tmp_path):
+        """A CODEX_HOME without auth.json is not detected as chatgpt; it falls
+        back to the API key when offered."""
+        codex_home = tmp_path / "empty_codex_home"
+        codex_home.mkdir()
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_codex_auth_file_honors_codex_home(self, tmp_path):
+        """_codex_auth_file points at $CODEX_HOME/auth.json when set, else
+        ~/.codex/auth.json."""
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=home):
+            assert _codex_auth_file({}) == home / ".codex" / "auth.json"
+        ch = tmp_path / "ch"
+        assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- Gemini Vertex AI service-account detection (issue #1020) ----------
+
+    def test_vertex_ai_selected_when_credentials_file_present(self, tmp_path):
+        """vertex-ai is selected when GOOGLE_APPLICATION_CREDENTIALS points at an
+        existing service-account JSON."""
+        sa = tmp_path / "gcloud-credentials.json"
+        sa.write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa), "GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_preferred_over_personal_oauth(self, tmp_path):
+        """The materialised Vertex SA (deployable) wins over a host-bound
+        personal OAuth login file."""
+        sa = tmp_path / "sa.json"
+        sa.write_text("{}", encoding="utf-8")
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa)}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_offered_but_no_credentials_file(self, tmp_path):
+        """vertex-ai offered but GOOGLE_APPLICATION_CREDENTIALS missing/empty ->
+        falls through to the API-key fallback."""
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
 
 # ---------------------------------------------------------------------------
 # ACP model overrides
@@ -6410,3 +6498,282 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._session_id = "sess-1"
         agent._agent_name = "locked-down-provider"
         assert agent.supports_runtime_model_switch is False
+
+
+# ---------------------------------------------------------------------------
+# Reserved file-content secret materialisation (issue #1020)
+# ---------------------------------------------------------------------------
+
+
+class TestACPFileSecretMaterialisation:
+    """Codex auth.json / Gemini Vertex SA JSON materialise to the durable
+    per-conversation root, with the right data-dir env var, seed-if-absent.
+    """
+
+    @staticmethod
+    def _make_conn(*, agent_name: str = "codex-acp", auth_method: str | None = None):
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = agent_name
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = [MagicMock(id=auth_method)] if auth_method else []
+        # MagicMock(id=...) doesn't set .id; assign explicitly.
+        for m in init_response.auth_methods:
+            m.id = auth_method
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-new"
+        new_response.models = None
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start(agent, state, *, conn):
+        """Run the real _start_acp_server with transport mocked; return the env
+        dict handed to the subprocess."""
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict[str, Any] = {}
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_exec(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+        return captured["env"]
+
+    @staticmethod
+    def _state(tmp_path, *, persisted: bool = True):
+        from openhands.sdk.agent.acp_agent import ACPAgent
+
+        agent = ACPAgent(acp_command=["codex-acp"])
+        workspace = LocalWorkspace(working_dir=str(tmp_path / "ws"))
+        (tmp_path / "ws").mkdir()
+        persistence_dir = (
+            str(tmp_path / "conversations" / uuid.uuid4().hex) if persisted else None
+        )
+        state = ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=persistence_dir,
+        )
+        return state
+
+    def test_codex_auth_json_materialises_to_conversation_root(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        auth_file = codex_home / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"tokens": "x"}'
+        # 0600 file inside a 0700 dir.
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert codex_home.stat().st_mode & 0o777 == 0o700
+        # The blob is not exported as an env var.
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_gemini_vertex_sa_materialises_and_points_at_file(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                    value=SecretStr('{"type": "service_account"}')
+                )
+            }
+        )
+        env = self._run_start(
+            agent, state, conn=self._make_conn(agent_name="gemini-cli")
+        )
+
+        gac = Path(env["GOOGLE_APPLICATION_CREDENTIALS"])
+        assert gac == Path(persist) / "acp" / "gemini-cli" / "gcloud-credentials.json"
+        assert gac.read_text(encoding="utf-8") == '{"type": "service_account"}'
+        assert gac.stat().st_mode & 0o777 == 0o600
+        assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
+        """A non-empty existing credential file (e.g. a token the CLI refreshed)
+        is preserved; the stale pasted blob does not overwrite it."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        # Pre-seed a "refreshed" auth.json at the target path.
+        codex_home = Path(persist) / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        refreshed = codex_home / "auth.json"
+        refreshed.write_text('{"refreshed": true}', encoding="utf-8")
+
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"stale": true}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert Path(env["CODEX_HOME"]) == codex_home
+        assert refreshed.read_text(encoding="utf-8") == '{"refreshed": true}'
+
+    def test_reads_from_agent_context_secrets_drain(self, tmp_path):
+        """The reserved secret can arrive via agent_context.secrets (canvas-local
+        path) rather than the registry."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                current_datetime=None,
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"a": 1}'))},
+            ),
+        )
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        auth_file = Path(env["CODEX_HOME"]) / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_acp_env_pin_wins_and_credential_seeds_where_it_points(self, tmp_path):
+        """An explicit acp_env[CODEX_HOME] keeps its precedence, and the
+        credential is seeded *there* so the file and env stay consistent."""
+        from openhands.sdk.secret import StaticSecret
+
+        pinned = tmp_path / "pinned_codex"
+        agent = _make_agent(acp_env={"CODEX_HOME": str(pinned)})
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"k": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert env["CODEX_HOME"] == str(pinned)
+        # The credential lands under the pinned dir, not the conversation root.
+        assert (pinned / "auth.json").read_text(encoding="utf-8") == '{"k": 1}'
+
+    def test_fallback_root_when_not_persisted(self, tmp_path):
+        """With no persistence_dir, the file lands under the workspace tree —
+        still seed-if-absent, no TemporaryDirectory."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        expected = Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        assert Path(env["CODEX_HOME"]) == expected
+        assert (expected / "auth.json").is_file()
+
+    def test_no_file_secret_when_secret_absent(self, tmp_path):
+        """No reserved secret present -> no data-dir env var is set."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_vertex_warns_when_project_unset(self, tmp_path, caplog):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with caplog.at_level("WARNING"):
+            self._run_start(agent, state, conn=self._make_conn(agent_name="gemini-cli"))
+        assert any("GOOGLE_CLOUD_PROJECT" in rec.message for rec in caplog.records)
+
+    def test_present_file_secret_names_helper(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(value=SecretStr("t")),
+            }
+        )
+        assert _present_acp_file_secret_names(state, None) == {"CODEX_AUTH_JSON"}
+
+    def test_blob_excluded_from_custom_secrets_advertisement(self, tmp_path):
+        """The <CUSTOM_SECRETS> advertisement lists plain secrets but not the
+        file-content blob (it's not an env var the agent can reference)."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(current_datetime=None),
+        )
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(
+                    value=SecretStr("t"), description="A plain token"
+                ),
+            }
+        )
+        events: list = []
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        suffix = events[0].dynamic_context
+        assert suffix is not None
+        assert "PLAIN_TOKEN" in suffix.text
+        assert "CODEX_AUTH_JSON" not in suffix.text

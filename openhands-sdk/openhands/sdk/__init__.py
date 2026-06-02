@@ -50,6 +50,7 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
+    ACPFileSecretSpec,
     ACPModelOption,
     ACPProviderInfo,
     AgentSettingsBase,
@@ -159,6 +160,7 @@ __all__ = [
     "VerificationSettings",
     "ACP_PROVIDERS",
     "ACPAgentSettings",
+    "ACPFileSecretSpec",
     "ACPModelOption",
     "ACPProviderInfo",
     "AgentSettingsBase",

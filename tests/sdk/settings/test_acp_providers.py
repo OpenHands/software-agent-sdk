@@ -221,3 +221,52 @@ class TestBuildSessionModelMeta:
     def test_unknown_agent_returns_empty(self):
         result = build_session_model_meta("unknown-agent", "some-model")
         assert result == {}
+
+
+class TestACPFileSecrets:
+    """The registry declares reserved file-content credential secrets for the
+    providers that authenticate from a file on disk (issue #1020)."""
+
+    def test_claude_code_has_no_file_secrets(self):
+        # Claude Code authenticates via env vars (token / API key) only.
+        assert ACP_PROVIDERS["claude-code"].file_secrets == ()
+
+    def test_codex_auth_json_spec(self):
+        specs = ACP_PROVIDERS["codex"].file_secrets
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.secret_name == "CODEX_AUTH_JSON"
+        assert spec.filename == "auth.json"
+        assert spec.env_var == "CODEX_HOME"
+        assert spec.env_points_to == "dir"
+
+    def test_gemini_vertex_sa_spec(self):
+        specs = ACP_PROVIDERS["gemini-cli"].file_secrets
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.secret_name == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        assert spec.filename == "gcloud-credentials.json"
+        assert spec.env_var == "GOOGLE_APPLICATION_CREDENTIALS"
+        assert spec.env_points_to == "file"
+        # Vertex needs a project + location alongside the SA JSON.
+        assert spec.warn_if_unset == ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION")
+
+    def test_file_secrets_by_name_aggregates_all_providers(self):
+        from openhands.sdk.settings.acp_providers import ACP_FILE_SECRETS_BY_NAME
+
+        assert set(ACP_FILE_SECRETS_BY_NAME) == {
+            "CODEX_AUTH_JSON",
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        }
+        provider_key, spec = ACP_FILE_SECRETS_BY_NAME["CODEX_AUTH_JSON"]
+        assert provider_key == "codex"
+        assert spec is ACP_PROVIDERS["codex"].file_secrets[0]
+
+    def test_file_secret_spec_is_frozen(self):
+        import dataclasses
+
+        from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
+
+        spec = ACPFileSecretSpec(secret_name="X", filename="x.json", env_var="X_HOME")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            spec.secret_name = "Y"  # type: ignore[misc]

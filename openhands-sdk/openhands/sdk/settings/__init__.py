@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .acp_providers import (
+    ACP_FILE_SECRETS_BY_NAME,
     ACP_PROVIDERS,
+    ACPFileSecretSpec,
     ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
@@ -73,7 +75,9 @@ _MODEL_EXPORTS = {
 }
 
 __all__ = [
+    "ACP_FILE_SECRETS_BY_NAME",
     "ACP_PROVIDERS",
+    "ACPFileSecretSpec",
     "ACPModelOption",
     "ACPProviderInfo",
     "build_session_model_meta",
