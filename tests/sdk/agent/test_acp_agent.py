@@ -848,6 +848,210 @@ class TestOpenHandsACPClient:
 
 
 # ---------------------------------------------------------------------------
+# Tool-call event emission (started + terminal, no per-progress fan-out)
+# ---------------------------------------------------------------------------
+
+
+def _mk_tool_start(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str = "git status",
+    kind: str = "execute",
+    status: str = "in_progress",
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallStart
+
+    start = MagicMock(spec=ToolCallStart)
+    start.tool_call_id = tool_call_id
+    start.title = title
+    start.kind = kind
+    start.status = status
+    start.raw_input = raw_input
+    start.raw_output = raw_output
+    start.content = content
+    return start
+
+
+def _mk_tool_progress(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallProgress
+
+    progress = MagicMock(spec=ToolCallProgress)
+    progress.tool_call_id = tool_call_id
+    progress.title = title
+    progress.kind = kind
+    progress.status = status
+    progress.raw_input = raw_input
+    progress.raw_output = raw_output
+    progress.content = content
+    return progress
+
+
+class TestACPToolCallProgressCollapse:
+    """The bridge persists exactly one ``started`` + one terminal event.
+
+    Each ``ToolCallProgress`` carries the *full cumulative* output, so emitting
+    one event per frame is O(n^2) storage + WebSocket relay. The bridge instead
+    streams one early ``started`` event and one terminal (``completed`` /
+    ``failed``) event per ``tool_call_id`` — the action->observation pair —
+    while silently accumulating the intermediate frames so the terminal event
+    still carries the final output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_emits_started_event(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_intermediate_progress_frames_are_not_emitted(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        # Several non-terminal progress frames with growing cumulative output.
+        for chunk in ("a", "ab", "abc"):
+            await client.session_update(
+                "s1", _mk_tool_progress(status="in_progress", raw_output=chunk)
+            )
+
+        # Only the started event was persisted — the intermediate frames are
+        # accumulated silently (this is the O(n^2)->O(1) collapse).
+        assert len(events) == 1
+        assert events[0].status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_emits_exactly_two_events(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="pending"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="in_progress", raw_output="partial")
+        )
+        await client.session_update(
+            "s1", _mk_tool_progress(status="completed", raw_output="partial-final")
+        )
+
+        assert len(events) == 2
+        started, terminal = events
+        assert started.status == "pending"
+        assert terminal.status == "completed"
+        # Terminal event carries the final cumulative output.
+        assert terminal.raw_output == "partial-final"
+        assert terminal.is_error is False
+
+    @pytest.mark.asyncio
+    async def test_failed_terminal_sets_is_error(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="failed", raw_output="boom")
+        )
+
+        assert len(events) == 2
+        assert events[-1].status == "failed"
+        assert events[-1].is_error is True
+
+    @pytest.mark.asyncio
+    async def test_single_shot_completed_start_emits_once(self) -> None:
+        """A ToolCallStart that is already terminal is the only event."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update(
+            "s1", _mk_tool_start(status="completed", raw_output="done")
+        )
+
+        assert len(events) == 1
+        assert events[0].status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_redundant_terminal_progress_does_not_double_emit(self) -> None:
+        """Only the first transition into a terminal status emits."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+        # A trailing duplicate terminal frame must not produce a third event.
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+
+        assert len(events) == 2
+        assert [e.status for e in events] == ["in_progress", "completed"]
+
+    def test_finalize_flush_completes_orphaned_tool_calls(self) -> None:
+        """A card the server opened but never closed is flushed to completed."""
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+        agent._client = client
+
+        # One still-running call and one already-terminal call.
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "live-1",
+                "title": "long task",
+                "tool_kind": "execute",
+                "status": "in_progress",
+                "raw_input": None,
+                "raw_output": "partial output",
+                "content": None,
+            }
+        )
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "done-1",
+                "title": "quick task",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": "ok",
+                "content": None,
+            }
+        )
+
+        agent._flush_inflight_tool_calls_as_completed()
+
+        # Only the non-terminal call is flushed (the terminal one is untouched).
+        assert len(events) == 1
+        assert events[0].tool_call_id == "live-1"
+        assert events[0].status == "completed"
+        assert events[0].is_error is False
+        assert events[0].raw_output == "partial output"
+        # The accumulator entry is now terminal so it won't be flushed again.
+        assert client.accumulated_tool_calls[0]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
 # Activity heartbeat
 # ---------------------------------------------------------------------------
 

@@ -640,13 +640,22 @@ class _OpenHandsACPBridge:
             }
             self.accumulated_tool_calls.append(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            # Emit one early "started" event — the action half of the
+            # action->observation pair. (If the server reports a terminal
+            # status on the very first notification, this single event is
+            # also the observation; the matching terminal-transition guard
+            # below then suppresses any redundant re-emission.)
             self._emit_tool_call_event(entry)
             self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
-            # Find the existing tool call entry and merge updates
+            # Find the existing tool call entry and merge updates. Track the
+            # status seen *before* this frame so we can detect the single
+            # transition into a terminal state.
             target: dict[str, Any] | None = None
+            prev_status: str | None = None
             for tc in self.accumulated_tool_calls:
                 if tc["tool_call_id"] == update.tool_call_id:
+                    prev_status = tc.get("status")
                     if update.title is not None:
                         tc["title"] = update.title
                     if update.kind is not None:
@@ -662,7 +671,19 @@ class _OpenHandsACPBridge:
                     target = tc
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
-            if target is not None:
+            # Persist exactly one terminal event per tool call. Intermediate
+            # progress frames each carry the *full cumulative* output; emitting
+            # one per frame is O(n^2) storage + WebSocket relay (the bug this
+            # method fixes). We accumulate them into ``target`` silently and
+            # emit only on the first transition into a terminal status, so the
+            # terminal event still carries the complete final output. This is
+            # the observation half of the action->observation pair.
+            became_terminal = (
+                target is not None
+                and target.get("status") in _TERMINAL_TOOL_CALL_STATUSES
+                and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
+            )
+            if target is not None and became_terminal:
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -1658,6 +1679,28 @@ class ACPAgent(AgentBase):
                     exc_info=True,
                 )
 
+    def _flush_inflight_tool_calls_as_completed(self) -> None:
+        """Emit a terminal ``completed`` ACPToolCallEvent for every accumulated
+        tool call still sitting at a non-terminal status.
+
+        The prompt returned successfully, so a tool card the server opened but
+        never closed (it sent ``ToolCallStart`` but no terminal
+        ``ToolCallProgress``) is treated as completed. Since we now persist
+        exactly one early ``started`` event and one terminal event per call,
+        this guarantees the action->observation pairing holds for *every*
+        call — without it, a server that omits the closing frame would leave
+        the early ``started`` event as the last word, and the relaxed canvas
+        render gate would show that card spinning forever. Reuses
+        ``_emit_tool_call_event`` so truncation and error-swallowing match the
+        live terminal path. No-op once every call is already terminal (the
+        common case, since ``conn.prompt`` only returns after its tools run).
+        """
+        for tc in self._client.accumulated_tool_calls:
+            if tc.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            tc["status"] = "completed"
+            self._client._emit_tool_call_event(tc)
+
     async def _arequest_session_cancel(self) -> None:
         """Async variant of _request_session_cancel that waits for cancel send."""
         if self._conn is None or self._executor is None or self._session_id is None:
@@ -1895,10 +1938,13 @@ class ACPAgent(AgentBase):
             usage_update=usage_update,
         )
 
-        # ACPToolCallEvents were already emitted live from
-        # _OpenHandsACPBridge.session_update as each ToolCallStart /
-        # ToolCallProgress notification arrived — no end-of-turn fan-out
-        # here. FinishAction closes out the turn below.
+        # Tool cards were already streamed live from
+        # _OpenHandsACPBridge.session_update: one early ``started`` event per
+        # ToolCallStart and one terminal event per call. Close out any card the
+        # server opened but never terminated so every ``started`` has its
+        # matching terminal observation before the turn's FinishAction lands.
+        self._flush_inflight_tool_calls_as_completed()
+
         response_text = "".join(self._client.accumulated_text)
         thought_text = "".join(self._client.accumulated_thoughts)
         if not response_text:
