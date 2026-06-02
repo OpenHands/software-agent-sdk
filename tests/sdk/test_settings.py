@@ -1,5 +1,4 @@
 import json
-import warnings
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
@@ -473,12 +472,21 @@ def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
 
 
 def test_llm_create_agent_builds_condenser_when_enabled() -> None:
+    llm = LLM(model="test-model", usage_id="agent")
+    agent_metrics = llm.metrics
     settings = OpenHandsAgentSettings(
+        llm=llm,
         condenser=CondenserSettings(enabled=True, max_size=100),
     )
     agent = settings.create_agent()
+
+    assert agent.llm is llm
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.max_size == 100
+    assert agent.condenser.llm is not llm
+    assert agent.condenser.llm.model == llm.model
+    assert agent.condenser.llm.usage_id == "condenser"
+    assert agent.condenser.llm.metrics is not agent_metrics
 
 
 def test_llm_create_agent_no_condenser_when_disabled() -> None:
@@ -657,23 +665,25 @@ def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
     assert agent.agent_context == context
 
 
-def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
-    """Importing ``LLMAgentSettings`` emits DeprecationWarning at import time."""
+def test_llm_agent_settings_public_alias_removed() -> None:
+    """The deprecated ``LLMAgentSettings`` public import aliases were removed in
+    v1.24.0; the class itself is retained (internal-only) for the union."""
+    import openhands.sdk as _sdk_mod
     import openhands.sdk.settings as _settings_mod
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cls = getattr(_settings_mod, "LLMAgentSettings")
+    with pytest.raises(AttributeError):
+        getattr(_settings_mod, "LLMAgentSettings")
+    with pytest.raises(AttributeError):
+        getattr(_sdk_mod, "LLMAgentSettings")
 
-    assert any("LLMAgentSettings" in str(w.message) for w in caught), (
-        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
-    )
-    assert issubclass(cls, OpenHandsAgentSettings)
-    # Construction itself does not emit a second warning.
-    settings = cls(llm=LLM(model="test-model"))
+    # The class is still reachable at its canonical internal location and keeps
+    # agent_kind="llm" so the discriminated union deserializes legacy payloads
+    # and the API-breakage checker sees no field-value change.
+    from openhands.sdk.settings.model import LLMAgentSettings
+
+    assert issubclass(LLMAgentSettings, OpenHandsAgentSettings)
+    settings = LLMAgentSettings(llm=LLM(model="test-model"))
     assert isinstance(settings, OpenHandsAgentSettings)
-    # LLMAgentSettings keeps its own agent_kind="llm" so the API-breakage
-    # checker sees no field-value change vs the published PyPI release.
     assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
 

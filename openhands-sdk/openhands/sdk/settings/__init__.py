@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from .acp_providers import (
     ACP_PROVIDERS,
+    ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
@@ -36,7 +37,6 @@ if TYPE_CHECKING:
         AgentSettingsConfig,
         CondenserSettings,
         ConversationSettings,
-        LLMAgentSettings,
         OpenHandsAgentSettings,
         SettingsChoice,
         SettingsFieldSchema,
@@ -74,6 +74,7 @@ _MODEL_EXPORTS = {
 
 __all__ = [
     "ACP_PROVIDERS",
+    "ACPModelOption",
     "ACPProviderInfo",
     "build_session_model_meta",
     "AGENT_SETTINGS_SCHEMA_VERSION",
@@ -84,7 +85,6 @@ __all__ = [
     "AgentSettingsConfig",
     "CondenserSettings",
     "ConversationSettings",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "SETTINGS_METADATA_KEY",
     "SETTINGS_SECTION_METADATA_KEY",
@@ -114,22 +114,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    if name == "LLMAgentSettings":
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            f"Importing {name!r} from openhands.sdk.settings",
-            deprecated_in="1.19.0",
-            removed_in="1.24.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` directly. "
-                "``LLMAgentSettings`` was renamed in v1.19.0."
-            ),
-            stacklevel=3,
-        )
-        from . import model
-
-        return getattr(model, name)
     if name in _MODEL_EXPORTS:
         from . import model
 

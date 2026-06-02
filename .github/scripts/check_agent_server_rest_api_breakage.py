@@ -557,6 +557,38 @@ _ADDITIVE_RESPONSE_BODY_ONEOF_IDS = frozenset(
 )
 
 
+# oasdiff rule IDs for enum-value additions in response schemas.
+_RESPONSE_ENUM_VALUE_ADDED_IDS = frozenset(
+    {
+        "response-property-enum-value-added",
+        "response-write-only-property-enum-value-added",
+    }
+)
+
+# Response properties that are known extensible discriminated-union discriminators
+# and may therefore grow new enum values additively. Adding a HookType value
+# (e.g. "agent") to a hook definition's `type` is safe because hook configs are an
+# extensible union and clients must tolerate unknown discriminator values. This is
+# intentionally scoped to the hook discriminator so an ordinary new response enum
+# value elsewhere (a new status/mode/etc.) is still treated as a breaking change.
+_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE = re.compile(
+    r"HookConfig\b.*\bhooks/items/type\b"
+)
+
+
+def _is_additive_discriminator_enum_value(change: dict) -> bool:
+    """Return True for additive enum values on a known extensible discriminator.
+
+    Adding a value to a response enum is normally breaking (generated clients may
+    treat the enum exhaustively), so this is scoped narrowly to the hook config
+    discriminator union rather than allowlisting every response enum addition.
+    """
+    if str(change.get("id", "")) not in _RESPONSE_ENUM_VALUE_ADDED_IDS:
+        return False
+    text = str(change.get("text", ""))
+    return bool(_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE.search(text))
+
+
 def _is_union_property_removal_artifact(change: dict) -> bool:
     """Return True for property removals that are artifacts of union widening.
 
@@ -606,7 +638,9 @@ def _split_breaking_changes(
             removed_schema_properties.append(change)
             continue
 
-        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS:
+        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS or (
+            _is_additive_discriminator_enum_value(change)
+        ):
             additive_response_oneof.append(change)
             continue
 
@@ -799,9 +833,10 @@ def main() -> int:
         if additive_response_oneof:
             print(
                 f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
-                "Additive oneOf/anyOf expansion detected in response schemas. "
-                "This is expected for extensible discriminated-union APIs and "
-                "does not break backward compatibility."
+                "Additive oneOf/anyOf expansion or enum-value additions detected "
+                "in response schemas. This is expected for extensible "
+                "discriminated-union APIs and does not break backward "
+                "compatibility."
             )
             for item in additive_response_oneof:
                 print(f"  - {item.get('text', str(item))}")

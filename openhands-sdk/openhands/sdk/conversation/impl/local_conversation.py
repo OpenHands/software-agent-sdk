@@ -5,6 +5,7 @@ import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
@@ -34,6 +35,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     CondensationRequest,
+    Event,
     InterruptEvent,
     MessageEvent,
     ObservationEvent,
@@ -43,7 +45,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -58,6 +60,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills import load_available_skills, merge_skills_by_name
 from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -70,6 +73,24 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
+
+ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
+ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
+ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
+ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
+    if not isinstance(event, MessageEvent):
+        return False
+    if event.source == "user":
+        return True
+    if event.source != "environment" or event.llm_message.role != "user":
+        return False
+    return any(
+        part.startswith(ACP_STOP_HOOK_FEEDBACK_PREFIX)
+        for part in content_to_str(event.llm_message.content)
+    )
 
 
 class LocalConversation(BaseConversation):
@@ -504,6 +525,38 @@ class LocalConversation(BaseConversation):
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
+        # Resolve project skills from the workspace. AgentContext can't do this
+        # itself (the workspace path is unknown at validation time), so it is done
+        # here, where the path is known. Project skills take precedence over
+        # same-named skills already on the context.
+        project_skills_loaded = False
+        if merged_context is not None and merged_context.load_project_skills:
+            # Best-effort: a failure to load project skills must not prevent the
+            # conversation from starting. (load_available_skills already guards
+            # the project source internally; this is belt-and-suspenders.)
+            try:
+                project_skills = load_available_skills(
+                    work_dir=self.workspace.working_dir,
+                    include_user=False,
+                    include_project=True,
+                    include_public=False,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to load project skills; continuing without them",
+                    exc_info=True,
+                )
+                project_skills = {}
+            if project_skills:
+                # Project skills are authoritative over same-named context skills.
+                merged_skills = merge_skills_by_name(
+                    project_skills.values(), merged_context.skills
+                )
+                merged_context = merged_context.model_copy(
+                    update={"skills": merged_skills}
+                )
+                project_skills_loaded = True
+
         # Expand MCP config variables with per-conversation secrets
         # This handles ${VAR} and ${VAR:-default} placeholders:
         # - Variables referencing secrets injected via API are expanded to secret values
@@ -521,9 +574,9 @@ class LocalConversation(BaseConversation):
             )
             logger.debug("Expanded MCP config variables")
 
-        # Update agent with merged content only if we have plugins or MCP config
-        # Skip update when nothing changed to avoid unnecessary agent state mutations
-        if self._plugin_specs or has_mcp_config:
+        # Update agent with merged content only if something changed.
+        # Skip update otherwise to avoid unnecessary agent state mutations.
+        if self._plugin_specs or has_mcp_config or project_skills_loaded:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -559,12 +612,23 @@ class LocalConversation(BaseConversation):
         if final_hook_config is not None:
             # Store final hook_config in state for observability
             self._state.hook_config = final_hook_config
+            hook_persistence_dir = (
+                str(Path(self._state.persistence_dir).parent)
+                if self._state.persistence_dir is not None
+                else None
+            )
 
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
+                # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
+                # so agent hooks must read the current LLM at execution time.
+                llm_getter=lambda: self.agent.llm,
+                persistence_dir=hook_persistence_dir,
+                visualizer=self._visualizer,
+                conversation_stats=self._state.stats,
             )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
@@ -629,12 +693,18 @@ class LocalConversation(BaseConversation):
             # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
 
-            # Register LLMs in the registry (still holding lock)
+            # Register LLMs in the registry (still holding lock).
+            # `registered` is updated after each add so that duplicate usage_ids
+            # within the same batch are silently skipped (first-write-wins),
+            # preventing a ValueError when e.g. agent and condenser LLMs were
+            # both serialised with usage_id="default".
             self.llm_registry.subscribe(self._state.stats.register_llm)
             registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
+                    registered.add(llm.usage_id)
+                self._pin_session_affinity_header(llm)
 
             self._agent_ready = True
 
@@ -656,6 +726,20 @@ class LocalConversation(BaseConversation):
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
 
+    def _pin_session_affinity_header(self, llm: LLM) -> None:
+        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
+
+        Note: if a caller passes ``extra_headers`` as a kwarg directly to
+        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
+        entirely — the same limitation that affects OpenRouter headers.
+        """
+        existing = llm.extra_headers or {}
+        if "x-litellm-session-id" not in existing:
+            llm.extra_headers = {
+                "x-litellm-session-id": str(self._state.id),
+                **existing,
+            }
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -676,6 +760,7 @@ class LocalConversation(BaseConversation):
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
+            self._pin_session_affinity_header(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -698,6 +783,71 @@ class LocalConversation(BaseConversation):
             loaded = self._profile_store.load(profile_name, cipher=self._cipher)
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
+
+    def switch_acp_model(self, model: str) -> None:
+        """Switch the model on a running ACP conversation (mid-conversation).
+
+        Unlike :meth:`switch_llm`, which swaps OpenHands' own LLM object, this
+        issues a protocol-level ``session/set_model`` call to the ACP
+        subprocess so the new model applies to subsequent turns of the *same*
+        session, preserving conversation context. ``switch_llm`` would not
+        affect an ACP conversation, since the subprocess owns its own model.
+
+        Args:
+            model: Provider-specific model id to switch to.
+
+        Raises:
+            ValueError: If the conversation's agent is not an :class:`ACPAgent`,
+                or the provider does not support runtime model switching, or
+                the ACP server rejects the switch.
+            RuntimeError: If the ACP session is not yet initialized.
+            TimeoutError: If the ACP server does not respond within
+                ``acp_prompt_timeout`` seconds.
+        """
+        if not isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_acp_model is only supported for ACP conversations."
+            )
+        with self._state:
+            # Perform the live protocol switch first; if it fails we leave the
+            # persisted state untouched.
+            self.agent.set_acp_model(model)
+            # Persist the switched model as the authoritative value. ``acp_model``
+            # is frozen, so we replace the agent with a copy carrying the new
+            # value. This matters on two counts the in-place mutation missed:
+            #   1. A fresh object identity makes the autosave path actually
+            #      write base_state.json (re-assigning the same object is a
+            #      no-op because old == new).
+            #   2. model_post_init / _start_acp_server derive the sentinel model
+            #      and the resumed session model from ``acp_model`` on reload, so
+            #      it must hold the switched value, not the construction-time one.
+            #
+            # model_copy is shallow, so the copy shares the live ACP runtime
+            # (_conn/_executor/_process) with the old agent. Disarm the old
+            # agent's finalizer before dropping it: otherwise ACPAgent.__del__
+            # -> close() on the discarded agent would tear down the session the
+            # copy now owns, leaving the next turn pointing at a dead connection.
+            old_agent = self.agent
+            new_agent = old_agent.model_copy(update={"acp_model": model})
+            old_agent.release_runtime()
+            # ``self.agent`` is the live reference used by subsequent ``step()``
+            # calls; ``self._state.agent`` is what the autosave path serializes
+            # to base_state.json. Update both so the running conversation and the
+            # persisted state agree on the switched model.
+            self.agent = new_agent
+            self._state.agent = new_agent
+            # Keep the persisted model hint in sync with the switch. The live
+            # agent's ``current_model_id`` (a PrivateAttr) already reflects the
+            # new model and wins on warm reads, but cold list reads after a
+            # process restart fall back to ``agent_state`` — which would
+            # otherwise still name the pre-switch model until the next resume.
+            # Write unconditionally: a successful switch is authoritative even
+            # for an older/custom server that reported no ``models`` at init
+            # (so the key may not exist yet).
+            self._state.agent_state = {
+                **self._state.agent_state,
+                "acp_current_model_id": model,
+            }
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -765,6 +915,11 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def _on_event_with_state_lock(self, event: Event) -> None:
+        """Emit an event while holding the conversation state lock."""
+        with self._state:
+            self._on_event(event)
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
@@ -817,7 +972,9 @@ class LocalConversation(BaseConversation):
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
                                 if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
                                     feedback_msg = MessageEvent(
                                         source="environment",
                                         llm_message=Message(
@@ -915,6 +1072,7 @@ class LocalConversation(BaseConversation):
         finally:
             self._cancel_token = None
 
+    @observe(name="conversation.arun")
     async def arun(self) -> None:
         """Async variant of :meth:`run`.
 
@@ -933,11 +1091,26 @@ class LocalConversation(BaseConversation):
         observation is patched with a synthetic ``AgentErrorEvent`` so
         the LLM conversation history stays consistent.
         """
-        self._ensure_agent_ready()
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
+        self._ensure_agent_ready()
 
         with self._state:
+            if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.IDLE,
+            ):
+                updated_agent_state = dict(self._state.agent_state)
+                inflight_prompt_user_message_id = updated_agent_state.get(
+                    ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID
+                )
+                if inflight_prompt_user_message_id is not None:
+                    updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                        inflight_prompt_user_message_id
+                    )
+                    updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
+                    self._state.agent_state = updated_agent_state
+
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
@@ -945,11 +1118,16 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
+            last_acp_prompt_user_message_id = self._state.agent_state.get(
+                ACP_LAST_PROMPT_USER_MESSAGE_ID
+            )
 
         iteration = 0
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
+                acp_step_user_message_id: str | None = None
+                acp_step_user_message: MessageEvent | None = None
                 with self._state:
                     if self._state.execution_status in [
                         ConversationExecutionStatus.PAUSED,
@@ -968,7 +1146,9 @@ class LocalConversation(BaseConversation):
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
                                 if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
                                     feedback_msg = MessageEvent(
                                         source="environment",
                                         llm_message=Message(
@@ -1000,12 +1180,238 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    await self.agent.astep(
-                        self,
-                        on_event=self._on_event,
-                        on_token=self._on_token,
-                    )
+                    if isinstance(self.agent, ACPAgent):
+                        # Re-scan prompt messages under the lock each time we need
+                        # the latest tail; the list is usually tiny, and correctness
+                        # is more important than caching stale prompt snapshots.
+
+                        acp_prompt_messages = [
+                            event
+                            for event in self._state.events
+                            if _is_acp_prompt_message(event)
+                        ]
+                        if last_acp_prompt_user_message_id is None:
+                            acp_step_user_message = (
+                                acp_prompt_messages[0] if acp_prompt_messages else None
+                            )
+                        else:
+                            last_prompt_index = next(
+                                (
+                                    index
+                                    for index, event in enumerate(acp_prompt_messages)
+                                    if event.id == last_acp_prompt_user_message_id
+                                ),
+                                None,
+                            )
+                            if last_prompt_index is None:
+                                logger.info(
+                                    "ACP prompt cursor %s no longer exists; "
+                                    "restarting from first available prompt",
+                                    last_acp_prompt_user_message_id,
+                                )
+                                acp_step_user_message = (
+                                    acp_prompt_messages[0]
+                                    if acp_prompt_messages
+                                    else None
+                                )
+                            else:
+                                acp_step_user_message = (
+                                    acp_prompt_messages[last_prompt_index + 1]
+                                    if last_prompt_index + 1 < len(acp_prompt_messages)
+                                    else None
+                                )
+                        acp_step_user_message_id = (
+                            acp_step_user_message.id
+                            if acp_step_user_message is not None
+                            else None
+                        )
+                    else:
+                        # The state lock is held across this await. Mutations
+                        # performed inside astep() (including native async
+                        # Agent.astep / ACPAgent.astep that mutate on the
+                        # event-loop thread) are intentional and part of this
+                        # critical section. The invariant is only that no
+                        # *unrelated* state mutator may run concurrently while
+                        # the lock is held: because FIFOLock is thread- (not
+                        # task-) reentrant, any unrelated state-mutating
+                        # coroutine awaited on this event-loop thread would
+                        # silently re-enter the lock and corrupt history. Such
+                        # unrelated mutators must be dispatched via
+                        # run_in_executor onto a worker thread.
+                        await self.agent.astep(
+                            self,
+                            on_event=self._on_event,
+                            on_token=self._on_token,
+                        )
+                        iteration += 1
+
+                        if (
+                            self.state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        ):
+                            break
+
+                        if iteration >= self.max_iteration_per_run:
+                            if (
+                                self._state.execution_status
+                                == ConversationExecutionStatus.FINISHED
+                            ):
+                                break
+                            error_msg = (
+                                f"Agent reached maximum iterations limit "
+                                f"({self.max_iteration_per_run})."
+                            )
+                            logger.error(error_msg)
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.ERROR
+                            )
+                            self._on_event(
+                                ConversationErrorEvent(
+                                    source="environment",
+                                    code="MaxIterationsReached",
+                                    detail=error_msg,
+                                )
+                            )
+                            break
+
+                        continue
+
+                # ACP prompt round-trips can run for minutes. Keep the state
+                # lock free while awaiting them so incoming user messages can
+                # be persisted immediately; event callbacks take the lock only
+                # for each individual mutation.
+                if acp_step_user_message is None:
+                    with self._state:
+                        acp_prompt_messages = [
+                            event
+                            for event in self._state.events
+                            if _is_acp_prompt_message(event)
+                        ]
+                        latest_acp_prompt_message_id = (
+                            acp_prompt_messages[-1].id if acp_prompt_messages else None
+                        )
+                        acp_prompt_message_changed = (
+                            latest_acp_prompt_message_id is not None
+                            and latest_acp_prompt_message_id
+                            != last_acp_prompt_user_message_id
+                        )
+                        if acp_prompt_message_changed:
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived before ACP finish; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            logger.info(
+                                "User message arrived before ACP finish; continuing run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+                            continue
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.FINISHED
+                        )
+                    break
+
+                acp_step_start_event_count = 0
+                with self._state:
+                    if self._state.execution_status in (
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
+                    ):
+                        break
+                    acp_step_start_event_count = len(self._state.events)
+                    if acp_step_user_message_id is not None:
+                        self._state.agent_state = {
+                            **self._state.agent_state,
+                            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID: (
+                                acp_step_user_message_id
+                            ),
+                        }
+
+                await self.agent.astep(
+                    self,
+                    on_event=self._on_event_with_state_lock,
+                    on_token=self._on_token,
+                    prompt_message=acp_step_user_message,
+                )
+                with self._state:
                     iteration += 1
+                    pause_requested_during_acp_step = any(
+                        isinstance(event, PauseEvent)
+                        for event in self._state.events[acp_step_start_event_count:]
+                    )
+                    updated_agent_state = dict(self._state.agent_state)
+                    if (
+                        updated_agent_state.get(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID)
+                        == acp_step_user_message_id
+                    ):
+                        updated_agent_state.pop(
+                            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None
+                        )
+                    updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
+                    if (
+                        acp_step_user_message_id is not None
+                        and self._state.execution_status
+                        not in (
+                            ConversationExecutionStatus.ERROR,
+                            ConversationExecutionStatus.STUCK,
+                            ConversationExecutionStatus.PAUSED,
+                        )
+                    ):
+                        last_acp_prompt_user_message_id = acp_step_user_message_id
+                        updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                            acp_step_user_message_id
+                        )
+                    self._state.agent_state = updated_agent_state
+
+                    if self._state.execution_status in (
+                        ConversationExecutionStatus.ERROR,
+                        ConversationExecutionStatus.STUCK,
+                    ):
+                        break
+                    if pause_requested_during_acp_step:
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.PAUSED
+                        )
+                        break
+
+                    acp_prompt_messages = [
+                        event
+                        for event in self._state.events
+                        if _is_acp_prompt_message(event)
+                    ]
+                    latest_acp_prompt_message_id = (
+                        acp_prompt_messages[-1].id if acp_prompt_messages else None
+                    )
+                    acp_prompt_message_changed = (
+                        latest_acp_prompt_message_id is not None
+                        and latest_acp_prompt_message_id
+                        != last_acp_prompt_user_message_id
+                    )
+                    if acp_prompt_message_changed and self._state.execution_status in (
+                        ConversationExecutionStatus.FINISHED,
+                        ConversationExecutionStatus.IDLE,
+                    ):
+                        if iteration >= self.max_iteration_per_run:
+                            logger.info(
+                                "User message arrived during final ACP iteration; "
+                                "leaving conversation idle for a follow-up run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.IDLE
+                            )
+                            break
+                        logger.info(
+                            "User message arrived during ACP step; continuing run"
+                        )
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
 
                     if (
                         self.state.execution_status
@@ -1042,6 +1448,24 @@ class LocalConversation(BaseConversation):
             # PAUSED so the conversation can be resumed later.
             logger.info("arun() interrupted via task cancellation")
             with self._state:
+                updated_agent_state = dict(self._state.agent_state)
+                inflight_prompt_user_message_id = updated_agent_state.pop(
+                    ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None
+                )
+                superseded_by_new_message = bool(
+                    updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, False)
+                )
+                completed_cancelled_prompt = (
+                    self._state.execution_status == ConversationExecutionStatus.FINISHED
+                )
+                if (
+                    superseded_by_new_message or completed_cancelled_prompt
+                ) and inflight_prompt_user_message_id is not None:
+                    updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                        inflight_prompt_user_message_id
+                    )
+                self._state.agent_state = updated_agent_state
+
                 # Emit synthetic error observations for any ActionEvents
                 # that were in-flight when the interrupt landed.  Without
                 # these the LLM history would contain tool-call requests
@@ -1053,6 +1477,10 @@ class LocalConversation(BaseConversation):
                 self._on_event(InterruptEvent())
         except Exception as e:
             with self._state:
+                updated_agent_state = dict(self._state.agent_state)
+                updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
+                updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
+                self._state.agent_state = updated_agent_state
                 self._state.execution_status = ConversationExecutionStatus.ERROR
                 self._on_event(
                     ConversationErrorEvent(
@@ -1065,7 +1493,11 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
         finally:
-            self._cancel_token = None
+            # A cancelled token must stay observable: interrupted tool calls run
+            # in worker threads that can outlive arun() and still poll it. A
+            # fresh token is created on the next run().
+            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
+                self._cancel_token = None
             self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:

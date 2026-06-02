@@ -2,7 +2,6 @@ from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 from tenacity import (
-    AsyncRetrying,
     RetryCallState,
     retry,
     retry_if_exception_type,
@@ -93,37 +92,6 @@ class RetryMixin:
             ),
         )
         return retry_decorator
-
-    def async_retry(
-        self,
-        num_retries: int = 5,
-        retry_exceptions: tuple[type[BaseException], ...] = (LLMNoResponseError,),
-        retry_min_wait: int = 8,
-        retry_max_wait: int = 64,
-        retry_multiplier: float = 2.0,
-        retry_listener: RetryListener | None = None,
-    ) -> AsyncRetrying:
-        """Return an ``AsyncRetrying`` instance for use in ``async for`` blocks.
-
-        Usage::
-
-            async for attempt in self.async_retry(...):
-                with attempt:
-                    result = await _do_work()
-        """
-        before_sleep = self._build_before_sleep(num_retries, retry_listener)
-
-        return AsyncRetrying(
-            before_sleep=before_sleep,
-            stop=stop_after_attempt(num_retries),
-            reraise=True,
-            retry=retry_if_exception_type(retry_exceptions),
-            wait=wait_exponential(
-                multiplier=retry_multiplier,
-                min=retry_min_wait,
-                max=retry_max_wait,
-            ),
-        )
 
     def log_retry_attempt(self, retry_state: RetryCallState) -> None:
         """Log retry attempts."""

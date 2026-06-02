@@ -28,6 +28,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
@@ -88,14 +89,16 @@ VERIFIED_NVIDIA_MODELS = [
 
 VERIFIED_QWEN_MODELS = [
     "qwen3-6-plus",
+    "qwen3.6-plus",
     "qwen3-coder-480b",
+    "qwen3-coder-next",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "gpt-5.5",
@@ -126,7 +129,9 @@ VERIFIED_OPENHANDS_MODELS = [
     "nemotron-3-nano",
     "nemotron-3-super-120b-a12b",
     "qwen3-6-plus",
+    "qwen3.6-plus",
     "qwen3-coder-480b",
+    "qwen3-coder-next",
     "trinity-large-thinking",
 ]
 

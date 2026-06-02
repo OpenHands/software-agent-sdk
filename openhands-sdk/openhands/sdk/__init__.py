@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.agent import (
     Agent,
@@ -51,6 +50,7 @@ from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
     ACP_PROVIDERS,
     ACPAgentSettings,
+    ACPModelOption,
     ACPProviderInfo,
     AgentSettingsBase,
     AgentSettingsConfig,
@@ -70,10 +70,6 @@ from openhands.sdk.settings import (
     get_acp_provider,
     validate_agent_settings,
 )
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.settings import LLMAgentSettings
 from openhands.sdk.settings.metadata import (
     SettingProminence,
     SettingsFieldMetadata,
@@ -117,35 +113,6 @@ except PackageNotFoundError:
 
 # Print startup banner
 _print_banner(__version__)
-
-_DEPRECATED_SDK_EXPORTS: dict[str, dict[str, str]] = {
-    "LLMAgentSettings": {
-        "deprecated_in": "1.19.0",
-        "removed_in": "1.24.0",
-        "details": (
-            "Use ``OpenHandsAgentSettings`` directly. "
-            "``LLMAgentSettings`` was renamed in v1.19.0."
-        ),
-    },
-}
-
-
-def __getattr__(name: str) -> Any:
-    if name in _DEPRECATED_SDK_EXPORTS:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        info = _DEPRECATED_SDK_EXPORTS[name]
-        warn_deprecated(
-            f"Importing {name!r} from openhands.sdk",
-            deprecated_in=info["deprecated_in"],
-            removed_in=info["removed_in"],
-            details=info["details"],
-            stacklevel=3,
-        )
-        from openhands.sdk import settings as _settings
-
-        return getattr(_settings, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
@@ -192,10 +159,10 @@ __all__ = [
     "VerificationSettings",
     "ACP_PROVIDERS",
     "ACPAgentSettings",
+    "ACPModelOption",
     "ACPProviderInfo",
     "AgentSettingsBase",
     "AgentSettingsConfig",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "build_session_model_meta",
     "default_agent_settings",

@@ -143,7 +143,10 @@ def maybe_inline_image_urls(
                 new_urls: list[str] = []
                 changed = False
                 for url in item.image_urls:
-                    if _needs_fetch(url) and client is None:
+                    # Only construct the client when we know we need to make
+                    # a real network call. URLs already served from the cache
+                    # (e.g. on second turns) must not trigger a client setup.
+                    if _needs_fetch(url) and _CACHE.get(url) is None and client is None:
                         client = httpx.Client(
                             timeout=FETCH_TIMEOUT_S,
                             follow_redirects=False,
@@ -208,7 +211,14 @@ def _inline_url(url: str, client: httpx.Client | None) -> str:
     if cached is not None:
         return cached
 
-    assert client is not None, "client must be provided for http(s) URLs"
+    # ``assert`` would be stripped under ``python -O``; use an explicit raise
+    # so the contract is enforced regardless of the optimisation level. The
+    # invariant is maintained by ``maybe_inline_image_urls``, so this path is
+    # unreachable in practice.
+    if client is None:
+        raise RuntimeError(
+            "internal error: httpx.Client must be provided for http(s) URLs"
+        )
 
     try:
         data_url = _fetch_and_encode(url, client)
