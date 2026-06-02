@@ -69,12 +69,6 @@ _EXT_TO_MIME = {
     "png": "image/png",
     "gif": "image/gif",
     "webp": "image/webp",
-_EXT_TO_MIME = {
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "png": "image/png",
-    "gif": "image/gif",
-    "webp": "image/webp",
     "bmp": "image/bmp",
     "tiff": "image/tiff",
     "tif": "image/tiff",
