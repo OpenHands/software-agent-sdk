@@ -429,6 +429,9 @@ class LocalConversation(BaseConversation):
             # immutable.
             for event in self._state.events:
                 fork_conv._state.events.append(event.model_copy(deep=True))
+            # Full rebuild: the copied events may need property enforcement
+            # (same posture as cold load).
+            fork_conv._state.rebuild_view()
 
             # Copy runtime state that accumulated during the source
             # conversation. activated_knowledge_skills is list[str] – strings
