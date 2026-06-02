@@ -18,6 +18,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _classify_acp_init_error,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -767,6 +768,120 @@ class TestACPAgentInitState:
         assert events[0].dynamic_context is not None
         assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
 
+    # -- Cold-start error surfacing (issue #1024) --------------------------
+
+    def _init_state_failure(self, tmp_path, exc: BaseException):
+        """Run init_state with ``_start_acp_server`` raising ``exc``.
+
+        Returns ``(state, events, raised)`` where ``raised`` is the exception
+        that escaped init_state (asserted to be the original ``exc``).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(type(exc)) as excinfo:
+                agent.init_state(state, on_event=events.append)
+        assert excinfo.value is exc, "original exception must propagate unchanged"
+        return state, events
+
+    def test_init_state_surfaces_auth_required(self, tmp_path):
+        """An auth-required protocol error becomes a typed ACPAuthRequired event
+        with ERROR status — instead of bypassing emission and reaching the
+        client as a generic "remote conversation ended with error"."""
+        exc = ACPRequestError(-32000, "Authentication required")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].source == "agent"
+        assert errors[0].code == "ACPAuthRequired"
+        assert "Authentication required" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_spawn_error(self, tmp_path):
+        """A missing/unexecutable CLI binary (FileNotFoundError /
+        PermissionError from create_subprocess_exec) becomes ACPSpawnError."""
+        for exc in (
+            FileNotFoundError("no such file: claude-agent-acp"),
+            PermissionError("permission denied"),
+        ):
+            state, events = self._init_state_failure(tmp_path, exc)
+            errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+            assert len(errors) == 1
+            assert errors[0].code == "ACPSpawnError"
+            assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_generic_init_error(self, tmp_path):
+        """Any other handshake/session failure falls back to ACPInitError."""
+        exc = RuntimeError("protocol handshake timed out")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "protocol handshake timed out" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_truncates_long_detail(self, tmp_path):
+        """detail is capped at 500 chars, matching the run-loop error path."""
+        exc = RuntimeError("x" * 1000)
+        _state, events = self._init_state_failure(tmp_path, exc)
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors[0].detail) == 500
+
+    def test_init_state_reraises_even_if_emission_fails(self, tmp_path):
+        """A failure while surfacing the error must never mask the original
+        exception — the re-raise contract run()/arun() rely on is preserved."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        exc = RuntimeError("boom")
+
+        def _explode(_event):
+            raise ValueError("on_event is broken")
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(RuntimeError, match="boom") as excinfo:
+                agent.init_state(state, on_event=_explode)
+        assert excinfo.value is exc
+
+
+# ---------------------------------------------------------------------------
+# _classify_acp_init_error
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyACPInitError:
+    def test_auth_required_code(self):
+        exc = ACPRequestError(-32000, "Authentication required")
+        assert _classify_acp_init_error(exc) == "ACPAuthRequired"
+
+    def test_other_request_error_is_init_error(self):
+        # A protocol error that isn't auth-required (e.g. internal error) is a
+        # generic init failure, not an auth failure.
+        exc = ACPRequestError(-32603, "Internal error")
+        assert _classify_acp_init_error(exc) == "ACPInitError"
+
+    def test_file_not_found_is_spawn_error(self):
+        assert _classify_acp_init_error(FileNotFoundError()) == "ACPSpawnError"
+
+    def test_permission_error_is_spawn_error(self):
+        assert _classify_acp_init_error(PermissionError()) == "ACPSpawnError"
+
+    def test_broken_pipe_is_init_error(self):
+        # A transport drop during the handshake is an OSError subclass but not a
+        # spawn failure — it must classify as ACPInitError, not ACPSpawnError.
+        assert _classify_acp_init_error(BrokenPipeError()) == "ACPInitError"
+
+    def test_generic_exception_is_init_error(self):
+        assert _classify_acp_init_error(RuntimeError("x")) == "ACPInitError"
+
 
 # ---------------------------------------------------------------------------
 # _OpenHandsACPBridge
@@ -845,6 +960,210 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Tool-call event emission (started + terminal, no per-progress fan-out)
+# ---------------------------------------------------------------------------
+
+
+def _mk_tool_start(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str = "git status",
+    kind: str = "execute",
+    status: str = "in_progress",
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallStart
+
+    start = MagicMock(spec=ToolCallStart)
+    start.tool_call_id = tool_call_id
+    start.title = title
+    start.kind = kind
+    start.status = status
+    start.raw_input = raw_input
+    start.raw_output = raw_output
+    start.content = content
+    return start
+
+
+def _mk_tool_progress(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallProgress
+
+    progress = MagicMock(spec=ToolCallProgress)
+    progress.tool_call_id = tool_call_id
+    progress.title = title
+    progress.kind = kind
+    progress.status = status
+    progress.raw_input = raw_input
+    progress.raw_output = raw_output
+    progress.content = content
+    return progress
+
+
+class TestACPToolCallProgressCollapse:
+    """The bridge persists exactly one ``started`` + one terminal event.
+
+    Each ``ToolCallProgress`` carries the *full cumulative* output, so emitting
+    one event per frame is O(n^2) storage + WebSocket relay. The bridge instead
+    streams one early ``started`` event and one terminal (``completed`` /
+    ``failed``) event per ``tool_call_id`` — the action->observation pair —
+    while silently accumulating the intermediate frames so the terminal event
+    still carries the final output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_emits_started_event(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_intermediate_progress_frames_are_not_emitted(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        # Several non-terminal progress frames with growing cumulative output.
+        for chunk in ("a", "ab", "abc"):
+            await client.session_update(
+                "s1", _mk_tool_progress(status="in_progress", raw_output=chunk)
+            )
+
+        # Only the started event was persisted — the intermediate frames are
+        # accumulated silently (this is the O(n^2)->O(1) collapse).
+        assert len(events) == 1
+        assert events[0].status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_emits_exactly_two_events(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="pending"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="in_progress", raw_output="partial")
+        )
+        await client.session_update(
+            "s1", _mk_tool_progress(status="completed", raw_output="partial-final")
+        )
+
+        assert len(events) == 2
+        started, terminal = events
+        assert started.status == "pending"
+        assert terminal.status == "completed"
+        # Terminal event carries the final cumulative output.
+        assert terminal.raw_output == "partial-final"
+        assert terminal.is_error is False
+
+    @pytest.mark.asyncio
+    async def test_failed_terminal_sets_is_error(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="failed", raw_output="boom")
+        )
+
+        assert len(events) == 2
+        assert events[-1].status == "failed"
+        assert events[-1].is_error is True
+
+    @pytest.mark.asyncio
+    async def test_single_shot_completed_start_emits_once(self) -> None:
+        """A ToolCallStart that is already terminal is the only event."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update(
+            "s1", _mk_tool_start(status="completed", raw_output="done")
+        )
+
+        assert len(events) == 1
+        assert events[0].status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_redundant_terminal_progress_does_not_double_emit(self) -> None:
+        """Only the first transition into a terminal status emits."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+        # A trailing duplicate terminal frame must not produce a third event.
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+
+        assert len(events) == 2
+        assert [e.status for e in events] == ["in_progress", "completed"]
+
+    def test_finalize_flush_completes_orphaned_tool_calls(self) -> None:
+        """A card the server opened but never closed is flushed to completed."""
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+        agent._client = client
+
+        # One still-running call and one already-terminal call.
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "live-1",
+                "title": "long task",
+                "tool_kind": "execute",
+                "status": "in_progress",
+                "raw_input": None,
+                "raw_output": "partial output",
+                "content": None,
+            }
+        )
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "done-1",
+                "title": "quick task",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": "ok",
+                "content": None,
+            }
+        )
+
+        agent._flush_inflight_tool_calls_as_completed()
+
+        # Only the non-terminal call is flushed (the terminal one is untouched).
+        assert len(events) == 1
+        assert events[0].tool_call_id == "live-1"
+        assert events[0].status == "completed"
+        assert events[0].is_error is False
+        assert events[0].raw_output == "partial output"
+        # The accumulator entry is now terminal so it won't be flushed again.
+        assert client.accumulated_tool_calls[0]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
