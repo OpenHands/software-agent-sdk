@@ -94,7 +94,7 @@ def test_base_conversation_span_management():
         # Start span
         conversation._start_observability_span("test-session-id")
         mock_start_span.assert_called_once_with(
-            "conversation", session_id="test-session-id"
+            "conversation", session_id="test-session-id", user_id=None
         )
         assert conversation._span_ended is False
         assert conversation._observability_root_span is fake_root

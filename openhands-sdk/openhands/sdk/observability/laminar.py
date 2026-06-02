@@ -86,8 +86,7 @@ def maybe_init_laminar():
         )
         return
 
-    import litellm
-    from lmnr import Instruments, Laminar, LaminarLiteLLMCallback
+    from lmnr import Instruments, Laminar
 
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
@@ -109,7 +108,6 @@ def maybe_init_laminar():
             ],
             force_http=force_http,
         )
-    litellm.callbacks.append(LaminarLiteLLMCallback())
 
 
 def observe[**P, R](
@@ -250,18 +248,26 @@ class RootSpan:
     traces with no ``session_id``), so we switched to the recommended pattern.
     """
 
-    def __init__(self, name: str, session_id: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
-        if session_id:
-            # ``set_trace_session_id`` requires an active span; briefly enter
-            # the span context to apply the session id to the trace metadata.
+        if session_id or user_id:
+            # ``set_trace_session_id`` / ``set_trace_user_id`` require an
+            # active span; briefly enter the span context to apply them.
             with contextlib.suppress(Exception):
                 with Laminar.use_span(self.span):
-                    Laminar.set_trace_session_id(session_id)
+                    if session_id:
+                        Laminar.set_trace_session_id(session_id)
+                    if user_id:
+                        Laminar.set_trace_user_id(user_id)
         self._ended = False
 
     def end(self) -> None:
@@ -275,7 +281,11 @@ class RootSpan:
             logger.debug("Error ending observability root span", exc_info=True)
 
 
-def start_root_span(name: str, session_id: str | None = None) -> RootSpan | None:
+def start_root_span(
+    name: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
+) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
     Returns ``None`` if observability is not enabled.
@@ -283,7 +293,7 @@ def start_root_span(name: str, session_id: str | None = None) -> RootSpan | None
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id)
+        return RootSpan(name, session_id=session_id, user_id=user_id)
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None

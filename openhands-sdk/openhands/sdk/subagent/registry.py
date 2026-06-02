@@ -174,7 +174,7 @@ def agent_definition_to_factory(
     - `model: inherit` preserves the parent LLM; an explicit model name
       creates a copy via `model_copy(update=...)`.
 
-    Note: Callers (e.g. DelegateTool, TaskManager) are responsible for
+    Note: Callers (e.g. TaskManager) are responsible for
     disabling streaming and resetting metrics on the resulting agent's LLM.
 
     Args:

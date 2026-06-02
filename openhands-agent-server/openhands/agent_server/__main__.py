@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 
 
 _INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+_EXTRA_PYTHON_PATH_ENV = "OH_EXTRA_PYTHON_PATH"
 
 
 def _get_internal_server_url(host: str, port: int) -> str:
@@ -41,6 +42,46 @@ def _get_internal_server_url(host: str, port: int) -> str:
     elif ":" in host and not host.startswith("["):
         resolved_host = f"[{host}]"
     return f"http://{resolved_host}:{port}"
+
+
+def extend_python_path(extra_paths: str | None) -> None:
+    """Add directories to ``sys.path`` so ``importlib.import_module`` can find
+    external custom-tool modules — even when running from a PyInstaller binary.
+
+    Paths are read from *extra_paths* (``--extra-python-path`` CLI arg) **and**
+    the ``OH_EXTRA_PYTHON_PATH`` environment variable.  Both use the
+    platform path separator (``':'`` on POSIX, ``';'`` on Windows).
+
+    Non-existent directories are skipped with a warning; duplicates and paths
+    already on ``sys.path`` are silently ignored.
+    """
+    raw_parts: list[str] = []
+    for source in (extra_paths, os.environ.get(_EXTRA_PYTHON_PATH_ENV)):
+        if source:
+            raw_parts.extend(source.split(os.pathsep))
+
+    added = 0
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        resolved = os.path.abspath(part)
+        if not os.path.isdir(resolved):
+            logger.warning(
+                "Ignoring non-existent --extra-python-path entry: %s", resolved
+            )
+            continue
+        if resolved not in sys.path:
+            sys.path.insert(0, resolved)
+            logger.info("Added to sys.path: %s", resolved)
+            added += 1
+
+    if added:
+        logger.info(
+            "Extended sys.path with %d director%s for custom tool imports",
+            added,
+            "y" if added == 1 else "ies",
+        )
 
 
 def preload_modules(modules_arg: str | None) -> None:
@@ -171,6 +212,16 @@ def main() -> None:
             "(e.g. 'myapp.tools,myapp.plugins')"
         ),
     )
+    parser.add_argument(
+        "--extra-python-path",
+        type=str,
+        default=None,
+        help=(
+            "Additional directories to add to sys.path for custom tool imports "
+            f"('{os.pathsep}'-separated).  Also reads from the "
+            f"{_EXTRA_PYTHON_PATH_ENV} environment variable."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -180,6 +231,10 @@ def main() -> None:
             sys.exit(0)
         else:
             sys.exit(1)
+
+    # Extend sys.path before importing user modules so external .py files
+    # are reachable — critical for PyInstaller binary builds.
+    extend_python_path(args.extra_python_path)
 
     # Import user modules after early-exit checks
     preload_modules(args.import_modules)

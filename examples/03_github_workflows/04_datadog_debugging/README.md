@@ -87,7 +87,7 @@ LLM_BASE_URL: Base URL for LLM service (optional)
    - **Issue Repository**: Where to create issues (default: `All-Hands-AI/infra`)
    - **Parent Issue**: Optional parent issue URL for tracking
    - **Issue Prefix**: Prefix for issue titles (default: `DataDog Error: `)
-   - **LLM Model**: Model to use (default: `openhands/claude-sonnet-4-5-20250929`)
+   - **LLM Model**: Model to use (default: `gpt-5.5`)
 5. Click **Run workflow**
 
 ### Via GitHub CLI
@@ -178,7 +178,7 @@ OpenHands/OpenHands,All-Hands-AI/infra,All-Hands-AI/deploy
 
 ### LLM Model Options
 
-- `openhands/claude-sonnet-4-5-20250929` - Best quality (default)
+- `gpt-5.5` - Best quality (default)
 - `openhands/claude-haiku-4-5-20251001` - Faster, cheaper
 - `anthropic/claude-3-5-sonnet-20241022` - Alternative
 
@@ -194,7 +194,7 @@ OpenHands/OpenHands,All-Hands-AI/infra,All-Hands-AI/deploy
 | `issue_parent` | string | No | - | Parent GitHub issue URL for tracking |
 | `issue_prefix` | string | No | `DataDog Error: ` | Prefix for issue titles |
 | `max_errors` | string | No | `5` | Maximum number of errors to fetch |
-| `llm_model` | string | No | `openhands/claude-sonnet-4-5-20250929` | LLM model to use |
+| `llm_model` | string | No | `gpt-5.5` | LLM model to use |
 
 ### Outputs
 

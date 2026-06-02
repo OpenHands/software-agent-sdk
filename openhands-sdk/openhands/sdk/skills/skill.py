@@ -2,6 +2,9 @@ import io
 import json
 import os
 import re
+import threading
+import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -931,6 +934,26 @@ PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
 PUBLIC_SKILLS_BRANCH = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 
+# Process-level cache for load_public_skills. Conversation creation re-validates
+# AgentContext several times and each validation re-runs load_public_skills
+# (git fetch + parse ~40 md files ≈ 1s). The cache short-circuits repeated calls
+# within the TTL while still picking up new skills within a minute.
+_PUBLIC_SKILLS_CACHE: dict[
+    tuple[str, str, str | None], tuple[float, list["Skill"]]
+] = {}
+_PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
+_PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
+
+
+def _invalidate_public_skills_cache() -> None:
+    """Clear the in-memory public-skills cache.
+
+    Called by ``sync_public_skills`` so a forced refresh re-parses immediately
+    instead of waiting for the TTL.
+    """
+    with _PUBLIC_SKILLS_CACHE_LOCK:
+        _PUBLIC_SKILLS_CACHE.clear()
+
 
 def load_marketplace_skill_names(
     repo_path: Path, marketplace_path: str
@@ -1025,6 +1048,15 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
+    cache_key = (repo_url, branch, marketplace_path)
+    with _PUBLIC_SKILLS_CACHE_LOCK:
+        cached = _PUBLIC_SKILLS_CACHE.get(cache_key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _PUBLIC_SKILLS_CACHE_TTL_SECONDS
+        ):
+            return list(cached[1])
+
     all_skills = []
 
     try:
@@ -1105,9 +1137,14 @@ def load_public_skills(
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
-    logger.info(
-        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
-    )
+    logger.info("Loaded %d public skills", len(all_skills))
+
+    # Only cache non-empty results so transient errors don't poison the cache
+    # for the full TTL window.
+    if all_skills:
+        with _PUBLIC_SKILLS_CACHE_LOCK:
+            _PUBLIC_SKILLS_CACHE[cache_key] = (time.monotonic(), list(all_skills))
+
     return all_skills
 
 
@@ -1165,6 +1202,24 @@ def load_available_skills(
             logger.warning(f"Failed to load project skills: {e}")
 
     return available
+
+
+def merge_skills_by_name(
+    primary: Iterable[Skill], secondary: Iterable[Skill]
+) -> list[Skill]:
+    """Merge two skill collections by name.
+
+    ``primary`` skills are authoritative: they take precedence on name conflicts
+    and keep their order. Each ``secondary`` skill is appended only when its name
+    is not already provided by ``primary``.
+    """
+    merged = list(primary)
+    seen = {skill.name for skill in merged}
+    for skill in secondary:
+        if skill.name not in seen:
+            seen.add(skill.name)
+            merged.append(skill)
+    return merged
 
 
 def to_prompt(skills: list[Skill], max_description_length: int = 1024) -> str:

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 from base64 import urlsafe_b64encode
@@ -10,9 +11,17 @@ from pydantic import SecretStr
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import (
+    PERSISTED_SETTINGS_SCHEMA_VERSION,
     FileSettingsStore,
     PersistedSettings,
     reset_stores,
+)
+from openhands.agent_server.persistence.models import _deep_merge
+from openhands.sdk.settings import (
+    AGENT_SETTINGS_SCHEMA_VERSION,
+    CONVERSATION_SETTINGS_SCHEMA_VERSION,
+    ACPAgentSettings,
+    OpenHandsAgentSettings,
 )
 from openhands.sdk.utils.cipher import Cipher
 
@@ -49,6 +58,16 @@ def config_with_settings(temp_persistence_dir, secret_key):
         session_api_keys=[],
         secret_key=SecretStr(secret_key),
     )
+
+
+def _encrypt(cipher: Cipher, value: str) -> str:
+    encrypted = cipher.encrypt(SecretStr(value))
+    assert encrypted is not None
+    return encrypted
+
+
+def _write_settings_file(persistence_dir: Path, payload: dict) -> None:
+    (persistence_dir / "settings.json").write_text(json.dumps(payload, indent=2))
 
 
 @pytest.fixture
@@ -113,6 +132,219 @@ def test_get_settings_returns_default_settings(client_with_settings):
     assert "conversation_settings" in body
     assert "llm_api_key_is_set" in body
     assert body["llm_api_key_is_set"] is False
+
+
+def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
+    client_with_settings, temp_persistence_dir, secret_key
+):
+    """Old OpenHands settings files load, migrate, and remain editable."""
+    cipher = Cipher(secret_key)
+    _write_settings_file(
+        temp_persistence_dir,
+        {
+            "active_profile": "legacy-profile",
+            "agent_settings": {
+                "schema_version": 1,
+                "agent_kind": "llm",
+                "llm": {
+                    "model": "legacy-model",
+                    "api_key": _encrypt(cipher, "sk-legacy-agent-key"),
+                },
+                "tools": [{"name": "TerminalTool"}],
+                "enable_sub_agents": False,
+                "enable_switch_llm_tool": True,
+                "mcp_config": {
+                    "mcpServers": {
+                        "github": {
+                            "command": "uvx",
+                            "args": ["mcp-server-github"],
+                            "env": {
+                                "GITHUB_TOKEN": _encrypt(cipher, "ghp-legacy-mcp-token")
+                            },
+                        },
+                        "remote": {
+                            "url": "https://example.com/mcp",
+                            "headers": {
+                                "Authorization": _encrypt(
+                                    cipher, "Bearer legacy-mcp-token"
+                                )
+                            },
+                        },
+                    }
+                },
+                "condenser": {"enabled": False, "max_size": 120},
+                "verification": {
+                    "critic_enabled": True,
+                    "confirmation_mode": True,
+                    "security_analyzer": "llm",
+                },
+            },
+            "conversation_settings": {
+                "max_iterations": 42,
+                "confirmation_mode": True,
+                "security_analyzer": "llm",
+            },
+        },
+    )
+
+    store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
+    loaded = store.load()
+
+    assert loaded is not None
+    assert loaded.active_profile == "legacy-profile"
+    assert loaded.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+
+    assert loaded.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert isinstance(loaded.agent_settings, OpenHandsAgentSettings)
+
+    assert loaded.agent_settings.agent_kind == "openhands"
+    assert loaded.agent_settings.llm.model == "legacy-model"
+    assert isinstance(loaded.agent_settings.llm.api_key, SecretStr)
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == "sk-legacy-agent-key"
+    assert loaded.conversation_settings.schema_version == (
+        CONVERSATION_SETTINGS_SCHEMA_VERSION
+    )
+    assert loaded.conversation_settings.max_iterations == 42
+    assert loaded.conversation_settings.confirmation_mode is True
+    assert loaded.conversation_settings.security_analyzer == "llm"
+
+    response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    agent_settings = body["agent_settings"]
+    assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert agent_settings["agent_kind"] == "openhands"
+    assert agent_settings["llm"]["api_key"] == "sk-legacy-agent-key"
+    assert agent_settings["condenser"] == {"enabled": False, "max_size": 120}
+    assert agent_settings["verification"]["critic_enabled"] is True
+    assert "confirmation_mode" not in agent_settings["verification"]
+    assert "security_analyzer" not in agent_settings["verification"]
+    servers = agent_settings["mcp_config"]["mcpServers"]
+    assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
+    assert servers["remote"]["headers"]["Authorization"] == "Bearer legacy-mcp-token"
+    assert body["conversation_settings"] == {
+        "schema_version": CONVERSATION_SETTINGS_SCHEMA_VERSION,
+        "max_iterations": 42,
+        "confirmation_mode": True,
+        "security_analyzer": "llm",
+    }
+
+    patch_response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {"llm": {"model": "post-migration-model"}},
+            "conversation_settings_diff": {"max_iterations": 84},
+        },
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    on_disk_text = (temp_persistence_dir / "settings.json").read_text()
+    assert "sk-legacy-agent-key" not in on_disk_text
+    assert "ghp-legacy-mcp-token" not in on_disk_text
+    assert "Bearer legacy-mcp-token" not in on_disk_text
+
+    on_disk = json.loads(on_disk_text)
+    assert on_disk["schema_version"] == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert on_disk["active_profile"] == "legacy-profile"
+    assert on_disk["agent_settings"]["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert on_disk["agent_settings"]["agent_kind"] == "openhands"
+    assert on_disk["conversation_settings"]["max_iterations"] == 84
+
+    response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["llm"]["model"] == "post-migration-model"
+    assert body["agent_settings"]["llm"]["api_key"] == "sk-legacy-agent-key"
+    servers = body["agent_settings"]["mcp_config"]["mcpServers"]
+    assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
+    assert body["conversation_settings"]["max_iterations"] == 84
+
+
+def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
+    client_with_settings, temp_persistence_dir, secret_key
+):
+    """ACP settings use the same persisted migration/encryption path."""
+    cipher = Cipher(secret_key)
+    _write_settings_file(
+        temp_persistence_dir,
+        {
+            "agent_settings": {
+                "schema_version": 1,
+                "agent_kind": "acp",
+                "acp_server": "custom",
+                "acp_command": ["echo", "settings"],
+                "acp_args": ["--verbose"],
+                "acp_env": {"OPENAI_API_KEY": _encrypt(cipher, "sk-acp-env")},
+                "acp_model": "acp-test-model",
+                "acp_session_mode": "bypassPermissions",
+                "acp_prompt_timeout": 123.0,
+                "llm": {
+                    "model": "acp-attribution-model",
+                    "api_key": _encrypt(cipher, "sk-acp-llm"),
+                },
+            },
+            "conversation_settings": {"max_iterations": 77},
+        },
+    )
+
+    store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=cipher)
+    loaded = store.load()
+
+    assert loaded is not None
+    assert loaded.schema_version == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert loaded.agent_settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert isinstance(loaded.agent_settings, ACPAgentSettings)
+
+    assert loaded.agent_settings.agent_kind == "acp"
+    assert loaded.agent_settings.acp_command == ["echo", "settings"]
+    assert loaded.agent_settings.acp_args == ["--verbose"]
+    assert loaded.agent_settings.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
+    assert loaded.agent_settings.acp_model == "acp-test-model"
+    assert loaded.agent_settings.acp_session_mode == "bypassPermissions"
+    assert loaded.agent_settings.acp_prompt_timeout == 123.0
+    assert isinstance(loaded.agent_settings.llm.api_key, SecretStr)
+    assert loaded.agent_settings.llm.api_key.get_secret_value() == "sk-acp-llm"
+
+    response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert response.status_code == 200
+    agent_settings = response.json()["agent_settings"]
+    assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    assert agent_settings["agent_kind"] == "acp"
+    assert agent_settings["acp_env"] == {"OPENAI_API_KEY": "sk-acp-env"}
+    assert agent_settings["llm"]["api_key"] == "sk-acp-llm"
+
+    patch_response = client_with_settings.patch(
+        "/api/settings", json={"conversation_settings_diff": {"max_iterations": 88}}
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    on_disk_text = (temp_persistence_dir / "settings.json").read_text()
+    assert "sk-acp-env" not in on_disk_text
+    assert "sk-acp-llm" not in on_disk_text
+    on_disk = json.loads(on_disk_text)
+    assert on_disk["schema_version"] == PERSISTED_SETTINGS_SCHEMA_VERSION
+    assert on_disk["agent_settings"]["acp_env"]["OPENAI_API_KEY"].startswith("gAAAA")
+    assert on_disk["conversation_settings"]["max_iterations"] == 88
+
+    reloaded = store.load()
+    assert reloaded is not None
+    assert isinstance(reloaded.agent_settings, ACPAgentSettings)
+
+    assert reloaded.agent_settings.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
+    assert reloaded.conversation_settings.max_iterations == 88
+
+
+def test_persisted_settings_from_persisted_rejects_newer_schema_version() -> None:
+    with pytest.raises(ValueError, match="newer than supported"):
+        PersistedSettings.from_persisted(
+            {"schema_version": PERSISTED_SETTINGS_SCHEMA_VERSION + 1}
+        )
 
 
 def test_get_settings_without_header_redacts_secrets(
@@ -241,18 +473,15 @@ def test_patch_settings_updates_llm_config(client_with_settings):
     assert body["llm_api_key_is_set"] is True
 
 
-def test_patch_settings_persists_mcp_env_vars_verbatim(
+def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     client_with_settings, temp_persistence_dir
 ):
-    """PATCH /api/settings must NOT replace MCP env / headers with ``"<redacted>"``
-    on disk.
+    """PATCH /api/settings must encrypt MCP ``env`` / ``headers`` values at
+    rest with the configured cipher — the same way other secret fields are
+    persisted — and never write them as ``"<redacted>"`` or plaintext.
 
-    Regression for the bug where saving MCP settings caused env / header
-    values to be written to ``settings.json`` as the literal string
-    ``"<redacted>"`` — irreversibly losing the user's credentials. The
-    storage path passes a ``cipher`` (and no ``expose_secrets``) in the
-    serialization context, which the MCP serializer was previously
-    treating the same as an untrusted REST default.
+    Reading them back via ``X-Expose-Secrets: plaintext`` must round-trip
+    to the original values (decrypted on load).
     """
     response = client_with_settings.patch(
         "/api/settings",
@@ -276,14 +505,23 @@ def test_patch_settings_persists_mcp_env_vars_verbatim(
     )
     assert response.status_code == 200, response.text
 
-    # Inspect the on-disk settings.json: env / headers must be the values the
-    # client sent, not ``<redacted>``.
-    on_disk = (temp_persistence_dir / "settings.json").read_text()
-    assert "<redacted>" not in on_disk
-    assert "ghp-router-secret" in on_disk
-    assert "tok-router-secret" in on_disk
+    # Inspect the on-disk settings.json: plaintext must NOT appear, the
+    # values must be Fernet ciphertext.
+    on_disk_path = temp_persistence_dir / "settings.json"
+    on_disk_text = on_disk_path.read_text()
+    assert "<redacted>" not in on_disk_text
+    assert "ghp-router-secret" not in on_disk_text
+    assert "tok-router-secret" not in on_disk_text
 
-    # GET with plaintext returns the same round-tripped values.
+    on_disk = json.loads(on_disk_text)
+    servers_on_disk = on_disk["agent_settings"]["mcp_config"]["mcpServers"]
+    assert servers_on_disk["github"]["env"]["GITHUB_TOKEN"].startswith("gAAAA")
+    assert servers_on_disk["remote"]["headers"]["Authorization"].startswith("gAAAA")
+    # Non-secret structure must remain readable.
+    assert servers_on_disk["github"]["command"] == "uvx"
+    assert servers_on_disk["remote"]["url"] == "https://example.com/mcp"
+
+    # GET with plaintext decrypts and returns the original round-tripped values.
     response = client_with_settings.get(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     )
@@ -319,6 +557,131 @@ def test_patch_settings_deep_merges(client_with_settings):
     body = response.json()
     assert body["agent_settings"]["llm"]["model"] == "gpt-4o"
     assert body["llm_api_key_is_set"] is True
+
+
+# ── JSON Merge Patch (RFC 7386) unset semantics ─────────────────────────
+
+
+def test_deep_merge_top_level_null_is_set_not_delete():
+    """A ``None`` on a top-level *field* is left as-is (set), NOT deleted —
+    so it flows to validation and fails loudly instead of silently resetting
+    the field to its default."""
+    merged = _deep_merge({"confirmation_mode": True}, {"confirmation_mode": None})
+    assert merged == {"confirmation_mode": None}
+
+
+def test_deep_merge_nested_null_deletes_entry():
+    """A ``None`` *inside a nested map* removes that entry; siblings survive."""
+    merged = _deep_merge(
+        {"acp_env": {"KEEP": "a", "DROP": "b"}},
+        {"acp_env": {"DROP": None}},
+    )
+    assert merged == {"acp_env": {"KEEP": "a"}}
+
+
+def test_deep_merge_nested_null_on_absent_key_is_noop():
+    """Unsetting a nested key that isn't present is a no-op, not an error."""
+    merged = _deep_merge({"acp_env": {"KEEP": "a"}}, {"acp_env": {"MISSING": None}})
+    assert merged == {"acp_env": {"KEEP": "a"}}
+
+
+def test_deep_merge_new_map_embedded_null_stored_as_is():
+    """Corner case (documented in ``_deep_merge``): when the nested map itself
+    doesn't exist in base yet, the overlay dict is assigned wholesale — null
+    entries inside are NOT treated as deletes (can't delete from a map that
+    doesn't exist yet). Pins the guarantee against a future refactor."""
+    merged = _deep_merge({}, {"new_map": {"KEY": None}})
+    assert merged == {"new_map": {"KEY": None}}
+
+
+def test_deep_merge_non_null_still_wins():
+    """Regression: non-null values still set/overwrite and merge as before."""
+    merged = _deep_merge({"a": 1, "b": {"x": 1}}, {"a": 2, "b": {"y": 2}})
+    assert merged == {"a": 2, "b": {"x": 1, "y": 2}}
+
+
+def _seed_acp_settings(persistence_dir: Path, acp_env: dict[str, str]) -> None:
+    """Write a settings.json with an active ACP agent carrying ``acp_env``."""
+    acp = ACPAgentSettings(acp_command=["echo", "hi"], acp_env=acp_env)
+    persisted = PersistedSettings(agent_settings=acp)
+    payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+    _write_settings_file(persistence_dir, payload)
+
+
+def test_patch_settings_unset_deletes_acp_env_key(
+    client_with_settings, temp_persistence_dir
+):
+    """PATCH with a ``null`` map value deletes a single ``acp_env`` entry —
+    the motivating case for the general merge-patch unset (supersedes the
+    need for a dedicated per-field DELETE endpoint)."""
+    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep", "DROP_ME": "drop"})
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"DROP_ME": None}}},
+    )
+    assert response.status_code == 200
+
+    acp_env = response.json()["agent_settings"]["acp_env"]
+    assert "KEEP_ME" in acp_env
+    assert "DROP_ME" not in acp_env
+
+
+def test_patch_settings_unset_absent_acp_env_key_is_noop(
+    client_with_settings, temp_persistence_dir
+):
+    """Unsetting a key that isn't present succeeds and changes nothing."""
+    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"NEVER_SET": None}}},
+    )
+    assert response.status_code == 200
+    assert set(response.json()["agent_settings"]["acp_env"]) == {"KEEP_ME"}
+
+
+def test_patch_settings_unset_then_add_acp_env_key(
+    client_with_settings, temp_persistence_dir
+):
+    """Add and delete coexist in one diff: set one key, drop another."""
+    _seed_acp_settings(temp_persistence_dir, {"OLD": "x", "DROP_ME": "y"})
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"NEW": "z", "DROP_ME": None}}},
+    )
+    assert response.status_code == 200
+    assert set(response.json()["agent_settings"]["acp_env"]) == {"OLD", "NEW"}
+
+
+def test_patch_settings_null_on_acp_env_field_itself_is_rejected(
+    client_with_settings, temp_persistence_dir
+):
+    """A ``null`` on the ``acp_env`` *field* (not an entry) is not an unset —
+    it flows to validation. ``acp_env`` is a non-optional dict, so it 422s
+    rather than wiping the map; clients clear a map by sending ``{}``."""
+    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": None}},
+    )
+    assert response.status_code == 422
+    # The pre-existing value is untouched (atomic validate-then-apply).
+    after = client_with_settings.get("/api/settings").json()
+    assert set(after["agent_settings"]["acp_env"]) == {"KEEP_ME"}
+
+
+def test_patch_settings_null_on_scalar_field_fails_loudly(client_with_settings):
+    """Regression guard against the silent-reset footgun: ``null`` on a
+    non-optional scalar like ``confirmation_mode`` is rejected (422), not
+    silently reverted to its (unsafe) default."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"conversation_settings_diff": {"confirmation_mode": None}},
+    )
+    assert response.status_code == 422
 
 
 # ── Secrets CRUD tests ──────────────────────────────────────────────────

@@ -156,6 +156,11 @@ def test_event_loss_race_condition_with_ws_delay(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
 
+    async def fake_acompletion(self, messages, tools=None, **kwargs):  # type: ignore[no-untyped-def]
+        return fake_completion_with_finish_tool(self, messages, tools, **kwargs)
+
+    monkeypatch.setattr(LLM, "acompletion", fake_acompletion, raising=True)
+
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
     workspace = RemoteWorkspace(

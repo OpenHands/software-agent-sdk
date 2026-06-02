@@ -72,6 +72,34 @@ def test_looks_like_malformed_conversation_history_error_positive():
     assert is_context_window_exceeded(malformed_history_error) is False
 
 
+def test_looks_like_malformed_conversation_history_error_moonshot():
+    error = BadRequestError(
+        (
+            "an assistant message with 'tool_calls' must be followed by tool "
+            "messages responding to each 'tool_call_id'"
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert looks_like_malformed_conversation_history_error(error) is True
+    assert is_context_window_exceeded(error) is False
+
+
+def test_looks_like_malformed_conversation_history_error_anthropic_first_sentence():
+    error = BadRequestError(
+        (
+            "messages.134: `tool_use` ids were found without `tool_result` "
+            "blocks immediately after: toolu_01Aye4s5HrR2uXwXFYgtQi4H."
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert looks_like_malformed_conversation_history_error(error) is True
+    assert is_context_window_exceeded(error) is False
+
+
 def test_is_context_window_exceeded_negative():
     assert (
         is_context_window_exceeded(BadRequestError("irrelevant", MODEL, PROVIDER))

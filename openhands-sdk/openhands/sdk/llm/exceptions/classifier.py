@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from litellm.exceptions import (
     APIConnectionError,
+    AuthenticationError,
     BadRequestError,
     ContextWindowExceededError,
     OpenAIError,
+    PermissionDeniedError,
 )
 
 from .types import (
@@ -31,6 +33,8 @@ LONG_PROMPT_PATTERNS: list[str] = [
 # into condensation-based recovery.
 MALFORMED_HISTORY_PATTERNS: list[str] = [
     "tool_use ids were found without `tool_result` blocks immediately after",
+    # Anthropic backtick variant
+    "`tool_use` ids were found without `tool_result` blocks immediately after",
     (
         "each `tool_use` block must have a corresponding `tool_result` block "
         "in the next message"
@@ -42,6 +46,8 @@ MALFORMED_HISTORY_PATTERNS: list[str] = [
         "each `tool_result` block must have a corresponding `tool_use` block "
         "in the previous message"
     ),
+    # Moonshot / Kimi variant
+    "must be followed by tool messages responding to each 'tool_call_id'",
 ]
 
 
@@ -80,6 +86,10 @@ AUTH_PATTERNS: list[str] = [
 
 
 def looks_like_auth_error(exception: Exception) -> bool:
+    # Trust the typed exception when the provider/LiteLLM raised an explicit
+    # 401/403 — its message text may not contain the heuristic patterns below.
+    if isinstance(exception, (AuthenticationError, PermissionDeniedError)):
+        return True
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
     s = str(exception).lower()

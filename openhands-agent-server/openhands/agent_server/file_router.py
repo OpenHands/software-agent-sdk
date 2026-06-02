@@ -63,10 +63,13 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
         # Ensure target directory exists
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stream the file to disk to avoid memory issues with large files
+        # Stream the file to disk to avoid memory issues with large files.
+        # Offload writes to a worker thread so slow storage (NFS, FUSE,
+        # encrypted FS) cannot starve the event loop for the upload's
+        # duration.
         with open(target_path, "wb") as f:
             while chunk := await file.read(8192):  # Read in 8KB chunks
-                f.write(chunk)
+                await asyncio.to_thread(f.write, chunk)
 
         logger.info(f"Uploaded file to {target_path}")
         return Success()

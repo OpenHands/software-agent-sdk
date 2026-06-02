@@ -26,7 +26,10 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
+    EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks",
     EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store",
+    EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks",
+    EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
     EXAMPLES_ROOT / "05_skills_and_plugins" / "05_mixed_marketplace_skills",
@@ -88,8 +91,15 @@ EXAMPLES = tuple(_iter_examples())
 
 
 def test_directory_example_is_discovered() -> None:
+    assert (EXAMPLES_ROOT / "01_standalone_sdk" / "33_hooks" / "main.py") in EXAMPLES
     assert (
         EXAMPLES_ROOT / "01_standalone_sdk" / "37_llm_profile_store" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "02_remote_agent_server" / "06_custom_tool" / "main.py"
+    ) in EXAMPLES
+    assert (
+        EXAMPLES_ROOT / "01_standalone_sdk" / "51_agent_hooks" / "main.py"
     ) in EXAMPLES
     assert (
         EXAMPLES_ROOT

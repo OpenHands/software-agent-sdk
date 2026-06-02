@@ -4,7 +4,7 @@ This folder demonstrates the OpenHands hooks system.
 
 ## Example
 
-- **33_hooks.py** - Complete hooks demo showing all four hook types
+- **main.py** - Complete hooks demo showing all four hook types
 
 ## Scripts
 
@@ -20,11 +20,11 @@ The `hook_scripts/` directory contains reusable hook script examples:
 ```bash
 # Set your LLM credentials
 export LLM_API_KEY="your-key"
-export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"  # optional
+export LLM_MODEL="gpt-5.5"  # optional
 export LLM_BASE_URL="https://your-endpoint"  # optional
 
 # Run example
-python 33_hooks.py
+python main.py
 ```
 
 ## Hook Types

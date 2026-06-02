@@ -24,6 +24,11 @@ class FIFOLock:
     - FIFO ordering: Threads get lock in request order
     - Context manager support: Use with 'with' statement
     - Thread-safe: Safe for concurrent access
+
+    Note: reentrancy is keyed by OS thread id, not by asyncio task, so the
+    lock does NOT serialize concurrent coroutines on the same event-loop
+    thread - each re-enters it. Only hold it across an ``await`` when no
+    other task on that thread can acquire it.
     """
 
     _mutex: threading.Lock

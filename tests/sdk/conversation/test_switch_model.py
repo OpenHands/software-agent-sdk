@@ -1,10 +1,16 @@
+import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.conversation.persistence_const import BASE_STATE
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
@@ -40,6 +46,130 @@ def _make_conversation() -> LocalConversation:
         ),
         workspace=Path.cwd(),
     )
+
+
+def test_switch_acp_model_rejects_non_acp_agent():
+    """switch_acp_model is only valid for ACP conversations."""
+    conv = _make_conversation()  # plain Agent, not ACPAgent
+    with pytest.raises(ValueError, match="only supported for ACP"):
+        conv.switch_acp_model("haiku")
+
+
+def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
+    """A persisted ACP conversation with a faked-out live session.
+
+    The fake ``_conn`` / ``_executor`` let ``set_acp_model`` issue its
+    protocol call without launching a real ACP subprocess.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
+    agent._conn = MagicMock()
+    agent._session_id = "sess-1"
+    agent._agent_name = "codex-acp"
+    executor = MagicMock()
+    executor.run_async = MagicMock()
+    agent._executor = executor
+    conv = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=str(tmp_path / "persist"),
+    )
+    return conv, agent
+
+
+def test_switch_acp_model_persists_authoritative_model(tmp_path):
+    """A runtime switch persists as the authoritative ``acp_model``.
+
+    Regression for the review finding that re-assigning the same (mutated)
+    agent object was an autosave no-op, and that the frozen ``acp_model``
+    field — which ``model_post_init`` / ``_start_acp_server`` read on
+    reload/resume — stayed at its construction-time value.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    live_conn = agent._conn
+
+    conv.switch_acp_model("model-b")
+
+    # In-memory: agent + state agree on the new model, and the live connection
+    # survived the model_copy so the conversation can keep running.
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_model == "model-b"
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-b"
+    assert switched.llm.model == "model-b"
+    assert switched._conn is live_conn
+    assert switched._session_id == "sess-1"
+
+    # On disk: base_state.json actually changed (not an autosave no-op), and the
+    # persisted agent reconstructs with the switched model as authoritative.
+    base_text = conv.state._fs.read(BASE_STATE)
+    reloaded = ConversationState.model_validate(json.loads(base_text))
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_model == "model-b"
+    # model_post_init derives the sentinel LLM model from the persisted acp_model.
+    assert reloaded.agent.llm.model == "model-b"
+
+
+def test_switch_acp_model_refreshes_surfaced_current_model_id(tmp_path):
+    """After a live switch, the model state surfaced on ``ConversationInfo``
+    must reflect the new model, not the stale session-start value.
+
+    Regression for the software-agent-sdk#3347 + #3390 integration: the chip /
+    inline picker reads ``ACPAgent.current_model_id`` (and the persisted
+    ``acp_current_model_id`` hint on cold reads). Without refreshing both on a
+    runtime switch, the chip goes stale exactly when it matters most.
+    """
+    conv, agent = _make_acp_conversation(tmp_path)
+    agent._current_model_id = "model-a"  # what _init captured at session start
+    # Deliberately do NOT pre-seed ``acp_current_model_id`` in agent_state:
+    # an older/custom server may not have reported a model at init, yet a
+    # successful switch is authoritative and must still persist the hint.
+    assert "acp_current_model_id" not in conv.state.agent_state
+
+    conv.switch_acp_model("model-b")
+
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    # Live PrivateAttr (carried onto the persisted agent by the model_copy).
+    assert switched.current_model_id == "model-b"
+    # Persisted hint written unconditionally for cold reads before re-init.
+    assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+
+def test_switch_acp_model_disarms_discarded_agent_finalizer(tmp_path):
+    """The pre-switch agent must not tear down the shared live session.
+
+    Regression: ``switch_acp_model`` swaps in a shallow ``model_copy`` that
+    shares ``_conn`` / ``_executor`` / ``_process`` with the old agent. Without
+    disarming it first, ``ACPAgent.__del__`` -> ``close()`` on the discarded
+    agent closes the connection, kills the subprocess and shuts down the
+    executor — out from under the copy, breaking the next turn.
+    """
+    conv, old_agent = _make_acp_conversation(tmp_path)
+    live_conn = old_agent._conn
+    live_executor = old_agent._executor
+
+    conv.switch_acp_model("model-b")
+
+    # The copy took over the live runtime...
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched._conn is live_conn
+    assert switched._executor is live_executor
+
+    # ...and the discarded agent's finalizer was disarmed (marked closed)
+    # WITHOUT clearing its runtime references — an in-flight ask_agent()/fork
+    # still holding the old agent keeps a valid connection.
+    assert old_agent._closed is True
+    assert old_agent._conn is live_conn
+    assert old_agent._executor is live_executor
+
+    # Simulating GC (__del__ -> close()) on the disarmed old agent is a no-op:
+    # the copy's shared connection/executor are left intact.
+    live_executor.run_async.reset_mock()
+    old_agent.close()
+    live_executor.run_async.assert_not_called()
+    live_executor.close.assert_not_called()
 
 
 def test_switch_profile(profile_store):
@@ -252,3 +382,28 @@ def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):
     assert len(seen) == 1
     assert seen[0].usage_id == "profile:fast"
     assert seen[0].model == "fast-model"
+
+
+def test_duplicate_usage_ids_in_registration_loop_are_silently_deduped(tmp_path):
+    """Regression: if agent LLM and condenser LLM both carry the same
+    usage_id (as happens when a conversation is deserialised from a
+    base_state.json written before #3368), _ensure_agent_ready() must
+    NOT raise ValueError.  The first-write-wins contract means only
+    the agent LLM entry is registered; the condenser duplicate is
+    silently skipped.
+    """
+    # Simulate the broken persisted state: condenser inherits the agent LLM's usage_id
+    agent_llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="default"
+    )
+    condenser_llm = agent_llm.model_copy()  # inherits usage_id="default"
+    condenser = LLMSummarizingCondenser(llm=condenser_llm, max_size=100, keep_first=2)
+    agent = Agent(llm=agent_llm, condenser=condenser, tools=[])
+
+    conv = LocalConversation(agent=agent, workspace=tmp_path)
+
+    # Must not raise ValueError("Usage ID 'default' already exists in registry")
+    conv._ensure_agent_ready()
+
+    # First-write-wins: only one entry under the shared usage_id
+    assert conv.llm_registry.list_usage_ids().count("default") == 1

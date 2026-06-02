@@ -744,6 +744,7 @@ class OpenAISubscriptionAuth:
         llm._is_subscription = True
         # Ensure these stay None even if model info tried to set them
         llm.max_output_tokens = None
+        llm._effective_max_output_tokens = None
         llm.temperature = None
         return llm
 

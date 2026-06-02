@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     Field,
     SecretStr,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -23,10 +24,14 @@ from openhands.sdk.skills import (
     Skill,
     SkillKnowledge,
     load_available_skills,
+    merge_skills_by_name,
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.utils.pydantic_secrets import serialize_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    serialize_secret,
+    validate_secret_dict,
+)
 
 
 logger = get_logger(__name__)
@@ -96,6 +101,22 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    load_project_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load project skills from the conversation "
+            "workspace (e.g. .openhands/skills/, AGENTS.md). Unlike "
+            "load_user_skills / load_public_skills, this flag is not resolved by "
+            "AgentContext itself (the workspace path is unknown at validation "
+            "time); LocalConversation resolves it lazily on the first "
+            "send_message() / run(), when the workspace is known. Also unlike "
+            "load_user_skills / load_public_skills (which yield to explicit "
+            "skills on a name conflict), resolved project skills are "
+            "authoritative: a project skill overrides a same-named skill already "
+            "present in `skills`."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
@@ -117,6 +138,28 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def _decrypt_secrets(cls, value: Any, info: ValidationInfo) -> Any:
+        """Decrypt persisted raw-string ``secrets`` values when a cipher
+        is in context.
+
+        ``_serialize_secrets`` writes each raw-string value through
+        :func:`serialize_secret`, which produces Fernet ciphertext under
+        cipher context. Without a matching ``mode='before'`` decryption
+        validator, that ciphertext would survive round-trips through
+        :class:`StartConversationRequest` (whose
+        ``_populate_agent_from_settings`` validator runs *without*
+        cipher context) and get injected into the agent's system prompt
+        as-is — same bug class that affected ``ACPAgent.acp_env``.
+
+        ``SecretSource`` entries are dict-shaped on the wire (Pydantic
+        models), so they're skipped by :func:`validate_secret_dict`'s
+        ``isinstance(value, str)`` gate and continue to construct
+        normally through their own validators.
+        """
+        return validate_secret_dict(value, info, description="AgentContext secrets")
 
     @field_serializer("secrets", when_used="always")
     def _serialize_secrets(
@@ -160,15 +203,14 @@ class AgentContext(BaseModel):
             marketplace_path=self.marketplace_path,
         )
 
-        existing_names = {skill.name for skill in self.skills}
-        for name, skill in auto_skills.items():
-            if name not in existing_names:
-                self.skills.append(skill)
-            else:
+        # Explicit skills are authoritative; auto-loaded skills only fill gaps.
+        explicit_names = {skill.name for skill in self.skills}
+        for name in auto_skills:
+            if name in explicit_names:
                 logger.debug(
                     f"Skipping auto-loaded skill '{name}' (already in explicit skills)"
                 )
-
+        self.skills = merge_skills_by_name(self.skills, auto_skills.values())
         return self
 
     def get_secret_infos(self) -> list[dict[str, str | None]]:
@@ -337,7 +379,10 @@ class AgentContext(BaseModel):
                 f"ACP prompt context does not support AgentContext field(s): {fields}"
             )
 
-    def to_acp_prompt_context(self) -> str | None:
+    def to_acp_prompt_context(
+        self,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> str | None:
         """Return the AgentContext fields that ACP can consume as prompt text.
 
         ACP servers own their tools, MCP servers, hooks, and execution model, so
@@ -356,11 +401,20 @@ class AgentContext(BaseModel):
         ``user_message_suffix`` is a compatible field but is not emitted here
         because ``LocalConversation`` already applies it through
         ``event.to_llm_message()``; including it would duplicate it.
+
+        Args:
+            additional_secret_infos: Optional list of additional secret info dicts
+                from the conversation's secret_registry, matching the interface of
+                :meth:`get_system_message_suffix`. When provided, these secrets are
+                merged with any secrets already on the AgentContext so the rendered
+                ``<CUSTOM_SECRETS>`` block matches what the regular Agent emits.
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
         # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
-        return self.get_system_message_suffix()
+        return self.get_system_message_suffix(
+            additional_secret_infos=additional_secret_infos
+        )
 
     def get_user_message_suffix(
         self, user_message: Message, skip_skill_names: list[str]

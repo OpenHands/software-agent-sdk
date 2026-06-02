@@ -78,7 +78,7 @@ class SettingsResponse(BaseModel):
         """
         from .model import ConversationSettings
 
-        return ConversationSettings.model_validate(self.conversation_settings)
+        return ConversationSettings.from_persisted(self.conversation_settings)
 
 
 class SettingsUpdateRequest(BaseModel):

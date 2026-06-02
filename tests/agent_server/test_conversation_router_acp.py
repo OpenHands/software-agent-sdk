@@ -14,7 +14,19 @@ from openhands.agent_server.models import ACPConversationInfo, ACPConversationPa
 from openhands.agent_server.utils import utc_now
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import LocalWorkspace
+
+
+warn_deprecated(
+    "tests.agent_server.test_conversation_router_acp",
+    deprecated_in="1.22.0",
+    removed_in="1.27.0",
+    details=(
+        "This module only covers deprecated /api/acp/conversations compatibility "
+        "routes; remove it with those routes."
+    ),
+)
 
 
 @pytest.fixture
@@ -117,7 +129,7 @@ def test_search_acp_conversations_returns_acp_page(
 
 
 def test_count_acp_conversations_returns_count(client, mock_conversation_service):
-    mock_conversation_service.count_acp_conversations.return_value = 2
+    mock_conversation_service.count_conversations.return_value = 2
     client.app.dependency_overrides[get_conversation_service] = (
         lambda: mock_conversation_service
     )
@@ -127,7 +139,7 @@ def test_count_acp_conversations_returns_count(client, mock_conversation_service
 
         assert response.status_code == 200
         assert response.json() == 2
-        mock_conversation_service.count_acp_conversations.assert_called_once_with(None)
+        mock_conversation_service.count_conversations.assert_called_once_with(None)
     finally:
         client.app.dependency_overrides.clear()
 

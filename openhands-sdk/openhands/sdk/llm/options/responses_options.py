@@ -18,7 +18,7 @@ def select_responses_options(
     # Note: max_output_tokens is not supported in subscription mode
     defaults = {}
     if not llm.is_subscription:
-        defaults["max_output_tokens"] = llm.max_output_tokens
+        defaults["max_output_tokens"] = llm.effective_max_output_tokens
     out = apply_defaults_if_absent(user_kwargs, defaults)
 
     # Enforce sampling/tool behavior for Responses path
@@ -30,6 +30,14 @@ def select_responses_options(
     # If user didn't set extra_headers, propagate from llm config
     if llm.extra_headers is not None and "extra_headers" not in out:
         out["extra_headers"] = dict(llm.extra_headers)
+
+    # Inject OpenRouter HTTP-Referer / X-Title via extra_headers so we don't
+    # have to mutate os.environ (which would leak across conversations in a
+    # multi-tenant server; see issue #3138). User-supplied headers win.
+    openrouter_headers = llm._openrouter_headers()
+    if openrouter_headers:
+        existing = out.get("extra_headers") or {}
+        out["extra_headers"] = {**openrouter_headers, **existing}
 
     # Store defaults to False (stateless) unless explicitly provided
     if store is not None:
