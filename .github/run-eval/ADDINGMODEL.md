@@ -339,6 +339,29 @@ Fixes #[issue-number]
 
 **Reference**: #2137, #2193
 
+### Preflight Check: "Invalid model name" for a newly-added model
+**Cause**: The local preflight in `resolve_model_config.py` performs a *live*
+`litellm.completion(...)` against the LiteLLM proxy at `LLM_BASE_URL` (default
+`https://llm-proxy.eval.all-hands.dev`). Registering a new model name on that
+proxy is done **out-of-band** by infra/maintainers — it is not part of this PR.
+So immediately after adding a new entry, the proxy may not yet know the model
+name and respond with `Invalid model name passed in model=<provider>/<name>`.
+
+**This is not a bug in the PR** — it is a transient proxy-provisioning lag.
+
+**What to do**:
+- Author: keep the PR open, link evidence that the model works (see Step 7 — the
+  integration-runner workflow run and/or the
+  [eval monitor](https://openhands-eval-monitor.vercel.app/) run for this model
+  are the authoritative checks).
+- Reviewers / QA bot: do **not** block the PR on this specific failure. Treat
+  successful integration-runner results or an eval monitor link as authoritative
+  validation, and re-run the local preflight only after the proxy has been
+  updated. See the "Reviewing model PRs" section in
+  [`AGENTS.md`](./AGENTS.md) for the full review-side rule.
+
+**Reference**: #3472
+
 ### Vision Tests Fail
 **Cause**: LiteLLM reports vision support but model doesn't actually support it
 
