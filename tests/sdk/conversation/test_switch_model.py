@@ -18,8 +18,6 @@ from openhands.sdk.conversation.state import (
 from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
-from openhands.sdk.tool import Tool, register_tool
-from openhands.sdk.tool.builtins import SwitchLLMTool
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -428,8 +426,6 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     The agent emits the switch and a finish in a single step, so the switch
     happens mid-step (the deadlock site) and the run can complete.
     """
-    register_tool("SwitchLLMTool", SwitchLLMTool)
-
     llm = TestLLM.from_messages(
         [
             Message(
@@ -455,7 +451,8 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
         usage_id="test-llm",
     )
 
-    agent = Agent(llm=llm, tools=[Tool(name="SwitchLLMTool")])
+    # Resolve the tools from BUILT_IN_TOOL_CLASSES (no global registry writes).
+    agent = Agent(llm=llm, include_default_tools=["FinishTool", "SwitchLLMTool"])
     conv = LocalConversation(agent=agent, workspace=tmp_path, visualizer=None)
     conv.send_message("please switch")
 

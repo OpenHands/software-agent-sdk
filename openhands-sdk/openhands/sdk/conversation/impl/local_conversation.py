@@ -109,8 +109,9 @@ class LocalConversation(BaseConversation):
     _arun_task: asyncio.Task[None] | None
     _cancel_token: CancellationToken | None
     # True while run()/arun() executes an agent step while holding the state
-    # lock. Tools run on worker threads, so a tool that mutates state (e.g.
-    # switch_llm) must reuse that lock instead of re-acquiring it (#3485).
+    # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
+    # it must skip re-acquiring the lock the run loop holds while blocked
+    # awaiting that tool (#3485).
     _step_holds_state_lock: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
@@ -764,11 +765,16 @@ class LocalConversation(BaseConversation):
         except KeyError:
             new_llm = llm
             self.llm_registry.add(new_llm)
-        # When this runs as a tool inside an in-progress agent step, the run
-        # loop already holds the state lock on another thread and is blocked
-        # awaiting this tool call; re-acquiring it here (on the tool worker
-        # thread) would deadlock. Reuse the lock the step already holds (#3485).
-        lock = contextlib.nullcontext() if self._step_holds_state_lock else self._state
+        # A switch_llm tool runs on a worker thread while run()/arun() holds the
+        # state lock across the agent step on another thread, blocked awaiting
+        # this very tool. Re-acquiring _state here would deadlock, so skip it:
+        # the run loop is parked and no other mutator can run, so the swap is
+        # safe without the lock (#3485). Only skip when the lock is held by a
+        # different thread (the run loop); when the caller already owns it (a
+        # sync step, or the switch endpoint reentering on the event-loop thread)
+        # acquire normally — FIFOLock is reentrant for the owning thread.
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
@@ -1024,8 +1030,8 @@ class LocalConversation(BaseConversation):
                         )
 
                     # Mark the step as holding the state lock so state-mutating
-                    # tools (e.g. switch_llm) running on worker threads reuse it
-                    # instead of deadlocking on a re-acquire (#3485).
+                    # tools (e.g. switch_llm) running on worker threads skip
+                    # re-acquiring it instead of deadlocking (#3485).
                     self._step_holds_state_lock = True
                     try:
                         self.agent.step(
@@ -1260,8 +1266,8 @@ class LocalConversation(BaseConversation):
                         # run_in_executor onto a worker thread.
                         # Mark the step as holding the state lock so
                         # state-mutating tools (e.g. switch_llm) running on
-                        # worker threads reuse it instead of deadlocking on a
-                        # re-acquire while this await holds it (#3485).
+                        # worker threads skip re-acquiring it instead of
+                        # deadlocking while this await holds it (#3485).
                         self._step_holds_state_lock = True
                         try:
                             await self.agent.astep(
