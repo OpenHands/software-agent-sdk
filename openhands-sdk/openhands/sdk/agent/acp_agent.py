@@ -70,8 +70,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
-    ACP_FILE_SECRETS_BY_NAME,
+    ACPFileSecretSpec,
     build_session_model_meta,
+    default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
@@ -274,27 +275,6 @@ def _write_secret_file(path: Path, value: str) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(value)
     path.chmod(0o600)
-
-
-def _present_acp_file_secret_names(
-    state: ConversationState,
-    agent_context: AgentContext | None,
-) -> set[str]:
-    """Reserved file-content secret names supplied for this conversation.
-
-    A name counts as present if it appears in either credential channel
-    (``state.secret_registry`` or ``agent_context.secrets``) and maps to a
-    built-in provider's ``file_secrets``. These names are materialised to disk
-    and therefore excluded from the plain env-var injection and the
-    ``<CUSTOM_SECRETS>`` advertisement (their values are file blobs, not env
-    vars the subprocess can reference by name).
-    """
-    if not ACP_FILE_SECRETS_BY_NAME:
-        return set()
-    present = set(state.secret_registry.secret_sources)
-    if agent_context and agent_context.secrets:
-        present |= set(agent_context.secrets)
-    return present & set(ACP_FILE_SECRETS_BY_NAME)
 
 
 def _extract_session_models(
@@ -1001,6 +981,18 @@ class ACPAgent(AgentBase):
             "If None, the server picks its default."
         ),
     )
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=lambda: list(default_acp_file_secrets()),
+        description=(
+            "Reserved 'file-content' credential secrets to materialise to disk "
+            "before launching the subprocess (e.g. Codex auth.json, Gemini "
+            "Vertex SA JSON). The SDK owns the mechanism (write the file in the "
+            "runtime pod, set the env var, seed-if-absent); these specs are the "
+            "policy. Defaults to the built-in supported providers; a downstream "
+            "application may override or extend this to support other ACP "
+            "servers with different file-auth schemes."
+        ),
+    )
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
@@ -1444,7 +1436,7 @@ class ACPAgent(AgentBase):
         """
         secret_infos = state.secret_registry.get_secret_infos()
         agent_context = self.agent_context
-        file_secret_names = _present_acp_file_secret_names(state, agent_context)
+        file_secret_names = self._present_file_secret_names(state)
         if file_secret_names:
             secret_infos = [
                 info
@@ -1500,10 +1492,28 @@ class ACPAgent(AgentBase):
                 )
         return None
 
-    def _acp_file_secret_dir(self, state: ConversationState, provider_key: str) -> Path:
-        """Durable per-conversation directory for one provider's credential files.
+    def _present_file_secret_names(self, state: ConversationState) -> set[str]:
+        """Reserved file-content secret names supplied for this conversation.
 
-        ``<persistence_dir>/acp/{provider}`` — the same per-conversation tree the
+        A name counts as present if it is configured in
+        :attr:`acp_file_secrets` *and* appears in either credential channel
+        (``state.secret_registry`` or ``agent_context.secrets``). These names
+        are materialised to disk and therefore excluded from the plain env-var
+        injection and the ``<CUSTOM_SECRETS>`` advertisement (their values are
+        file blobs, not env vars the subprocess can reference by name).
+        """
+        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        if not configured:
+            return set()
+        present = set(state.secret_registry.secret_sources)
+        if self.agent_context and self.agent_context.secrets:
+            present |= set(self.agent_context.secrets)
+        return present & configured
+
+    def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
+        """Durable per-conversation directory for a credential file.
+
+        ``<persistence_dir>/acp/{subdir}`` — the same per-conversation tree the
         regular agent persists ``base_state.json`` / events to, so a token the
         CLI refreshes on disk survives a pod recycle (``/workspace`` persists
         across pause/resume; see #1018/#1019). Falls back to a per-conversation
@@ -1513,11 +1523,9 @@ class ACPAgent(AgentBase):
         inherits the agent-server's cwd) resolves it unambiguously.
         """
         if state.persistence_dir:
-            root = Path(state.persistence_dir) / "acp" / provider_key
+            root = Path(state.persistence_dir) / "acp" / subdir
         else:
-            root = (
-                Path(state.workspace.working_dir) / ".openhands" / "acp" / provider_key
-            )
+            root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
     def _materialise_file_secrets(
@@ -1525,18 +1533,18 @@ class ACPAgent(AgentBase):
     ) -> None:
         """Seed reserved file-content credentials onto disk and point the CLI at them.
 
-        For each reserved secret present in either credential channel (see
-        :meth:`_read_conversation_secret`), write its value to the provider's
-        durable per-conversation directory (:meth:`_acp_file_secret_dir`) and
-        set the controlling env var (``CODEX_HOME`` /
-        ``GOOGLE_APPLICATION_CREDENTIALS``) unless the caller pinned it via
-        ``acp_env``.
+        For each spec in :attr:`acp_file_secrets` whose secret is present in
+        either credential channel (see :meth:`_read_conversation_secret`), write
+        its value to the spec's durable per-conversation directory
+        (:meth:`_acp_file_secret_dir`) and set the controlling env var
+        (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``) unless the caller
+        pinned it via ``acp_env``.
 
         Seed-if-absent: a non-empty existing file is preserved, never clobbered
         — so a token the CLI rewrites on refresh (Codex) survives a recycle, and
         a stale pasted blob can't overwrite the live one. Files are ``0600`` in
         ``0700`` directories. The blob secret itself is not exported as an env
-        var (callers exclude it via :func:`_present_acp_file_secret_names`); only
+        var (callers exclude it via :meth:`_present_file_secret_names`); only
         the path env var is set.
 
         If the caller pinned the data-dir env var via the (deprecated)
@@ -1544,7 +1552,8 @@ class ACPAgent(AgentBase):
         and env stay consistent — and ``acp_env`` keeps its precedence over the
         env var.
         """
-        for name, (provider_key, spec) in ACP_FILE_SECRETS_BY_NAME.items():
+        for spec in self.acp_file_secrets:
+            name = spec.secret_name
             value = self._read_conversation_secret(state, name)
             if not value:
                 continue
@@ -1559,7 +1568,7 @@ class ACPAgent(AgentBase):
                 target = Path(pinned)
                 directory = target.parent
             else:
-                directory = self._acp_file_secret_dir(state, provider_key)
+                directory = self._acp_file_secret_dir(state, spec.subdir)
                 target = directory / spec.filename
             try:
                 directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1642,7 +1651,7 @@ class ACPAgent(AgentBase):
         # Vertex SA — see _materialise_file_secrets) are written to disk, not
         # injected as env vars, so exclude their (large blob) names from the
         # plain env-injection below; materialisation sets only the path env var.
-        file_secret_names = _present_acp_file_secret_names(state, self.agent_context)
+        file_secret_names = self._present_file_secret_names(state)
         # agent_context.secrets drain (lower precedence than the registry).
         # Skip keys a higher tier will set — acp_env (applied last) and the
         # registry (applied next) — to avoid a wasted SecretSource.get_value()

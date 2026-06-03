@@ -238,6 +238,7 @@ class TestACPFileSecrets:
         assert spec.secret_name == "CODEX_AUTH_JSON"
         assert spec.filename == "auth.json"
         assert spec.env_var == "CODEX_HOME"
+        assert spec.subdir == "codex"
         assert spec.env_points_to == "dir"
 
     def test_gemini_vertex_sa_spec(self):
@@ -247,26 +248,56 @@ class TestACPFileSecrets:
         assert spec.secret_name == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
         assert spec.filename == "gcloud-credentials.json"
         assert spec.env_var == "GOOGLE_APPLICATION_CREDENTIALS"
+        assert spec.subdir == "gemini-cli"
         assert spec.env_points_to == "file"
         # Vertex needs a project + location alongside the SA JSON.
         assert spec.warn_if_unset == ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION")
 
-    def test_file_secrets_by_name_aggregates_all_providers(self):
-        from openhands.sdk.settings.acp_providers import ACP_FILE_SECRETS_BY_NAME
+    def test_default_acp_file_secrets_aggregates_all_providers(self):
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
 
-        assert set(ACP_FILE_SECRETS_BY_NAME) == {
+        specs = default_acp_file_secrets()
+        assert {s.secret_name for s in specs} == {
             "CODEX_AUTH_JSON",
             "GOOGLE_APPLICATION_CREDENTIALS_JSON",
         }
-        provider_key, spec = ACP_FILE_SECRETS_BY_NAME["CODEX_AUTH_JSON"]
-        assert provider_key == "codex"
-        assert spec is ACP_PROVIDERS["codex"].file_secrets[0]
+        # The union is exactly the providers' file_secrets concatenated.
+        assert specs == (
+            ACP_PROVIDERS["codex"].file_secrets
+            + ACP_PROVIDERS["gemini-cli"].file_secrets
+        )
 
     def test_file_secret_spec_is_frozen(self):
-        import dataclasses
+        from pydantic import ValidationError
 
         from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
 
-        spec = ACPFileSecretSpec(secret_name="X", filename="x.json", env_var="X_HOME")
-        with pytest.raises(dataclasses.FrozenInstanceError):
+        spec = ACPFileSecretSpec(
+            secret_name="X", filename="x.json", env_var="X_HOME", subdir="x"
+        )
+        with pytest.raises(ValidationError):
             spec.secret_name = "Y"  # type: ignore[misc]
+
+    def test_file_secret_spec_rejects_path_traversal(self):
+        from pydantic import ValidationError
+
+        from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
+
+        # filename must be a bare basename.
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="../escape.json", env_var="X", subdir="x"
+            )
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="a/b.json", env_var="X", subdir="x"
+            )
+        # subdir must not escape the acp root.
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="x.json", env_var="X", subdir="../up"
+            )
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="x.json", env_var="X", subdir="/abs"
+            )

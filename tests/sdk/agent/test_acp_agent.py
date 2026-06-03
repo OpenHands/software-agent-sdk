@@ -27,7 +27,6 @@ from openhands.sdk.agent.acp_agent import (
     _image_url_to_acp_block,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
-    _present_acp_file_secret_names,
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
@@ -6743,6 +6742,7 @@ class TestACPFileSecretMaterialisation:
     def test_present_file_secret_names_helper(self, tmp_path):
         from openhands.sdk.secret import StaticSecret
 
+        agent = _make_agent()
         state = self._state(tmp_path)
         state.secret_registry.update_secrets(
             {
@@ -6750,7 +6750,7 @@ class TestACPFileSecretMaterialisation:
                 "PLAIN_TOKEN": StaticSecret(value=SecretStr("t")),
             }
         )
-        assert _present_acp_file_secret_names(state, None) == {"CODEX_AUTH_JSON"}
+        assert agent._present_file_secret_names(state) == {"CODEX_AUTH_JSON"}
 
     def test_blob_excluded_from_custom_secrets_advertisement(self, tmp_path):
         """The <CUSTOM_SECRETS> advertisement lists plain secrets but not the
@@ -6777,3 +6777,63 @@ class TestACPFileSecretMaterialisation:
         assert suffix is not None
         assert "PLAIN_TOKEN" in suffix.text
         assert "CODEX_AUTH_JSON" not in suffix.text
+
+    def test_downstream_can_override_specs_with_custom_provider(self, tmp_path):
+        """A downstream app supplies its own ACPFileSecretSpec for a custom CLI;
+        the SDK mechanism materialises it without any registry change."""
+        from openhands.sdk import ACPFileSecretSpec
+        from openhands.sdk.secret import StaticSecret
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+            env_points_to="dir",
+        )
+        agent = _make_agent(acp_file_secrets=[custom])
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"MYCLI_TOKEN_JSON": StaticSecret(value=SecretStr('{"t": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        home = Path(env["MYCLI_HOME"])
+        assert home == Path(persist) / "acp" / "mycli"
+        assert (home / "token.json").read_text(encoding="utf-8") == '{"t": 1}'
+        assert "MYCLI_TOKEN_JSON" not in env
+        # The built-in Codex/Gemini specs were replaced, so their secrets would
+        # NOT be materialised by this agent.
+        assert agent._present_file_secret_names(state) == {"MYCLI_TOKEN_JSON"}
+
+    def test_empty_specs_disables_materialisation(self, tmp_path):
+        """With acp_file_secrets=[], a CODEX_AUTH_JSON secret is treated as an
+        ordinary env var (no file written, no CODEX_HOME) — downstream opt-out."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_file_secrets=[])
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert "CODEX_HOME" not in env
+        # Not configured as a file-secret, so it flows through as a plain env var.
+        assert env.get("CODEX_AUTH_JSON") == "blob"
+
+    def test_settings_pass_file_secrets_through_create_agent(self):
+        """ACPAgentSettings defaults to the built-in specs and forwards them to
+        the constructed ACPAgent."""
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+        from openhands.sdk.settings.model import ACPAgentSettings
+
+        settings = ACPAgentSettings(acp_server="codex")
+        agent = settings.create_agent()
+        names = {s.secret_name for s in agent.acp_file_secrets}
+        assert "CODEX_AUTH_JSON" in names
+        assert {s.secret_name for s in agent.acp_file_secrets} == {
+            s.secret_name for s in default_acp_file_secrets()
+        }

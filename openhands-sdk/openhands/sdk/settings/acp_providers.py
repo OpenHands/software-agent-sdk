@@ -35,8 +35,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 @dataclass(frozen=True)
@@ -50,8 +53,7 @@ class ACPModelOption:
     """Human-readable label shown in the model picker (e.g. ``"Claude Opus 4.7"``)."""
 
 
-@dataclass(frozen=True)
-class ACPFileSecretSpec:
+class ACPFileSecretSpec(BaseModel):
     """Declarative mapping from a reserved "file-content" secret to a credential
     file the ACP subprocess authenticates from.
 
@@ -66,18 +68,32 @@ class ACPFileSecretSpec:
     Materialisation is keyed off :attr:`secret_name` (not the launch command),
     so a custom or aliased ``acp_command`` still works as long as the reserved
     secret is supplied.
+
+    The SDK owns the *mechanism* (writing the file in the runtime pod, setting
+    the env var, seed-if-absent, permissions); the *policy* — which secrets map
+    to which files for which CLIs — lives in these specs. Built-in defaults
+    cover the supported providers, but downstream applications can override
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_file_secrets` to support other ACP
+    servers with different file-auth schemes without an SDK change.
     """
 
-    secret_name: str
+    model_config = ConfigDict(frozen=True)
+
+    secret_name: str = Field(min_length=1)
     """Reserved secret whose value is the credential file's contents (looked up
     in ``state.secret_registry`` / ``agent_context.secrets``)."""
 
-    filename: str
-    """Basename of the materialised file, written under the per-conversation
-    ``<conversations>/{id.hex}/acp/{provider}/`` directory."""
+    filename: str = Field(min_length=1)
+    """Basename of the materialised file (e.g. ``auth.json``)."""
 
-    env_var: str
+    env_var: str = Field(min_length=1)
     """Env var the CLI reads to locate the materialised credential."""
+
+    subdir: str = Field(min_length=1)
+    """Folder under the per-conversation ``<conversations>/{id.hex}/acp/`` root
+    where the file is written — the provider key for built-ins (``codex`` /
+    ``gemini-cli``), or any stable folder name for a custom spec. Keeps
+    concurrent providers' credential files isolated within one sandbox."""
 
     env_points_to: Literal["dir", "file"] = "file"
     """Whether :attr:`env_var` is set to the file's parent *directory* (Codex's
@@ -88,6 +104,23 @@ class ACPFileSecretSpec:
     """Companion env vars to warn about when this secret is materialised but
     they are missing (e.g. ``GOOGLE_CLOUD_PROJECT`` / ``GOOGLE_CLOUD_LOCATION``
     for Vertex AI). Advisory only — materialisation still proceeds."""
+
+    @field_validator("filename")
+    @classmethod
+    def _validate_filename(cls, value: str) -> str:
+        """``filename`` must be a bare basename, never a path or traversal."""
+        if "/" in value or "\\" in value or value in (".", ".."):
+            raise ValueError("filename must be a bare basename, not a path")
+        return value
+
+    @field_validator("subdir")
+    @classmethod
+    def _validate_subdir(cls, value: str) -> str:
+        """``subdir`` must be a relative path with no traversal or root escape."""
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("subdir must be a relative path without '..' segments")
+        return value
 
 
 @dataclass(frozen=True)
@@ -299,6 +332,7 @@ _CODEX_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
         secret_name="CODEX_AUTH_JSON",
         filename="auth.json",
         env_var="CODEX_HOME",
+        subdir="codex",
         env_points_to="dir",
     ),
 )
@@ -307,6 +341,7 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
         secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
         filename="gcloud-credentials.json",
         env_var="GOOGLE_APPLICATION_CREDENTIALS",
+        subdir="gemini-cli",
         env_points_to="file",
         warn_if_unset=("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
     ),
@@ -373,21 +408,16 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
 
 
-ACP_FILE_SECRETS_BY_NAME: Mapping[str, tuple[str, ACPFileSecretSpec]] = (
-    MappingProxyType(
-        {
-            spec.secret_name: (key, spec)
-            for key, info in ACP_PROVIDERS.items()
-            for spec in info.file_secrets
-        }
-    )
-)
-"""Reserved file-content secret name → ``(provider_key, spec)``.
+def default_acp_file_secrets() -> tuple[ACPFileSecretSpec, ...]:
+    """Built-in file-content credential specs across all supported providers.
 
-Aggregates :attr:`ACPProviderInfo.file_secrets` across the built-in providers so
-materialisation can be driven by the reserved secret name alone — independent of
-which ``acp_command`` is configured.
-"""
+    The union of every :attr:`ACPProviderInfo.file_secrets` (Codex ``auth.json``,
+    Gemini Vertex SA). Used as the default for
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_file_secrets`, which a downstream
+    application may override or extend to support other ACP servers without an
+    SDK change.
+    """
+    return tuple(spec for info in ACP_PROVIDERS.values() for spec in info.file_secrets)
 
 
 def get_acp_provider(key: str) -> ACPProviderInfo | None:
