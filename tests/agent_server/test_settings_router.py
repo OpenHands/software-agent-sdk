@@ -17,6 +17,7 @@ from openhands.agent_server.persistence import (
     reset_stores,
 )
 from openhands.agent_server.persistence.models import _deep_merge
+from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -692,20 +693,25 @@ def test_patch_settings_switch_agent_kind_from_acp_to_openhands(
     When ``agent_kind`` changes, incompatible fields from the old variant
     (like ``acp_command``) must not be merged into the new variant.
     This is a variant replacement, not a field merge."""
-    # Seed with ACP settings
+    # Seed with ACP settings, including a NON-default ``llm`` model. ``llm`` is
+    # a field both variants share, so this lets us prove it is NOT silently
+    # carried into the new variant on a switch.
     acp = ACPAgentSettings(
         acp_command=["echo", "test"],
         acp_env={"KEY": "value"},
+        llm=LLM(model="acp-only-model", usage_id="default"),
     )
     persisted = PersistedSettings(agent_settings=acp)
     payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
     _write_settings_file(temp_persistence_dir, payload)
 
-    # Verify it starts as ACP
+    # Verify it starts as ACP with the seeded model.
     get_response = client_with_settings.get("/api/settings")
-    assert get_response.json()["agent_settings"]["agent_kind"] == "acp"
+    seeded = get_response.json()["agent_settings"]
+    assert seeded["agent_kind"] == "acp"
+    assert seeded["llm"]["model"] == "acp-only-model"
 
-    # Switch to OpenHands — provide only the required fields for OpenHands variant
+    # Switch to OpenHands, restating ``llm`` with a new model.
     response = client_with_settings.patch(
         "/api/settings",
         json={
@@ -723,6 +729,44 @@ def test_patch_settings_switch_agent_kind_from_acp_to_openhands(
     # ACP-specific fields should not appear in the response
     assert "acp_command" not in body["agent_settings"]
     assert "acp_env" not in body["agent_settings"]
+    # The restated ``llm`` model wins — the ACP-seeded value is gone.
+    assert body["agent_settings"]["llm"]["model"] == "claude-3-5-sonnet-20241022"
+
+
+def test_patch_settings_switch_drops_shared_field_when_not_restated(
+    client_with_settings, temp_persistence_dir
+):
+    """A shared field (``llm``) set on the OLD variant is dropped on a kind
+    switch unless the caller restates it — it falls back to the new variant's
+    default rather than silently carrying over.
+
+    This pins the intentional "fresh start on the new variant" contract: a
+    kind switch is a variant replacement, so shared fields are not inherited.
+    Callers that want to preserve a shared field must include it in the switch
+    payload (see the sibling test, which restates ``llm``)."""
+    # Seed ACP with a non-default llm model.
+    acp = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        llm=LLM(model="acp-only-model", usage_id="default"),
+    )
+    persisted = PersistedSettings(agent_settings=acp)
+    payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+    _write_settings_file(temp_persistence_dir, payload)
+
+    # Switch to OpenHands WITHOUT restating llm.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "openhands"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["agent_kind"] == "openhands"
+    # The ACP-seeded model is NOT carried over; llm falls back to the
+    # OpenHands variant's default model.
+    default_model = OpenHandsAgentSettings().llm.model
+    assert body["agent_settings"]["llm"]["model"] == default_model
+    assert body["agent_settings"]["llm"]["model"] != "acp-only-model"
 
 
 def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_settings):
