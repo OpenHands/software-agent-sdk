@@ -661,28 +661,26 @@ def test_deepseek_v4_flash_config():
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
 
 
+def test_gpt_oss_120b_config():
+    """Test that gpt-oss-120b has correct configuration."""
+    model = MODELS["gpt-oss-120b"]
+
+    assert model["id"] == "gpt-oss-120b"
+    assert model["display_name"] == "GPT OSS 120B"
+    assert (
+        model["llm_config"]["model"] == "litellm_proxy/openrouter/openai/gpt-oss-120b"
+    )
+
+
 def test_nemotron_3_ultra_550b_a55b_config():
     """Test that nemotron-3-ultra-550b-a55b has correct configuration."""
     model = MODELS["nemotron-3-ultra-550b-a55b"]
 
     assert model["id"] == "nemotron-3-ultra-550b-a55b"
     assert model["display_name"] == "NVIDIA Nemotron-3 Ultra 550B"
-    assert (
-        model["llm_config"]["model"]
-        == "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b"
-    )
+    assert model["llm_config"]["model"] == "litellm_proxy/nemotron-3-ultra-550b-a55b"
     assert model["llm_config"]["temperature"] == 1.0
     assert model["llm_config"]["top_p"] == 0.95
-
-
-def test_amber_vector_3542_config():
-    """Test that amber-vector-3542 has correct configuration."""
-    model = MODELS["amber-vector-3542"]
-
-    assert model["id"] == "amber-vector-3542"
-    assert model["display_name"] == "Amber Vector 3542"
-    assert model["llm_config"]["model"] == "litellm_proxy/amber-vector-3542"
-    assert model["llm_config"]["temperature"] == 0.0
 
 
 def test_claude_opus_4_8_config():
@@ -692,3 +690,14 @@ def test_claude_opus_4_8_config():
     assert model["id"] == "claude-opus-4-8"
     assert model["display_name"] == "Claude Opus 4.8"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-8"
+
+
+def test_minimax_m3_config():
+    """Test that minimax-m3 has correct configuration."""
+    model = MODELS["minimax-m3"]
+
+    assert model["id"] == "minimax-m3"
+    assert model["display_name"] == "MiniMax M3"
+    assert model["llm_config"]["model"] == "litellm_proxy/minimax/MiniMax-M3"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95

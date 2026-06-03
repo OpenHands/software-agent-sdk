@@ -23,7 +23,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
@@ -76,6 +76,7 @@ from openhands.sdk.settings.acp_providers import (
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret_dict,
@@ -432,6 +433,24 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
     return image_block(data="", mime_type="image/png", uri=url)
 
 
+def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
+    """Recursively apply *mask* to every string leaf of a JSON-like value.
+
+    ACP tool-call ``raw_input`` / ``raw_output`` / ``content`` blocks are
+    arbitrary JSON (a bare string, a dict of params, a list of content
+    blocks). ``SecretRegistry.mask_secrets_in_output`` is a pure string op,
+    so walk the structure and mask each leaf string; non-string leaves
+    (ints, bools, ``None``) pass through unchanged.
+    """
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, dict):
+        return {k: _mask_json_value(v, mask) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_json_value(v, mask) for v in value]
+    return value
+
+
 def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
@@ -485,6 +504,34 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     except Exception:
         logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
+
+
+def _classify_acp_init_error(exc: BaseException) -> str:
+    """Map a cold-start failure to a structured ``ConversationErrorEvent`` code.
+
+    ACP's spawn + auth + ``session/new`` runs in :meth:`ACPAgent.init_state`,
+    which ``LocalConversation.run()``/``arun()`` invoke *before* their try-block
+    (via ``_ensure_agent_ready()``).  These cold-start failures — far more common
+    on cloud than locally — therefore bypass the run loop's error emission, so
+    ``init_state`` surfaces them itself.  The code tells clients *which* failure
+    occurred so they can react (e.g. prompt re-auth vs. report a missing binary):
+
+    - ``ACPAuthRequired``: the ACP server reported a JSON-RPC auth-required error
+      (code ``-32000``) from ``authenticate``/``new_session`` — missing, expired,
+      or rejected credentials.  The most actionable cloud failure, so it gets its
+      own code.
+    - ``ACPSpawnError``: the subprocess could not be launched — the CLI binary is
+      missing or not executable (``FileNotFoundError`` / ``PermissionError`` from
+      ``create_subprocess_exec``).
+    - ``ACPInitError``: anything else during the protocol handshake or session
+      creation (timeouts, transport drops, unexpected protocol errors, cwd
+      mismatch surfaced by the server).
+    """
+    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
+        return "ACPAuthRequired"
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return "ACPSpawnError"
+    return "ACPInitError"
 
 
 class _OpenHandsACPBridge:
@@ -547,6 +594,13 @@ class _OpenHandsACPBridge:
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
+        # Secret masker — set per turn by ACPAgent to
+        # ``state.secret_registry.mask_secrets_in_output``. Applied to streamed
+        # text chunks and tool-call raw_input/raw_output/content before they
+        # reach ``on_token`` / ``on_event`` so a subprocess that echoes an
+        # injected credential never lands in the (persisted, network-relayed)
+        # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
+        self.mask: Callable[[str], str] | None = None
         self._last_activity_signal: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
@@ -590,6 +644,37 @@ class _OpenHandsACPBridge:
         self._usage_received.pop(session_id, None)
         return self._turn_usage_updates.pop(session_id, None)
 
+    def _mask_value(self, value: Any) -> Any:
+        """Mask injected secrets in *value* (string or JSON-like), no-op if unset.
+
+        Defensive: on mask failure, returns the original value unchanged and
+        logs at DEBUG — this may transiently leak the credential but prevents a
+        crash, matching the regular terminal tool's masking contract. (Masking
+        is a pure ``str.replace`` and should never raise in practice.)
+        """
+        if self.mask is None:
+            return value
+        try:
+            return _mask_json_value(value, self.mask)
+        except Exception:
+            logger.debug("secret masking failed", exc_info=True)
+            return value
+
+    def _mask_tool_call_entry(self, entry: dict[str, Any]) -> None:
+        """Mask title / raw_input / raw_output / content of a tool-call entry.
+
+        Applied in place at ingestion (``session_update``) so the accumulator
+        itself never holds plaintext secrets, and every downstream emitter
+        (``_emit_tool_call_event`` and the supersede path in
+        ``_cancel_inflight_tool_calls``) carries masked values for free.
+        ``title`` is normally a benign server-set label, but a misbehaving ACP
+        server could echo a credential there (e.g. ``Running: curl -H
+        'Authorization: Bearer <token>'``), so it is masked too.
+        """
+        for key in ("title", "raw_input", "raw_output", "content"):
+            if entry.get(key) is not None:
+                entry[key] = self._mask_value(entry[key])
+
     # -- Client protocol methods ------------------------------------------
 
     async def session_update(
@@ -600,16 +685,26 @@ class _OpenHandsACPBridge:
     ) -> None:
         logger.debug("ACP session_update: type=%s", type(update).__name__)
 
-        # Route fork session updates to the fork accumulator
+        # Route fork session updates to the fork accumulator. ask_agent() joins
+        # and returns this text to the caller (a UI/network sink), so mask it
+        # like the main-turn path — a secret echoed in a fork session must not
+        # leak in cleartext.
         if self._fork_session_id is not None and session_id == self._fork_session_id:
             if isinstance(update, AgentMessageChunk):
                 if isinstance(update.content, TextContentBlock):
-                    self._fork_accumulated_text.append(update.content.text)
+                    self._fork_accumulated_text.append(
+                        self._mask_value(update.content.text)
+                    )
             return
 
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
-                text = update.content.text
+                # Mask once, then use the masked chunk for both the persisted
+                # accumulation and the live ``on_token`` relay. A secret split
+                # across two chunks slips through here (each piece alone won't
+                # match); the joined response is re-masked at the persistence
+                # boundary in ``_finalize_successful_turn`` to catch that.
+                text = self._mask_value(update.content.text)
                 self.accumulated_text.append(text)
                 if self.on_token is not None:
                     try:
@@ -619,7 +714,7 @@ class _OpenHandsACPBridge:
             self._maybe_signal_activity()
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
-                self.accumulated_thoughts.append(update.content.text)
+                self.accumulated_thoughts.append(self._mask_value(update.content.text))
         elif isinstance(update, UsageUpdate):
             # Store the update for step()/ask_agent() to process in one place.
             self._context_window = update.size
@@ -638,15 +733,25 @@ class _OpenHandsACPBridge:
                 "raw_output": update.raw_output,
                 "content": _serialize_tool_content(update.content),
             }
+            self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            # Emit one early "started" event — the action half of the
+            # action->observation pair. (If the server reports a terminal
+            # status on the very first notification, this single event is
+            # also the observation; the matching terminal-transition guard
+            # below then suppresses any redundant re-emission.)
             self._emit_tool_call_event(entry)
             self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
-            # Find the existing tool call entry and merge updates
+            # Find the existing tool call entry and merge updates. Track the
+            # status seen *before* this frame so we can detect the single
+            # transition into a terminal state.
             target: dict[str, Any] | None = None
+            prev_status: str | None = None
             for tc in self.accumulated_tool_calls:
                 if tc["tool_call_id"] == update.tool_call_id:
+                    prev_status = tc.get("status")
                     if update.title is not None:
                         tc["title"] = update.title
                     if update.kind is not None:
@@ -662,7 +767,25 @@ class _OpenHandsACPBridge:
                     target = tc
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            # Mask the merged entry on every frame so the accumulator (and thus
+            # the terminal event and any _cancel_inflight_tool_calls supersede)
+            # never carries plaintext secrets. ``status`` is left untouched, so
+            # the terminal-transition check below is unaffected.
             if target is not None:
+                self._mask_tool_call_entry(target)
+            # Persist exactly one terminal event per tool call. Intermediate
+            # progress frames each carry the *full cumulative* output; emitting
+            # one per frame is O(n^2) storage + WebSocket relay (the bug this
+            # method fixes). We accumulate them into ``target`` silently and
+            # emit only on the first transition into a terminal status, so the
+            # terminal event still carries the complete final output. This is
+            # the observation half of the action->observation pair.
+            became_terminal = (
+                target is not None
+                and target.get("status") in _TERMINAL_TOOL_CALL_STATUSES
+                and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
+            )
+            if target is not None and became_terminal:
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -832,7 +955,12 @@ class ACPAgent(AgentBase):
     )
     acp_env: dict[str, str] = Field(
         default_factory=dict,
-        description="Additional environment variables for the ACP server process",
+        description=(
+            "DEPRECATED (removed in 1.29.0): additional environment variables for "
+            "the ACP server process. Route subprocess env/credentials through "
+            "state.secret_registry (e.g. agent_context.secrets / "
+            "StartConversationRequest.secrets) instead."
+        ),
     )
 
     @field_validator("acp_env", mode="before")
@@ -1197,6 +1325,28 @@ class ACPAgent(AgentBase):
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
             self._cleanup()
+            # init_state runs *outside* run()/arun()'s try-block (it is reached
+            # via _ensure_agent_ready() before the loop starts), so a cold-start
+            # failure — bad/expired auth, missing CLI binary, cwd mismatch — would
+            # otherwise bypass error emission and reach the client as a generic
+            # "remote conversation ended with error".  Emit a typed
+            # ConversationErrorEvent and flip the status to ERROR here, mirroring
+            # what the regular Agent (and ACPAgent.astep) do from inside the run
+            # loop, so clients render their existing error banner instead.
+            # Best-effort: surfacing the error must never mask the original
+            # exception, which still propagates to preserve the existing
+            # cleanup/re-raise contract that run()/arun() rely on.
+            try:
+                state.execution_status = ConversationExecutionStatus.ERROR
+                on_event(
+                    ConversationErrorEvent(
+                        source="agent",
+                        code=_classify_acp_init_error(e),
+                        detail=str(e)[:500],
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to surface ACP init error to client")
             raise
 
         # A successful resume keeps the prior id; cwd mismatch and load_session
@@ -1327,27 +1477,59 @@ class ACPAgent(AgentBase):
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
         self._client = client
+        # Bind the secret masker for the conversation's lifetime. It's derived
+        # from state.secret_registry (stable for the conversation) and is a pure
+        # read of _exported_values, so it has none of the cross-thread/state-lock
+        # hazards that make on_event/on_token strictly per-turn. Binding it here
+        # (rather than per-turn in _reset_client_for_turn) keeps it available for
+        # session updates AND for ask_agent() forks, which run on the shared
+        # client and may fire while no step()/astep() turn is active.
+        client.mask = state.secret_registry.mask_secrets_in_output
 
-        # Build the subprocess environment top-down, highest precedence first:
-        #   acp_env > os.environ > default_environment >
-        #   state.secret_registry > agent_context.secrets
+        # Build the subprocess environment. Precedence, highest first:
+        #   acp_env > state.secret_registry > agent_context.secrets
+        #     > os.environ > default_environment
         #
-        # Secret tiers fill-if-absent. The ``name in env`` guard does double
-        # duty: it preserves higher-precedence values and avoids calling
-        # SecretSource.get_value() for keys already satisfied — important
-        # because LookupSecret can make an HTTP request.
+        # Conversation credentials (the registry and the agent_context drain)
+        # intentionally OVERRIDE ambient os.environ: an explicit per-conversation
+        # / provider secret must win over a same-named variable in the
+        # agent-server's own environment (os.environ is the wrong process for a
+        # remote server). acp_env (deprecated) stays highest.
+        #
+        # Two conversation channels, because an ACP subprocess is a black box we
+        # cannot name-scan per command (unlike the regular agent's bash tool), so
+        # credentials must be injected upfront:
+        #   - state.secret_registry: the canonical channel
+        #     (StartConversationRequest.secrets; also where create_request lifts
+        #     agent_context.secrets on the Python-caller path / OpenHands cloud).
+        #   - agent_context.secrets drain: the ONLY channel that delivers
+        #     agent_context.secrets on paths that do NOT call create_request —
+        #     notably canvas-local, which builds the request in TypeScript and
+        #     relies on the server's create_agent() to fold llm.api_key into
+        #     agent_context.secrets. There is no server-side agent_context.secrets
+        #     → registry lift, so keep this drain until one exists.
+        # On a key collision the registry wins over the drain.
         env = default_environment()
         env.update(os.environ)
-        env.update(self.acp_env)
-        for name in state.secret_registry.secret_sources:
-            if name in env:
-                continue
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                env[name] = value
+        if self.acp_env:
+            warn_deprecated(
+                "ACPAgent.acp_env",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=(
+                    "Route ACP subprocess env/credentials through "
+                    "state.secret_registry (e.g. agent_context.secrets / "
+                    "StartConversationRequest.secrets) instead."
+                ),
+            )
+        # agent_context.secrets drain (lower precedence than the registry).
+        # Skip keys a higher tier will set — acp_env (applied last) and the
+        # registry (applied next) — to avoid a wasted SecretSource.get_value()
+        # (LookupSecret can make an HTTP request).
+        registry_names = set(state.secret_registry.secret_sources)
         if self.agent_context and self.agent_context.secrets:
             for name, secret in self.agent_context.secrets.items():
-                if name in env:
+                if name in self.acp_env or name in registry_names:
                     continue
                 value = (
                     secret.get_value()
@@ -1356,6 +1538,16 @@ class ACPAgent(AgentBase):
                 )
                 if value:
                     env[name] = value
+        # state.secret_registry overrides the drain and ambient os.environ. Skip
+        # keys acp_env will set (avoids a redundant LookupSecret.get_value()).
+        for name in state.secret_registry.secret_sources:
+            if name in self.acp_env:
+                continue
+            value = state.secret_registry.get_secret_value(name)
+            if value:
+                env[name] = value
+        # acp_env (deprecated) has highest precedence.
+        env.update(self.acp_env)
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -1606,7 +1798,8 @@ class ACPAgent(AgentBase):
         clears them.  ``on_event`` is fired from inside
         ``_OpenHandsACPBridge.session_update`` as tool-call notifications
         arrive, so consumers see ACPToolCallEvents streamed live instead of
-        a single end-of-turn burst.
+        a single end-of-turn burst.  The secret masker is bound once in
+        ``_start_acp_server`` (conversation-stable), not here.
         """
         self._client.reset()
         self._client.on_token = on_token
@@ -1657,6 +1850,28 @@ class ACPAgent(AgentBase):
                     tc.get("tool_call_id"),
                     exc_info=True,
                 )
+
+    def _flush_inflight_tool_calls_as_completed(self) -> None:
+        """Emit a terminal ``completed`` ACPToolCallEvent for every accumulated
+        tool call still sitting at a non-terminal status.
+
+        The prompt returned successfully, so a tool card the server opened but
+        never closed (it sent ``ToolCallStart`` but no terminal
+        ``ToolCallProgress``) is treated as completed. Since we now persist
+        exactly one early ``started`` event and one terminal event per call,
+        this guarantees the action->observation pairing holds for *every*
+        call — without it, a server that omits the closing frame would leave
+        the early ``started`` event as the last word, and the relaxed canvas
+        render gate would show that card spinning forever. Reuses
+        ``_emit_tool_call_event`` so truncation and error-swallowing match the
+        live terminal path. No-op once every call is already terminal (the
+        common case, since ``conn.prompt`` only returns after its tools run).
+        """
+        for tc in self._client.accumulated_tool_calls:
+            if tc.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            tc["status"] = "completed"
+            self._client._emit_tool_call_event(tc)
 
     async def _arequest_session_cancel(self) -> None:
         """Async variant of _request_session_cancel that waits for cancel send."""
@@ -1895,12 +2110,20 @@ class ACPAgent(AgentBase):
             usage_update=usage_update,
         )
 
-        # ACPToolCallEvents were already emitted live from
-        # _OpenHandsACPBridge.session_update as each ToolCallStart /
-        # ToolCallProgress notification arrived — no end-of-turn fan-out
-        # here. FinishAction closes out the turn below.
-        response_text = "".join(self._client.accumulated_text)
-        thought_text = "".join(self._client.accumulated_thoughts)
+        # Tool cards were already streamed live from
+        # _OpenHandsACPBridge.session_update: one early ``started`` event per
+        # ToolCallStart and one terminal event per call. Close out any card the
+        # server opened but never terminated so every ``started`` has its
+        # matching terminal observation before the turn's FinishAction lands.
+        self._flush_inflight_tool_calls_as_completed()
+
+        # Re-mask the joined text at this persistence boundary: the chunks were
+        # already masked individually as they streamed, but a secret split
+        # across two chunks only reassembles in the join, so this is where it
+        # gets caught before landing in the persisted event stream.
+        mask = state.secret_registry.mask_secrets_in_output
+        response_text = mask("".join(self._client.accumulated_text))
+        thought_text = mask("".join(self._client.accumulated_thoughts))
         if not response_text:
             response_text = "(No response from ACP server)"
 
@@ -2418,7 +2641,10 @@ class ACPAgent(AgentBase):
                         )
                 fork_elapsed = time.monotonic() - fork_t0
 
-                result = "".join(client._fork_accumulated_text)
+                # Re-mask the joined fork text at this return boundary — mirrors
+                # _finalize_successful_turn, catching a secret split across fork
+                # chunks that per-chunk masking can't match.
+                result = client._mask_value("".join(client._fork_accumulated_text))
                 usage_update = client.pop_turn_usage_update(fork_session_id)
                 self._record_usage(
                     response,

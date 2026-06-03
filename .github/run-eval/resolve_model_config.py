@@ -234,6 +234,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    "minimax-m3": {
+        "id": "minimax-m3",
+        "display_name": "MiniMax M3",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M3",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
@@ -320,6 +329,21 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    # https://openai.com/index/introducing-gpt-oss/
+    # Note: gpt-oss-20b uses a direct proxy alias (litellm_proxy/gpt-oss-20b);
+    # gpt-oss-120b requires OpenRouter because no equivalent proxy alias exists.
+    # The Fireworks-specific path (fireworks_ai/accounts/fireworks/models/...)
+    # is not registered as a model alias on the proxy, so preflight rejects it
+    # with "Invalid model name". OpenRouter is already configured on the proxy
+    # and routes to multiple backend providers (Fireworks, Together, etc.).
+    "gpt-oss-120b": {
+        "id": "gpt-oss-120b",
+        "display_name": "GPT OSS 120B",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/openai/gpt-oss-120b",
+            "temperature": 0.0,
+        },
+    },
     "nemotron-3-super-120b-a12b": {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
@@ -334,7 +358,7 @@ MODELS = {
         "id": "nemotron-3-ultra-550b-a55b",
         "display_name": "NVIDIA Nemotron-3 Ultra 550B",
         "llm_config": {
-            "model": "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b",
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b",
             "temperature": 1.0,
             "top_p": 0.95,
         },
@@ -354,14 +378,6 @@ MODELS = {
             "model": "litellm_proxy/trinity-large-thinking",
             "temperature": 1.0,
             "top_p": 0.95,
-        },
-    },
-    "amber-vector-3542": {
-        "id": "amber-vector-3542",
-        "display_name": "Amber Vector 3542",
-        "llm_config": {
-            "model": "litellm_proxy/amber-vector-3542",
-            "temperature": 0.0,
         },
     },
 }

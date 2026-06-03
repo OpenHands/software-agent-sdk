@@ -105,6 +105,36 @@ Examples:
 - A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)
 - A PR changing CI runners or fixing workflow infrastructure issues (e.g., standardizing runner types to fix path inconsistencies)
 
+### Special rule: live preflight failures for newly-added models
+
+PRs that only add an entry to `.github/run-eval/resolve_model_config.py` (and
+the matching test in `tests/cross/test_resolve_model_config.py`) interact with
+the LiteLLM proxy at `LLM_BASE_URL` (default
+`https://llm-proxy.eval.all-hands.dev`). Provisioning a new model name on that
+proxy is done **out-of-band**, not in the PR.
+
+A live preflight call that returns
+`Invalid model name passed in model=<provider>/<name>` for a model the PR is
+introducing is therefore **not** evidence that the PR is broken — it is most
+likely transient proxy-provisioning lag.
+
+When reviewing or QA-ing such a PR:
+
+- Do **not** post `❌ QA Report: FAIL` purely because the live preflight
+  rejected the new model name.
+- Do **not** open or re-open a 🔴 Critical inline thread on the new model
+  entry purely on the basis of `Invalid model name` from the live proxy.
+- Treat any of the following as authoritative validation instead:
+  1. A successful integration-runner workflow run for this PR.
+  2. A run for this model on
+     [openhands-eval-monitor.vercel.app](https://openhands-eval-monitor.vercel.app/).
+  3. The author's explicit confirmation (e.g. screenshot) that the model is
+     reachable via the proxy.
+
+Real preflight blockers still apply (parameter conflicts on Claude, bad
+`litellm_extra_body`, unit-test failures, regressions on existing models —
+see `.github/run-eval/AGENTS.md` "What still IS a real preflight blocker").
+
 ### When to COMMENT
 
 Use COMMENT when you have feedback or concerns:

@@ -18,10 +18,12 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _classify_acp_init_error,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _mask_json_value,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
@@ -767,6 +769,120 @@ class TestACPAgentInitState:
         assert events[0].dynamic_context is not None
         assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
 
+    # -- Cold-start error surfacing (issue #1024) --------------------------
+
+    def _init_state_failure(self, tmp_path, exc: BaseException):
+        """Run init_state with ``_start_acp_server`` raising ``exc``.
+
+        Returns ``(state, events, raised)`` where ``raised`` is the exception
+        that escaped init_state (asserted to be the original ``exc``).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(type(exc)) as excinfo:
+                agent.init_state(state, on_event=events.append)
+        assert excinfo.value is exc, "original exception must propagate unchanged"
+        return state, events
+
+    def test_init_state_surfaces_auth_required(self, tmp_path):
+        """An auth-required protocol error becomes a typed ACPAuthRequired event
+        with ERROR status — instead of bypassing emission and reaching the
+        client as a generic "remote conversation ended with error"."""
+        exc = ACPRequestError(-32000, "Authentication required")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].source == "agent"
+        assert errors[0].code == "ACPAuthRequired"
+        assert "Authentication required" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_spawn_error(self, tmp_path):
+        """A missing/unexecutable CLI binary (FileNotFoundError /
+        PermissionError from create_subprocess_exec) becomes ACPSpawnError."""
+        for exc in (
+            FileNotFoundError("no such file: claude-agent-acp"),
+            PermissionError("permission denied"),
+        ):
+            state, events = self._init_state_failure(tmp_path, exc)
+            errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+            assert len(errors) == 1
+            assert errors[0].code == "ACPSpawnError"
+            assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_generic_init_error(self, tmp_path):
+        """Any other handshake/session failure falls back to ACPInitError."""
+        exc = RuntimeError("protocol handshake timed out")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "protocol handshake timed out" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_truncates_long_detail(self, tmp_path):
+        """detail is capped at 500 chars, matching the run-loop error path."""
+        exc = RuntimeError("x" * 1000)
+        _state, events = self._init_state_failure(tmp_path, exc)
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors[0].detail) == 500
+
+    def test_init_state_reraises_even_if_emission_fails(self, tmp_path):
+        """A failure while surfacing the error must never mask the original
+        exception — the re-raise contract run()/arun() rely on is preserved."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        exc = RuntimeError("boom")
+
+        def _explode(_event):
+            raise ValueError("on_event is broken")
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(RuntimeError, match="boom") as excinfo:
+                agent.init_state(state, on_event=_explode)
+        assert excinfo.value is exc
+
+
+# ---------------------------------------------------------------------------
+# _classify_acp_init_error
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyACPInitError:
+    def test_auth_required_code(self):
+        exc = ACPRequestError(-32000, "Authentication required")
+        assert _classify_acp_init_error(exc) == "ACPAuthRequired"
+
+    def test_other_request_error_is_init_error(self):
+        # A protocol error that isn't auth-required (e.g. internal error) is a
+        # generic init failure, not an auth failure.
+        exc = ACPRequestError(-32603, "Internal error")
+        assert _classify_acp_init_error(exc) == "ACPInitError"
+
+    def test_file_not_found_is_spawn_error(self):
+        assert _classify_acp_init_error(FileNotFoundError()) == "ACPSpawnError"
+
+    def test_permission_error_is_spawn_error(self):
+        assert _classify_acp_init_error(PermissionError()) == "ACPSpawnError"
+
+    def test_broken_pipe_is_init_error(self):
+        # A transport drop during the handshake is an OSError subclass but not a
+        # spawn failure — it must classify as ACPInitError, not ACPSpawnError.
+        assert _classify_acp_init_error(BrokenPipeError()) == "ACPInitError"
+
+    def test_generic_exception_is_init_error(self):
+        assert _classify_acp_init_error(RuntimeError("x")) == "ACPInitError"
+
 
 # ---------------------------------------------------------------------------
 # _OpenHandsACPBridge
@@ -845,6 +961,210 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Tool-call event emission (started + terminal, no per-progress fan-out)
+# ---------------------------------------------------------------------------
+
+
+def _mk_tool_start(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str = "git status",
+    kind: str = "execute",
+    status: str = "in_progress",
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallStart
+
+    start = MagicMock(spec=ToolCallStart)
+    start.tool_call_id = tool_call_id
+    start.title = title
+    start.kind = kind
+    start.status = status
+    start.raw_input = raw_input
+    start.raw_output = raw_output
+    start.content = content
+    return start
+
+
+def _mk_tool_progress(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallProgress
+
+    progress = MagicMock(spec=ToolCallProgress)
+    progress.tool_call_id = tool_call_id
+    progress.title = title
+    progress.kind = kind
+    progress.status = status
+    progress.raw_input = raw_input
+    progress.raw_output = raw_output
+    progress.content = content
+    return progress
+
+
+class TestACPToolCallProgressCollapse:
+    """The bridge persists exactly one ``started`` + one terminal event.
+
+    Each ``ToolCallProgress`` carries the *full cumulative* output, so emitting
+    one event per frame is O(n^2) storage + WebSocket relay. The bridge instead
+    streams one early ``started`` event and one terminal (``completed`` /
+    ``failed``) event per ``tool_call_id`` — the action->observation pair —
+    while silently accumulating the intermediate frames so the terminal event
+    still carries the final output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_emits_started_event(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_intermediate_progress_frames_are_not_emitted(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        # Several non-terminal progress frames with growing cumulative output.
+        for chunk in ("a", "ab", "abc"):
+            await client.session_update(
+                "s1", _mk_tool_progress(status="in_progress", raw_output=chunk)
+            )
+
+        # Only the started event was persisted — the intermediate frames are
+        # accumulated silently (this is the O(n^2)->O(1) collapse).
+        assert len(events) == 1
+        assert events[0].status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_emits_exactly_two_events(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="pending"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="in_progress", raw_output="partial")
+        )
+        await client.session_update(
+            "s1", _mk_tool_progress(status="completed", raw_output="partial-final")
+        )
+
+        assert len(events) == 2
+        started, terminal = events
+        assert started.status == "pending"
+        assert terminal.status == "completed"
+        # Terminal event carries the final cumulative output.
+        assert terminal.raw_output == "partial-final"
+        assert terminal.is_error is False
+
+    @pytest.mark.asyncio
+    async def test_failed_terminal_sets_is_error(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="failed", raw_output="boom")
+        )
+
+        assert len(events) == 2
+        assert events[-1].status == "failed"
+        assert events[-1].is_error is True
+
+    @pytest.mark.asyncio
+    async def test_single_shot_completed_start_emits_once(self) -> None:
+        """A ToolCallStart that is already terminal is the only event."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update(
+            "s1", _mk_tool_start(status="completed", raw_output="done")
+        )
+
+        assert len(events) == 1
+        assert events[0].status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_redundant_terminal_progress_does_not_double_emit(self) -> None:
+        """Only the first transition into a terminal status emits."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+        # A trailing duplicate terminal frame must not produce a third event.
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+
+        assert len(events) == 2
+        assert [e.status for e in events] == ["in_progress", "completed"]
+
+    def test_finalize_flush_completes_orphaned_tool_calls(self) -> None:
+        """A card the server opened but never closed is flushed to completed."""
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+        agent._client = client
+
+        # One still-running call and one already-terminal call.
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "live-1",
+                "title": "long task",
+                "tool_kind": "execute",
+                "status": "in_progress",
+                "raw_input": None,
+                "raw_output": "partial output",
+                "content": None,
+            }
+        )
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "done-1",
+                "title": "quick task",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": "ok",
+                "content": None,
+            }
+        )
+
+        agent._flush_inflight_tool_calls_as_completed()
+
+        # Only the non-terminal call is flushed (the terminal one is untouched).
+        assert len(events) == 1
+        assert events[0].tool_call_id == "live-1"
+        assert events[0].status == "completed"
+        assert events[0].is_error is False
+        assert events[0].raw_output == "partial output"
+        # The accumulator entry is now terminal so it won't be flushed again.
+        assert client.accumulated_tool_calls[0]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -5236,7 +5556,11 @@ class TestACPSecretsEnvInjection:
     """Tests for secret injection into the ACP subprocess environment.
 
     Secrets passed via ``agent_context.secrets`` must land in the subprocess
-    env so the ACP server (Claude Code, Codex CLI, etc.) can use them.
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them. This
+    drain is the only thing that delivers ``agent_context.secrets`` to the CLI
+    on paths that don't call ``create_request`` (e.g. canvas-local, which folds
+    ``llm.api_key`` into ``agent_context.secrets`` server-side via
+    ``create_agent`` but never lifts it into ``state.secret_registry``).
     ``acp_env`` entries take precedence over agent_context secrets.
     """
 
@@ -5284,6 +5608,11 @@ class TestACPSecretsEnvInjection:
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
+            # Hermetic: exclude the runner's ambient env (e.g. a real
+            # GITHUB_TOKEN / ANTHROPIC_API_KEY) so it can't shadow the
+            # registry/drain values under test — env.update(os.environ) runs
+            # before the fill-if-absent secret tiers in _start_acp_server.
+            stack.enter_context(patch.dict("os.environ", {}, clear=True))
             stack.enter_context(
                 patch(
                     "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -5313,7 +5642,12 @@ class TestACPSecretsEnvInjection:
         return captured
 
     def test_static_secret_injected_into_subprocess_env(self, tmp_path):
-        """A StaticSecret in agent_context.secrets lands in the subprocess env."""
+        """A StaticSecret in agent_context.secrets lands in the subprocess env.
+
+        This drain is what delivers ``agent_context.secrets`` to the CLI on
+        paths that don't lift them into ``state.secret_registry`` via
+        ``create_request`` (e.g. canvas-local).
+        """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
@@ -5343,7 +5677,8 @@ class TestACPSecretsEnvInjection:
                 secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
             ),
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
         assert env.get("MY_TOKEN") == "acp-env-wins"
 
     def test_none_value_secret_not_injected(self, tmp_path):
@@ -5372,6 +5707,23 @@ class TestACPSecretsEnvInjection:
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
 
+    def test_acp_env_still_injected(self, tmp_path):
+        """``acp_env`` (user arbitrary env vars) is still injected at spawn."""
+        agent = _make_agent(acp_env={"MY_TOKEN": "acp-env-value"})
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("MY_TOKEN") == "acp-env-value"
+
+    def test_empty_acp_env_does_not_warn(self, tmp_path):
+        """An empty ``acp_env`` must not emit the deprecation warning."""
+        import warnings
+
+        agent = _make_agent()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._run_start_capturing_env(agent, tmp_path)
+        assert not [w for w in caught if "acp_env" in str(w.message)]
+
 
 class TestACPSecretRegistryEnvInjection:
     """Tests for secret injection from the conversation's secret_registry.
@@ -5383,12 +5735,16 @@ class TestACPSecretRegistryEnvInjection:
     ``AgentContext(secrets=...)`` shim around the same data.
 
     Same-key precedence is
-    ``acp_env > existing base env > secret_registry > agent_context.secrets``.
-    Registry and context entries only fill genuine gaps in the base env.
+    ``acp_env > secret_registry > agent_context.secrets > os.environ``.
+    Conversation secrets (registry + the agent_context drain) override ambient
+    ``os.environ`` so an explicit per-conversation/provider secret wins over a
+    same-named server env var; the registry wins over the drain on collision.
     """
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path, *, registry_secrets=None) -> dict:
+    def _run_start_capturing_env(
+        agent, tmp_path, *, registry_secrets=None, extra_os_env=None
+    ) -> dict:
         """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
         state = _make_state(tmp_path)
         if registry_secrets:
@@ -5415,6 +5771,12 @@ class TestACPSecretRegistryEnvInjection:
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
+            # Hermetic: replace the runner's ambient env with extra_os_env (or
+            # nothing), so it can't shadow the registry values under test and so
+            # tests can inject a controlled ambient var to assert precedence.
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
             stack.enter_context(
                 patch(
                     "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -5525,15 +5887,12 @@ class TestACPSecretRegistryEnvInjection:
     def test_registry_secret_takes_precedence_over_agent_context_secret(self, tmp_path):
         """``secret_registry`` wins over ``agent_context.secrets`` on collision.
 
-        Precedence ladder for this collision:
-        ``acp_env > existing base env > secret_registry > agent_context.secrets``.
-        The registry is the canonical conversation-secret channel
-        (``StartConversationRequest.secrets`` lands here); ``agent_context.
-        secrets`` is the legacy direct-attach path. When both carry the same
-        key the canonical channel wins — that's also what lets OpenHands
-        eventually drop its ``AgentContext(secrets=...)`` shim without a
-        behaviour break for clients that still attach via both paths
-        during the migration.
+        Precedence: ``acp_env > secret_registry > agent_context.secrets >
+        os.environ``. The registry is the canonical conversation-secret channel
+        (``StartConversationRequest.secrets`` lands here). On a key collision the
+        registry value is used (the drain skips keys the registry will set); a
+        context-only key is still injected by the drain — proving the two
+        channels coexist without double-injecting.
         """
         from pydantic import SecretStr
 
@@ -5541,7 +5900,10 @@ class TestACPSecretRegistryEnvInjection:
 
         agent = _make_agent(
             agent_context=AgentContext(
-                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context")),
+                    "CONTEXT_ONLY": StaticSecret(value=SecretStr("ctx-value")),
+                }
             )
         )
         env = self._run_start_capturing_env(
@@ -5550,6 +5912,7 @@ class TestACPSecretRegistryEnvInjection:
             registry_secrets={"GITHUB_TOKEN": "from-registry"},
         )
         assert env.get("GITHUB_TOKEN") == "from-registry"
+        assert env.get("CONTEXT_ONLY") == "ctx-value"
 
     def test_empty_registry_does_not_change_behaviour(self, tmp_path):
         """An empty secret_registry must not raise or alter the spawn env."""
@@ -5579,6 +5942,40 @@ class TestACPSecretRegistryEnvInjection:
             registry_secrets={"BROKEN": _BrokenSecret()},
         )
         assert "BROKEN" not in env
+
+    def test_registry_secret_overrides_ambient_os_environ(self, tmp_path):
+        """A registry secret overrides a same-named ambient os.environ var.
+
+        Conversation/provider creds must win over the agent-server's own
+        environment (os.environ is the wrong process for a remote server).
+        Before this change the ambient value silently won.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "from-registry"},
+            extra_os_env={"ANTHROPIC_API_KEY": "ambient-should-lose"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "from-registry"
+
+    def test_agent_context_secret_overrides_ambient_os_environ(self, tmp_path):
+        """An agent_context.secrets drain value overrides ambient os.environ."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={"GITHUB_TOKEN": "ambient-should-lose"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-context"
 
 
 class TestACPEnvConflictSuppression:
@@ -5613,7 +6010,9 @@ class TestACPEnvConflictSuppression:
         return conn
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path, *, extra_os_env=None) -> dict:
+    def _run_start_capturing_env(
+        agent, tmp_path, *, extra_os_env=None, registry_secrets=None
+    ) -> dict:
         from contextlib import ExitStack
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -5633,6 +6032,8 @@ class TestACPEnvConflictSuppression:
             return None
 
         state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
@@ -5660,8 +6061,12 @@ class TestACPEnvConflictSuppression:
                     return_value=MagicMock(),
                 )
             )
-            if extra_os_env:
-                stack.enter_context(patch.dict("os.environ", extra_os_env, clear=False))
+            # Hermetic: clear the runner's ambient env so it can't shadow the
+            # values under test; extra_os_env is the only os.environ content
+            # (used by the test that injects ANTHROPIC_API_KEY via os.environ).
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
             agent._start_acp_server(state)
 
         return captured
@@ -5699,8 +6104,36 @@ class TestACPEnvConflictSuppression:
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
+    def test_claude_config_dir_suppresses_api_key_from_registry(self, tmp_path):
+        """ANTHROPIC_API_KEY injected via secret_registry is stripped too.
+
+        This is the channel provider creds now travel on (folded into
+        ``agent_context.secrets`` by ``create_agent`` → lifted into the
+        registry by ``create_request``).
+        """
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "ANTHROPIC_API_KEY": "sk-from-registry",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
     def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
-        """ANTHROPIC_API_KEY injected via agent_context.secrets is stripped too."""
+        """ANTHROPIC_API_KEY drained from agent_context.secrets is stripped too.
+
+        Covers the canvas-local channel: provider creds folded into
+        ``agent_context.secrets`` reach env via the drain, and must still be
+        stripped when CLAUDE_CONFIG_DIR is active.
+        """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
@@ -5718,7 +6151,8 @@ class TestACPEnvConflictSuppression:
                 }
             ),
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
 
         assert "CLAUDE_CONFIG_DIR" in env
         assert "ANTHROPIC_API_KEY" not in env
@@ -5977,3 +6411,269 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._session_id = "sess-1"
         agent._agent_name = "locked-down-provider"
         assert agent.supports_runtime_model_switch is False
+
+
+# ---------------------------------------------------------------------------
+# Secret masking (#1023)
+# ---------------------------------------------------------------------------
+
+
+def _redacting_mask(text: str) -> str:
+    """Stand-in for ``secret_registry.mask_secrets_in_output``: replaces the
+    literal secret with the same sentinel the real registry uses."""
+    return text.replace("SEKRET", "<secret-hidden>")
+
+
+class TestMaskJsonValue:
+    """Unit tests for the recursive JSON masker helper."""
+
+    def test_masks_bare_string(self):
+        assert _mask_json_value("token=SEKRET", _redacting_mask) == (
+            "token=<secret-hidden>"
+        )
+
+    def test_masks_nested_dict_and_list(self):
+        value = {
+            "command": "curl -H 'Authorization: Bearer SEKRET'",
+            "args": ["--data", "key=SEKRET"],
+            "count": 3,
+            "ok": True,
+            "nothing": None,
+        }
+        masked = _mask_json_value(value, _redacting_mask)
+        assert masked["command"] == "curl -H 'Authorization: Bearer <secret-hidden>'"
+        assert masked["args"] == ["--data", "key=<secret-hidden>"]
+        # Non-string leaves pass through unchanged.
+        assert masked["count"] == 3
+        assert masked["ok"] is True
+        assert masked["nothing"] is None
+
+    def test_non_string_scalar_passthrough(self):
+        assert _mask_json_value(42, _redacting_mask) == 42
+        assert _mask_json_value(None, _redacting_mask) is None
+
+
+class TestACPBridgeMasking:
+    """``_OpenHandsACPBridge`` masks injected secrets before they reach the
+    ``on_token`` / ``on_event`` sinks (persisted + network-relayed)."""
+
+    @pytest.mark.asyncio
+    async def test_message_chunk_masked_in_relay_and_accumulation(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "the token is SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["the token is <secret-hidden>"]
+        assert client.accumulated_text == ["the token is <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_thought_chunk_masked(self):
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "I will use SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert client.accumulated_thoughts == ["I will use <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_masks_raw_fields(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Running: echo SEKRET"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = {"command": "echo SEKRET"}
+        start.raw_output = "leaked SEKRET here"
+        start.content = None
+
+        await client.session_update("sess-1", start)
+
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.title == "Running: echo <secret-hidden>"
+        assert evt.raw_input == {"command": "echo <secret-hidden>"}
+        assert evt.raw_output == "leaked <secret-hidden> here"
+        # The accumulator itself must hold masked values so the supersede /
+        # flush path can't re-leak them.
+        stored = client.accumulated_tool_calls[0]
+        assert stored["title"] == "Running: echo <secret-hidden>"
+        assert stored["raw_input"] == {"command": "echo <secret-hidden>"}
+        assert stored["raw_output"] == "leaked <secret-hidden> here"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_masks_terminal_output(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Terminal progress frame carries the secret in its cumulative output.
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "result: SEKRET"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+
+        # The terminal event (emitted on the in_progress->completed transition)
+        # carries masked output.
+        assert events[-1].status == "completed"
+        assert events[-1].raw_output == "result: <secret-hidden>"
+        assert (
+            client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_masking_when_mask_unset(self):
+        """A standalone bridge (mask is None) passes text through unchanged
+        and never raises."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        assert client.mask is None
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "raw SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["raw SEKRET"]
+        assert client.accumulated_text == ["raw SEKRET"]
+
+    def test_mask_value_swallows_mask_errors(self):
+        """A failing masker must never crash session_update — fall back to the
+        original value (matches the regular terminal tool's masking contract)."""
+
+        def _boom(_text: str) -> str:
+            raise RuntimeError("masker exploded")
+
+        client = _OpenHandsACPBridge()
+        client.mask = _boom
+        assert client._mask_value("keep SEKRET") == "keep SEKRET"
+
+    def test_reset_preserves_mask(self):
+        """mask is conversation-lifetime (bound once in _start_acp_server), so a
+        per-turn reset() must NOT clear it — unlike on_token/on_event."""
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client.reset()
+        assert client.mask is _redacting_mask
+
+    @pytest.mark.asyncio
+    async def test_fork_session_text_masked(self):
+        """ask_agent() joins _fork_accumulated_text and returns it to the
+        caller, so fork-session chunks must be masked too."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client._fork_session_id = "fork-1"
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "fork says SEKRET"
+
+        await client.session_update("fork-1", chunk)
+
+        assert client._fork_accumulated_text == ["fork says <secret-hidden>"]
+
+
+class TestACPStepMasksPersistedTurn:
+    """End-to-end: the persisted FinishAction text is masked at the join
+    boundary, including secrets split across streamed chunks."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_finish_action_masks_secret_split_across_chunks(self, tmp_path):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        # Seed the mask set via the canonical registry path (get_secret_value
+        # records the resolved value in _exported_values) — the same path
+        # _start_acp_server drives for StartConversationRequest secrets.
+        reg = conversation.state.secret_registry
+        reg.update_secrets({"TOKEN": "supersecret"})
+        reg.get_secret_value("TOKEN")
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            # Populate accumulated_text directly, bypassing session_update (and
+            # thus per-chunk masking) on purpose: this isolates the join-boundary
+            # re-mask in _finalize_successful_turn. The secret straddles two
+            # chunks, so neither chunk matches alone — only the reassembled join
+            # does, which is exactly what the persistence-boundary mask catches.
+            mock_client.accumulated_text.append("the value is super")
+            mock_client.accumulated_text.append("secret now")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        finish = next(
+            e for e in events if isinstance(getattr(e, "action", None), FinishAction)
+        )
+        assert "supersecret" not in finish.action.message
+        assert finish.action.message == "the value is <secret-hidden> now"
