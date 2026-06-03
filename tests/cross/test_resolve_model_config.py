@@ -661,6 +661,16 @@ def test_deepseek_v4_flash_config():
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
 
 
+def test_gemini_3_5_flash_config():
+    """Test that gemini-3.5-flash has correct configuration."""
+    model = MODELS["gemini-3.5-flash"]
+
+    assert model["id"] == "gemini-3.5-flash"
+    assert model["display_name"] == "Gemini 3.5 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/gemini-3.5-flash"
+    assert model["llm_config"]["temperature"] == 0.0
+
+
 def test_gpt_oss_120b_config():
     """Test that gpt-oss-120b has correct configuration."""
     model = MODELS["gpt-oss-120b"]
