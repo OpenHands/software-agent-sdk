@@ -1653,6 +1653,21 @@ class ACPAgent(AgentBase):
         codex/gemini have no such coupling. (Claude's transcripts are already
         cwd-keyed, so the residual shared state is the mostly-inert global
         config.)
+
+        ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
+        ignores ``XDG``) has a wider blast radius than the surgical
+        ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
+        seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
+        ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).
+        That is accepted as the cost of isolating Gemini at all; callers that
+        need a narrower scope can pin ``HOME`` via ``acp_env`` (honoured below)
+        or leave isolation off for Gemini.
+
+        Ordering contract: this runs *after* the secret_registry / agent_context
+        drain and the ``acp_env`` update in :meth:`_start_acp_server`, so the
+        credential vars it inspects (``ANTHROPIC_API_KEY`` /
+        ``CLAUDE_CODE_OAUTH_TOKEN``) are already hydrated into ``env``. Calling it
+        earlier would misread the active credential and wrongly relocate Claude.
         """
         provider = detect_acp_provider_by_command(self.acp_command)
         if provider is None or provider.data_dir_env_var is None:
@@ -1660,6 +1675,8 @@ class ACPAgent(AgentBase):
         env_var = provider.data_dir_env_var
         if env_var in self.acp_env:
             return
+        # Relies on the ordering contract above: ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN must already be hydrated into env.
         if (
             env_var == "CLAUDE_CONFIG_DIR"
             and env.get("ANTHROPIC_API_KEY")
@@ -1862,8 +1879,12 @@ class ACPAgent(AgentBase):
 
         # Relocate the CLI's data/config root to a per-conversation directory so
         # sandbox-sharing conversations don't race on a shared HOME (#1019).
-        # After acp_env (so a pin wins) and before the conflict-strip below (so a
-        # CLAUDE_CONFIG_DIR we set is still subject to it).
+        # Ordering is load-bearing — this must run AFTER the registry /
+        # agent_context drain and the acp_env update above (so the credential
+        # vars its Claude carve-out inspects — ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN — are already in env, and an acp_env pin wins)
+        # and BEFORE the conflict-strip below (so a CLAUDE_CONFIG_DIR it sets is
+        # still subject to the strip).
         if self.acp_isolate_data_dir:
             self._isolate_acp_data_dir(state, env)
 

@@ -476,19 +476,35 @@ def detect_acp_provider_by_command(
     """Identify a provider from its launch ``command``, before the subprocess runs.
 
     Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
-    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are substrings of its
-    npm package name, so the same patterns that match the runtime ``agent_name``
-    also match the launch command — letting us pick the provider *before* the
-    server starts and reports its name (when the subprocess environment, e.g. a
-    relocated data dir, must already be set). Tolerant of version pins
-    (``@google/gemini-cli@0.43.0``) and absolute-path forms.
+    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are prefixes of its
+    npm-package / binary basename, so we can pick the provider *before* the server
+    starts and reports its name (when the subprocess environment, e.g. a relocated
+    data dir, must already be set).
+
+    Matching is deliberately stricter than
+    :func:`detect_acp_provider_by_agent_name` because the launch command is
+    *caller-controlled*: each token is reduced to its basename (last path segment,
+    minus a trailing ``@version`` pin) and a provider matches only when that
+    basename *starts with* one of its patterns. This accepts the real forms —
+    ``@zed-industries/codex-acp``, ``@google/gemini-cli@0.43.0``,
+    ``/opt/node_modules/.bin/codex-acp`` — while rejecting incidental substrings
+    like ``my-codex-acp-wrapper`` or ``/opt/shims/not-codex-acp`` that a plain
+    substring test would misattribute.
 
     Returns ``None`` for a custom/unrecognised command, so callers that require a
     known provider (e.g. data-dir isolation) safely no-op.
     """
-    joined = " ".join(command).lower()
+    bases: list[str] = []
+    for token in command:
+        base = token.rsplit("/", 1)[-1].lower()
+        at = base.rfind("@")
+        if at > 0:  # strip a trailing @version pin (not a leading @scope)
+            base = base[:at]
+        bases.append(base)
     for info in ACP_PROVIDERS.values():
-        if any(pat in joined for pat in info.agent_name_patterns):
+        if any(
+            base.startswith(pat) for base in bases for pat in info.agent_name_patterns
+        ):
             return info
     return None
 

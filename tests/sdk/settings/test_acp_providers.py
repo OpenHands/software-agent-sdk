@@ -163,6 +163,18 @@ class TestDetectACPProviderByCommand:
     def test_returns_none_for_empty_command(self):
         assert detect_acp_provider_by_command([]) is None
 
+    def test_rejects_incidental_substring_in_custom_command(self):
+        # Plain substring matching would misattribute these to codex; the
+        # basename + prefix rule rejects them (basenames start with "my-"/"not-").
+        assert detect_acp_provider_by_command(["my-codex-acp-wrapper"]) is None
+        assert detect_acp_provider_by_command(["/opt/shims/not-codex-acp"]) is None
+
+    def test_prefix_match_accepts_provider_basename_prefix(self):
+        # A basename that *starts with* the pattern is treated as that provider
+        # (mirrors how "claude-agent" must match the "claude-agent-acp" package).
+        info = detect_acp_provider_by_command(["@acme/codex-acp-shim"])
+        assert info is not None and info.key == "codex"
+
 
 class TestProviderRegistryConsistency:
     """Verify the registry is internally consistent."""
