@@ -33,7 +33,7 @@ own copies of this metadata.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -252,6 +252,25 @@ class ACPProviderInfo:
     callers constructing this dataclass positionally keep working.
     """
 
+    data_dir_env_var: str | None = None
+    """Env var that relocates this CLI's per-user data/config root.
+
+    Set it to a per-conversation directory to isolate the CLI's on-disk state
+    (config, transcripts, caches, lockfiles) when several of a user's
+    conversations share one sandbox (``SandboxGroupingStrategy != NO_GROUPING``)
+    — otherwise they race on a single shared ``HOME`` (see #1019). Each CLI
+    exposes a different lever:
+
+    - ``CODEX_HOME``        — codex-acp (relocates ``~/.codex`` wholesale)
+    - ``CLAUDE_CONFIG_DIR`` — claude-agent-acp (relocates ``~/.claude*``)
+    - ``HOME``              — gemini-cli (no dedicated var; it hard-codes
+      ``~/.gemini`` and ignores ``XDG``, so only ``HOME`` moves it)
+
+    ``None`` for providers with no known relocation lever, which then skip
+    isolation. Consumed by
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -371,6 +390,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
         "codex": ACPProviderInfo(
             key="codex",
@@ -386,6 +406,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
             file_secrets=_CODEX_FILE_SECRETS,
+            data_dir_env_var="CODEX_HOME",
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -406,6 +427,9 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # auto-routing.
             default_model="auto-gemini-2.5",
             file_secrets=_GEMINI_FILE_SECRETS,
+            # Gemini CLI has no dedicated config-dir var; it hard-codes
+            # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
+            data_dir_env_var="HOME",
         ),
     }
 )
@@ -442,6 +466,29 @@ def detect_acp_provider_by_agent_name(agent_name: str) -> ACPProviderInfo | None
     lower = agent_name.lower()
     for info in ACP_PROVIDERS.values():
         if any(pat in lower for pat in info.agent_name_patterns):
+            return info
+    return None
+
+
+def detect_acp_provider_by_command(
+    command: Sequence[str],
+) -> ACPProviderInfo | None:
+    """Identify a provider from its launch ``command``, before the subprocess runs.
+
+    Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
+    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are substrings of its
+    npm package name, so the same patterns that match the runtime ``agent_name``
+    also match the launch command — letting us pick the provider *before* the
+    server starts and reports its name (when the subprocess environment, e.g. a
+    relocated data dir, must already be set). Tolerant of version pins
+    (``@google/gemini-cli@0.43.0``) and absolute-path forms.
+
+    Returns ``None`` for a custom/unrecognised command, so callers that require a
+    known provider (e.g. data-dir isolation) safely no-op.
+    """
+    joined = " ".join(command).lower()
+    for info in ACP_PROVIDERS.values():
+        if any(pat in joined for pat in info.agent_name_patterns):
             return info
     return None
 

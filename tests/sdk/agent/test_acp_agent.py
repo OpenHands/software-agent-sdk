@@ -6875,6 +6875,137 @@ class TestACPFileSecretMaterialisation:
 
 
 # ---------------------------------------------------------------------------
+# Per-conversation CLI data-dir isolation (issue #1019)
+# ---------------------------------------------------------------------------
+
+
+class TestACPDataDirIsolation:
+    """``acp_isolate_data_dir`` relocates each provider's CLI data/config root to
+    ``<persistence_dir>/acp/<provider>`` so conversations sharing one sandbox
+    don't race on a shared HOME. Reuses the materialisation harness so the two
+    features are exercised against the same _start_acp_server path.
+    """
+
+    _H = TestACPFileSecretMaterialisation
+
+    @staticmethod
+    def _agent(command, **kw):
+        return ACPAgent(acp_command=command, acp_isolate_data_dir=True, **kw)
+
+    def test_codex_sets_codex_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        data_dir = Path(env["CODEX_HOME"])
+        assert data_dir == Path(persist) / "acp" / "codex"
+        assert data_dir.is_dir()
+        assert data_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_gemini_sets_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["npx", "-y", "@google/gemini-cli", "--acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="gemini-cli")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "gemini-cli"
+
+    def test_disabled_by_default_leaves_home_shared(self, tmp_path):
+        # Same codex command, isolation OFF (the default): no CODEX_HOME injected.
+        agent = ACPAgent(acp_command=["codex-acp"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_unknown_command_no_ops(self, tmp_path):
+        agent = self._agent(["my-custom-acp", "serve"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+        assert "CLAUDE_CONFIG_DIR" not in env
+
+    def test_acp_env_pin_wins(self, tmp_path):
+        agent = self._agent(["codex-acp"], acp_env={"CODEX_HOME": "/pinned/codex"})
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert env["CODEX_HOME"] == "/pinned/codex"
+
+    def test_falls_back_to_workspace_when_not_persisted(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert (
+            Path(env["CODEX_HOME"])
+            == Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        )
+
+    def test_composes_with_materialised_codex_auth(self, tmp_path):
+        """Isolation and file-secret materialisation agree on one CODEX_HOME."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        # Materialisation seeded auth.json into the SAME dir isolation points at.
+        assert (codex_home / "auth.json").read_text(
+            encoding="utf-8"
+        ) == '{"tokens": "x"}'
+
+    # --- Claude carve-out: must not knock out an active API key --------------
+
+    def test_claude_skips_when_api_key_active(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-live"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        # Setting CLAUDE_CONFIG_DIR would trip _ENV_CONFLICT_MAP and strip the
+        # key, so isolation is skipped and the working key survives.
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert env["ANTHROPIC_API_KEY"] == "sk-live"
+
+    def test_claude_isolates_under_oauth_token(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CLAUDE_CODE_OAUTH_TOKEN": StaticSecret(value=SecretStr("oauth-xyz"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
+
+
+# ---------------------------------------------------------------------------
 # Secret masking (#1023)
 # ---------------------------------------------------------------------------
 
