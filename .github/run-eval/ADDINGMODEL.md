@@ -52,11 +52,20 @@ This file (`resolve_model_config.py`) defines models available for evaluation. M
    - `openhands-sdk/openhands/sdk/llm/utils/model_prompt_spec.py` - GPT models only (variant detection)
    - `openhands-sdk/openhands/sdk/llm/utils/verified_models.py` - Production-ready models
 
-   > ⚠️ **When editing `verified_models.py`**: If you add a model to `VERIFIED_OPENHANDS_MODELS`,
-   > you **must also** add it to its provider-specific list (e.g. `VERIFIED_ANTHROPIC_MODELS`,
-   > `VERIFIED_GEMINI_MODELS`, `VERIFIED_MOONSHOT_MODELS`, etc.).
-   > If no list exists for the provider yet, create one and add it to the `VERIFIED_MODELS` dict.
-   > This ensures the model appears under its actual provider in the UI, not just under "openhands".
+   > ⛔ **Do NOT add a model to `verified_models.py` unless explicitly asked to.**
+   > "Verified" means the model has been validated against the OpenHands integration
+   > test suite **and** an OpenHands maintainer has approved it for the production UI.
+   > A passing integration run is *necessary but not sufficient*. New models should be
+   > added to `MODELS` in `resolve_model_config.py` (and `model_features.py` if
+   > applicable) only — leave `verified_models.py` alone until a maintainer requests it
+   > in the PR.
+   >
+   > ⚠️ **When you are explicitly asked to edit `verified_models.py`**: If you add a
+   > model to `VERIFIED_OPENHANDS_MODELS`, you **must also** add it to its
+   > provider-specific list (e.g. `VERIFIED_ANTHROPIC_MODELS`, `VERIFIED_GEMINI_MODELS`,
+   > `VERIFIED_MOONSHOT_MODELS`, etc.). If no list exists for the provider yet, create
+   > one and add it to the `VERIFIED_MODELS` dict. This ensures the model appears under
+   > its actual provider in the UI, not just under "openhands".
 
 ## Step 1: Add to resolve_model_config.py
 
@@ -338,6 +347,29 @@ Fixes #[issue-number]
 - Add model to REASONING_EFFORT_MODELS or EXTENDED_THINKING_MODELS (auto-strips both)
 
 **Reference**: #2137, #2193
+
+### Preflight Check: "Invalid model name" for a newly-added model
+**Cause**: The local preflight in `resolve_model_config.py` performs a *live*
+`litellm.completion(...)` against the LiteLLM proxy at `LLM_BASE_URL` (default
+`https://llm-proxy.eval.all-hands.dev`). Registering a new model name on that
+proxy is done **out-of-band** by infra/maintainers — it is not part of this PR.
+So immediately after adding a new entry, the proxy may not yet know the model
+name and respond with `Invalid model name passed in model=<provider>/<name>`.
+
+**This is not a bug in the PR** — it is a transient proxy-provisioning lag.
+
+**What to do**:
+- Author: keep the PR open, link evidence that the model works (see Step 7 — the
+  integration-runner workflow run and/or the
+  [eval monitor](https://openhands-eval-monitor.vercel.app/) run for this model
+  are the authoritative checks).
+- Reviewers / QA bot: do **not** block the PR on this specific failure. Treat
+  successful integration-runner results or an eval monitor link as authoritative
+  validation, and re-run the local preflight only after the proxy has been
+  updated. See the "Reviewing model PRs" section in
+  [`AGENTS.md`](./AGENTS.md) for the full review-side rule.
+
+**Reference**: #3472
 
 ### Vision Tests Fail
 **Cause**: LiteLLM reports vision support but model doesn't actually support it

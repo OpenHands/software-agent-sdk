@@ -109,6 +109,11 @@ class LocalConversation(BaseConversation):
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
     _cancel_token: CancellationToken | None
+    # True while run()/arun() executes an agent step while holding the state
+    # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
+    # it must skip re-acquiring the lock the run loop holds while blocked
+    # awaiting that tool (#3485).
+    _step_holds_state_lock: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -191,6 +196,7 @@ class LocalConversation(BaseConversation):
         self._arun_task = None
         self._cancel_token = None
         self._prompt_cache_key = prompt_cache_key
+        self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -772,7 +778,17 @@ class LocalConversation(BaseConversation):
         except KeyError:
             new_llm = llm
             self.llm_registry.add(new_llm)
-        with self._state:
+        # A switch_llm tool runs on a worker thread while run()/arun() holds the
+        # state lock across the agent step on another thread, blocked awaiting
+        # this very tool. Re-acquiring _state here would deadlock, so skip it:
+        # the run loop is parked and no other mutator can run, so the swap is
+        # safe without the lock (#3485). Only skip when the lock is held by a
+        # different thread (the run loop); when the caller already owns it (a
+        # sync step, or the switch endpoint reentering on the event-loop thread)
+        # acquire normally — FIFOLock is reentrant for the owning thread.
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
@@ -1025,9 +1041,16 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    self.agent.step(
-                        self, on_event=self._on_event, on_token=self._on_token
-                    )
+                    # Mark the step as holding the state lock so state-mutating
+                    # tools (e.g. switch_llm) running on worker threads skip
+                    # re-acquiring it instead of deadlocking (#3485).
+                    self._step_holds_state_lock = True
+                    try:
+                        self.agent.step(
+                            self, on_event=self._on_event, on_token=self._on_token
+                        )
+                    finally:
+                        self._step_holds_state_lock = False
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -1253,11 +1276,19 @@ class LocalConversation(BaseConversation):
                         # silently re-enter the lock and corrupt history. Such
                         # unrelated mutators must be dispatched via
                         # run_in_executor onto a worker thread.
-                        await self.agent.astep(
-                            self,
-                            on_event=self._on_event,
-                            on_token=self._on_token,
-                        )
+                        # Mark the step as holding the state lock so
+                        # state-mutating tools (e.g. switch_llm) running on
+                        # worker threads skip re-acquiring it instead of
+                        # deadlocking while this await holds it (#3485).
+                        self._step_holds_state_lock = True
+                        try:
+                            await self.agent.astep(
+                                self,
+                                on_event=self._on_event,
+                                on_token=self._on_token,
+                            )
+                        finally:
+                            self._step_holds_state_lock = False
                         iteration += 1
 
                         if (
