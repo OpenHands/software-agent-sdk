@@ -661,6 +661,17 @@ def test_deepseek_v4_flash_config():
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
 
 
+def test_gpt_oss_120b_config():
+    """Test that gpt-oss-120b has correct configuration."""
+    model = MODELS["gpt-oss-120b"]
+
+    assert model["id"] == "gpt-oss-120b"
+    assert model["display_name"] == "GPT OSS 120B"
+    assert (
+        model["llm_config"]["model"] == "litellm_proxy/openrouter/openai/gpt-oss-120b"
+    )
+
+
 def test_nemotron_3_ultra_550b_a55b_config():
     """Test that nemotron-3-ultra-550b-a55b has correct configuration."""
     model = MODELS["nemotron-3-ultra-550b-a55b"]

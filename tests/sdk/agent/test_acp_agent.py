@@ -23,6 +23,7 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _mask_json_value,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
@@ -6410,3 +6411,269 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._session_id = "sess-1"
         agent._agent_name = "locked-down-provider"
         assert agent.supports_runtime_model_switch is False
+
+
+# ---------------------------------------------------------------------------
+# Secret masking (#1023)
+# ---------------------------------------------------------------------------
+
+
+def _redacting_mask(text: str) -> str:
+    """Stand-in for ``secret_registry.mask_secrets_in_output``: replaces the
+    literal secret with the same sentinel the real registry uses."""
+    return text.replace("SEKRET", "<secret-hidden>")
+
+
+class TestMaskJsonValue:
+    """Unit tests for the recursive JSON masker helper."""
+
+    def test_masks_bare_string(self):
+        assert _mask_json_value("token=SEKRET", _redacting_mask) == (
+            "token=<secret-hidden>"
+        )
+
+    def test_masks_nested_dict_and_list(self):
+        value = {
+            "command": "curl -H 'Authorization: Bearer SEKRET'",
+            "args": ["--data", "key=SEKRET"],
+            "count": 3,
+            "ok": True,
+            "nothing": None,
+        }
+        masked = _mask_json_value(value, _redacting_mask)
+        assert masked["command"] == "curl -H 'Authorization: Bearer <secret-hidden>'"
+        assert masked["args"] == ["--data", "key=<secret-hidden>"]
+        # Non-string leaves pass through unchanged.
+        assert masked["count"] == 3
+        assert masked["ok"] is True
+        assert masked["nothing"] is None
+
+    def test_non_string_scalar_passthrough(self):
+        assert _mask_json_value(42, _redacting_mask) == 42
+        assert _mask_json_value(None, _redacting_mask) is None
+
+
+class TestACPBridgeMasking:
+    """``_OpenHandsACPBridge`` masks injected secrets before they reach the
+    ``on_token`` / ``on_event`` sinks (persisted + network-relayed)."""
+
+    @pytest.mark.asyncio
+    async def test_message_chunk_masked_in_relay_and_accumulation(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "the token is SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["the token is <secret-hidden>"]
+        assert client.accumulated_text == ["the token is <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_thought_chunk_masked(self):
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "I will use SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert client.accumulated_thoughts == ["I will use <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_masks_raw_fields(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Running: echo SEKRET"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = {"command": "echo SEKRET"}
+        start.raw_output = "leaked SEKRET here"
+        start.content = None
+
+        await client.session_update("sess-1", start)
+
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.title == "Running: echo <secret-hidden>"
+        assert evt.raw_input == {"command": "echo <secret-hidden>"}
+        assert evt.raw_output == "leaked <secret-hidden> here"
+        # The accumulator itself must hold masked values so the supersede /
+        # flush path can't re-leak them.
+        stored = client.accumulated_tool_calls[0]
+        assert stored["title"] == "Running: echo <secret-hidden>"
+        assert stored["raw_input"] == {"command": "echo <secret-hidden>"}
+        assert stored["raw_output"] == "leaked <secret-hidden> here"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_masks_terminal_output(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Terminal progress frame carries the secret in its cumulative output.
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "result: SEKRET"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+
+        # The terminal event (emitted on the in_progress->completed transition)
+        # carries masked output.
+        assert events[-1].status == "completed"
+        assert events[-1].raw_output == "result: <secret-hidden>"
+        assert (
+            client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_masking_when_mask_unset(self):
+        """A standalone bridge (mask is None) passes text through unchanged
+        and never raises."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        assert client.mask is None
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "raw SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["raw SEKRET"]
+        assert client.accumulated_text == ["raw SEKRET"]
+
+    def test_mask_value_swallows_mask_errors(self):
+        """A failing masker must never crash session_update — fall back to the
+        original value (matches the regular terminal tool's masking contract)."""
+
+        def _boom(_text: str) -> str:
+            raise RuntimeError("masker exploded")
+
+        client = _OpenHandsACPBridge()
+        client.mask = _boom
+        assert client._mask_value("keep SEKRET") == "keep SEKRET"
+
+    def test_reset_preserves_mask(self):
+        """mask is conversation-lifetime (bound once in _start_acp_server), so a
+        per-turn reset() must NOT clear it — unlike on_token/on_event."""
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client.reset()
+        assert client.mask is _redacting_mask
+
+    @pytest.mark.asyncio
+    async def test_fork_session_text_masked(self):
+        """ask_agent() joins _fork_accumulated_text and returns it to the
+        caller, so fork-session chunks must be masked too."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client._fork_session_id = "fork-1"
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "fork says SEKRET"
+
+        await client.session_update("fork-1", chunk)
+
+        assert client._fork_accumulated_text == ["fork says <secret-hidden>"]
+
+
+class TestACPStepMasksPersistedTurn:
+    """End-to-end: the persisted FinishAction text is masked at the join
+    boundary, including secrets split across streamed chunks."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_finish_action_masks_secret_split_across_chunks(self, tmp_path):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        # Seed the mask set via the canonical registry path (get_secret_value
+        # records the resolved value in _exported_values) — the same path
+        # _start_acp_server drives for StartConversationRequest secrets.
+        reg = conversation.state.secret_registry
+        reg.update_secrets({"TOKEN": "supersecret"})
+        reg.get_secret_value("TOKEN")
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            # Populate accumulated_text directly, bypassing session_update (and
+            # thus per-chunk masking) on purpose: this isolates the join-boundary
+            # re-mask in _finalize_successful_turn. The secret straddles two
+            # chunks, so neither chunk matches alone — only the reassembled join
+            # does, which is exactly what the persistence-boundary mask catches.
+            mock_client.accumulated_text.append("the value is super")
+            mock_client.accumulated_text.append("secret now")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        finish = next(
+            e for e in events if isinstance(getattr(e, "action", None), FinishAction)
+        )
+        assert "supersecret" not in finish.action.message
+        assert finish.action.message == "the value is <secret-hidden> now"
