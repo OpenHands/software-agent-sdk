@@ -1582,6 +1582,11 @@ class ACPAgent(AgentBase):
                 # permissions the user chose.
                 if not pinned:
                     directory.chmod(0o700)
+                    # Also clamp the shared SDK-owned `acp/` parent, which
+                    # parents=True may have created under the process umask
+                    # (e.g. 0o755); the leaf chmod above only covers <subdir>.
+                    # Stop at `acp/` — its parent is the persistence layer's.
+                    directory.parent.chmod(0o700)
                 if target.is_file() and target.stat().st_size > 0:
                     # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
                     # but still clamp perms — a pre-existing credential file may

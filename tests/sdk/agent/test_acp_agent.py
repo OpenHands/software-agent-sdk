@@ -6615,9 +6615,10 @@ class TestACPFileSecretMaterialisation:
         assert codex_home == Path(persist) / "acp" / "codex"
         auth_file = codex_home / "auth.json"
         assert auth_file.read_text(encoding="utf-8") == '{"tokens": "x"}'
-        # 0600 file inside a 0700 dir.
+        # 0600 file inside a 0700 dir, and the shared acp/ parent is 0700 too.
         assert auth_file.stat().st_mode & 0o777 == 0o600
         assert codex_home.stat().st_mode & 0o777 == 0o700
+        assert codex_home.parent.stat().st_mode & 0o777 == 0o700
         # The blob is not exported as an env var.
         assert "CODEX_AUTH_JSON" not in env
 
