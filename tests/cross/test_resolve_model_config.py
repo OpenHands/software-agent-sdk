@@ -699,6 +699,11 @@ def test_step_3_7_flash_config():
     exactly so that `_get_model_info_from_litellm_proxy` matches the
     registry entry and picks up `supports_vision=true` from the
     proxy-side `model_info`.
+
+    The retry envelope is bumped above the SDK default (5/8/64) because
+    StepFun caps this model at 10 RPM on the current tier and parallel
+    inference otherwise drains the retry budget before the rate-limit
+    bucket resets, see OpenHands/software-agent-sdk#3496.
     """
     model = MODELS["step-3.7-flash"]
 
@@ -706,3 +711,9 @@ def test_step_3_7_flash_config():
     assert model["display_name"] == "Step 3.7 Flash"
     assert model["llm_config"]["model"] == "litellm_proxy/step-3.7-flash"
     assert model["llm_config"]["temperature"] == 0.0
+
+    # Retry settings must be at least these values to weather StepFun's
+    # 10 RPM tier under parallel inference.
+    assert model["llm_config"]["num_retries"] >= 10
+    assert model["llm_config"]["retry_min_wait"] >= 15
+    assert model["llm_config"]["retry_max_wait"] >= 90

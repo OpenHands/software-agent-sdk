@@ -381,6 +381,18 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/step-3.7-flash",
             "temperature": 0.0,
+            # StepFun's current API tier caps step-3.7-flash at 10 RPM
+            # (see https://platform.stepfun.ai/docs/en/pricing/details
+            # #tiered-rate-limits). The eval runs many instances in
+            # parallel and each step hammers the same RPM bucket, so the
+            # SDK's default retry envelope (5 attempts, ~3 min total)
+            # exhausts long before the bucket resets and every instance
+            # ends up in `output_errors.jsonl` instead of `output.jsonl`
+            # (see OpenHands/software-agent-sdk#3496). Stretch the retry
+            # window enough to outlast a fully-saturated 60s bucket.
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }
