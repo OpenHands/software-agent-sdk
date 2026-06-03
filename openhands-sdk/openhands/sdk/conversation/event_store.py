@@ -91,8 +91,7 @@ class EventLog(EventsListBase):
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
 
-        cached = self._event_cache.get(i)
-        if cached is not None:
+        if (cached := self._event_cache.get(i)) is not None:
             return cached
 
         try:
