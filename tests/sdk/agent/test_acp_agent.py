@@ -6642,7 +6642,9 @@ class TestACPFileSecretMaterialisation:
         gac = Path(env["GOOGLE_APPLICATION_CREDENTIALS"])
         assert gac == Path(persist) / "acp" / "gemini-cli" / "gcloud-credentials.json"
         assert gac.read_text(encoding="utf-8") == '{"type": "service_account"}'
+        # 0600 file inside a 0700 dir (symmetry with the Codex test).
         assert gac.stat().st_mode & 0o777 == 0o600
+        assert gac.parent.stat().st_mode & 0o777 == 0o700
         assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
 
     def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
