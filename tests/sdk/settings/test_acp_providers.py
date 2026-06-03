@@ -40,7 +40,8 @@ class TestACPProviderInfo:
         # ... but it DOES support session/set_model for mid-conversation switches.
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
-        assert info.default_model == "claude-opus-4-7"
+        assert info.default_model == "claude-opus-4-8"
+        assert any(m.id == "claude-opus-4-8" for m in info.available_models)
         assert any(m.id == "claude-opus-4-7" for m in info.available_models)
 
     def test_codex_metadata(self):

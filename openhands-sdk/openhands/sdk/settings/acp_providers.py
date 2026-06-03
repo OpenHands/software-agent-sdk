@@ -267,6 +267,7 @@ class ACPProviderInfo:
 # the newest 1M-capable model — keep their labels version-less to match).
 # ``opusplan`` routes planning to Opus and execution to Sonnet.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="claude-opus-4-8", label="Claude Opus 4.8"),
     ACPModelOption(id="claude-opus-4-7", label="Claude Opus 4.7"),
     ACPModelOption(id="claude-opus-4-6", label="Claude Opus 4.6"),
     ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
@@ -370,7 +371,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
-            default_model="claude-opus-4-7",
+            default_model="claude-opus-4-8",
         ),
         "codex": ACPProviderInfo(
             key="codex",
