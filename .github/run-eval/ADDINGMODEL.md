@@ -91,6 +91,49 @@ Add only if needed:
 - **`top_p: <value>`** - Nucleus sampling (cannot be used with `temperature` for Claude models)
 - **`litellm_extra_body: {...}`** - Provider-specific parameters (e.g., `{"enable_thinking": True}`)
 
+### Vision and Reasoning Capability Check
+
+Before finalizing the entry, explicitly check both capabilities against
+the **provider's official documentation** (don't rely only on LiteLLM):
+
+1. **Vision (multimodal input)**
+   - Does the model accept image / video input?
+   - Cross-check LiteLLM: in a Python shell, run
+     ```python
+     from litellm import supports_vision
+     supports_vision(model="<litellm_proxy_target_without_litellm_proxy_prefix>")
+     ```
+   - Decision matrix:
+     | Provider says | LiteLLM says | Action |
+     |---------------|--------------|--------|
+     | Vision ✅      | Vision ✅     | Do nothing — vision auto-enables. |
+     | Vision ❌      | Vision ✅     | Add `"disable_vision": True` (LiteLLM is wrong). |
+     | Vision ✅      | Vision ❌     | **Do not** add `disable_vision: True`. The SDK gates `vision_is_active()` on LiteLLM's `supports_vision()`, so images won't be sent until LiteLLM's metadata is updated upstream (`model_prices_and_context_window.json` in `BerriAI/litellm`). The vision integration test will be skipped, not failed — that's expected. |
+     | Vision ❌      | Vision ❌     | Do nothing. |
+   - Note the result in the PR description (e.g., "Vision: supported by provider; LiteLLM not yet aware — vision test will skip until LiteLLM is updated").
+
+2. **Reasoning (thinking / reasoning_effort)**
+   - Does the model expose adjustable reasoning levels or extended thinking?
+   - Cross-check LiteLLM:
+     ```python
+     from litellm import get_supported_openai_params
+     "reasoning_effort" in (get_supported_openai_params(
+         model="<litellm_target>", custom_llm_provider=None) or [])
+     ```
+   - Decision matrix:
+     | Provider style | LiteLLM `reasoning_effort` support | Action |
+     |----------------|-------------------------------------|--------|
+     | OpenAI-style reasoning items (e.g. GPT-5, OpenRouter reasoning levels) | ✅ | Optionally pin `"reasoning_effort": "high"` in `llm_config`. If pinned, remove `temperature` / `top_p` (they'll be auto-stripped). |
+     | OpenAI-style reasoning items | ❌ | **Do not** add `reasoning_effort` — `drop_params=True` will strip it before send. Leave the model at provider defaults; reasoning will still work, but you can't tune the level from `llm_config` until LiteLLM exposes the param. |
+     | Anthropic extended thinking (Claude Sonnet 4.5+, Haiku 4.5) | n/a | Add the model identifier to `EXTENDED_THINKING_MODELS` in `model_features.py` (see Step 2). |
+     | Non-reasoning model | n/a | Do nothing. |
+   - Note the result in the PR description (e.g., "Reasoning: OpenRouter exposes high/medium/low; LiteLLM does not yet expose `reasoning_effort` for this model — leaving it unset; condenser thinking-block test will skip (expected for non-Anthropic reasoning models)").
+
+The integration runner correctly **skips** vision / extended-thinking tests
+when the SDK can't detect support. A skipped test for one of these reasons
+is **not** a failure of the PR and doesn't need to be fixed in the same PR;
+it usually means LiteLLM metadata needs to be updated upstream.
+
 ### Critical Rules
 
 1. Model ID must match dictionary key
