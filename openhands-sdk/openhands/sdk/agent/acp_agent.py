@@ -74,6 +74,7 @@ from openhands.sdk.settings.acp_providers import (
     build_session_model_meta,
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
+    detect_acp_provider_by_command,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -1069,6 +1070,25 @@ class ACPAgent(AgentBase):
             "servers with different file-auth schemes."
         ),
     )
+    acp_isolate_data_dir: bool = Field(
+        default=False,
+        description=(
+            "Give the ACP subprocess a per-conversation CLI data/config root "
+            "instead of the shared user ``HOME``. When True and the provider is "
+            "recognised, point its data-dir env var "
+            "(``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` / ``HOME``; see "
+            "``ACPProviderInfo.data_dir_env_var``) at "
+            "``<persistence_dir>/acp/<provider>`` — the same per-conversation "
+            "tree materialised file-secrets use. Required for correctness when "
+            "several of a user's conversations share one sandbox "
+            "(``SandboxGroupingStrategy != NO_GROUPING``), where they would "
+            "otherwise race on one set of CLI auth/config/cache/lock files "
+            "(see #1019). Off by default: with one sandbox per conversation the "
+            "shared HOME is already private, and relocating it would hide a "
+            "pre-existing interactive login. Downstream policy decides when to "
+            "enable it; the SDK owns where the root lives."
+        ),
+    )
 
     def model_post_init(self, __context: object) -> None:
         super().model_post_init(__context)
@@ -1604,6 +1624,69 @@ class ACPAgent(AgentBase):
             root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
         return Path(os.path.abspath(root))
 
+    def _isolate_acp_data_dir(
+        self, state: ConversationState, env: dict[str, str]
+    ) -> None:
+        """Relocate the CLI's data/config root to a per-conversation directory.
+
+        When :attr:`acp_isolate_data_dir` is set, point the recognised provider's
+        data-dir env var (``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` / ``HOME``) at
+        ``<persistence_dir>/acp/<provider>`` — the same per-conversation tree
+        :meth:`_materialise_file_secrets` seeds auth into, so a relocated
+        ``CODEX_HOME`` and a materialised ``auth.json`` always agree on one
+        directory. This stops conversations that share a sandbox
+        (``SandboxGroupingStrategy != NO_GROUPING``) from racing on a single
+        shared HOME's CLI auth/config/cache/lock files (#1019). The override
+        replaces an ambient value (e.g. the agent-server's own ``CODEX_HOME``):
+        the per-conversation root is what isolation is for.
+
+        No-ops for an unrecognised command or a provider without a relocation
+        lever. An explicit ``acp_env`` pin of the data-dir var wins (it has the
+        highest precedence and is honoured as the materialisation target too), so
+        leave it untouched.
+
+        Claude carve-out: ``CLAUDE_CONFIG_DIR`` also activates Claude Code's
+        OAuth credential-file flow, and :data:`_ENV_CONFLICT_MAP` then strips
+        ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL``. Relocating it while an API
+        key is the active credential (no OAuth token present) would delete a
+        working key + proxy URL and break auth, so skip Claude in that case;
+        codex/gemini have no such coupling. (Claude's transcripts are already
+        cwd-keyed, so the residual shared state is the mostly-inert global
+        config.)
+
+        ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
+        ignores ``XDG``) has a wider blast radius than the surgical
+        ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
+        seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
+        ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).
+        That is accepted as the cost of isolating Gemini at all; callers that
+        need a narrower scope can pin ``HOME`` via ``acp_env`` (honoured below)
+        or leave isolation off for Gemini.
+
+        Ordering contract: this runs *after* the secret_registry / agent_context
+        drain and the ``acp_env`` update in :meth:`_start_acp_server`, so the
+        credential vars it inspects (``ANTHROPIC_API_KEY`` /
+        ``CLAUDE_CODE_OAUTH_TOKEN``) are already hydrated into ``env``. Calling it
+        earlier would misread the active credential and wrongly relocate Claude.
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None or provider.data_dir_env_var is None:
+            return
+        env_var = provider.data_dir_env_var
+        if env_var in self.acp_env:
+            return
+        # Relies on the ordering contract above: ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN must already be hydrated into env.
+        if (
+            env_var == "CLAUDE_CONFIG_DIR"
+            and env.get("ANTHROPIC_API_KEY")
+            and "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        ):
+            return
+        data_dir = self._acp_file_secret_dir(state, provider.key)
+        data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        env[env_var] = str(data_dir)
+
     def _materialise_file_secrets(
         self, state: ConversationState, env: dict[str, str]
     ) -> None:
@@ -1793,6 +1876,17 @@ class ACPAgent(AgentBase):
         env.update(self.acp_env)
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
+
+        # Relocate the CLI's data/config root to a per-conversation directory so
+        # sandbox-sharing conversations don't race on a shared HOME (#1019).
+        # Ordering is load-bearing — this must run AFTER the registry /
+        # agent_context drain and the acp_env update above (so the credential
+        # vars its Claude carve-out inspects — ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN — are already in env, and an acp_env pin wins)
+        # and BEFORE the conflict-strip below (so a CLAUDE_CONFIG_DIR it sets is
+        # still subject to the strip).
+        if self.acp_isolate_data_dir:
+            self._isolate_acp_data_dir(state, env)
 
         # Strip env vars that conflict with an active auth mechanism.
         # E.g. CLAUDE_CONFIG_DIR (OAuth credential file) conflicts with

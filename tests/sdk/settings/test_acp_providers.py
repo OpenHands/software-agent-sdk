@@ -12,6 +12,7 @@ from openhands.sdk.settings.acp_providers import (
     ACPProviderInfo,
     build_session_model_meta,
     detect_acp_provider_by_agent_name,
+    detect_acp_provider_by_command,
     get_acp_provider,
 )
 
@@ -44,6 +45,7 @@ class TestACPProviderInfo:
         assert any(m.id == "claude-opus-4-7" for m in info.available_models)
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
+        assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"
 
     def test_codex_metadata(self):
         info = ACP_PROVIDERS["codex"]
@@ -60,6 +62,7 @@ class TestACPProviderInfo:
         assert info.default_model == "gpt-5.5/medium"
         assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
         assert info.binary_name == "codex-acp"
+        assert info.data_dir_env_var == "CODEX_HOME"
 
     def test_gemini_cli_metadata(self):
         info = ACP_PROVIDERS["gemini-cli"]
@@ -78,6 +81,8 @@ class TestACPProviderInfo:
         # The Gemini CLI's ACP binary is just ``gemini`` (the ``--acp`` flag is
         # a trailing arg, preserved by resolve_acp_command on rewrite).
         assert info.binary_name == "gemini"
+        # Gemini CLI has no dedicated config-dir var, so only HOME relocates it.
+        assert info.data_dir_env_var == "HOME"
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
@@ -135,6 +140,46 @@ class TestDetectACPProviderByAgentName:
 
     def test_returns_none_for_empty_string(self):
         assert detect_acp_provider_by_agent_name("") is None
+
+
+class TestDetectACPProviderByCommand:
+    def test_detects_each_provider_from_default_command(self):
+        for key, info in ACP_PROVIDERS.items():
+            detected = detect_acp_provider_by_command(list(info.default_command))
+            assert detected is not None, key
+            assert detected.key == key
+
+    def test_tolerates_version_pin(self):
+        info = detect_acp_provider_by_command(
+            ["npx", "-y", "@google/gemini-cli@0.43.0", "--acp"]
+        )
+        assert info is not None
+        assert info.key == "gemini-cli"
+
+    def test_tolerates_absolute_path_form(self):
+        info = detect_acp_provider_by_command(
+            ["/usr/local/bin/node", "/opt/node_modules/.bin/codex-acp"]
+        )
+        assert info is not None
+        assert info.key == "codex"
+
+    def test_returns_none_for_custom_command(self):
+        assert detect_acp_provider_by_command(["my-custom-acp", "serve"]) is None
+
+    def test_returns_none_for_empty_command(self):
+        assert detect_acp_provider_by_command([]) is None
+
+    def test_rejects_incidental_substring_in_custom_command(self):
+        # Plain substring matching would misattribute these to codex; the
+        # basename + prefix rule rejects them (basenames start with "my-"/"not-").
+        assert detect_acp_provider_by_command(["my-codex-acp-wrapper"]) is None
+        assert detect_acp_provider_by_command(["/opt/shims/not-codex-acp"]) is None
+
+    def test_prefix_match_accepts_provider_basename_prefix(self):
+        # A basename that *starts with* the pattern is treated as that provider
+        # (mirrors how "claude-agent" must match the "claude-agent-acp" package).
+        info = detect_acp_provider_by_command(["@acme/codex-acp-shim"])
+        assert info is not None and info.key == "codex"
 
 
 class TestProviderRegistryConsistency:

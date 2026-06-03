@@ -33,7 +33,7 @@ own copies of this metadata.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -270,6 +270,25 @@ class ACPProviderInfo:
     working.
     """
 
+    data_dir_env_var: str | None = None
+    """Env var that relocates this CLI's per-user data/config root.
+
+    Set it to a per-conversation directory to isolate the CLI's on-disk state
+    (config, transcripts, caches, lockfiles) when several of a user's
+    conversations share one sandbox (``SandboxGroupingStrategy != NO_GROUPING``)
+    — otherwise they race on a single shared ``HOME`` (see #1019). Each CLI
+    exposes a different lever:
+
+    - ``CODEX_HOME``        — codex-acp (relocates ``~/.codex`` wholesale)
+    - ``CLAUDE_CONFIG_DIR`` — claude-agent-acp (relocates ``~/.claude*``)
+    - ``HOME``              — gemini-cli (no dedicated var; it hard-codes
+      ``~/.gemini`` and ignores ``XDG``, so only ``HOME`` moves it)
+
+    ``None`` for providers with no known relocation lever, which then skip
+    isolation. Consumed by
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -390,6 +409,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
             binary_name="claude-agent-acp",
+            data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
         "codex": ACPProviderInfo(
             key="codex",
@@ -406,6 +426,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_model="gpt-5.5/medium",
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name="codex-acp",
+            data_dir_env_var="CODEX_HOME",
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -427,6 +448,9 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_model="auto-gemini-2.5",
             file_secrets=_GEMINI_FILE_SECRETS,
             binary_name="gemini",
+            # Gemini CLI has no dedicated config-dir var; it hard-codes
+            # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
+            data_dir_env_var="HOME",
         ),
     }
 )
@@ -463,6 +487,45 @@ def detect_acp_provider_by_agent_name(agent_name: str) -> ACPProviderInfo | None
     lower = agent_name.lower()
     for info in ACP_PROVIDERS.values():
         if any(pat in lower for pat in info.agent_name_patterns):
+            return info
+    return None
+
+
+def detect_acp_provider_by_command(
+    command: Sequence[str],
+) -> ACPProviderInfo | None:
+    """Identify a provider from its launch ``command``, before the subprocess runs.
+
+    Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
+    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are prefixes of its
+    npm-package / binary basename, so we can pick the provider *before* the server
+    starts and reports its name (when the subprocess environment, e.g. a relocated
+    data dir, must already be set).
+
+    Matching is deliberately stricter than
+    :func:`detect_acp_provider_by_agent_name` because the launch command is
+    *caller-controlled*: each token is reduced to its basename (last path segment,
+    minus a trailing ``@version`` pin) and a provider matches only when that
+    basename *starts with* one of its patterns. This accepts the real forms —
+    ``@zed-industries/codex-acp``, ``@google/gemini-cli@0.43.0``,
+    ``/opt/node_modules/.bin/codex-acp`` — while rejecting incidental substrings
+    like ``my-codex-acp-wrapper`` or ``/opt/shims/not-codex-acp`` that a plain
+    substring test would misattribute.
+
+    Returns ``None`` for a custom/unrecognised command, so callers that require a
+    known provider (e.g. data-dir isolation) safely no-op.
+    """
+    bases: list[str] = []
+    for token in command:
+        base = token.rsplit("/", 1)[-1].lower()
+        at = base.rfind("@")
+        if at > 0:  # strip a trailing @version pin (not a leading @scope)
+            base = base[:at]
+        bases.append(base)
+    for info in ACP_PROVIDERS.values():
+        if any(
+            base.startswith(pat) for base in bases for pat in info.agent_name_patterns
+        ):
             return info
     return None
 
