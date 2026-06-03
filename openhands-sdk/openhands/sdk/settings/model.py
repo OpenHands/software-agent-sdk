@@ -51,7 +51,12 @@ from openhands.sdk.utils.pydantic_secrets import (
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
-from .acp_providers import ACPProviderInfo, get_acp_provider
+from .acp_providers import (
+    ACPFileSecretSpec,
+    ACPProviderInfo,
+    default_acp_file_secrets,
+    get_acp_provider,
+)
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -1092,6 +1097,20 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
+    # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
+    # settings-form UI (no SETTINGS_METADATA_KEY): it's a list of structured
+    # specs a downstream application supplies in code to support other ACP CLIs,
+    # not an end-user field. The built-in providers work via the default.
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=lambda: list(default_acp_file_secrets()),
+        description=(
+            "Reserved 'file-content' credential secrets the SDK materialises to "
+            "disk before launching the ACP subprocess (e.g. Codex auth.json, "
+            "Gemini Vertex SA JSON). Defaults to the built-in supported "
+            "providers; override to support other ACP servers with different "
+            "file-auth schemes."
+        ),
+    )
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
@@ -1286,6 +1305,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            acp_file_secrets=list(self.acp_file_secrets),
             agent_context=agent_context,
         )
 

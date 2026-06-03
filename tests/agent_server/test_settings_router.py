@@ -17,6 +17,7 @@ from openhands.agent_server.persistence import (
     reset_stores,
 )
 from openhands.agent_server.persistence.models import _deep_merge
+from openhands.sdk.llm import LLM
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
@@ -682,6 +683,190 @@ def test_patch_settings_null_on_scalar_field_fails_loudly(client_with_settings):
         json={"conversation_settings_diff": {"confirmation_mode": None}},
     )
     assert response.status_code == 422
+
+
+def test_patch_settings_switch_agent_kind_from_acp_to_openhands(
+    client_with_settings, temp_persistence_dir
+):
+    """PATCH /api/settings can switch from ACP to OpenHands.
+
+    When ``agent_kind`` changes, incompatible fields from the old variant
+    (like ``acp_command``) must not be merged into the new variant.
+    This is a variant replacement, not a field merge."""
+    # Seed with ACP settings, including a NON-default ``llm`` model. ``llm`` is
+    # a field both variants share, so this lets us prove it is NOT silently
+    # carried into the new variant on a switch.
+    acp = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        acp_env={"KEY": "value"},
+        llm=LLM(model="acp-only-model", usage_id="default"),
+    )
+    persisted = PersistedSettings(agent_settings=acp)
+    payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+    _write_settings_file(temp_persistence_dir, payload)
+
+    # Verify it starts as ACP with the seeded model.
+    get_response = client_with_settings.get("/api/settings")
+    seeded = get_response.json()["agent_settings"]
+    assert seeded["agent_kind"] == "acp"
+    assert seeded["llm"]["model"] == "acp-only-model"
+
+    # Switch to OpenHands, restating ``llm`` with a new model.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "openhands",
+                "llm": {"model": "claude-3-5-sonnet-20241022"},
+            }
+        },
+    )
+
+    # Should succeed — no validation error about leftover ACP-specific fields
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["agent_kind"] == "openhands"
+    # ACP-specific fields should not appear in the response
+    assert "acp_command" not in body["agent_settings"]
+    assert "acp_env" not in body["agent_settings"]
+    # The restated ``llm`` model wins — the ACP-seeded value is gone.
+    assert body["agent_settings"]["llm"]["model"] == "claude-3-5-sonnet-20241022"
+
+
+def test_patch_settings_switch_drops_shared_field_when_not_restated(
+    client_with_settings, temp_persistence_dir
+):
+    """A shared field (``llm``) set on the OLD variant is dropped on a kind
+    switch unless the caller restates it — it falls back to the new variant's
+    default rather than silently carrying over.
+
+    This pins the intentional "fresh start on the new variant" contract: a
+    kind switch is a variant replacement, so shared fields are not inherited.
+    Callers that want to preserve a shared field must include it in the switch
+    payload (see the sibling test, which restates ``llm``)."""
+    # Seed ACP with a non-default llm model.
+    acp = ACPAgentSettings(
+        acp_command=["echo", "test"],
+        llm=LLM(model="acp-only-model", usage_id="default"),
+    )
+    persisted = PersistedSettings(agent_settings=acp)
+    payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+    _write_settings_file(temp_persistence_dir, payload)
+
+    # Switch to OpenHands WITHOUT restating llm.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "openhands"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["agent_kind"] == "openhands"
+    # The ACP-seeded model is NOT carried over; llm falls back to the
+    # OpenHands variant's default model.
+    default_model = OpenHandsAgentSettings().llm.model
+    assert body["agent_settings"]["llm"]["model"] == default_model
+    assert body["agent_settings"]["llm"]["model"] != "acp-only-model"
+
+
+def test_patch_settings_switch_agent_kind_from_openhands_to_acp(client_with_settings):
+    """PATCH /api/settings can switch from OpenHands to ACP.
+
+    When switching to ACP, the new variant's required fields should be set
+    without interference from the old variant's fields."""
+    # Seed with OpenHands settings (default)
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {"model": "claude-3-5-sonnet-20241022"},
+            }
+        },
+    )
+    assert response.status_code == 200
+
+    # Switch to ACP
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_command": ["echo", "hello"],
+            }
+        },
+    )
+
+    # Should succeed — no validation error about leftover OpenHands-specific fields
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["agent_kind"] == "acp"
+    assert body["agent_settings"]["acp_command"] == ["echo", "hello"]
+
+
+def test_patch_settings_same_kind_restated_still_deep_merges(client_with_settings):
+    """Re-stating the current ``agent_kind`` is NOT a variant switch: the diff
+    must still deep-merge so unrelated fields survive.
+
+    ``new_kind != old_kind`` is False when the kind is restated, so the
+    deep-merge branch runs. This pins that a client which echoes back the
+    current ``agent_kind`` alongside an incremental edit does not accidentally
+    trigger a full variant replacement (which would reset sibling fields)."""
+    # Establish a model on the default OpenHands variant.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+    )
+    assert response.status_code == 200
+
+    # Restate agent_kind=openhands while setting only the api_key. Because the
+    # kind is unchanged, this deep-merges and the model must be preserved.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "openhands",
+                "llm": {"api_key": "sk-test-key"},
+            }
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["agent_kind"] == "openhands"
+    # The model set in the first PATCH survives — proving deep-merge ran.
+    assert body["agent_settings"]["llm"]["model"] == "gpt-4o"
+    assert body["llm_api_key_is_set"] is True
+
+
+def test_patch_settings_same_kind_merge_after_a_switch(client_with_settings):
+    """After a variant switch, subsequent same-kind PATCHes resume deep-merge.
+
+    The switch itself is a replacement, but the newly active variant must
+    behave like any other for incremental edits afterwards — a follow-up
+    field edit must not wipe the fields set during the switch."""
+    # Switch from default OpenHands to ACP, setting two ACP fields.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_command": ["my-cli"],
+                "acp_env": {"FOO": "bar"},
+            }
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["agent_settings"]["acp_command"] == ["my-cli"]
+
+    # Same-kind follow-up: add an env var. Deep-merge must preserve acp_command
+    # and the pre-existing env entry.
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"BAZ": "qux"}}},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["acp_command"] == ["my-cli"]
+    assert set(body["agent_settings"]["acp_env"]) == {"FOO", "BAZ"}
 
 
 # ── Secrets CRUD tests ──────────────────────────────────────────────────
