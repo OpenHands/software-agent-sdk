@@ -100,6 +100,139 @@ class TestEventsToMessages:
         assert isinstance(messages[0].content[0], TextContent)
         assert messages[0].content[0].text == "Hello, how are you?"
 
+    def test_consecutive_user_message_events_are_merged(self):
+        """Synthetic user context should not create adjacent user turns."""
+        user_message = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="Implement the feature")]
+            ),
+        )
+        user_context = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Relevant project context")],
+            ),
+        )
+        assistant_message = MessageEvent(
+            source="agent",
+            llm_message=Message(
+                role="assistant", content=[TextContent(text="I'll take a look.")]
+            ),
+        )
+
+        events = cast(
+            list[LLMConvertibleEvent], [user_message, user_context, assistant_message]
+        )
+        messages = LLMConvertibleEvent.events_to_messages(events)
+
+        assert [message.role for message in messages] == ["user", "assistant"]
+        assert [
+            content.text
+            for content in messages[0].content
+            if isinstance(content, TextContent)
+        ] == [
+            "Implement the feature",
+            "Relevant project context",
+        ]
+
+    def test_user_messages_with_tool_call_id_not_merged(self):
+        """Tool-result user messages must not be coalesced."""
+        result = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Tool output")],
+                tool_call_id="call_abc",
+            ),
+        )
+        context = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Additional context")],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [result, context])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+        assert len(messages) == 2
+
+    def test_user_messages_with_tool_calls_not_merged(self):
+        """User messages containing tool calls must not be coalesced."""
+        tool_msg = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Call this tool")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="call_1",
+                        name="search",
+                        arguments="{}",
+                        origin="completion",
+                    )
+                ],
+            ),
+        )
+        plain = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Plain message")],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [tool_msg, plain])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+        assert len(messages) == 2
+
+    def test_user_messages_with_name_not_merged(self):
+        """Named user messages must not be coalesced."""
+        named = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Named output")],
+                name="search_results",
+            ),
+        )
+        plain = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Plain message")],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [named, plain])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+        assert len(messages) == 2
+
+    def test_mixed_role_messages_not_merged(self):
+        """Messages with different roles must not be coalesced."""
+        assistant_msg = MessageEvent(
+            source="agent",
+            llm_message=Message(
+                role="assistant",
+                content=[TextContent(text="Assistant reply")],
+            ),
+        )
+        user_msg = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="User message")],
+            ),
+        )
+
+        events = cast(list[LLMConvertibleEvent], [assistant_msg, user_msg])
+        messages = LLMConvertibleEvent.events_to_messages(events)
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        assert messages[1].role == "user"
+
     def test_single_action_event(self):
         """Test conversion of single ActionEvent."""
         action_event = create_action_event(
