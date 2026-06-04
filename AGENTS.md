@@ -317,6 +317,11 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+- Comments policy: write comments sparingly and strategically. Prefer making the code self-explanatory through clear naming and structure over adding prose.
+  - Do NOT add comments that restate what the code already says, summarize the surrounding diff/PR, or narrate the change history ("previously we did X, now we do Y"). That kind of context belongs in the PR description or commit message, not in the source — `git blame` and the PR are the source of truth for *why* a change was made.
+  - Do NOT describe non-local parts of the system (other modules, callers, downstream behavior) in a comment unless there is a mechanism to keep that description in sync. Such comments drift and become misleading.
+  - DO add a comment when the code expresses something genuinely unintuitive: a non-obvious invariant, a workaround for an external bug, a subtle ordering/locking requirement, or a deliberate trade-off the reader cannot infer from the code itself.
+  - When in doubt, prefer restructuring or renaming over commenting. A 3-line change should not produce 19 lines of comments — if it feels like it needs that much narration, the explanation belongs in the PR description.
 
 </CODE>
 
@@ -382,5 +387,10 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 - Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
+
+<KNOWN_RACES_AND_GOTCHAS>
+- **`RemoteConversation._wait_for_run_completion` and stop hooks**: Per-field WebSocket `FINISHED` status events are *hints*, not authoritative termination. The server-side `LocalConversation.run` loop releases its state lock at the end of each iteration, so a `FINISHED` status set by `agent.step()` is visible to clients before the *next* loop iteration runs stop hooks (`hook_processor.run_stop`). If a stop hook returns rc=2 (denying the stop), status flips back to RUNNING and the agent gets another iteration. The client's `_wait_for_run_completion` therefore must **not** return on the first WS-delivered FINISHED. Instead, post-run full-state WebSocket snapshots are authoritative; if that snapshot is missing, the time-based hard-fallback path (`TERMINAL_HARD_FALLBACK_SECS = 30.0`) accepts REST-confirmed terminal status after 30 continuous seconds. ERROR/STUCK still raise immediately through `_handle_conversation_status`. Empirically this caused agents to consume just 0–1 iterations after a hook block on programbench retry-16; fix shipped in `feat/programbench`.
+- **Hook events vs `state.events`**: `HookExecutionEvent` is emitted via `hook_processor.original_callback` (the chained `_on_event`), so it *should* land in `state.events` when the run is allowed to complete. But because the WS-FINISHED race above used to make the client snapshot `list(conversation.state.events)` *before* the server-side hook eval ran, `output.jsonl` history could miss hook events while on-disk persisted events under `/workspace/conversations/.../events/` had them — useful as a forensic signal that the race fired.
+</KNOWN_RACES_AND_GOTCHAS>
 
 </REPO>

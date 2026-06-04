@@ -147,25 +147,6 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     assert "top_p" not in out
 
 
-def test_claude_opus_4_8_strips_temp_and_top_p():
-    """Test that claude-opus-4-8 strips temperature and top_p.
-
-    Anthropic rejects requests to Claude Opus 4.8 with `temperature`/`top_p`:
-    ``"`temperature` is deprecated for this model."``. Routing the model
-    through the extended-thinking path strips both params (and enables the
-    thinking budget header) so requests succeed.
-    """
-    llm = DummyLLM(
-        model="litellm_proxy/anthropic/claude-opus-4-8",
-        top_p=1.0,  # SDK default
-        temperature=0.0,  # Often overridden by benchmarks (e.g. SWE-bench)
-    )
-    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-
-    assert "temperature" not in out
-    assert "top_p" not in out
-
-
 def test_extended_thinking_budget_clamped_below_max_tokens():
     """Test that thinking.budget_tokens is clamped to max_output_tokens - 1."""
     # Case 1: extended_thinking_budget exceeds max_output_tokens

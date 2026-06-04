@@ -110,9 +110,21 @@ from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
+
+# Shared message for the no-op ``_return_metrics`` deprecation (Q1 of #3341).
+# Metrics are always returned via ``LLMResponse.metrics``; the parameter has no
+# effect and is scheduled for removal after the standard 5-minor-release runway.
+# NOTE: ``deprecated_in`` / ``removed_in`` must be passed as string literals at
+# each call site — ``check_deprecations.py`` reads them via static AST analysis
+# and cannot resolve module-level constants.
+_RETURN_METRICS_DETAILS: Final[str] = (
+    "The _return_metrics parameter has no effect; metrics are always available "
+    "via LLMResponse.metrics. Stop passing it."
+)
 
 __all__ = ["LLM"]
 
@@ -1099,7 +1111,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Args:
             messages: List of conversation messages.
             tools: Optional list of tools available to the model.
-            _return_metrics: Whether to return usage metrics.
+            _return_metrics: Deprecated and ignored; metrics are always returned
+                via ``LLMResponse.metrics``. Scheduled for removal in
+                ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas.
             on_token: Optional callback for streaming tokens.
             **kwargs: Additional arguments passed to the LLM API.
@@ -1123,6 +1137,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(response.content)
             ```
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.completion(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -1167,9 +1188,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 lambda fb: fb.completion(
                     messages,
                     tools,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    on_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
                 ),
             )
 
@@ -1190,6 +1210,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.acompletion(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
@@ -1237,9 +1264,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 lambda fb: fb.completion(
                     messages,
                     tools,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    _fb_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=_fb_token,
                 ),
             )
 
@@ -1266,7 +1292,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model
             include: Optional list of fields to include in response
             store: Whether to store the conversation
-            _return_metrics: Whether to return usage metrics
+            _return_metrics: Deprecated and ignored; metrics are always returned
+                via ``LLMResponse.metrics``. Scheduled for removal in ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
@@ -1275,6 +1302,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.responses(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             # We allow on_token to be None for subscription mode
@@ -1360,9 +1394,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     include,
                     store,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    on_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=on_token,
                 ),
             )
 
@@ -1385,6 +1418,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
+        if _return_metrics:
+            warn_deprecated(
+                "LLM.aresponses(_return_metrics=...)",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=_RETURN_METRICS_DETAILS,
+            )
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
             # We allow on_token to be None for subscription mode
@@ -1474,9 +1514,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     include,
                     store,
-                    _return_metrics,
-                    add_security_risk_prediction,
-                    _fb_token,
+                    add_security_risk_prediction=add_security_risk_prediction,
+                    on_token=_fb_token,
                 ),
             )
 
@@ -1515,15 +1554,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return api_key_value
 
-    def _transport_call(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        enable_streaming: bool = False,
-        on_token: TokenCallbackType | None = None,
-        **kwargs,
-    ) -> ModelResponse:
-        # litellm.modify_params is GLOBAL; guard it for thread-safety
+    @contextmanager
+    def _transport_ctx(self):
+        """Guard a litellm transport call.
+
+        ``litellm.modify_params`` is GLOBAL, so it is guarded for thread-safety,
+        and the noisy provider/litellm warnings are filtered out for the call.
+        """
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -1536,51 +1573,68 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 warnings.filterwarnings(
                     "ignore",
-                    message=r"There is no current event loop",
+                    message="There is no current event loop",
                     category=DeprecationWarning,
                 )
-                warnings.filterwarnings(
-                    "ignore",
-                    category=UserWarning,
-                )
+                warnings.filterwarnings("ignore", category=UserWarning)
                 warnings.filterwarnings(
                     "ignore",
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                api_key_value = self._get_litellm_api_key_value()
+                yield
 
-                # When streaming, request usage in the final chunk so that
-                # detailed token breakdowns (prompt_tokens_details with
-                # cached_tokens, etc.) are not silently discarded by
-                # litellm's streaming handler.
-                if enable_streaming:
-                    kwargs.setdefault("stream_options", {"include_usage": True})
+    def _prepare_transport_kwargs(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Build the keyword arguments for a litellm (a)completion call."""
+        # When streaming, request usage in the final chunk so that detailed
+        # token breakdowns (prompt_tokens_details with cached_tokens, etc.) are
+        # not silently discarded by litellm's streaming handler.
+        if enable_streaming:
+            kwargs.setdefault("stream_options", {"include_usage": True})
+        return dict(
+            model=self.model,
+            api_key=self._get_litellm_api_key_value(),
+            api_base=self.base_url,
+            api_version=self.api_version,
+            timeout=self.timeout,
+            drop_params=self.drop_params,
+            seed=self.seed,
+            messages=messages,
+            **{**self._aws_kwargs(), **kwargs},
+        )
 
-                # Some providers need renames handled in _normalize_call_kwargs.
-                ret = litellm_completion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    **{**self._aws_kwargs(), **kwargs},
+    def _transport_call(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool = False,
+        on_token: TokenCallbackType | None = None,
+        **kwargs,
+    ) -> ModelResponse:
+        with self._transport_ctx():
+            ret = litellm_completion(
+                **self._prepare_transport_kwargs(
+                    messages=messages, enable_streaming=enable_streaming, **kwargs
                 )
-                if enable_streaming and on_token is not None:
-                    assert isinstance(ret, CustomStreamWrapper)
-                    chunks = []
-                    for chunk in ret:
-                        on_token(chunk)
-                        chunks.append(chunk)
-                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            )
+            if enable_streaming and on_token is not None:
+                assert isinstance(ret, CustomStreamWrapper)
+                chunks: list[ModelResponseStream] = []
+                for chunk in ret:
+                    on_token(chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-                assert isinstance(ret, ModelResponse), (
-                    f"Expected ModelResponse, got {type(ret)}"
-                )
-                return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     async def _atransport_call(
         self,
@@ -1591,55 +1645,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
-        with self._litellm_modify_params_ctx(self.modify_params):
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="httpx.*"
+        with self._transport_ctx():
+            ret = await litellm_acompletion(
+                **self._prepare_transport_kwargs(
+                    messages=messages, enable_streaming=enable_streaming, **kwargs
                 )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r".*content=.*upload.*",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"There is no current event loop",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings(
-                    "ignore",
-                    category=DeprecationWarning,
-                    message="Accessing the 'model_fields' attribute.*",
-                )
-                api_key_value = self._get_litellm_api_key_value()
+            )
+            if enable_streaming and on_token is not None:
+                assert isinstance(ret, CustomStreamWrapper)
+                chunks: list[ModelResponseStream] = []
+                async for chunk in ret:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-                if enable_streaming:
-                    kwargs.setdefault("stream_options", {"include_usage": True})
-
-                ret = await litellm_acompletion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    **{**self._aws_kwargs(), **kwargs},
-                )
-                if enable_streaming and on_token is not None:
-                    assert isinstance(ret, CustomStreamWrapper)
-                    chunks = []
-                    async for chunk in ret:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
-
-                assert isinstance(ret, ModelResponse), (
-                    f"Expected ModelResponse, got {type(ret)}"
-                )
-                return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
@@ -1970,16 +1993,39 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
 
-    def get_token_count(self, messages: list[Message]) -> int:
+    def get_token_count(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+    ) -> int:
         logger.debug(
             "Message objects now include serialized tool calls in token counting"
         )
         formatted_messages = self.format_messages_for_llm(messages)
+        cc_tools = [
+            tool.to_openai_tool(
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
+            for tool in tools or []
+        ]
+        use_mock_tools = self.should_mock_tool_calls(cc_tools)
+        if use_mock_tools:
+            tool_call_state: dict[str, Any] = {}
+            formatted_messages, _ = self.pre_request_prompt_mock(
+                formatted_messages,
+                cc_tools,
+                tool_call_state,
+                include_security_params=add_security_risk_prediction,
+            )
+            cc_tools = []
+
         try:
             return int(
                 token_counter(
                     model=self.model,
                     messages=formatted_messages,
+                    tools=cc_tools or None,
                     custom_tokenizer=self._tokenizer,
                 )
             )

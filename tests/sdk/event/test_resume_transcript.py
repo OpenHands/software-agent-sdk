@@ -144,6 +144,24 @@ class TestRenderResumeTranscript:
         assert "(completed)" in out
         assert "ok" in out
 
+    def test_started_then_terminal_renders_only_terminal(self) -> None:
+        # The source now persists exactly two events per call: an early
+        # ``started`` (in_progress) event and one terminal event. The transcript
+        # must keep only the terminal one — it carries the final I/O.
+        started = _tool("tc-1", title="bash", status="in_progress", raw_input={"c": 1})
+        terminal = _tool(
+            "tc-1",
+            title="bash",
+            status="completed",
+            raw_input={"c": 1},
+            raw_output="final output",
+        )
+        out = render_resume_transcript([started, terminal])
+        assert out is not None
+        assert out.count("[TOOL USE: bash]") == 1
+        assert "(completed)" in out
+        assert "final output" in out
+
     def test_cross_session_same_id_both_render(self) -> None:
         # ACP providers like Codex reset tool_call_id counters each session.
         # A user message between two events with the same id means they come

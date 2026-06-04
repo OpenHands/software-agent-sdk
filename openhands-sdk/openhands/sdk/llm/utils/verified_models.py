@@ -95,7 +95,6 @@ VERIFIED_QWEN_MODELS = [
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
     "claude-opus-4-7",

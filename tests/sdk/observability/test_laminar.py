@@ -8,6 +8,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from openhands.sdk.agent.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+
 
 @pytest.fixture(autouse=True)
 def _reset_observability_cache():
@@ -524,3 +527,18 @@ def test_deprecated_shims_emit_warnings():
             lam.SpanManager().start_active_span("conversation")
         with pytest.warns(DeprecationWarning, match="SpanManager.end_active_span"):
             lam.SpanManager().end_active_span()
+
+
+def test_async_agent_and_conversation_paths_are_observed():
+    """The async twins must be ``@observe``-wrapped like their sync versions.
+
+    Regression test for the async-parity gap (issue #3449): ``Agent.astep`` and
+    ``LocalConversation.arun`` lost the tracing decorators their sync twins
+    (``Agent.step`` / ``LocalConversation.run``) carry. The ``observe`` wrapper
+    renames the underlying code object to ``async_wrapper``/``sync_wrapper``, so
+    its presence is detectable via ``__code__.co_name``.
+    """
+    assert Agent.step.__code__.co_name == "sync_wrapper"
+    assert Agent.astep.__code__.co_name == "async_wrapper"
+    assert LocalConversation.run.__code__.co_name == "sync_wrapper"
+    assert LocalConversation.arun.__code__.co_name == "async_wrapper"

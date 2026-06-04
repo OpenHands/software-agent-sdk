@@ -1152,6 +1152,59 @@ class TestEventServiceSendMessage:
         conversation.run.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_run_exception_forces_error_status(self, event_service):
+        """A run that raises before setting its own ERROR status (e.g. an ACP
+        cold-start failure in init_state, which runs outside run()/arun()'s
+        try-block) must be flipped to ERROR so the finally's state publish
+        surfaces the failure instead of a stale IDLE/RUNNING status (issue
+        #1024)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        # Status never advanced past IDLE because the failure happened in
+        # _ensure_agent_ready() before the run loop set RUNNING.
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("init failed"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        # The final state update is still published after the flip.
+        event_service._publish_state_update.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_exception_preserves_existing_error_status(self, event_service):
+        """When the run already set ERROR (the regular Agent path), the backstop
+        is a no-op — it must not clobber a status the run already owns."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("boom"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):
         """Test send_message with different message types."""
         # Mock conversation

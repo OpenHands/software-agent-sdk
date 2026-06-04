@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,8 +11,11 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.conversation.persistence_const import BASE_STATE
-from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.llm import llm_profile_store
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
@@ -407,3 +411,55 @@ def test_duplicate_usage_ids_in_registration_loop_are_silently_deduped(tmp_path)
 
     # First-write-wins: only one entry under the shared usage_id
     assert conv.llm_registry.list_usage_ids().count("default") == 1
+
+
+def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
+    """Regression for #3485: a ``switch_llm`` tool call during ``arun()`` must
+    not deadlock the conversation runtime.
+
+    ``arun()`` holds the ConversationState lock across the (async) agent step
+    while tools execute on worker threads. ``switch_llm()`` used to re-acquire
+    that lock from the tool worker thread, which deadlocked against the run
+    loop that already held it and was blocked awaiting the tool — no
+    observation was ever emitted and the conversation hung in ``running``.
+
+    The agent emits the switch and a finish in a single step, so the switch
+    happens mid-step (the deadlock site) and the run can complete.
+    """
+    llm = TestLLM.from_messages(
+        [
+            Message(
+                role="assistant",
+                content=[TextContent(text="")],
+                tool_calls=[
+                    MessageToolCall(
+                        id="switch_1",
+                        name="switch_llm",
+                        arguments='{"profile_name": "fast", "reason": "test"}',
+                        origin="completion",
+                    ),
+                    MessageToolCall(
+                        id="finish_1",
+                        name="finish",
+                        arguments='{"message": "done"}',
+                        origin="completion",
+                    ),
+                ],
+            ),
+        ],
+        model="default-model",
+        usage_id="test-llm",
+    )
+
+    # Resolve the tools from BUILT_IN_TOOL_CLASSES (no global registry writes).
+    agent = Agent(llm=llm, include_default_tools=["FinishTool", "SwitchLLMTool"])
+    conv = LocalConversation(agent=agent, workspace=tmp_path, visualizer=None)
+    conv.send_message("please switch")
+
+    # Bounded so a regression surfaces as a fast test failure rather than a
+    # hung suite. On the fixed path arun() completes near-instantly.
+    asyncio.run(asyncio.wait_for(conv.arun(), timeout=10))
+
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+    # The switch took effect: the agent now carries the 'fast' profile's model.
+    assert conv.agent.llm.model == "fast-model"

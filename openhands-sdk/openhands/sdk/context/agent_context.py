@@ -9,6 +9,7 @@ from pydantic import (
     BaseModel,
     Field,
     SecretStr,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -27,7 +28,10 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
-from openhands.sdk.utils.pydantic_secrets import serialize_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    serialize_secret,
+    validate_secret_dict,
+)
 
 
 logger = get_logger(__name__)
@@ -134,6 +138,28 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def _decrypt_secrets(cls, value: Any, info: ValidationInfo) -> Any:
+        """Decrypt persisted raw-string ``secrets`` values when a cipher
+        is in context.
+
+        ``_serialize_secrets`` writes each raw-string value through
+        :func:`serialize_secret`, which produces Fernet ciphertext under
+        cipher context. Without a matching ``mode='before'`` decryption
+        validator, that ciphertext would survive round-trips through
+        :class:`StartConversationRequest` (whose
+        ``_populate_agent_from_settings`` validator runs *without*
+        cipher context) and get injected into the agent's system prompt
+        as-is — same bug class that affected ``ACPAgent.acp_env``.
+
+        ``SecretSource`` entries are dict-shaped on the wire (Pydantic
+        models), so they're skipped by :func:`validate_secret_dict`'s
+        ``isinstance(value, str)`` gate and continue to construct
+        normally through their own validators.
+        """
+        return validate_secret_dict(value, info, description="AgentContext secrets")
 
     @field_serializer("secrets", when_used="always")
     def _serialize_secrets(

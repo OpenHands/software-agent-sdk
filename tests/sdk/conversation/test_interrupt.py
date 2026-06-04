@@ -301,8 +301,37 @@ async def test_interrupt_sets_cancel_token(tmp_path):
     conv.interrupt()
     await asyncio.wait_for(task, timeout=2.0)
 
-    # After arun finishes, token is cleared
-    assert conv._cancel_token is None
+    # After an interrupt the cancelled token is retained (not cleared) so tool
+    # threads that outlive arun() can still observe it.
+    assert conv._cancel_token is not None
+    assert conv._cancel_token.is_cancelled
+
+
+@pytest.mark.asyncio
+async def test_cancel_token_stays_observable_after_interrupt(tmp_path):
+    """A tool polling conversation.cancel_token from a worker thread that
+    outlives arun() must still see the cancellation, not the None the finally
+    used to clear. A fresh token is swapped in on the next run."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+
+    task = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+    conv.interrupt()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # arun() has run its finally; a late poll via the public property (what
+    # tools use) must still observe the cancellation.
+    assert conv.cancel_token is not None
+    assert conv.cancel_token.is_cancelled
+
+    # The next run replaces it with a fresh, uncancelled token.
+    conv.send_message("again")
+    resumed = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+    assert conv.cancel_token is not None
+    assert not conv.cancel_token.is_cancelled
+    conv.interrupt()
+    await asyncio.wait_for(resumed, timeout=2.0)
 
 
 # ── ParallelToolExecutor cancellation tests ───────────────────────────
