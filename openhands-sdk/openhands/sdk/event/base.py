@@ -118,8 +118,8 @@ class LLMConvertibleEvent(Event, ABC):
                 # Create combined message for the response
                 msg = _combine_action_events(batch_events)
                 if messages and _can_merge_user_messages(messages[-1], msg):
-                    messages[-1].content = (
-                        list(messages[-1].content) + list(msg.content)
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
                     )
                 else:
                     messages.append(msg)
@@ -128,8 +128,8 @@ class LLMConvertibleEvent(Event, ABC):
                 # Regular event - direct conversion
                 msg = event.to_llm_message()
                 if messages and _can_merge_user_messages(messages[-1], msg):
-                    messages[-1].content = (
-                        list(messages[-1].content) + list(msg.content)
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
                     )
                 else:
                     messages.append(msg)
