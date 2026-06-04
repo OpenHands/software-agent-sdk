@@ -317,6 +317,11 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+- Comments policy: write comments sparingly and strategically. Prefer making the code self-explanatory through clear naming and structure over adding prose.
+  - Do NOT add comments that restate what the code already says, summarize the surrounding diff/PR, or narrate the change history ("previously we did X, now we do Y"). That kind of context belongs in the PR description or commit message, not in the source — `git blame` and the PR are the source of truth for *why* a change was made.
+  - Do NOT describe non-local parts of the system (other modules, callers, downstream behavior) in a comment unless there is a mechanism to keep that description in sync. Such comments drift and become misleading.
+  - DO add a comment when the code expresses something genuinely unintuitive: a non-obvious invariant, a workaround for an external bug, a subtle ordering/locking requirement, or a deliberate trade-off the reader cannot infer from the code itself.
+  - When in doubt, prefer restructuring or renaming over commenting. A 3-line change should not produce 19 lines of comments — if it feels like it needs that much narration, the explanation belongs in the PR description.
 
 </CODE>
 

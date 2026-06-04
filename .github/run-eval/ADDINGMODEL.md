@@ -52,11 +52,20 @@ This file (`resolve_model_config.py`) defines models available for evaluation. M
    - `openhands-sdk/openhands/sdk/llm/utils/model_prompt_spec.py` - GPT models only (variant detection)
    - `openhands-sdk/openhands/sdk/llm/utils/verified_models.py` - Production-ready models
 
-   > ⚠️ **When editing `verified_models.py`**: If you add a model to `VERIFIED_OPENHANDS_MODELS`,
-   > you **must also** add it to its provider-specific list (e.g. `VERIFIED_ANTHROPIC_MODELS`,
-   > `VERIFIED_GEMINI_MODELS`, `VERIFIED_MOONSHOT_MODELS`, etc.).
-   > If no list exists for the provider yet, create one and add it to the `VERIFIED_MODELS` dict.
-   > This ensures the model appears under its actual provider in the UI, not just under "openhands".
+   > ⛔ **Do NOT add a model to `verified_models.py` unless explicitly asked to.**
+   > "Verified" means the model has been validated against the OpenHands integration
+   > test suite **and** an OpenHands maintainer has approved it for the production UI.
+   > A passing integration run is *necessary but not sufficient*. New models should be
+   > added to `MODELS` in `resolve_model_config.py` (and `model_features.py` if
+   > applicable) only — leave `verified_models.py` alone until a maintainer requests it
+   > in the PR.
+   >
+   > ⚠️ **When you are explicitly asked to edit `verified_models.py`**: If you add a
+   > model to `VERIFIED_OPENHANDS_MODELS`, you **must also** add it to its
+   > provider-specific list (e.g. `VERIFIED_ANTHROPIC_MODELS`, `VERIFIED_GEMINI_MODELS`,
+   > `VERIFIED_MOONSHOT_MODELS`, etc.). If no list exists for the provider yet, create
+   > one and add it to the `VERIFIED_MODELS` dict. This ensures the model appears under
+   > its actual provider in the UI, not just under "openhands".
 
 ## Step 1: Add to resolve_model_config.py
 
@@ -90,6 +99,66 @@ Add only if needed:
 - **`max_tokens: <value>`** - To prevent hangs or control output length
 - **`top_p: <value>`** - Nucleus sampling (cannot be used with `temperature` for Claude models)
 - **`litellm_extra_body: {...}`** - Provider-specific parameters (e.g., `{"enable_thinking": True}`)
+
+### Vision and Reasoning Capability Check
+
+Before finalizing the entry, explicitly check both capabilities against
+the **provider's official documentation** (don't rely only on LiteLLM):
+
+1. **Vision (multimodal input)**
+   - Does the model accept image / video input?
+   - **Critical first check — proxy `model_name` alignment.** The eval
+     LiteLLM proxy stores capability metadata (`supports_vision`,
+     `supports_function_calling`, token limits, etc.) under each
+     `model_name` registered in its config. The SDK's lookup
+     (`_get_model_info_from_litellm_proxy`) does an **exact string match**
+     of `model.removeprefix("litellm_proxy/")` against the proxy's
+     `model_name`. If the strings don't match, `supports_vision` is
+     silently ignored and the SDK falls back to LiteLLM's static metadata.
+     So: **use the proxy's exact registered `model_name` in your
+     `llm_config["model"]`**, not a longer provider-prefixed alias, e.g.
+     prefer `litellm_proxy/step-3.7-flash` over
+     `litellm_proxy/openrouter/stepfun/step-3.7-flash` if the proxy entry
+     is registered as `step-3.7-flash`. Ask infra (or check the proxy
+     config) for the canonical `model_name` — and confirm `model_info`
+     has the capability flags you expect.
+   - Cross-check LiteLLM static metadata: in a Python shell, run
+     ```python
+     from litellm import supports_vision
+     supports_vision(model="<litellm_proxy_target_without_litellm_proxy_prefix>")
+     ```
+   - Decision matrix:
+     | Provider docs | Proxy `model_info.supports_vision` | LiteLLM static | Action |
+     |---------------|------------------------------------|----------------|--------|
+     | Vision ✅      | True (and `model_name` matches your config) | any | Do nothing — vision auto-enables via the proxy metadata. |
+     | Vision ✅      | True, but `model_name` does **not** match your config | any | **Fix the model path** in your `llm_config` to match the proxy's `model_name` exactly. Don't add `disable_vision`. |
+     | Vision ✅      | not set / proxy entry has no `model_info` | any | Coordinate with infra to add `supports_vision: true` to the proxy entry (one line of YAML). Vision integration test will skip until that lands — non-blocking. |
+     | Vision ❌      | True | True | Add `"disable_vision": True` (proxy/LiteLLM are wrong). |
+     | Vision ❌      | any | any | Do nothing. |
+   - Note the result in the PR description, including the exact proxy
+     `model_name` your `llm_config["model"]` matches.
+
+2. **Reasoning (thinking / reasoning_effort)**
+   - Does the model expose adjustable reasoning levels or extended thinking?
+   - Cross-check LiteLLM:
+     ```python
+     from litellm import get_supported_openai_params
+     "reasoning_effort" in (get_supported_openai_params(
+         model="<litellm_target>", custom_llm_provider=None) or [])
+     ```
+   - Decision matrix:
+     | Provider style | LiteLLM `reasoning_effort` support | Action |
+     |----------------|-------------------------------------|--------|
+     | OpenAI-style reasoning items (e.g. GPT-5, OpenRouter reasoning levels) | ✅ | Pin `"reasoning_effort": "high"` in `llm_config`. If pinned, remove `temperature` / `top_p` (they'll be auto-stripped). |
+     | OpenAI-style reasoning items, provider has a non-standard reasoning param | ❌ | Pin via provider-specific passthrough: `"litellm_extra_body": {<provider-key>: <value>}` (e.g. `{"reasoning": {"effort": "high"}}` for OpenRouter, `{"enable_thinking": True}` for Qwen). **Confirm which upstream the proxy actually routes to** before choosing the key — the proxy's `litellm_params.model` (e.g. `openai/...` vs `openrouter/...`) decides what extra-body keys the upstream understands. The top-level `reasoning_effort` would otherwise be dropped by `drop_params=True`. |
+     | Anthropic extended thinking (Claude Sonnet 4.5+, Haiku 4.5) | n/a | Add the model identifier to `EXTENDED_THINKING_MODELS` in `model_features.py` (see Step 2). |
+     | Non-reasoning model | n/a | Do nothing. |
+   - Note the result in the PR description (e.g., "Reasoning: OpenRouter exposes high/medium/low; LiteLLM does not yet expose `reasoning_effort`, so opting in via `litellm_extra_body`; condenser thinking-block test will skip — expected for non-Anthropic reasoning models").
+
+The integration runner correctly **skips** vision / extended-thinking tests
+when the SDK can't detect support. A skipped test for one of these reasons
+is **not** a failure of the PR and doesn't need to be fixed in the same PR;
+it usually means LiteLLM metadata needs to be updated upstream.
 
 ### Critical Rules
 
@@ -338,6 +407,29 @@ Fixes #[issue-number]
 - Add model to REASONING_EFFORT_MODELS or EXTENDED_THINKING_MODELS (auto-strips both)
 
 **Reference**: #2137, #2193
+
+### Preflight Check: "Invalid model name" for a newly-added model
+**Cause**: The local preflight in `resolve_model_config.py` performs a *live*
+`litellm.completion(...)` against the LiteLLM proxy at `LLM_BASE_URL` (default
+`https://llm-proxy.eval.all-hands.dev`). Registering a new model name on that
+proxy is done **out-of-band** by infra/maintainers — it is not part of this PR.
+So immediately after adding a new entry, the proxy may not yet know the model
+name and respond with `Invalid model name passed in model=<provider>/<name>`.
+
+**This is not a bug in the PR** — it is a transient proxy-provisioning lag.
+
+**What to do**:
+- Author: keep the PR open, link evidence that the model works (see Step 7 — the
+  integration-runner workflow run and/or the
+  [eval monitor](https://openhands-eval-monitor.vercel.app/) run for this model
+  are the authoritative checks).
+- Reviewers / QA bot: do **not** block the PR on this specific failure. Treat
+  successful integration-runner results or an eval monitor link as authoritative
+  validation, and re-run the local preflight only after the proxy has been
+  updated. See the "Reviewing model PRs" section in
+  [`AGENTS.md`](./AGENTS.md) for the full review-side rule.
+
+**Reference**: #3472
 
 ### Vision Tests Fail
 **Cause**: LiteLLM reports vision support but model doesn't actually support it

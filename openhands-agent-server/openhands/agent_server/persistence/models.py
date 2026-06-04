@@ -146,6 +146,11 @@ class PersistedSettings(BaseModel):
         apply any schema migrations if the incoming diff contains an older
         schema version.
 
+        When ``agent_kind`` changes in the diff, the update is treated as a
+        variant replacement: the incoming diff is validated as-is rather than
+        merged with the old variant's fields. Same-kind updates retain deep-merge
+        behavior for incremental field edits.
+
         Thread Safety:
             This method is NOT thread-safe for concurrent in-memory updates.
             The assignments to ``agent_settings`` and ``conversation_settings``
@@ -176,12 +181,35 @@ class PersistedSettings(BaseModel):
 
         try:
             if isinstance(agent_update, dict):
-                agent_merged = _deep_merge(
-                    self.agent_settings.model_dump(
-                        mode="json", context={"expose_secrets": "plaintext"}
-                    ),
-                    agent_update,
-                )
+                # Check if this is a variant (agent_kind) switch
+                old_kind = self.agent_settings.agent_kind
+                new_kind = agent_update.get("agent_kind")
+                is_kind_switch = new_kind is not None and new_kind != old_kind
+
+                if is_kind_switch:
+                    # Variant replacement: validate the diff as-is rather than
+                    # deep-merging it onto the old variant. A kind switch picks a
+                    # different member of the AgentSettingsConfig union, and the
+                    # old variant's serialized fields are not a valid base for the
+                    # new one (e.g. ACP's acp_command has no place in
+                    # OpenHandsAgentSettings and would fail validation).
+                    #
+                    # Consequence (intentional): fields the two variants happen to
+                    # share (e.g. ``llm``) are NOT carried over — they fall back to
+                    # the new variant's defaults unless the caller restates them in
+                    # this same diff. Switching kinds is a fresh start on the new
+                    # variant, mirroring the frontend's "fresh base on kind switch"
+                    # behaviour. Callers that want to preserve a shared field must
+                    # include it in the switch payload.
+                    agent_merged = agent_update
+                else:
+                    # Same-kind update: deep-merge for incremental field edits
+                    agent_merged = _deep_merge(
+                        self.agent_settings.model_dump(
+                            mode="json", context={"expose_secrets": "plaintext"}
+                        ),
+                        agent_update,
+                    )
                 try:
                     new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
