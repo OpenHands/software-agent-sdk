@@ -29,6 +29,7 @@ from openhands.sdk.skills.utils import (
     find_skill_md_directories,
     find_third_party_files,
     get_skills_cache_dir,
+    is_skills_repo_pinned,
     load_and_categorize,
     load_mcp_config,
     update_skills_repository,
@@ -929,17 +930,21 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
 # Public skills repository configuration
 PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/extensions"
-# Allow overriding the branch via EXTENSIONS_REF environment variable
-# (used by evaluation/benchmarks workflows to test feature branches)
-PUBLIC_SKILLS_BRANCH = os.environ.get("EXTENSIONS_REF", "main")
+# Allow overriding the ref via EXTENSIONS_REF environment variable.
+# Accepts a branch name, tag (e.g. "v1.0.0"), or full 40-char commit SHA.
+PUBLIC_SKILLS_REF = os.environ.get("EXTENSIONS_REF", "main")
 DEFAULT_MARKETPLACE_PATH = "marketplaces/default.json"
 
 # Process-level cache for load_public_skills. Conversation creation re-validates
 # AgentContext several times and each validation re-runs load_public_skills
 # (git fetch + parse ~40 md files ≈ 1s). The cache short-circuits repeated calls
 # within the TTL while still picking up new skills within a minute.
+#
+# Cache value: (timestamp, skills, is_pinned)
+# When is_pinned is True (repo is at a tag or commit SHA), the entry never
+# expires — immutable refs never change so there is no reason to re-fetch.
 _PUBLIC_SKILLS_CACHE: dict[
-    tuple[str, str, str | None], tuple[float, list["Skill"]]
+    tuple[str, str, str | None], tuple[float, list["Skill"], bool]
 ] = {}
 _PUBLIC_SKILLS_CACHE_TTL_SECONDS = 60.0
 _PUBLIC_SKILLS_CACHE_LOCK = threading.Lock()
@@ -1007,16 +1012,17 @@ def load_marketplace_skill_names(
 
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
-    branch: str = PUBLIC_SKILLS_BRANCH,
+    ref: str = PUBLIC_SKILLS_REF,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
 ) -> list[Skill]:
     """Load skills from the public OpenHands skills repository.
 
     This function maintains a local git clone of the public skills registry at
     https://github.com/OpenHands/extensions. On first run, it clones the repository
-    to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
-    to keep the skills up-to-date. This approach is more efficient than fetching
-    individual files via HTTP.
+    to ~/.openhands/skills-cache/. On subsequent runs within the same process, it
+    returns cached results. For branch refs it re-fetches after the cache TTL; for
+    tags and commit SHAs (immutable refs) the cache never expires so no further
+    network calls are made.
 
     By default, only skills listed in the default marketplace
     (marketplaces/default.json) are loaded. Pass a different relative
@@ -1030,7 +1036,10 @@ def load_public_skills(
     Args:
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
-        branch: Branch name to load skills from. Defaults to 'main'.
+        ref: Branch name, tag (e.g. ``"v1.0.0"``), or full 40-character commit
+            SHA to load skills from. Defaults to ``'main'``. Tags and commit
+            SHAs are treated as immutable: once loaded, the result is cached
+            for the lifetime of the process without further remote polling.
         marketplace_path: Relative path to the marketplace JSON file within the
             repository. Pass None to load all public skills without filtering.
 
@@ -1048,25 +1057,32 @@ def load_public_skills(
         >>> # Use with AgentContext
         >>> context = AgentContext(skills=public_skills)
     """
-    cache_key = (repo_url, branch, marketplace_path)
+    cache_key = (repo_url, ref, marketplace_path)
     with _PUBLIC_SKILLS_CACHE_LOCK:
         cached = _PUBLIC_SKILLS_CACHE.get(cache_key)
-        if (
-            cached is not None
-            and time.monotonic() - cached[0] < _PUBLIC_SKILLS_CACHE_TTL_SECONDS
-        ):
-            return list(cached[1])
+        if cached is not None:
+            _, cached_skills, is_pinned = cached
+            if (
+                is_pinned
+                or time.monotonic() - cached[0] < _PUBLIC_SKILLS_CACHE_TTL_SECONDS
+            ):
+                return list(cached_skills)
 
-    all_skills = []
+    all_skills: list[Skill] = []
+    is_pinned = False
 
     try:
         # Get or update the local repository
         cache_dir = get_skills_cache_dir()
-        repo_path = update_skills_repository(repo_url, branch, cache_dir)
+        repo_path = update_skills_repository(repo_url, ref, cache_dir)
 
         if repo_path is None:
             logger.warning("Failed to access public skills repository")
             return all_skills
+
+        # Detect whether the ref is immutable (tag or commit SHA in detached HEAD).
+        # Pinned repos are cached indefinitely — no re-fetching needed.
+        is_pinned = is_skills_repo_pinned(repo_path)
 
         # Load skills from the local repository
         skills_dir = repo_path / "skills"
@@ -1143,7 +1159,11 @@ def load_public_skills(
     # for the full TTL window.
     if all_skills:
         with _PUBLIC_SKILLS_CACHE_LOCK:
-            _PUBLIC_SKILLS_CACHE[cache_key] = (time.monotonic(), list(all_skills))
+            _PUBLIC_SKILLS_CACHE[cache_key] = (
+                time.monotonic(),
+                list(all_skills),
+                is_pinned,
+            )
 
     return all_skills
 

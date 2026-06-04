@@ -6,6 +6,7 @@ and keeping them updated. Used by both the skills system and plugin fetching.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -21,6 +22,9 @@ logger = get_logger(__name__)
 # Default timeout for acquiring cache locks (seconds)
 # Consistent with other lock timeouts in the SDK (io/local.py, event_store.py)
 DEFAULT_LOCK_TIMEOUT = 30
+
+# Matches a full 40-character git commit SHA (lowercase hex)
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class GitHelper:
@@ -302,14 +306,22 @@ def _clone_repository(
     Args:
         url: Git URL to clone.
         dest: Destination path.
-        branch: Branch to checkout (optional).
+        branch: Branch or tag to checkout during clone. For full 40-character
+            commit SHAs, ``--branch`` is not used; the default branch is cloned
+            in full (no ``--depth``) and the SHA is checked out afterward.
         git: GitHelper instance.
     """
     # Remove existing directory if it exists but isn't a valid git repo
     if dest.exists():
         shutil.rmtree(dest)
 
-    git.clone(url, dest, depth=1, branch=branch)
+    if branch and _FULL_SHA_RE.fullmatch(branch):
+        # git clone --branch does not accept raw commit SHAs. Clone the full
+        # history without specifying a branch, then checkout the target commit.
+        git.clone(url, dest, depth=None, branch=None)
+        git.checkout(dest, branch)
+    else:
+        git.clone(url, dest, depth=1, branch=branch)
     logger.debug(f"Repository cloned to {dest}")
 
 

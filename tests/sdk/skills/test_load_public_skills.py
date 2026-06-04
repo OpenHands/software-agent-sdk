@@ -521,8 +521,8 @@ def test_load_public_skills_custom_repo(mock_repo_dir, tmp_path):
 def test_load_public_skills_custom_branch(mock_repo_dir, tmp_path):
     """Test loading from a specific branch."""
 
-    def mock_update_repo(repo_url, branch, cache_dir):
-        assert branch == "develop"
+    def mock_update_repo(repo_url, ref, cache_dir):
+        assert ref == "develop"
         return mock_repo_dir
 
     with (
@@ -535,7 +535,7 @@ def test_load_public_skills_custom_branch(mock_repo_dir, tmp_path):
             return_value=tmp_path,
         ),
     ):
-        skills = load_public_skills(branch="develop")
+        skills = load_public_skills(ref="develop")
         assert len(skills) == 3
 
 

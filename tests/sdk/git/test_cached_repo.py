@@ -40,6 +40,24 @@ def test_clone_with_ref(tmp_path: Path):
     )
 
 
+def test_clone_with_full_sha_uses_full_clone_and_checkout(tmp_path: Path):
+    """Full 40-char commit SHAs must use a full clone (no --depth) then checkout.
+
+    git clone --branch does not accept raw commit SHAs, so we fall back to a
+    regular (non-shallow) clone followed by an explicit checkout of the SHA.
+    """
+    mock_git = create_autospec(GitHelper)
+    dest = tmp_path / "repo"
+    sha = "a" * 40
+
+    _clone_repository("https://github.com/owner/repo.git", dest, sha, mock_git)
+
+    mock_git.clone.assert_called_once_with(
+        "https://github.com/owner/repo.git", dest, depth=None, branch=None
+    )
+    mock_git.checkout.assert_called_once_with(dest, sha)
+
+
 def test_clone_removes_existing_directory(tmp_path: Path):
     mock_git = create_autospec(GitHelper)
     dest = tmp_path / "repo"
