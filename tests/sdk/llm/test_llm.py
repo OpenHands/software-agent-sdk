@@ -1125,6 +1125,8 @@ def test_llm_reset_metrics():
     llm.reset_metrics()
 
     # Verify new metrics are created
+    assert llm._metrics is not None
+    assert llm._telemetry is not None
     assert llm.metrics is not original_metrics
     assert llm.telemetry is not original_telemetry
     assert llm.metrics.accumulated_cost == 0.0

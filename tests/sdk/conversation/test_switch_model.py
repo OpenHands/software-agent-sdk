@@ -19,6 +19,7 @@ from openhands.sdk.llm import Message, MessageToolCall, TextContent, llm_profile
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.utils.cipher import Cipher
+from tests.conftest import create_mock_litellm_response
 
 
 def _make_llm(model: str, usage_id: str) -> LLM:
@@ -286,7 +287,9 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     assert conv.agent.llm._prompt_cache_key == str(conv.id)
 
 
-def test_switch_llm_refreshes_llm_condenser_credentials(empty_profile_store, tmp_path):
+def test_switch_llm_refreshes_llm_condenser_credentials(
+    empty_profile_store, tmp_path, monkeypatch
+):
     """A mid-session LLM switch must also refresh the default condenser LLM.
 
     The condenser owns a separate copy of the agent LLM. If the agent LLM is
@@ -329,6 +332,25 @@ def test_switch_llm_refreshes_llm_condenser_credentials(empty_profile_store, tmp
     assert state_condenser_llm.model == condenser_llm.model
     assert state_condenser_llm.api_key == condenser_llm.api_key
     assert condenser_llm.metrics is not conv.agent.llm.metrics
+    assert condenser_llm._telemetry is not None
+
+    async def _fake_acompletion(**kwargs):
+        return create_mock_litellm_response(
+            content="condensed summary",
+            model=kwargs["model"],
+        )
+
+    monkeypatch.setattr("openhands.sdk.llm.llm.litellm_acompletion", _fake_acompletion)
+
+    response = asyncio.run(
+        condenser_llm.acompletion(
+            [Message(role="user", content=[TextContent(text="summarize")])]
+        )
+    )
+
+    content = response.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "condensed summary"
 
 
 def test_switch_llm_then_send_message(empty_profile_store):

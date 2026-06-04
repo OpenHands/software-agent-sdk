@@ -700,11 +700,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
         Pydantic's model_copy() does a shallow copy of private attributes by default,
         causing the original and copied LLM to share the same Metrics object.
-        This method allows the registry to fix this by resetting metrics to None,
-        which will be lazily recreated when accessed.
+        This method allows the registry to fix this by creating fresh metrics and
+        telemetry immediately, so the copied LLM is ready for the next completion
+        call even if callers do not access ``metrics``/``telemetry`` first.
         """
-        self._metrics = None
-        self._telemetry = None
+        self._metrics = Metrics(model_name=self.model)
+        self._telemetry = Telemetry(
+            model_name=self.model,
+            log_enabled=self.log_completions,
+            log_dir=self.log_completions_folder if self.log_completions else None,
+            input_cost_per_token=self.input_cost_per_token,
+            output_cost_per_token=self.output_cost_per_token,
+            metrics=self._metrics,
+        )
 
     def _handle_error(
         self,
@@ -960,11 +968,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        assert self._telemetry is not None
+        telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
-        if self._telemetry.log_enabled:
+        if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
                     "messages": formatted_messages[:],  # already simple dicts
@@ -1031,11 +1039,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        assert self._telemetry is not None
+        telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
-        if self._telemetry.log_enabled:
+        if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
