@@ -974,16 +974,27 @@ templates.",
         assert result is None
 
     def test_agent_context_default_datetime(self):
-        """Test that AgentContext defaults to current datetime."""
+        """Test that AgentContext defaults to the current timezone-aware datetime."""
         from datetime import datetime, timedelta
 
-        before = datetime.now()
+        before = datetime.now().astimezone()
         context = AgentContext()
-        after = datetime.now()
+        after = datetime.now().astimezone()
 
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
+        # Regression for #3438: the default must be timezone-aware (not naive
+        # local time) so the datetime injected into the system prompt is
+        # unambiguous.
+        assert context.current_datetime.tzinfo is not None
+        # The bug surfaced in the rendered value injected into the prompt, not
+        # just the field: get_formatted_datetime() must carry a UTC offset.
+        formatted = context.get_formatted_datetime()
+        assert formatted is not None
+        assert "+" in formatted or "-" in formatted.split("T", 1)[1], (
+            f"formatted datetime should carry a UTC offset, got {formatted!r}"
+        )
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
