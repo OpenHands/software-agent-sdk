@@ -8,6 +8,7 @@ import threading
 import uuid
 from base64 import urlsafe_b64encode
 from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,10 +20,13 @@ from pydantic import SecretStr
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _classify_acp_init_error,
+    _codex_auth_file,
+    _codex_base_url_overrides,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _mask_json_value,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
     _reapply_session_model_on_resume,
@@ -4039,6 +4043,143 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    # -- CODEX_HOME-aware chatgpt detection (issue #1020) ------------------
+
+    def test_chatgpt_detected_under_relocated_codex_home(self, tmp_path):
+        """chatgpt is selected when auth.json lives under a relocated CODEX_HOME,
+        even though ~/.codex/auth.json does not exist."""
+        codex_home = tmp_path / "conv" / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        methods = [self._make_auth_method("chatgpt")]
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert (
+                _select_auth_method(methods, {"CODEX_HOME": str(codex_home)})
+                == "chatgpt"
+            )
+
+    def test_codex_home_without_auth_file_falls_back(self, tmp_path):
+        """A CODEX_HOME without auth.json is not detected as chatgpt; it falls
+        back to the API key when offered."""
+        codex_home = tmp_path / "empty_codex_home"
+        codex_home.mkdir()
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_codex_auth_file_honors_codex_home(self, tmp_path):
+        """_codex_auth_file points at $CODEX_HOME/auth.json when set, else
+        ~/.codex/auth.json."""
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=home):
+            assert _codex_auth_file({}) == home / ".codex" / "auth.json"
+        ch = tmp_path / "ch"
+        assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- Gemini Vertex AI service-account detection (issue #1020) ----------
+
+    def test_vertex_ai_selected_when_credentials_file_present(self, tmp_path):
+        """vertex-ai is selected when GOOGLE_APPLICATION_CREDENTIALS points at an
+        existing service-account JSON."""
+        sa = tmp_path / "gcloud-credentials.json"
+        sa.write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa), "GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_preferred_over_personal_oauth(self, tmp_path):
+        """The materialised Vertex SA (deployable) wins over a host-bound
+        personal OAuth login file."""
+        sa = tmp_path / "sa.json"
+        sa.write_text("{}", encoding="utf-8")
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa)}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_offered_but_no_credentials_file(self, tmp_path):
+        """vertex-ai offered but GOOGLE_APPLICATION_CREDENTIALS missing/empty ->
+        falls through to the API-key fallback."""
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+
+# ---------------------------------------------------------------------------
+# _codex_base_url_overrides (codex ignores OPENAI_BASE_URL)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexBaseUrlOverrides:
+    def test_pins_base_url_for_codex(self):
+        # The documented one-liner: override the built-in openai provider's URL.
+        ov = _codex_base_url_overrides(
+            "codex-acp", [], {"OPENAI_BASE_URL": "https://proxy.example"}
+        )
+        assert ov == ["-c", 'openai_base_url="https://proxy.example"']
+
+    def test_detects_codex_in_any_token(self):
+        # e.g. launched via npx with the scoped package name
+        ov = _codex_base_url_overrides(
+            "npx",
+            ["-y", "@zed-industries/codex-acp@0.15.0"],
+            {"OPENAI_BASE_URL": "https://p"},
+        )
+        assert ov == ["-c", 'openai_base_url="https://p"']
+
+    def test_noop_for_non_codex(self):
+        assert (
+            _codex_base_url_overrides(
+                "claude-agent-acp", [], {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
+    def test_noop_when_no_base_url(self):
+        assert _codex_base_url_overrides("codex-acp", [], {}) == []
+
+    def test_noop_when_caller_already_set_base_url(self):
+        args = ["-c", 'openai_base_url="https://other"']
+        assert (
+            _codex_base_url_overrides(
+                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
+    def test_noop_when_caller_already_set_provider(self):
+        args = ["-c", 'model_provider="custom"']
+        assert (
+            _codex_base_url_overrides(
+                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
 
 # ---------------------------------------------------------------------------
 # ACP model overrides
@@ -6410,3 +6551,774 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._session_id = "sess-1"
         agent._agent_name = "locked-down-provider"
         assert agent.supports_runtime_model_switch is False
+
+
+# ---------------------------------------------------------------------------
+# Reserved file-content secret materialisation (issue #1020)
+# ---------------------------------------------------------------------------
+
+
+class TestACPFileSecretMaterialisation:
+    """Codex auth.json / Gemini Vertex SA JSON materialise to the durable
+    per-conversation root, with the right data-dir env var, seed-if-absent.
+    """
+
+    @staticmethod
+    def _make_conn(*, agent_name: str = "codex-acp", auth_method: str | None = None):
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = agent_name
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = [MagicMock(id=auth_method)] if auth_method else []
+        # MagicMock(id=...) doesn't set .id; assign explicitly.
+        for m in init_response.auth_methods:
+            m.id = auth_method
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-new"
+        new_response.models = None
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start(agent, state, *, conn):
+        """Run the real _start_acp_server with transport mocked; return the env
+        dict handed to the subprocess."""
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict[str, Any] = {}
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_exec(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+        return captured["env"]
+
+    @staticmethod
+    def _state(tmp_path, *, persisted: bool = True):
+        from openhands.sdk.agent.acp_agent import ACPAgent
+
+        agent = ACPAgent(acp_command=["codex-acp"])
+        workspace = LocalWorkspace(working_dir=str(tmp_path / "ws"))
+        (tmp_path / "ws").mkdir()
+        persistence_dir = (
+            str(tmp_path / "conversations" / uuid.uuid4().hex) if persisted else None
+        )
+        state = ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=persistence_dir,
+        )
+        return state
+
+    def test_codex_auth_json_materialises_to_conversation_root(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        auth_file = codex_home / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"tokens": "x"}'
+        # 0600 file inside a 0700 dir, and the shared acp/ parent is 0700 too.
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert codex_home.stat().st_mode & 0o777 == 0o700
+        assert codex_home.parent.stat().st_mode & 0o777 == 0o700
+        # The blob is not exported as an env var.
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_gemini_vertex_sa_materialises_and_points_at_file(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                    value=SecretStr('{"type": "service_account"}')
+                )
+            }
+        )
+        env = self._run_start(
+            agent, state, conn=self._make_conn(agent_name="gemini-cli")
+        )
+
+        gac = Path(env["GOOGLE_APPLICATION_CREDENTIALS"])
+        assert gac == Path(persist) / "acp" / "gemini-cli" / "gcloud-credentials.json"
+        assert gac.read_text(encoding="utf-8") == '{"type": "service_account"}'
+        # 0600 file inside a 0700 dir (symmetry with the Codex test).
+        assert gac.stat().st_mode & 0o777 == 0o600
+        assert gac.parent.stat().st_mode & 0o777 == 0o700
+        assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
+        """A non-empty existing credential file (e.g. a token the CLI refreshed)
+        is preserved; the stale pasted blob does not overwrite it."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        # Pre-seed a "refreshed" auth.json with deliberately wide (0644) perms.
+        codex_home = Path(persist) / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        refreshed = codex_home / "auth.json"
+        refreshed.write_text('{"refreshed": true}', encoding="utf-8")
+        refreshed.chmod(0o644)
+
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"stale": true}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert Path(env["CODEX_HOME"]) == codex_home
+        # Contents preserved (not clobbered by the stale paste)...
+        assert refreshed.read_text(encoding="utf-8") == '{"refreshed": true}'
+        # ...but perms are still clamped to 0600 (regression: QA found a
+        # preserved 0644 file staying world-readable).
+        assert refreshed.stat().st_mode & 0o777 == 0o600
+
+    def test_reads_from_agent_context_secrets_drain(self, tmp_path):
+        """The reserved secret can arrive via agent_context.secrets (canvas-local
+        path) rather than the registry."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                current_datetime=None,
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"a": 1}'))},
+            ),
+        )
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        auth_file = Path(env["CODEX_HOME"]) / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_acp_env_pin_wins_and_credential_seeds_where_it_points(self, tmp_path):
+        """An explicit acp_env[CODEX_HOME] keeps its precedence, and the
+        credential is seeded *there* so the file and env stay consistent."""
+        from openhands.sdk.secret import StaticSecret
+
+        pinned = tmp_path / "pinned_codex"
+        # Pre-create the pinned dir with deliberately wide (0755) perms.
+        pinned.mkdir()
+        pinned.chmod(0o755)
+        agent = _make_agent(acp_env={"CODEX_HOME": str(pinned)})
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"k": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert env["CODEX_HOME"] == str(pinned)
+        # The credential lands under the pinned dir, not the conversation root.
+        assert (pinned / "auth.json").read_text(encoding="utf-8") == '{"k": 1}'
+        # The pinned dir's user-chosen perms are NOT silently narrowed...
+        assert pinned.stat().st_mode & 0o777 == 0o755
+        # ...but the credential file itself is still 0600.
+        assert (pinned / "auth.json").stat().st_mode & 0o777 == 0o600
+
+    def test_fallback_root_when_not_persisted(self, tmp_path):
+        """With no persistence_dir, the file lands under the workspace tree —
+        still seed-if-absent, no TemporaryDirectory."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        expected = Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        assert Path(env["CODEX_HOME"]) == expected
+        assert (expected / "auth.json").is_file()
+
+    def test_no_file_secret_when_secret_absent(self, tmp_path):
+        """No reserved secret present -> no data-dir env var is set."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_materialisation_oserror_fails_fast(self, tmp_path):
+        """If the credential can't be written (e.g. read-only mount), the error
+        propagates out of _start_acp_server (so init_state surfaces a typed
+        ConversationErrorEvent) instead of being swallowed and leaving the CLI
+        to fail at auth time with no SDK breadcrumb."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with patch(
+            "openhands.sdk.agent.acp_agent._write_secret_file",
+            side_effect=OSError("[Errno 30] Read-only file system"),
+        ):
+            with pytest.raises(OSError, match="Read-only file system"):
+                self._run_start(agent, state, conn=self._make_conn())
+
+    def test_vertex_warns_when_project_unset(self, tmp_path, caplog):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with caplog.at_level("WARNING"):
+            self._run_start(agent, state, conn=self._make_conn(agent_name="gemini-cli"))
+        assert any("GOOGLE_CLOUD_PROJECT" in rec.message for rec in caplog.records)
+
+    def test_present_file_secret_names_helper(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(value=SecretStr("t")),
+            }
+        )
+        assert agent._present_file_secret_names(state) == {"CODEX_AUTH_JSON"}
+
+    def test_blob_excluded_from_custom_secrets_advertisement(self, tmp_path):
+        """The <CUSTOM_SECRETS> advertisement lists plain secrets but not the
+        file-content blob (it's not an env var the agent can reference)."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(current_datetime=None),
+        )
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(
+                    value=SecretStr("t"), description="A plain token"
+                ),
+            }
+        )
+        events: list = []
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        suffix = events[0].dynamic_context
+        assert suffix is not None
+        assert "PLAIN_TOKEN" in suffix.text
+        assert "CODEX_AUTH_JSON" not in suffix.text
+
+    def test_downstream_can_override_specs_with_custom_provider(self, tmp_path):
+        """A downstream app supplies its own ACPFileSecretSpec for a custom CLI;
+        the SDK mechanism materialises it without any registry change."""
+        from openhands.sdk import ACPFileSecretSpec
+        from openhands.sdk.secret import StaticSecret
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+            env_points_to="dir",
+        )
+        agent = _make_agent(acp_file_secrets=[custom])
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"MYCLI_TOKEN_JSON": StaticSecret(value=SecretStr('{"t": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        home = Path(env["MYCLI_HOME"])
+        assert home == Path(persist) / "acp" / "mycli"
+        assert (home / "token.json").read_text(encoding="utf-8") == '{"t": 1}'
+        assert "MYCLI_TOKEN_JSON" not in env
+        # The built-in Codex/Gemini specs were replaced, so their secrets would
+        # NOT be materialised by this agent.
+        assert agent._present_file_secret_names(state) == {"MYCLI_TOKEN_JSON"}
+
+    def test_empty_specs_disables_materialisation(self, tmp_path):
+        """With acp_file_secrets=[], a CODEX_AUTH_JSON secret is treated as an
+        ordinary env var (no file written, no CODEX_HOME) — downstream opt-out."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_file_secrets=[])
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert "CODEX_HOME" not in env
+        # Not configured as a file-secret, so it flows through as a plain env var.
+        assert env.get("CODEX_AUTH_JSON") == "blob"
+
+    def test_settings_pass_file_secrets_through_create_agent(self):
+        """ACPAgentSettings defaults to the built-in specs and forwards them to
+        the constructed ACPAgent."""
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+        from openhands.sdk.settings.model import ACPAgentSettings
+
+        settings = ACPAgentSettings(acp_server="codex")
+        agent = settings.create_agent()
+        names = {s.secret_name for s in agent.acp_file_secrets}
+        assert "CODEX_AUTH_JSON" in names
+        assert {s.secret_name for s in agent.acp_file_secrets} == {
+            s.secret_name for s in default_acp_file_secrets()
+        }
+
+
+# ---------------------------------------------------------------------------
+# Per-conversation CLI data-dir isolation (issue #1019)
+# ---------------------------------------------------------------------------
+
+
+class TestACPDataDirIsolation:
+    """``acp_isolate_data_dir`` relocates each provider's CLI data/config root to
+    ``<persistence_dir>/acp/<provider>`` so conversations sharing one sandbox
+    don't race on a shared HOME. Reuses the materialisation harness so the two
+    features are exercised against the same _start_acp_server path.
+    """
+
+    _H = TestACPFileSecretMaterialisation
+
+    @staticmethod
+    def _agent(command, **kw):
+        return ACPAgent(acp_command=command, acp_isolate_data_dir=True, **kw)
+
+    def test_codex_sets_codex_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        data_dir = Path(env["CODEX_HOME"])
+        assert data_dir == Path(persist) / "acp" / "codex"
+        assert data_dir.is_dir()
+        assert data_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_gemini_sets_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["npx", "-y", "@google/gemini-cli", "--acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="gemini-cli")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "gemini-cli"
+
+    def test_disabled_by_default_leaves_home_shared(self, tmp_path):
+        # Same codex command, isolation OFF (the default): no CODEX_HOME injected.
+        agent = ACPAgent(acp_command=["codex-acp"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_unknown_command_no_ops(self, tmp_path):
+        agent = self._agent(["my-custom-acp", "serve"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+        assert "CLAUDE_CONFIG_DIR" not in env
+
+    def test_acp_env_pin_wins(self, tmp_path):
+        agent = self._agent(["codex-acp"], acp_env={"CODEX_HOME": "/pinned/codex"})
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert env["CODEX_HOME"] == "/pinned/codex"
+
+    def test_falls_back_to_workspace_when_not_persisted(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert (
+            Path(env["CODEX_HOME"])
+            == Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        )
+
+    def test_composes_with_materialised_codex_auth(self, tmp_path):
+        """Isolation and file-secret materialisation agree on one CODEX_HOME."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        # Materialisation seeded auth.json into the SAME dir isolation points at.
+        assert (codex_home / "auth.json").read_text(
+            encoding="utf-8"
+        ) == '{"tokens": "x"}'
+
+    # --- Claude carve-out: must not knock out an active API key --------------
+
+    def test_claude_skips_when_api_key_active(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-live"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        # Setting CLAUDE_CONFIG_DIR would trip _ENV_CONFLICT_MAP and strip the
+        # key, so isolation is skipped and the working key survives.
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert env["ANTHROPIC_API_KEY"] == "sk-live"
+
+    def test_claude_isolates_under_oauth_token(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CLAUDE_CODE_OAUTH_TOKEN": StaticSecret(value=SecretStr("oauth-xyz"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
+
+
+# ---------------------------------------------------------------------------
+# Secret masking (#1023)
+# ---------------------------------------------------------------------------
+
+
+def _redacting_mask(text: str) -> str:
+    """Stand-in for ``secret_registry.mask_secrets_in_output``: replaces the
+    literal secret with the same sentinel the real registry uses."""
+    return text.replace("SEKRET", "<secret-hidden>")
+
+
+class TestMaskJsonValue:
+    """Unit tests for the recursive JSON masker helper."""
+
+    def test_masks_bare_string(self):
+        assert _mask_json_value("token=SEKRET", _redacting_mask) == (
+            "token=<secret-hidden>"
+        )
+
+    def test_masks_nested_dict_and_list(self):
+        value = {
+            "command": "curl -H 'Authorization: Bearer SEKRET'",
+            "args": ["--data", "key=SEKRET"],
+            "count": 3,
+            "ok": True,
+            "nothing": None,
+        }
+        masked = _mask_json_value(value, _redacting_mask)
+        assert masked["command"] == "curl -H 'Authorization: Bearer <secret-hidden>'"
+        assert masked["args"] == ["--data", "key=<secret-hidden>"]
+        # Non-string leaves pass through unchanged.
+        assert masked["count"] == 3
+        assert masked["ok"] is True
+        assert masked["nothing"] is None
+
+    def test_non_string_scalar_passthrough(self):
+        assert _mask_json_value(42, _redacting_mask) == 42
+        assert _mask_json_value(None, _redacting_mask) is None
+
+
+class TestACPBridgeMasking:
+    """``_OpenHandsACPBridge`` masks injected secrets before they reach the
+    ``on_token`` / ``on_event`` sinks (persisted + network-relayed)."""
+
+    @pytest.mark.asyncio
+    async def test_message_chunk_masked_in_relay_and_accumulation(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "the token is SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["the token is <secret-hidden>"]
+        assert client.accumulated_text == ["the token is <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_thought_chunk_masked(self):
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "I will use SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert client.accumulated_thoughts == ["I will use <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_masks_raw_fields(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Running: echo SEKRET"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = {"command": "echo SEKRET"}
+        start.raw_output = "leaked SEKRET here"
+        start.content = None
+
+        await client.session_update("sess-1", start)
+
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.title == "Running: echo <secret-hidden>"
+        assert evt.raw_input == {"command": "echo <secret-hidden>"}
+        assert evt.raw_output == "leaked <secret-hidden> here"
+        # The accumulator itself must hold masked values so the supersede /
+        # flush path can't re-leak them.
+        stored = client.accumulated_tool_calls[0]
+        assert stored["title"] == "Running: echo <secret-hidden>"
+        assert stored["raw_input"] == {"command": "echo <secret-hidden>"}
+        assert stored["raw_output"] == "leaked <secret-hidden> here"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_masks_terminal_output(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Terminal progress frame carries the secret in its cumulative output.
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "result: SEKRET"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+
+        # The terminal event (emitted on the in_progress->completed transition)
+        # carries masked output.
+        assert events[-1].status == "completed"
+        assert events[-1].raw_output == "result: <secret-hidden>"
+        assert (
+            client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_masking_when_mask_unset(self):
+        """A standalone bridge (mask is None) passes text through unchanged
+        and never raises."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        assert client.mask is None
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "raw SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["raw SEKRET"]
+        assert client.accumulated_text == ["raw SEKRET"]
+
+    def test_mask_value_swallows_mask_errors(self):
+        """A failing masker must never crash session_update — fall back to the
+        original value (matches the regular terminal tool's masking contract)."""
+
+        def _boom(_text: str) -> str:
+            raise RuntimeError("masker exploded")
+
+        client = _OpenHandsACPBridge()
+        client.mask = _boom
+        assert client._mask_value("keep SEKRET") == "keep SEKRET"
+
+    def test_reset_preserves_mask(self):
+        """mask is conversation-lifetime (bound once in _start_acp_server), so a
+        per-turn reset() must NOT clear it — unlike on_token/on_event."""
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client.reset()
+        assert client.mask is _redacting_mask
+
+    @pytest.mark.asyncio
+    async def test_fork_session_text_masked(self):
+        """ask_agent() joins _fork_accumulated_text and returns it to the
+        caller, so fork-session chunks must be masked too."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client._fork_session_id = "fork-1"
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "fork says SEKRET"
+
+        await client.session_update("fork-1", chunk)
+
+        assert client._fork_accumulated_text == ["fork says <secret-hidden>"]
+
+
+class TestACPStepMasksPersistedTurn:
+    """End-to-end: the persisted FinishAction text is masked at the join
+    boundary, including secrets split across streamed chunks."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_finish_action_masks_secret_split_across_chunks(self, tmp_path):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        # Seed the mask set via the canonical registry path (get_secret_value
+        # records the resolved value in _exported_values) — the same path
+        # _start_acp_server drives for StartConversationRequest secrets.
+        reg = conversation.state.secret_registry
+        reg.update_secrets({"TOKEN": "supersecret"})
+        reg.get_secret_value("TOKEN")
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            # Populate accumulated_text directly, bypassing session_update (and
+            # thus per-chunk masking) on purpose: this isolates the join-boundary
+            # re-mask in _finalize_successful_turn. The secret straddles two
+            # chunks, so neither chunk matches alone — only the reassembled join
+            # does, which is exactly what the persistence-boundary mask catches.
+            mock_client.accumulated_text.append("the value is super")
+            mock_client.accumulated_text.append("secret now")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        finish = next(
+            e for e in events if isinstance(getattr(e, "action", None), FinishAction)
+        )
+        assert "supersecret" not in finish.action.message
+        assert finish.action.message == "the value is <secret-hidden> now"
