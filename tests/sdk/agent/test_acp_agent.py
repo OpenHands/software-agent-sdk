@@ -6095,21 +6095,6 @@ class TestACPSecretsEnvInjection:
         assert not [w for w in caught if "acp_env" in str(w.message)]
 
 
-# NOTE: module-level on purpose. A ``SecretSource`` (DiscriminatedUnionMixin)
-# subclass defined inside a function auto-registers globally and, having
-# ``<locals>`` in its qualname, makes the registry raise "Local classes not
-# supported!" for any later discriminated-union validation in the same xdist
-# worker (e.g. an unrelated ConversationState deserialization). Module-level
-# (importable) subclasses avoid that pollution.
-class _FakeLookupSecret(SecretSource):
-    """A ``LookupSecret``-shaped source whose ``get_value()`` returns a literal."""
-
-    stored_value: str
-
-    def get_value(self) -> str | None:
-        return self.stored_value
-
-
 class _CountingLookupSecret(SecretSource):
     """A lookup source that records each ``get_value()`` call (to assert it is
     *not* invoked when ``acp_env`` shadows the key)."""
