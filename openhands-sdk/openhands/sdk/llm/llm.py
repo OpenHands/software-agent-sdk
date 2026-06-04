@@ -2187,6 +2187,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             context_window,
                         )
                         effective_max_output_tokens = capped
+                    if (
+                        self.base_url is not None
+                        and effective_max_output_tokens is not None
+                        and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    ):
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(model metadata may exceed provider limit)",
+                            effective_max_output_tokens,
+                            DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+                            self.model,
+                        )
+                        effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting
