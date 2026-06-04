@@ -128,7 +128,7 @@ class TestEventsToMessages:
         messages = LLMConvertibleEvent.events_to_messages(events)
 
         assert [message.role for message in messages] == ["user", "assistant"]
-        assert [content.text for content in messages[0].content] == [
+        assert [content.text for content in messages[0].content if isinstance(content, TextContent)] == [
             "Implement the feature",
             "Relevant project context",
         ]
