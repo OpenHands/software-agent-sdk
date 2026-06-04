@@ -172,7 +172,7 @@ RUN set -ux; \
         PATH="$ACP_NODE_DIR/bin:$PATH"; \
         if "$ACP_NODE_DIR/bin/npm" install -g \
             @agentclientprotocol/claude-agent-acp@0.30.0 \
-            @zed-industries/codex-acp@0.11.1 \
+            @zed-industries/codex-acp@0.15.0 \
             @google/gemini-cli@0.38.0; then \
           # Create wrappers in /usr/local/bin that prepend ACP's Node 22 to PATH.
           # This ensures the ACP binary's #!/usr/bin/env node shebang resolves

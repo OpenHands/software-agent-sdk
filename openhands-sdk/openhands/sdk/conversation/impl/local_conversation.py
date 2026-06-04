@@ -108,6 +108,11 @@ class LocalConversation(BaseConversation):
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
     _cancel_token: CancellationToken | None
+    # True while run()/arun() executes an agent step while holding the state
+    # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
+    # it must skip re-acquiring the lock the run loop holds while blocked
+    # awaiting that tool (#3485).
+    _step_holds_state_lock: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -185,6 +190,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -429,6 +435,9 @@ class LocalConversation(BaseConversation):
             # immutable.
             for event in self._state.events:
                 fork_conv._state.events.append(event.model_copy(deep=True))
+            # Full rebuild: the copied events may need property enforcement
+            # (same posture as cold load).
+            fork_conv._state.rebuild_view()
 
             # Copy runtime state that accumulated during the source
             # conversation. activated_knowledge_skills is list[str] – strings
@@ -704,6 +713,7 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
+                self._pin_session_affinity_header(llm)
 
             self._agent_ready = True
 
@@ -725,6 +735,20 @@ class LocalConversation(BaseConversation):
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
 
+    def _pin_session_affinity_header(self, llm: LLM) -> None:
+        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
+
+        Note: if a caller passes ``extra_headers`` as a kwarg directly to
+        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
+        entirely — the same limitation that affects OpenRouter headers.
+        """
+        existing = llm.extra_headers or {}
+        if "x-litellm-session-id" not in existing:
+            llm.extra_headers = {
+                "x-litellm-session-id": str(self._state.id),
+                **existing,
+            }
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -741,10 +765,21 @@ class LocalConversation(BaseConversation):
         except KeyError:
             new_llm = llm
             self.llm_registry.add(new_llm)
-        with self._state:
+        # A switch_llm tool runs on a worker thread while run()/arun() holds the
+        # state lock across the agent step on another thread, blocked awaiting
+        # this very tool. Re-acquiring _state here would deadlock, so skip it:
+        # the run loop is parked and no other mutator can run, so the swap is
+        # safe without the lock (#3485). Only skip when the lock is held by a
+        # different thread (the run loop); when the caller already owns it (a
+        # sync step, or the switch endpoint reentering on the event-loop thread)
+        # acquire normally — FIFOLock is reentrant for the owning thread.
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
+            self._pin_session_affinity_header(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -994,9 +1029,16 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    self.agent.step(
-                        self, on_event=self._on_event, on_token=self._on_token
-                    )
+                    # Mark the step as holding the state lock so state-mutating
+                    # tools (e.g. switch_llm) running on worker threads skip
+                    # re-acquiring it instead of deadlocking (#3485).
+                    self._step_holds_state_lock = True
+                    try:
+                        self.agent.step(
+                            self, on_event=self._on_event, on_token=self._on_token
+                        )
+                    finally:
+                        self._step_holds_state_lock = False
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -1056,6 +1098,7 @@ class LocalConversation(BaseConversation):
         finally:
             self._cancel_token = None
 
+    @observe(name="conversation.arun")
     async def arun(self) -> None:
         """Async variant of :meth:`run`.
 
@@ -1076,7 +1119,14 @@ class LocalConversation(BaseConversation):
         """
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
-        self._ensure_agent_ready()
+        # Off-load lazy init to a worker thread: init_state may block the loop
+        # (an ACP agent resolves credentials via a synchronous LookupSecret
+        # httpx.get). When the agent-server runs arun() on its event loop and
+        # that lookup points back at the same single-process server, doing it
+        # inline freezes the loop so the lookup can never be served — a
+        # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
+        # _ensure_agent_ready is thread-safe and already runs off-loop in run().
+        await asyncio.to_thread(self._ensure_agent_ready)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
@@ -1221,11 +1271,19 @@ class LocalConversation(BaseConversation):
                         # silently re-enter the lock and corrupt history. Such
                         # unrelated mutators must be dispatched via
                         # run_in_executor onto a worker thread.
-                        await self.agent.astep(
-                            self,
-                            on_event=self._on_event,
-                            on_token=self._on_token,
-                        )
+                        # Mark the step as holding the state lock so
+                        # state-mutating tools (e.g. switch_llm) running on
+                        # worker threads skip re-acquiring it instead of
+                        # deadlocking while this await holds it (#3485).
+                        self._step_holds_state_lock = True
+                        try:
+                            await self.agent.astep(
+                                self,
+                                on_event=self._on_event,
+                                on_token=self._on_token,
+                            )
+                        finally:
+                            self._step_holds_state_lock = False
                         iteration += 1
 
                         if (
@@ -1476,7 +1534,11 @@ class LocalConversation(BaseConversation):
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
         finally:
-            self._cancel_token = None
+            # A cancelled token must stay observable: interrupted tool calls run
+            # in worker threads that can outlive arun() and still poll it. A
+            # fresh token is created on the next run().
+            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
+                self._cancel_token = None
             self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:

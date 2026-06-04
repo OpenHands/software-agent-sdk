@@ -161,6 +161,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "display_name": "Gemini 3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.5-flash",
+            "temperature": 0.0,
+        },
+    },
     "gpt-5.2": {
         "id": "gpt-5.2",
         "display_name": "GPT-5.2",
@@ -230,6 +238,15 @@ MODELS = {
         "display_name": "MiniMax M2.7",
         "llm_config": {
             "model": "litellm_proxy/minimax/MiniMax-M2.7",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    "minimax-m3": {
+        "id": "minimax-m3",
+        "display_name": "MiniMax M3",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M3",
             "temperature": 1.0,
             "top_p": 0.95,
         },
@@ -320,6 +337,21 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    # https://openai.com/index/introducing-gpt-oss/
+    # Note: gpt-oss-20b uses a direct proxy alias (litellm_proxy/gpt-oss-20b);
+    # gpt-oss-120b requires OpenRouter because no equivalent proxy alias exists.
+    # The Fireworks-specific path (fireworks_ai/accounts/fireworks/models/...)
+    # is not registered as a model alias on the proxy, so preflight rejects it
+    # with "Invalid model name". OpenRouter is already configured on the proxy
+    # and routes to multiple backend providers (Fireworks, Together, etc.).
+    "gpt-oss-120b": {
+        "id": "gpt-oss-120b",
+        "display_name": "GPT OSS 120B",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/openai/gpt-oss-120b",
+            "temperature": 0.0,
+        },
+    },
     "nemotron-3-super-120b-a12b": {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
@@ -334,7 +366,7 @@ MODELS = {
         "id": "nemotron-3-ultra-550b-a55b",
         "display_name": "NVIDIA Nemotron-3 Ultra 550B",
         "llm_config": {
-            "model": "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b",
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b",
             "temperature": 1.0,
             "top_p": 0.95,
         },
@@ -356,12 +388,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
-    "amber-vector-3542": {
-        "id": "amber-vector-3542",
-        "display_name": "Amber Vector 3542",
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
         "llm_config": {
-            "model": "litellm_proxy/amber-vector-3542",
+            "model": "litellm_proxy/step-3.7-flash",
             "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }

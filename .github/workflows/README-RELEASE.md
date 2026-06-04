@@ -63,8 +63,8 @@ You can monitor the progress in the [Actions tab](https://github.com/OpenHands/s
 In parallel with the PyPI workflow, **release-binaries.yml** also fires on `release: published`.
 It also runs on every push to `main` as ongoing smoke coverage. It:
 
-- ✅ Builds the agent-server PyInstaller binary on a 4-runner matrix
-  (linux x86_64/arm64, macOS x86_64/arm64) and smoke-tests each
+- ✅ Builds the agent-server PyInstaller binary on a 5-runner matrix
+  (linux x86_64/arm64, macOS x86_64/arm64, windows x86_64) and smoke-tests each
 - ✅ Generates a combined `SHA256SUMS` and attaches all artifacts to the GitHub
   release as `agent-server-<version>-<os>-<arch>` on release/manual runs
 - ✅ Verifies that the multi-arch Docker manifest
@@ -82,7 +82,7 @@ release version and the binaries are uploaded to the GitHub release.
 
 | Stage | Runtime (typical) | Runners |
 |---|---|---|
-| Binary builds (4-way matrix, parallel) | ~10–15 min on Linux, ~12–18 min on macOS | `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-13`, `macos-14` |
+| Binary builds (5-way matrix, parallel) | ~10–15 min on Linux, ~12–18 min on macOS | `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-14`, `windows-2022` |
 | `publish-binaries` (download + checksum + upload) | ~1–2 min | `ubuntu-24.04` |
 | `docker-smoke-test` (6-way matrix, parallel) | Up to 45 min (mostly polling for the docker images) | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 |
 
