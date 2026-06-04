@@ -388,31 +388,13 @@ MODELS = {
             "top_p": 0.95,
         },
     },
-    # https://static.stepfun.com/blog/step-3.7-flash/
-    # The eval LiteLLM proxy registers this model as `step-3.7-flash`
-    # (short alias) routing to `openai/step-3.7-flash` at
-    # api.stepfun.ai/v1, with `model_info.supports_vision=true`. We must
-    # use the proxy's exact `model_name` here so that
-    # `_get_model_info_from_litellm_proxy` matches the registry entry and
-    # picks up `supports_vision=true`. Using the longer
-    # `litellm_proxy/openrouter/stepfun/step-3.7-flash` form works at
-    # request time (proxy pass-through to OpenRouter) but misses the
-    # model_info lookup, so vision is never activated by the SDK.
+
     "step-3.7-flash": {
         "id": "step-3.7-flash",
         "display_name": "Step 3.7 Flash",
         "llm_config": {
             "model": "litellm_proxy/step-3.7-flash",
             "temperature": 0.0,
-            # StepFun's current API tier caps step-3.7-flash at 10 RPM
-            # (see https://platform.stepfun.ai/docs/en/pricing/details
-            # #tiered-rate-limits). The eval runs many instances in
-            # parallel and each step hammers the same RPM bucket, so the
-            # SDK's default retry envelope (5 attempts, ~3 min total)
-            # exhausts long before the bucket resets and every instance
-            # ends up in `output_errors.jsonl` instead of `output.jsonl`
-            # (see OpenHands/software-agent-sdk#3496). Stretch the retry
-            # window enough to outlast a fully-saturated 60s bucket.
             "num_retries": 12,
             "retry_min_wait": 30,
             "retry_max_wait": 120,
