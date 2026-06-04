@@ -166,7 +166,8 @@ class TestEventsToMessages:
                     MessageToolCall(
                         id="call_1",
                         name="search",
-                        arguments={},
+                        arguments="{}",
+                        origin="completion",
                     )
                 ],
             ),
