@@ -83,14 +83,39 @@ def test_update_fetches_and_resets(tmp_path: Path):
     mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
 
 
-def test_update_with_ref_checks_out(tmp_path: Path):
+def test_update_with_pinned_ref_skips_fetch(tmp_path: Path):
+    """Tag/commit locally present: optimistic checkout succeeds → no fetch."""
     mock_git = create_autospec(GitHelper)
-    mock_git.get_current_branch.return_value = None
+    mock_git.get_current_branch.return_value = None  # detached HEAD
 
     _update_repository(tmp_path, "v1.0.0", mock_git)
 
-    mock_git.fetch.assert_called_once_with(tmp_path)
     mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
+    mock_git.fetch.assert_not_called()
+
+
+def test_update_fetches_for_branch_ref(tmp_path: Path):
+    """Branch refs always fetch even when the local checkout succeeds."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.get_current_branch.return_value = "main"  # on a branch, not detached
+
+    _update_repository(tmp_path, "main", mock_git)
+
+    mock_git.fetch.assert_called_once_with(tmp_path)
+
+
+def test_update_fetches_when_ref_not_present_locally(tmp_path: Path):
+    """If the optimistic checkout fails, fall through to a full fetch."""
+    mock_git = create_autospec(GitHelper)
+    mock_git.checkout.side_effect = [
+        GitCommandError("ref not found", command=["git", "checkout"], exit_code=1),
+        None,  # second checkout (inside _try_checkout_and_reset) succeeds
+    ]
+    mock_git.get_current_branch.return_value = None  # detached HEAD after fetch
+
+    _update_repository(tmp_path, "v2.0.0", mock_git)
+
+    mock_git.fetch.assert_called_once_with(tmp_path)
 
 
 def test_update_detached_head_recovers_to_default_branch(tmp_path: Path):

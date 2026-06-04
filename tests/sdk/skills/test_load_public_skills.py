@@ -318,14 +318,21 @@ def test_update_skills_repository_update_existing(tmp_path):
         )
 
         assert result_path == repo_path
-        # The git operations are: fetch, checkout, get_current_branch, reset
-        # (get_current_branch returns branch name so reset is called)
-        assert mock_run.call_count == 4
+        # For a branch ref, the sequence is:
+        #   1. checkout (optimistic local attempt)
+        #   2. rev-parse (detects we're on a branch → fall through to fetch)
+        #   3. fetch
+        #   4. checkout (proper update inside _try_checkout_and_reset)
+        #   5. rev-parse (detects branch again inside _checkout_ref)
+        #   6. reset --hard origin/main
+        assert mock_run.call_count == 6
         all_commands = [call[0][0] for call in mock_run.call_args_list]
-        assert all_commands[0][:3] == ["git", "fetch", "origin"]
-        assert all_commands[1][:2] == ["git", "checkout"]
-        assert all_commands[2] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-        assert all_commands[3][:3] == ["git", "reset", "--hard"]
+        assert all_commands[0][:2] == ["git", "checkout"]
+        assert all_commands[1] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+        assert all_commands[2][:3] == ["git", "fetch", "origin"]
+        assert all_commands[3][:2] == ["git", "checkout"]
+        assert all_commands[4] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+        assert all_commands[5][:3] == ["git", "reset", "--hard"]
 
 
 def test_update_skills_repository_clone_timeout(tmp_path):
