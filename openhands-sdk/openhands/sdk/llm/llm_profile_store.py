@@ -18,7 +18,28 @@ from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
+    from openhands.sdk.settings.model import ACPAgentSettings
     from openhands.sdk.utils.cipher import Cipher
+
+
+def _build_save_context(include_secrets: bool, cipher: Cipher | None) -> dict[str, Any]:
+    """Pydantic serialization context for persisting a profile.
+
+    When ``include_secrets`` is set, secrets are encrypted at rest if a
+    ``cipher`` is available, else written in plaintext. When it is unset, an
+    empty context masks secrets via the model serializers. Shared by
+    :meth:`LLMProfileStore.save` and :meth:`LLMProfileStore.save_acp` so both
+    paths handle secrets identically.
+    """
+    context: dict[str, Any] = {}
+    if include_secrets:
+        if cipher:
+            context["cipher"] = cipher
+            context["expose_secrets"] = "encrypted"
+        else:
+            context["expose_secrets"] = True
+    return context
+
 
 _DEFAULT_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "profiles"
 _LOCK_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -126,6 +147,56 @@ class LLMProfileStore:
             ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
             TimeoutError: If the lock cannot be acquired.
         """
+        context = _build_save_context(include_secrets, cipher)
+        profile_json = json.dumps(llm.to_persisted(context=context), indent=2)
+        self._persist_profile_json(name, profile_json, max_profiles=max_profiles)
+
+    def save_acp(
+        self,
+        name: str,
+        acp_settings: ACPAgentSettings,
+        include_secrets: bool = False,
+        *,
+        cipher: Cipher | None = None,
+        max_profiles: int | None = None,
+    ) -> None:
+        """Save an ACP AgentProfile to the profile directory.
+
+        ACP counterpart to :meth:`save`. The on-disk JSON carries
+        ``agent_kind: "acp"`` so :meth:`profile_kind` and :meth:`list_summaries`
+        can tell it apart from a legacy bare-LLM (OpenHands) profile, and
+        :meth:`load` rejects it (an ACP profile is not an :class:`LLM`).
+
+        ``acp_env`` values and the bookkeeping ``llm`` secrets are encrypted at
+        rest when ``cipher`` is provided, mirroring :meth:`save`.
+
+        Args:
+            name: Name of the profile to save.
+            acp_settings: The ACP agent settings to persist.
+            include_secrets: Whether to persist ``acp_env`` / ``llm`` secrets.
+            cipher: Optional cipher for at-rest encryption of secrets.
+            max_profiles: Optional cap on the number of profiles.
+
+        Raises:
+            ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
+            TimeoutError: If the lock cannot be acquired.
+        """
+        context = _build_save_context(include_secrets, cipher)
+        profile_json = json.dumps(
+            acp_settings.model_dump(mode="json", exclude_none=True, context=context),
+            indent=2,
+        )
+        self._persist_profile_json(name, profile_json, max_profiles=max_profiles)
+
+    def _persist_profile_json(
+        self, name: str, profile_json: str, *, max_profiles: int | None
+    ) -> None:
+        """Atomically write ``profile_json`` to ``<name>.json`` under the lock.
+
+        Shared by :meth:`save` (LLM profiles) and :meth:`save_acp` (ACP
+        profiles) so the profile-limit check and atomic temp-file replace live
+        in exactly one place.
+        """
         profile_path = self._get_profile_path(name)
 
         with self._acquire_lock():
@@ -147,15 +218,6 @@ class LLMProfileStore:
                     f"[Profile Store] Profile `{name}` already exists. Overwriting."
                 )
 
-            context: dict[str, Any] = {}
-            if include_secrets:
-                if cipher:
-                    context["cipher"] = cipher
-                    context["expose_secrets"] = "encrypted"
-                else:
-                    context["expose_secrets"] = True
-
-            profile_json = json.dumps(llm.to_persisted(context=context), indent=2)
             with tempfile.NamedTemporaryFile(
                 mode="w", dir=self.base_dir, suffix=".tmp", delete=False
             ) as tmp:
@@ -207,6 +269,70 @@ class LLMProfileStore:
 
             logger.info(f"[Profile Store] Loaded profile `{name}` from {profile_path}")
             return llm_instance
+
+    def profile_kind(self, name: str) -> str:
+        """Return the AgentProfile kind for a saved profile.
+
+        Reads the JSON directly (no model instantiation). A file without an
+        ``agent_kind`` (legacy bare-LLM profile) or with ``"openhands"`` /
+        ``"llm"`` reports ``"openhands"``; ``"acp"`` reports ``"acp"``. Callers
+        use this to pick :meth:`load` vs :meth:`load_acp`.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the profile file cannot be read/parsed.
+        """
+        profile_path = self._get_profile_path(name)
+        with self._acquire_lock():
+            if not profile_path.exists():
+                raise FileNotFoundError(f"Profile `{name}` not found")
+            try:
+                data = json.loads(profile_path.read_text())
+            except (OSError, json.JSONDecodeError) as e:
+                raise ValueError(f"Failed to read profile `{name}`: {e}") from e
+        kind = data.get("agent_kind") if isinstance(data, dict) else None
+        return "acp" if kind == "acp" else "openhands"
+
+    def load_acp(self, name: str, *, cipher: Cipher | None = None) -> ACPAgentSettings:
+        """Load an ACP AgentProfile (:class:`ACPAgentSettings`) by name.
+
+        ACP counterpart to :meth:`load`. Validates through
+        :func:`validate_agent_settings` so ``acp_env`` / ``llm`` secrets are
+        decrypted when ``cipher`` is provided.
+
+        Raises:
+            FileNotFoundError: If the profile does not exist.
+            ValueError: If the file is corrupted or is not an ACP profile.
+            TimeoutError: If the lock cannot be acquired.
+        """
+        from openhands.sdk.settings.model import (
+            ACPAgentSettings,
+            validate_agent_settings,
+        )
+
+        profile_path = self._get_profile_path(name)
+
+        with self._acquire_lock():
+            if not profile_path.exists():
+                existing = [p.name for p in self.base_dir.glob("*.json")]
+                raise FileNotFoundError(
+                    f"Profile `{name}` not found. "
+                    f"Available profiles: {', '.join(existing) or 'none'}"
+                )
+            try:
+                data = json.loads(profile_path.read_text())
+                context: dict[str, Any] | None = {"cipher": cipher} if cipher else None
+                settings = validate_agent_settings(data, context=context)
+            except Exception as e:
+                raise ValueError(f"Failed to load profile `{name}`: {e}") from e
+
+        if not isinstance(settings, ACPAgentSettings):
+            raise ValueError(
+                f"Profile `{name}` is not an ACP profile "
+                f"(agent_kind={getattr(settings, 'agent_kind', 'openhands')!r})"
+            )
+        logger.info(f"[Profile Store] Loaded ACP profile `{name}` from {profile_path}")
+        return settings
 
     def delete(self, name: str) -> None:
         """Delete an existing profile.
@@ -277,18 +403,53 @@ class LLMProfileStore:
                         f"[Profile Store] Skipping non-dict profile {name!r}"
                     )
                     continue
-                api_key = data.get("api_key")
-                api_key_set = (
-                    isinstance(api_key, str)
-                    and bool(api_key.strip())
-                    and api_key != REDACTED_SECRET_VALUE
-                )
-                summaries.append(
-                    {
-                        "name": name,
-                        "model": data.get("model"),
-                        "base_url": data.get("base_url"),
-                        "api_key_set": api_key_set,
-                    }
-                )
+                if data.get("agent_kind") == "acp":
+                    summaries.append(_acp_summary(name, data))
+                else:
+                    summaries.append(_llm_summary(name, data))
         return summaries
+
+
+def _is_set_secret(value: Any) -> bool:
+    """True when a serialized secret carries a real (non-redacted) value."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value != REDACTED_SECRET_VALUE
+    )
+
+
+def _llm_summary(name: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Summary for a legacy bare-LLM (OpenHands) profile file."""
+    return {
+        "name": name,
+        "kind": "openhands",
+        "model": data.get("model"),
+        "base_url": data.get("base_url"),
+        "acp_server": None,
+        "acp_model": None,
+        "api_key_set": _is_set_secret(data.get("api_key")),
+    }
+
+
+def _acp_summary(name: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Summary for an ACP profile file.
+
+    ``model`` mirrors ``acp_model`` so chip/label consumers that read ``model``
+    still show something. ``api_key_set`` reflects whether the profile carries
+    credentials in ``acp_env`` (the ACP subprocess's real auth surface).
+    """
+    acp_env = data.get("acp_env")
+    api_key_set = isinstance(acp_env, dict) and any(
+        _is_set_secret(v) for v in acp_env.values()
+    )
+    acp_model = data.get("acp_model")
+    return {
+        "name": name,
+        "kind": "acp",
+        "model": acp_model,
+        "base_url": None,
+        "acp_server": data.get("acp_server"),
+        "acp_model": acp_model,
+        "api_key_set": api_key_set,
+    }

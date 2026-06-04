@@ -1197,3 +1197,147 @@ def test_auto_created_profile_persists(client, store):
     assert loaded.temperature == 0.7
     assert loaded.api_key is not None
     assert loaded.api_key.get_secret_value() == "sk-persist-test"
+
+
+# ── ACP AgentProfiles ────────────────────────────────────────────────────────
+
+
+def _acp_agent_settings_payload() -> dict:
+    return {
+        "agent_kind": "acp",
+        "acp_server": "claude-code",
+        "acp_model": "claude-opus-4-7",
+        "acp_command": ["npx", "-y", "@anthropic-ai/claude-code-acp"],
+        "acp_args": [],
+        "acp_env": {"ANTHROPIC_API_KEY": "sk-secret-value"},
+    }
+
+
+def test_save_acp_profile_and_list(client):
+    """POST agent_settings (acp) saves an ACP profile surfaced with kind=acp."""
+    resp = client.post(
+        "/api/profiles/local-claude",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    assert resp.status_code == 201
+
+    listing = client.get("/api/profiles").json()
+    by_name = {p["name"]: p for p in listing["profiles"]}
+    acp = by_name["local-claude"]
+    assert acp["kind"] == "acp"
+    assert acp["acp_server"] == "claude-code"
+    assert acp["acp_model"] == "claude-opus-4-7"
+    assert acp["model"] == "claude-opus-4-7"
+
+
+def test_get_acp_profile_masks_secret(client):
+    """GET (no expose header) returns the ACP config with acp_env masked."""
+    client.post(
+        "/api/profiles/local-claude",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    resp = client.get("/api/profiles/local-claude")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["config"]["agent_kind"] == "acp"
+    assert "sk-secret-value" not in str(body["config"])
+    assert body["api_key_set"] is True
+
+
+def test_activate_acp_profile_flips_agent_kind(client):
+    """Activating an ACP profile flips agent_kind and applies ACP fields."""
+    client.post(
+        "/api/profiles/local-claude",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    activate = client.post("/api/profiles/local-claude/activate")
+    assert activate.status_code == 200
+
+    listing = client.get("/api/profiles").json()
+    assert listing["active_profile"] == "local-claude"
+
+    settings = client.get("/api/settings").json()
+    agent_settings = settings["agent_settings"]
+    assert agent_settings["agent_kind"] == "acp"
+    assert agent_settings["acp_server"] == "claude-code"
+    assert agent_settings["acp_model"] == "claude-opus-4-7"
+
+
+def test_save_profile_rejects_both_payloads(client):
+    """Providing both `llm` and `agent_settings` is a 422."""
+    resp = client.post(
+        "/api/profiles/both",
+        json={
+            "llm": {"model": "gpt-4o"},
+            "agent_settings": _acp_agent_settings_payload(),
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_save_openhands_via_agent_settings(client):
+    """An openhands agent_settings payload persists as an LLM (openhands) profile."""
+    resp = client.post(
+        "/api/profiles/oh",
+        json={
+            "agent_settings": {
+                "agent_kind": "openhands",
+                "llm": {"model": "openai/gpt-4o"},
+            }
+        },
+    )
+    assert resp.status_code == 201
+
+    listing = client.get("/api/profiles").json()
+    by_name = {p["name"]: p for p in listing["profiles"]}
+    assert by_name["oh"]["kind"] == "openhands"
+    assert by_name["oh"]["model"] == "openai/gpt-4o"
+
+
+def test_acp_profile_cipher_roundtrip(client_with_cipher):
+    """With a cipher configured, an ACP profile's acp_env secret is encrypted at
+    rest and recoverable plaintext for activation, never leaked in masked GETs."""
+    save = client_with_cipher.post(
+        "/api/profiles/sealed",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    assert save.status_code == 201
+
+    # Masked GET (no expose header) must not leak the plaintext secret.
+    masked = client_with_cipher.get("/api/profiles/sealed").json()
+    assert "sk-secret-value" not in str(masked["config"])
+    assert masked["api_key_set"] is True
+
+    # Activation applies the decrypted acp_env to settings.
+    activate = client_with_cipher.post("/api/profiles/sealed/activate")
+    assert activate.status_code == 200
+    settings = client_with_cipher.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert settings["agent_settings"]["agent_kind"] == "acp"
+    assert (
+        settings["agent_settings"]["acp_env"]["ANTHROPIC_API_KEY"] == "sk-secret-value"
+    )
+
+
+def test_activate_openhands_profile_flips_kind_back_from_acp(client):
+    """Activating an OpenHands profile must reset agent_kind from acp."""
+    # Start with an ACP default.
+    client.post(
+        "/api/profiles/acp-default",
+        json={"agent_settings": _acp_agent_settings_payload()},
+    )
+    client.post("/api/profiles/acp-default/activate")
+    assert client.get("/api/settings").json()["agent_settings"]["agent_kind"] == "acp"
+
+    # Now activate an OpenHands (LLM) profile — kind must flip back.
+    client.post(
+        "/api/profiles/oh-llm",
+        json={"llm": {"model": "openai/gpt-4o"}},
+    )
+    resp = client.post("/api/profiles/oh-llm/activate")
+    assert resp.status_code == 200
+
+    agent_settings = client.get("/api/settings").json()["agent_settings"]
+    assert agent_settings["agent_kind"] == "openhands"
+    assert agent_settings["llm"]["model"] == "openai/gpt-4o"

@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, SecretStr
@@ -26,6 +26,7 @@ from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.settings import ACPAgentSettings, validate_agent_settings
 
 
 logger = get_logger(__name__)
@@ -42,8 +43,24 @@ ProfileName = Annotated[
 
 class ProfileInfo(BaseModel):
     name: str
+    kind: Literal["openhands", "acp"] = Field(
+        default="openhands",
+        description=(
+            "AgentProfile kind. ``openhands`` profiles carry an LLM config; "
+            "``acp`` profiles launch an ACP subprocess (see ``acp_server`` / "
+            "``acp_model``). Legacy LLM profiles default to ``openhands``."
+        ),
+    )
     model: str | None = None
     base_url: str | None = None
+    acp_server: str | None = Field(
+        default=None,
+        description="ACP backend key for ``acp`` profiles (else null).",
+    )
+    acp_model: str | None = Field(
+        default=None,
+        description="Configured ACP model for ``acp`` profiles (else null).",
+    )
     api_key_set: bool = False
 
 
@@ -66,10 +83,29 @@ class ProfileMutationResponse(BaseModel):
 
 
 class SaveProfileRequest(BaseModel):
-    llm: LLM
+    """Save an AgentProfile.
+
+    Provide exactly one of:
+
+    - ``llm`` — the legacy LLM-only payload, saved as an ``openhands`` profile.
+      Kept for backward compatibility with existing clients.
+    - ``agent_settings`` — a full AgentSettings payload (``agent_kind`` +
+      fields). ``acp`` settings are saved as an ACP profile; ``openhands`` /
+      ``llm`` settings persist their ``llm`` (profiles remain LLM-only for the
+      OpenHands kind for now).
+    """
+
+    llm: LLM | None = None
+    agent_settings: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Full AgentSettings payload (discriminated by ``agent_kind``). "
+            "Use this to save ACP profiles. Mutually exclusive with ``llm``."
+        ),
+    )
     include_secrets: bool = Field(
         default=True,
-        description="Whether to persist the API key with the profile.",
+        description="Whether to persist secrets (API key / acp_env) with the profile.",
     )
 
 
@@ -103,6 +139,17 @@ def _has_api_key(llm: LLM) -> bool:
     if not isinstance(llm.api_key, SecretStr):
         return False
     return bool(llm.api_key.get_secret_value().strip())
+
+
+def _acp_has_secret(acp: ACPAgentSettings) -> bool:
+    """Whether an ACP profile carries credentials (acp_env or bookkeeping llm).
+
+    ``acp_env`` is the ACP subprocess's real auth surface (e.g.
+    ``ANTHROPIC_API_KEY``); a non-empty value there counts as "secret set".
+    """
+    if any(isinstance(v, str) and v.strip() for v in acp.acp_env.values()):
+        return True
+    return _has_api_key(acp.llm)
 
 
 def _model_to_profile_name(model: str) -> str:
@@ -217,17 +264,34 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     store = LLMProfileStore()
     try:
         with _store_errors():
-            llm = store.load(name, cipher=cipher)
+            kind = store.profile_kind(name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile '{name}' not found",
         )
 
+    if kind == "acp":
+        with _store_errors():
+            acp = store.load_acp(name, cipher=cipher)
+        if expose_mode:
+            context = build_expose_context(expose_mode, cipher)
+            with translate_missing_cipher():
+                config: dict[str, Any] = acp.model_dump(mode="json", context=context)
+        else:
+            # No context → the model's secret serializers mask llm secrets and
+            # acp_env values, so nothing sensitive leaks.
+            config = acp.model_dump(mode="json")
+        return ProfileDetailResponse(
+            name=name, config=config, api_key_set=_acp_has_secret(acp)
+        )
+
+    with _store_errors():
+        llm = store.load(name, cipher=cipher)
     if expose_mode:
         context = build_expose_context(expose_mode, cipher)
         with translate_missing_cipher():
-            config: dict[str, Any] = llm.model_dump(mode="json", context=context)
+            config = llm.model_dump(mode="json", context=context)
     else:
         config = llm.model_dump(mode="json")
         config["api_key"] = None
@@ -247,27 +311,75 @@ async def save_profile(
     name: ProfileName,
     body: SaveProfileRequest,
 ) -> ProfileMutationResponse:
-    """Save an LLM configuration as a named profile.
+    """Save an AgentProfile (LLM or ACP) as a named profile.
 
-    Overwrites an existing profile of the same name. Returns 409 if creating
-    a new profile would exceed ``MAX_PROFILES``.
+    Accepts either the legacy ``llm`` payload (saved as an ``openhands``
+    profile) or a full ``agent_settings`` payload (``acp`` settings are saved
+    as an ACP profile). Overwrites an existing profile of the same name.
+    Returns 409 if creating a new profile would exceed ``MAX_PROFILES``.
 
     When ``OH_SECRET_KEY`` is configured, secrets are encrypted at rest.
     Clients can submit cipher-encrypted secrets which will be decrypted
     server-side before re-encrypting with the storage cipher.
     """
+    if (body.llm is None) == (body.agent_settings is None):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide exactly one of `llm` or `agent_settings`.",
+        )
+
     cipher = get_cipher(request)
-    llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
     store = LLMProfileStore()
     try:
         with _store_errors():
-            store.save(
-                name,
-                llm,
-                include_secrets=body.include_secrets,
-                cipher=cipher,
-                max_profiles=MAX_PROFILES,
-            )
+            if body.agent_settings is not None:
+                # New AgentProfile path. Validate with the cipher in context so
+                # client-encrypted secrets (llm.api_key, acp_env values) are
+                # decrypted before re-encryption at rest.
+                try:
+                    settings = validate_agent_settings(
+                        body.agent_settings,
+                        context={"cipher": cipher} if cipher else None,
+                    )
+                except Exception as e:
+                    # type(e).__name__ only — Pydantic errors may echo secrets.
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid agent_settings payload: {type(e).__name__}",
+                    )
+                if isinstance(settings, ACPAgentSettings):
+                    store.save_acp(
+                        name,
+                        settings,
+                        include_secrets=body.include_secrets,
+                        cipher=cipher,
+                        max_profiles=MAX_PROFILES,
+                    )
+                else:
+                    # OpenHands AgentProfile: persist its LLM (profiles remain
+                    # LLM-only for the OpenHands kind for now).
+                    store.save(
+                        name,
+                        settings.llm,
+                        include_secrets=body.include_secrets,
+                        cipher=cipher,
+                        max_profiles=MAX_PROFILES,
+                    )
+            else:
+                # Legacy LLM-only payload.
+                assert body.llm is not None  # guaranteed by SaveProfileRequest
+                llm = (
+                    decrypt_incoming_llm_secrets(body.llm, cipher)
+                    if cipher
+                    else body.llm
+                )
+                store.save(
+                    name,
+                    llm,
+                    include_secrets=body.include_secrets,
+                    cipher=cipher,
+                    max_profiles=MAX_PROFILES,
+                )
     except ProfileLimitExceeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -356,11 +468,14 @@ class ActivateProfileResponse(BaseModel):
 async def activate_profile(
     request: Request, name: ProfileName
 ) -> ActivateProfileResponse:
-    """Activate a saved LLM profile.
+    """Activate a saved AgentProfile.
 
     This endpoint:
-    1. Loads the named profile's LLM configuration
-    2. Applies it to the current agent settings (updates ``agent_settings.llm``)
+    1. Loads the named profile (LLM or ACP)
+    2. Applies it to the current agent settings — for an ``openhands`` profile
+       this updates ``agent_settings.llm``; for an ``acp`` profile it flips
+       ``agent_kind`` to ``acp`` and applies the ACP launch fields
+       (server/model/command/args/env)
     3. Records the profile name as the active profile for frontend tracking
 
     Returns 404 if the profile does not exist.
@@ -371,26 +486,54 @@ async def activate_profile(
     cipher = get_cipher(request)
     config = get_config(request)
 
-    # Load the profile
+    # Load the profile (kind-aware)
     profile_store = LLMProfileStore()
     try:
         with _store_errors():
-            llm = profile_store.load(name, cipher=cipher)
+            kind = profile_store.profile_kind(name)
+            if kind == "acp":
+                acp = profile_store.load_acp(name, cipher=cipher)
+                # Build the agent_settings diff from the saved ACP fields. Drop
+                # ``llm`` so it doesn't deep-merge into the current bookkeeping
+                # LLM, and drop ``schema_version`` / ``agent_context`` which the
+                # union validator fills in. The remaining ``agent_kind: "acp"``
+                # + acp_* fields flip the kind and apply the full launch config
+                # (including acp_env credentials). Leftover OpenHands-only keys
+                # from the current settings are ignored by ACPAgentSettings.
+                acp_dump = acp.model_dump(
+                    mode="json", context={"expose_secrets": "plaintext"}
+                )
+                agent_diff = {
+                    k: v
+                    for k, v in acp_dump.items()
+                    if k not in ("llm", "schema_version", "agent_context")
+                }
+            else:
+                llm = profile_store.load(name, cipher=cipher)
+                # ``agent_kind: "openhands"`` flips the kind back when the
+                # current settings are ACP — without it the ``{"llm": ...}``
+                # diff would deep-merge into the ACP settings and stay ``acp``,
+                # leaving an OpenHands profile unable to take effect. Validated
+                # as OpenHandsAgentSettings, the leftover acp_* keys are ignored.
+                agent_diff = {
+                    "agent_kind": "openhands",
+                    "llm": llm.model_dump(
+                        mode="json", context={"expose_secrets": "plaintext"}
+                    ),
+                }
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Profile '{name}' not found",
         )
 
-    # Apply the LLM config to settings and record active profile
+    # Apply the config to settings and record active profile
     settings_store = get_settings_store(config)
 
     def apply_profile(settings: PersistedSettings) -> PersistedSettings:
-        # Update the LLM configuration
-        llm_dict = llm.model_dump(mode="json", context={"expose_secrets": "plaintext"})
         settings.update(
             {
-                "agent_settings_diff": {"llm": llm_dict},
+                "agent_settings_diff": agent_diff,
                 "active_profile": name,
             }
         )

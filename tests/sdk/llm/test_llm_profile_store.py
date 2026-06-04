@@ -669,3 +669,85 @@ def test_multiple_profiles(profile_store: LLMProfileStore) -> None:
     profile_store.delete("gpt4")
     assert len(profile_store.list()) == 2
     assert "gpt4.json" not in profile_store.list()
+
+
+# ── ACP AgentProfiles ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_acp_settings():
+    """A sample ACPAgentSettings for testing ACP profile persistence."""
+    from openhands.sdk.settings import ACPAgentSettings
+
+    return ACPAgentSettings(
+        acp_server="claude-code",
+        acp_model="claude-opus-4-7",
+        acp_command=["npx", "-y", "@anthropic-ai/claude-code-acp"],
+        acp_args=[],
+        acp_env={"ANTHROPIC_API_KEY": "sk-secret-value"},
+    )
+
+
+def test_save_and_load_acp_profile(profile_store, sample_acp_settings):
+    """save_acp persists an ACP profile that load_acp round-trips."""
+    profile_store.save_acp("local-codex", sample_acp_settings, include_secrets=True)
+
+    assert profile_store.profile_kind("local-codex") == "acp"
+
+    loaded = profile_store.load_acp("local-codex")
+    assert loaded.agent_kind == "acp"
+    assert loaded.acp_server == "claude-code"
+    assert loaded.acp_model == "claude-opus-4-7"
+    assert loaded.acp_command == ["npx", "-y", "@anthropic-ai/claude-code-acp"]
+    assert loaded.acp_env["ANTHROPIC_API_KEY"] == "sk-secret-value"
+
+
+def test_acp_profile_kind_for_legacy_llm(profile_store, sample_llm):
+    """A legacy bare-LLM profile reports kind 'openhands'."""
+    profile_store.save("legacy", sample_llm)
+    assert profile_store.profile_kind("legacy") == "openhands"
+
+
+def test_load_rejects_acp_profile(profile_store, sample_acp_settings):
+    """The LLM load() path raises on an ACP profile rather than mis-parsing it."""
+    profile_store.save_acp("acp-only", sample_acp_settings)
+    with pytest.raises(ValueError):
+        profile_store.load("acp-only")
+
+
+def test_load_acp_rejects_llm_profile(profile_store, sample_llm):
+    """load_acp raises on an OpenHands (bare-LLM) profile."""
+    profile_store.save("oh", sample_llm)
+    with pytest.raises(ValueError):
+        profile_store.load_acp("oh")
+
+
+def test_list_summaries_includes_kind_and_acp_fields(
+    profile_store, sample_llm, sample_acp_settings
+):
+    """list_summaries tags each profile with kind + ACP summary fields."""
+    profile_store.save("oh", sample_llm)
+    profile_store.save_acp("acp", sample_acp_settings, include_secrets=True)
+
+    by_name = {s["name"]: s for s in profile_store.list_summaries()}
+
+    assert by_name["oh"]["kind"] == "openhands"
+    assert by_name["oh"]["model"] == sample_llm.model
+    assert by_name["oh"]["acp_server"] is None
+
+    acp = by_name["acp"]
+    assert acp["kind"] == "acp"
+    assert acp["acp_server"] == "claude-code"
+    assert acp["acp_model"] == "claude-opus-4-7"
+    # model mirrors acp_model so chip consumers reading `model` still render.
+    assert acp["model"] == "claude-opus-4-7"
+    # acp_env carries a credential, so api_key_set is reported.
+    assert acp["api_key_set"] is True
+
+
+def test_acp_profile_without_secrets_masks_env(profile_store, sample_acp_settings):
+    """include_secrets=False must not write the acp_env secret to disk."""
+    profile_store.save_acp("masked", sample_acp_settings, include_secrets=False)
+
+    raw = json.loads((profile_store.base_dir / "masked.json").read_text())
+    assert "sk-secret-value" not in json.dumps(raw)
