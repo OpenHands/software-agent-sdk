@@ -252,6 +252,18 @@ class ACPProviderInfo:
     callers constructing this dataclass positionally keep working.
     """
 
+    binary_name: str | None = field(default=None, compare=False)
+    """Pinned, pre-installed CLI binary for this provider (e.g. ``codex-acp``).
+
+    The agent-server image installs the ACP CLIs at a fixed version as ``PATH``
+    wrappers. When this binary resolves via :func:`shutil.which`,
+    :meth:`~openhands.sdk.settings.model.ACPAgentSettings.resolve_acp_command`
+    rewrites the ``npx -y <pkg>`` launch command to run it directly (preserving
+    trailing args like gemini's ``--acp``); otherwise the ``npx`` command is
+    used unchanged. ``None`` for providers with no pinned binary (and ``custom``
+    servers); defaulted so positional construction keeps working.
+    """
+
     data_dir_env_var: str | None = None
     """Env var that relocates this CLI's per-user data/config root.
 
@@ -390,6 +402,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            binary_name="claude-agent-acp",
             data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
         "codex": ACPProviderInfo(
@@ -406,6 +419,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
             file_secrets=_CODEX_FILE_SECRETS,
+            binary_name="codex-acp",
             data_dir_env_var="CODEX_HOME",
         ),
         "gemini-cli": ACPProviderInfo(
@@ -427,6 +441,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # auto-routing.
             default_model="auto-gemini-2.5",
             file_secrets=_GEMINI_FILE_SECRETS,
+            binary_name="gemini",
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",

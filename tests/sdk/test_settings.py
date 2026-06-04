@@ -1,4 +1,5 @@
 import json
+import shutil
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
@@ -31,6 +32,7 @@ from openhands.sdk.settings import (
     CondenserSettings,
     VerificationSettings,
 )
+from openhands.sdk.settings.model import ACPServerKind
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -120,6 +122,15 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         is SettingProminence.CRITICAL
     )
 
+    # The critic API key must surface in the schema as a CRITICAL, secret
+    # field that depends on critic_enabled — this is what the GUI uses to
+    # render a masked input gated on the toggle.
+    critic_api_key = v_fields["verification.critic_api_key"]
+    assert critic_api_key.secret is True
+    assert critic_api_key.value_type == "string"
+    assert critic_api_key.prominence is SettingProminence.CRITICAL
+    assert critic_api_key.depends_on == ["verification.critic_enabled"]
+
 
 def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     schema = ACPAgentSettings.export_schema()
@@ -145,6 +156,13 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     assert acp_fields["acp_server"].prominence is SettingProminence.CRITICAL
     assert acp_fields["acp_model"].prominence is SettingProminence.CRITICAL
     assert acp_fields["acp_command"].prominence is SettingProminence.MINOR
+
+    # mcp_config is exposed as a single object field (matching the OpenHands
+    # variant) rather than being expanded into nested per-server fields. The
+    # servers are forwarded to the ACP subprocess at session creation.
+    general_fields = {f.key: f for f in sections["general"].fields}
+    assert "mcp_config" in general_fields
+    assert general_fields["mcp_config"].prominence is SettingProminence.MINOR
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -545,6 +563,77 @@ def test_llm_create_agent_no_critic_without_api_key() -> None:
     assert agent.critic is None
 
 
+def test_llm_create_agent_critic_uses_explicit_api_key() -> None:
+    """When ``verification.critic_api_key`` is set, the critic authenticates
+    with it instead of the LLM key. The LLM's own key is preserved untouched
+    so the main agent loop still talks to its provider."""
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="m", api_key=SecretStr("llm-key")),
+        verification=VerificationSettings(
+            critic_enabled=True,
+            critic_api_key=SecretStr("critic-key"),
+        ),
+    )
+    agent = settings.create_agent()
+    assert isinstance(agent.critic, APIBasedCritic)
+    assert isinstance(agent.critic.api_key, SecretStr)
+    assert agent.critic.api_key.get_secret_value() == "critic-key"
+    # LLM key unaffected.
+    assert isinstance(agent.llm.api_key, SecretStr)
+    assert agent.llm.api_key.get_secret_value() == "llm-key"
+
+
+def test_llm_create_agent_critic_falls_back_to_llm_api_key() -> None:
+    """Without ``verification.critic_api_key``, the legacy behavior holds:
+    the critic reuses the LLM key (auto-config path for the All-Hands proxy)."""
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="m", api_key=SecretStr("llm-key")),
+        verification=VerificationSettings(critic_enabled=True),
+    )
+    agent = settings.create_agent()
+    assert isinstance(agent.critic, APIBasedCritic)
+    assert isinstance(agent.critic.api_key, SecretStr)
+    assert agent.critic.api_key.get_secret_value() == "llm-key"
+
+
+def test_llm_create_agent_critic_with_only_critic_api_key() -> None:
+    """If the LLM has no key but ``critic_api_key`` is supplied, the critic
+    is still built — its credential is independent of the LLM's."""
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="m", api_key=None),
+        verification=VerificationSettings(
+            critic_enabled=True,
+            critic_api_key=SecretStr("critic-only-key"),
+        ),
+    )
+    agent = settings.create_agent()
+    assert isinstance(agent.critic, APIBasedCritic)
+    assert isinstance(agent.critic.api_key, SecretStr)
+    assert agent.critic.api_key.get_secret_value() == "critic-only-key"
+
+
+def test_verification_settings_critic_api_key_roundtrip() -> None:
+    """``critic_api_key`` survives dump → validate when secrets are exposed,
+    and validates from both plain strings and SecretStr inputs."""
+    settings = VerificationSettings(
+        critic_enabled=True,
+        critic_api_key="plain-string-key",
+    )
+    assert isinstance(settings.critic_api_key, SecretStr)
+    assert settings.critic_api_key.get_secret_value() == "plain-string-key"
+
+    dumped = settings.model_dump(context={"expose_secrets": "plaintext"})
+    assert dumped["critic_api_key"] == "plain-string-key"
+
+    restored = VerificationSettings.model_validate(dumped)
+    assert isinstance(restored.critic_api_key, SecretStr)
+    assert restored.critic_api_key.get_secret_value() == "plain-string-key"
+
+    # Empty strings normalize to None (consistent with LLM.api_key handling).
+    empty = VerificationSettings(critic_enabled=True, critic_api_key="")
+    assert empty.critic_api_key is None
+
+
 def test_llm_create_agent_critic_with_iterative_refinement() -> None:
     settings = OpenHandsAgentSettings(
         llm=LLM(model="m", api_key=SecretStr("k")),
@@ -575,8 +664,16 @@ def test_llm_roundtrip_preserves_llm_model() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_acp_create_agent_uses_server_default_command() -> None:
-    """With ``acp_server`` set but no explicit command, use the built-in default."""
+def test_acp_create_agent_uses_server_default_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``acp_server`` set but no explicit command, use the built-in default.
+
+    Pin ``shutil.which`` to ``None`` so the ``npx`` default is asserted
+    deterministically — on a host where the pinned ``claude-agent-acp`` binary
+    is installed, :meth:`resolve_acp_command` would (correctly) rewrite to it.
+    """
+    monkeypatch.setattr(shutil, "which", lambda _: None)
     settings = ACPAgentSettings(acp_server="claude-code", acp_model="claude-opus-4-6")
     agent = settings.create_agent()
     assert isinstance(agent, ACPAgent)
@@ -588,8 +685,15 @@ def test_acp_create_agent_uses_server_default_command() -> None:
     assert agent.acp_model == "claude-opus-4-6"
 
 
-def test_acp_resolve_command_for_known_servers() -> None:
-    """Every non-custom choice must map to a runnable default."""
+def test_acp_resolve_command_for_known_servers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every non-custom choice must map to a runnable default.
+
+    With no pinned binary on ``PATH`` (``shutil.which`` → ``None``), the
+    default stays the ``npx`` invocation.
+    """
+    monkeypatch.setattr(shutil, "which", lambda _: None)
     for server in ("claude-code", "codex", "gemini-cli"):
         settings = ACPAgentSettings(acp_server=server)
         cmd = settings.resolve_acp_command()
@@ -616,12 +720,160 @@ def test_acp_custom_server_requires_explicit_command() -> None:
         raise AssertionError("expected ValueError")
 
 
+def test_acp_create_agent_forwards_isolate_data_dir() -> None:
+    """``acp_isolate_data_dir`` propagates from settings to the built agent.
+
+    Off by default, and an explicit True reaches ``ACPAgent`` so a deploying
+    application can opt conversations sharing one sandbox into a per-conversation
+    CLI data dir (#1019).
+    """
+    default_agent = ACPAgentSettings(acp_server="codex").create_agent()
+    assert default_agent.acp_isolate_data_dir is False
+
+    isolated = ACPAgentSettings(
+        acp_server="codex", acp_isolate_data_dir=True
+    ).create_agent()
+    assert isolated.acp_isolate_data_dir is True
+
+
 def test_acp_custom_server_with_command_resolves() -> None:
     settings = ACPAgentSettings(
         acp_server="custom",
         acp_command=["bin", "--flag"],
     )
     assert settings.resolve_acp_command() == ["bin", "--flag"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_acp_command() — prefer the pinned, pre-installed CLI binary
+#
+# The agent-server image pre-installs the ACP CLIs and exposes them as wrappers
+# on PATH (claude-agent-acp / codex-acp / gemini). resolve_acp_command rewrites
+# the ``npx -y <pkg>`` launch command — the registry default AND the explicit
+# acp_command canvas sends — to run the pinned binary directly when it is on
+# PATH (reproducible, no runtime npm download), preserving trailing args. When
+# the binary is absent (local dev), it falls back to the npx command unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _which_returning(*available: str):
+    """Build a ``shutil.which`` stub resolving only the named binaries."""
+    paths = {name: f"/usr/local/bin/{name}" for name in available}
+    return lambda name: paths.get(name)
+
+
+@pytest.mark.parametrize(
+    ("server", "binary", "expected"),
+    [
+        ("claude-code", "claude-agent-acp", ["claude-agent-acp"]),
+        ("codex", "codex-acp", ["codex-acp"]),
+        # gemini's default carries a trailing ``--acp`` that must be preserved.
+        ("gemini-cli", "gemini", ["gemini", "--acp"]),
+    ],
+)
+def test_acp_resolve_command_rewrites_default_to_pinned_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    server: ACPServerKind,
+    binary: str,
+    expected: list[str],
+) -> None:
+    """(a) Registry default + binary on PATH → run the pinned binary directly."""
+    monkeypatch.setattr(shutil, "which", _which_returning(binary))
+    settings = ACPAgentSettings(acp_server=server)
+    assert settings.resolve_acp_command() == expected
+
+
+def test_acp_resolve_command_rewrites_explicit_npx_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) Explicit ``npx -y <pkg>`` (what canvas sends) + binary on PATH →
+    rewritten to the pinned binary, with trailing args preserved."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        acp_command=["npx", "-y", "@zed-industries/codex-acp", "--verbose"],
+    )
+    assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
+
+
+def test_acp_resolve_command_keeps_npx_when_binary_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) Binary not on PATH (local dev) → the ``npx`` command is unchanged."""
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    settings = ACPAgentSettings(acp_server="codex")
+    assert settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "@zed-industries/codex-acp",
+    ]
+
+
+def test_acp_resolve_command_leaves_custom_binary_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(d) A non-npx / user-supplied command is never rewritten, even when the
+    provider's pinned binary is on PATH."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        acp_command=["/opt/my-codex", "--flag"],
+    )
+    assert settings.resolve_acp_command() == ["/opt/my-codex", "--flag"]
+
+
+def test_acp_resolve_command_leaves_unknown_package_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(d) An ``npx`` command for a *different* package is not rewritten — the
+    pinned binary only stands in for the provider's own package."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        acp_command=["npx", "-y", "@other/some-acp"],
+    )
+    assert settings.resolve_acp_command() == ["npx", "-y", "@other/some-acp"]
+
+
+def test_acp_resolve_command_custom_server_never_rewritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``custom`` has no registry entry (hence no pinned binary), so even a
+    command that looks exactly like codex's is returned verbatim."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp", "gemini"))
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["npx", "-y", "@zed-industries/codex-acp"],
+    )
+    assert settings.resolve_acp_command() == [
+        "npx",
+        "-y",
+        "@zed-industries/codex-acp",
+    ]
+
+
+def test_acp_resolve_command_queries_which_with_binary_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The PATH probe uses the provider's ``binary_name``, not the npm package."""
+    queried: list[str] = []
+
+    def fake_which(name: str) -> str | None:
+        queried.append(name)
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    ACPAgentSettings(acp_server="gemini-cli").resolve_acp_command()
+    assert queried == ["gemini"]
+
+
+def test_acp_create_agent_uses_pinned_binary_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: create_agent() bakes the rewritten command into the agent."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
+    agent = ACPAgentSettings(acp_server="codex").create_agent()
+    assert agent.acp_command == ["codex-acp"]
 
 
 def test_acp_api_key_env_var_maps_known_servers() -> None:
@@ -1192,9 +1444,13 @@ def test_acp_settings_base_url_env_var_from_registry() -> None:
     )
 
 
-def test_acp_resolve_command_uses_registry_defaults() -> None:
+def test_acp_resolve_command_uses_registry_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from openhands.sdk.settings.acp_providers import ACP_PROVIDERS
 
+    # No pinned binary on PATH → registry npx default is returned verbatim.
+    monkeypatch.setattr(shutil, "which", lambda _: None)
     for server_key in ("claude-code", "codex", "gemini-cli"):
         settings = ACPAgentSettings(acp_server=server_key)
         expected = list(ACP_PROVIDERS[server_key].default_command)

@@ -1119,7 +1119,14 @@ class LocalConversation(BaseConversation):
         """
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
-        self._ensure_agent_ready()
+        # Off-load lazy init to a worker thread: init_state may block the loop
+        # (an ACP agent resolves credentials via a synchronous LookupSecret
+        # httpx.get). When the agent-server runs arun() on its event loop and
+        # that lookup points back at the same single-process server, doing it
+        # inline freezes the loop so the lookup can never be served — a
+        # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
+        # _ensure_agent_ready is thread-safe and already runs off-loop in run().
+        await asyncio.to_thread(self._ensure_agent_ready)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
