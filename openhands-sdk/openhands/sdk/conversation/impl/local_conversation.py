@@ -9,6 +9,7 @@ from typing import TypeGuard
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -749,6 +750,17 @@ class LocalConversation(BaseConversation):
                 **existing,
             }
 
+    def _condenser_for_switched_llm(self, llm: LLM) -> CondenserBase | None:
+        condenser = self.agent.condenser
+        if not isinstance(condenser, LLMSummarizingCondenser):
+            return condenser
+
+        condenser_llm = llm.model_copy(
+            update={"usage_id": condenser.llm.usage_id},
+        )
+        condenser_llm.reset_metrics()
+        return condenser.model_copy(update={"llm": condenser_llm})
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -776,7 +788,11 @@ class LocalConversation(BaseConversation):
         skip_lock = self._step_holds_state_lock and not self._state.owned()
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            updates = {
+                "llm": new_llm,
+                "condenser": self._condenser_for_switched_llm(new_llm),
+            }
+            self.agent = self.agent.model_copy(update=updates)
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
             self._pin_session_affinity_header(new_llm)

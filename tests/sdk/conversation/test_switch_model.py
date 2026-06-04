@@ -286,6 +286,51 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     assert conv.agent.llm._prompt_cache_key == str(conv.id)
 
 
+def test_switch_llm_refreshes_llm_condenser_credentials(empty_profile_store, tmp_path):
+    """A mid-session LLM switch must also refresh the default condenser LLM.
+
+    The condenser owns a separate copy of the agent LLM. If the agent LLM is
+    switched but that copy is left behind, normal turns can keep working while
+    the next condensation request still calls the old no-credential model.
+    """
+    initial_llm = LLM(model="litellm_proxy/old-model", usage_id="default")
+    initial_condenser_llm = initial_llm.model_copy(update={"usage_id": "condenser"})
+    initial_condenser_llm.reset_metrics()
+    condenser = LLMSummarizingCondenser(
+        llm=initial_condenser_llm,
+        max_size=100,
+        keep_first=2,
+    )
+    conv = LocalConversation(
+        agent=Agent(llm=initial_llm, condenser=condenser, tools=[]),
+        workspace=tmp_path,
+    )
+    conv._ensure_agent_ready()
+
+    switched_llm = LLM(
+        model="litellm_proxy/new-model",
+        api_key=SecretStr("new-test-key"),
+        usage_id="profile:new",
+    )
+
+    conv.switch_llm(switched_llm)
+
+    assert conv.agent.llm.model == "litellm_proxy/new-model"
+    assert isinstance(conv.agent.condenser, LLMSummarizingCondenser)
+    assert isinstance(conv.state.agent.condenser, LLMSummarizingCondenser)
+
+    condenser_llm = conv.agent.condenser.llm
+    state_condenser_llm = conv.state.agent.condenser.llm
+    assert condenser_llm is not initial_condenser_llm
+    assert condenser_llm.model == "litellm_proxy/new-model"
+    assert condenser_llm.usage_id == "condenser"
+    assert isinstance(condenser_llm.api_key, SecretStr)
+    assert condenser_llm.api_key.get_secret_value() == "new-test-key"
+    assert state_condenser_llm.model == condenser_llm.model
+    assert state_condenser_llm.api_key == condenser_llm.api_key
+    assert condenser_llm.metrics is not conv.agent.llm.metrics
+
+
 def test_switch_llm_then_send_message(empty_profile_store):
     """send_message triggers _ensure_agent_ready, which re-registers agent
     LLMs in the registry. switch_llm adds an entry under the caller's
