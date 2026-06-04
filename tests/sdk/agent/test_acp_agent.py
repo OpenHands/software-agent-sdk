@@ -2837,7 +2837,10 @@ class TestACPAgentTelemetry:
         mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
-        agent._session_id = "test-session"
+        # A bearer-secret-looking id so the log-hygiene assertion below is
+        # meaningful: the timeout warning must fingerprint it to ``...<last-8>``,
+        # never emit the full id.
+        agent._session_id = "sk-resume-secret-DEADBEEF"
 
         mock_usage = MagicMock()
         mock_usage.input_tokens = 100
@@ -2875,6 +2878,9 @@ class TestACPAgentTelemetry:
             agent.step(conversation, on_event=lambda _: None)
 
         assert "UsageUpdate not received within 2.0s" in caplog.text
+        # Bearer session id is fingerprinted, not leaked, in the timeout warning.
+        assert "sk-resume-secret-DEADBEEF" not in caplog.text
+        assert "...DEADBEEF" in caplog.text
         assert len(agent.llm.metrics.token_usages) == 1
         assert len(agent.llm.metrics.costs) == 0
         assert agent.llm.metrics.accumulated_cost == 0.0

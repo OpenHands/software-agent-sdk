@@ -463,7 +463,7 @@ async def _reapply_session_model_on_resume(
             "Could not reapply model %r on resumed session %s (%s); the live "
             "session may run on the server default until the next switch",
             acp_model,
-            session_id,
+            _fingerprint_session_id(session_id),
             e,
         )
         return False
@@ -2562,7 +2562,7 @@ class ACPAgent(AgentBase):
                 logger.warning(
                     "UsageUpdate not received within %.1fs for session %s",
                     _USAGE_UPDATE_TIMEOUT,
-                    self._session_id,
+                    _fingerprint_session_id(self._session_id),
                 )
         return response
 
@@ -3141,7 +3141,7 @@ class ACPAgent(AgentBase):
                         logger.warning(
                             "UsageUpdate not received within %.1fs for fork session %s",
                             _USAGE_UPDATE_TIMEOUT,
-                            fork_session_id,
+                            _fingerprint_session_id(fork_session_id),
                         )
                 fork_elapsed = time.monotonic() - fork_t0
 
@@ -3267,7 +3267,7 @@ class ACPAgent(AgentBase):
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,
             provider.key if provider else "unknown",
-            self._session_id,
+            _fingerprint_session_id(self._session_id),
         )
 
     def close(self) -> None:
