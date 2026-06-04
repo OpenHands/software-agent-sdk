@@ -974,17 +974,19 @@ templates.",
         assert result is None
 
     def test_agent_context_default_datetime(self):
-        """Test that AgentContext defaults to current datetime."""
-        from datetime import datetime, timedelta
+        """Test that AgentContext defaults to current UTC datetime with tzinfo."""
+        from datetime import UTC, datetime, timedelta
 
-        before = datetime.now()
+        before = datetime.now(UTC)
         context = AgentContext()
-        after = datetime.now()
+        after = datetime.now(UTC)
 
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
-        # Verify it's approximately the current time (within 1 second)
+        # Verify it is timezone-aware (has tzinfo)
+        assert context.current_datetime.tzinfo is not None
+        # Verify it's approximately the current UTC time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
     def test_get_system_message_suffix_with_datetime_only(self):
@@ -1086,6 +1088,14 @@ templates.",
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
         assert "The current date and time is: 2024-03-15T14:30:00" in result
+
+    def test_get_formatted_datetime_default_includes_timezone(self):
+        """Test that default datetime isoformat includes UTC offset."""
+        context = AgentContext()
+        result = context.get_formatted_datetime()
+
+        assert result is not None
+        assert "+00:00" in result
 
 
 def test_agent_context_secrets_raw_strings_redacted_by_default():
