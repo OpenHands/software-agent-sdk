@@ -56,7 +56,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
+    model="gpt-5.5",
     api_key=os.getenv("LLM_API_KEY"),
 )
 
@@ -194,4 +194,68 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
+
+
+
+## FAQ
+
+### What is the OpenHands Software Agent SDK?
+
+The **OpenHands Software Agent SDK** is a set of Python and REST APIs for building agents that work with code. It powers the [OpenHands CLI](https://github.com/OpenHands/OpenHands-CLI) and [OpenHands Cloud](https://github.com/OpenHands/OpenHands).
+
+| Use Case | Description |
+|----------|-------------|
+| One-off tasks | Build a README for your repo |
+| Routine maintenance | Update dependencies |
+| Major tasks | Refactors and rewrites |
+| Custom DX | Build new developer experiences |
+
+### How do I get started?
+
+```python
+import os
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
+
+llm = LLM(model="gpt-5.5", api_key=os.getenv("LLM_API_KEY"))
+agent = Agent(llm=llm, tools=[
+    Tool(name=TerminalTool.name),
+    Tool(name=FileEditorTool.name),
+    Tool(name=TaskTrackerTool.name),
+])
+conversation = Conversation(agent=agent, workspace=os.getcwd())
+conversation.send_message("Write 3 facts about the project.")
+conversation.run()
+```
+
+### What tools are available?
+
+| Tool | Purpose |
+|------|---------|
+| TerminalTool | Execute shell commands |
+| FileEditorTool | Read, write, edit files |
+| TaskTrackerTool | Track task progress |
+
+### Where can agents run?
+
+| Workspace | Description |
+|-----------|-------------|
+| Local machine | Local filesystem |
+| Ephemeral workspaces | Docker/Kubernetes |
+| Agent Server | Remote REST API |
+
+### Is the SDK free and open source?
+
+Yes! **MIT licensed**.
+
+### Where can I get help?
+
+| Resource | Link |
+|----------|------|
+| Documentation | docs.openhands.dev/sdk |
+| Slack | openhands.dev/joinslack |
+| Paper | arxiv.org/abs/2511.03690 |
+| Issues | github.com/OpenHands/software-agent-sdk/issues |
 
