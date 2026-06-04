@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
+import itertools
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import (
@@ -1246,20 +1248,71 @@ class ACPAgentSettings(AgentSettingsBase):
         up the default from :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
         Raises ``ValueError`` when :attr:`acp_server` is ``'custom'`` but
         no explicit command is set (there is no sensible default to fall back to).
+
+        The result is routed through :meth:`_prefer_pinned_binary`, which swaps
+        an ``npx`` command for the pinned binary when it is on ``PATH`` (a no-op
+        otherwise).
         """
         if self.acp_command:
-            return list(self.acp_command)
-        if self.acp_server == "custom":
+            command = list(self.acp_command)
+        elif self.acp_server == "custom":
             raise ValueError(
                 "ACPAgentSettings.acp_command must be set when "
                 "acp_server='custom' — there is no default to fall back to"
             )
+        else:
+            info = get_acp_provider(self.acp_server)
+            if info is None:
+                raise ValueError(
+                    f"No default ACP command for acp_server={self.acp_server!r}"
+                )
+            command = list(info.default_command)
+        return self._prefer_pinned_binary(command)
+
+    @staticmethod
+    def _parse_npx_invocation(command: Sequence[str]) -> tuple[str, list[str]] | None:
+        """Parse an ``npx``-style launch command into ``(package, extra_args)``.
+
+        ``["npx", "-y", "@scope/pkg", "--flag"]`` → ``("@scope/pkg", ["--flag"])``,
+        skipping any leading ``npx`` flags such as ``-y`` / ``--yes``. Returns
+        ``None`` when *command* is not an ``npx`` invocation (e.g. an
+        already-resolved binary path), so callers leave it untouched.
+        """
+        if not command or command[0] != "npx":
+            return None
+        # Drop leading npx flags (-y, --yes, ...) to find the package name.
+        rest = list(itertools.dropwhile(lambda arg: arg.startswith("-"), command[1:]))
+        if not rest:
+            return None
+        package, *extra_args = rest
+        return package, extra_args
+
+    def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
+        """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
+
+        When *command* is an ``npx`` invocation of this provider's package and
+        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
+        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        ``--acp``) — running the agent-server image's pinned wrapper instead of
+        downloading npm-latest. Returned unchanged otherwise: no pinned binary
+        (custom server), a non-matching/non-npx command, or the binary not on
+        ``PATH`` (local dev).
+        """
         info = get_acp_provider(self.acp_server)
-        if info is None:
-            raise ValueError(
-                f"No default ACP command for acp_server={self.acp_server!r}"
-            )
-        return list(info.default_command)
+        if info is None or info.binary_name is None:
+            return command
+
+        default_parsed = self._parse_npx_invocation(info.default_command)
+        actual_parsed = self._parse_npx_invocation(command)
+        if default_parsed is None or actual_parsed is None:
+            return command
+
+        default_pkg, _ = default_parsed
+        actual_pkg, extra = actual_parsed
+        if actual_pkg != default_pkg or shutil.which(info.binary_name) is None:
+            return command
+
+        return [info.binary_name, *extra]
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
