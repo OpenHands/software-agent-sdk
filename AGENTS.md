@@ -238,6 +238,18 @@ mkdir -p .pr
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
+<PR_DESCRIPTION_HUMAN_CHECK>
+# Human-only PR description fields
+
+The `HUMAN:` section and the `A human has tested these changes.` checkbox in
+PR descriptions are reserved for human contributors only. AI agents
+MUST NOT add to, edit, move, remove, or check these fields. If the PR description
+CI fails because these fields are missing, empty, or unchecked, stop and ask the
+human user to update them in their own words. If the fields were already updated
+by a human, report the exact validator error rather than editing them yourself.
+</PR_DESCRIPTION_HUMAN_CHECK>
+
+
 <REVIEW_HANDLING>
 - Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
   - Does it fix a real bug or improve clarity significantly?

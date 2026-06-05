@@ -29,6 +29,7 @@ class LLMConfig(BaseModel):
     top_p: float | None = None
     reasoning_effort: str | None = None
     disable_vision: bool | None = None
+    inline_image_urls: bool | None = None
     litellm_extra_body: dict[str, Any] | None = None
 
     @field_validator("model")
