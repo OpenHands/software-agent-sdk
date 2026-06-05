@@ -304,20 +304,14 @@ class LocalConversation(BaseConversation):
         self._profile_store = LLMProfileStore()
         self._cipher = cipher
 
-        # Seed secret_registry from agent_context.secrets at lower priority than
-        # request.secrets.  Fills the gap for callers (e.g. canvas / TypeScript
-        # clients) that build StartConversationRequest directly without going
-        # through create_request(), so agent_context.secrets never reach
-        # request.secrets via _start_request_kwargs.  Idempotent for Python
-        # callers that do go through create_request(): request.secrets (applied
-        # next) will overwrite any duplicate keys.
+        # Lower priority: agent_context.secrets (covers callers that don't go
+        # through create_request(), e.g. canvas / TypeScript).
         if (ctx := getattr(self.agent, "agent_context", None)) is not None:
             ctx_secrets = getattr(ctx, "secrets", None)
             if ctx_secrets:
                 self.update_secrets(ctx_secrets)
 
-        # Initialize secrets from request (higher priority — applied after
-        # agent_context.secrets so they win on collision).
+        # Higher priority: request.secrets overwrites duplicate keys from above.
         if secrets:
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
