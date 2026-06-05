@@ -56,6 +56,7 @@ from openhands.sdk.plugin import (
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -304,9 +305,33 @@ class LocalConversation(BaseConversation):
         self._profile_store = LLMProfileStore()
         self._cipher = cipher
 
-        # Initialize secrets if provided
+        # Seed agent_context.secrets into the registry for every agent (regular
+        # and ACP), covering callers that skip create_request() — canvas /
+        # TypeScript, or the server-side agent_settings -> create_agent fold.
+        # Idempotent with the create_request() lift; lower priority than
+        # request.secrets (below). On resume, fill-if-absent so a persisted
+        # value is never downgraded (or lost to redacted/no-cipher serialization).
+        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
+            ctx_secrets = getattr(ctx, "secrets", None)
+            if ctx_secrets:
+                existing_sources = self._state.secret_registry.secret_sources
+                fill_secrets: dict[str, SecretValue] = {}
+                for name, secret in ctx_secrets.items():
+                    existing = existing_sources.get(name)
+                    # Refill only when absent, or when a StaticSecret lost its
+                    # value to redacted/no-cipher serialization (value is None).
+                    # Other SecretSource types (e.g. LookupSecret) are left as-is
+                    # even with a None value — that is their resolved state, not
+                    # a stale placeholder to overwrite.
+                    if existing is None or (
+                        isinstance(existing, StaticSecret) and existing.value is None
+                    ):
+                        fill_secrets[name] = secret
+                if fill_secrets:
+                    self.update_secrets(fill_secrets)
+
+        # Higher priority: request.secrets overwrites duplicate keys from above.
         if secrets:
-            # Convert dict[str, str] to dict[str, SecretValue]
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 

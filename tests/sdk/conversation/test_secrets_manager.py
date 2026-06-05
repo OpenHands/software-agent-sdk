@@ -163,6 +163,58 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
     assert env_vars == {"WORKING_SECRET": "working-value"}
 
 
+def test_get_all_secrets_as_env_vars_resolves_whole_registry():
+    """get_all_secrets_as_env_vars resolves every secret without a command scan."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "API_KEY": "static-value",
+            "DYNAMIC_TOKEN": MyTokenSource(),
+        }
+    )
+
+    env_vars = secret_registry.get_all_secrets_as_env_vars()
+    assert env_vars == {
+        "API_KEY": "static-value",
+        "DYNAMIC_TOKEN": "dynamic-token-456",
+    }
+
+
+def test_get_all_secrets_as_env_vars_excludes_named_keys():
+    """The exclude set skips keys (e.g. ones a higher-precedence tier will set)."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"KEEP": "keep-value", "DROP": "drop-value"})
+
+    env_vars = secret_registry.get_all_secrets_as_env_vars(exclude={"DROP"})
+    assert env_vars == {"KEEP": "keep-value"}
+
+
+def test_get_all_secrets_as_env_vars_skips_failing_lookups():
+    """Failing lookups are swallowed, not raised; only resolvable keys returned."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "FAILING_SECRET": MyFailingTokenSource(),
+            "WORKING_SECRET": MyWorkingTokenSource(),
+        }
+    )
+
+    env_vars = secret_registry.get_all_secrets_as_env_vars()
+    assert env_vars == {"WORKING_SECRET": "working-value"}
+
+
+def test_get_all_secrets_as_env_vars_tracks_values_for_masking():
+    """Resolved values feed _exported_values so output masking covers them."""
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets({"API_KEY": "super-secret"})
+
+    secret_registry.get_all_secrets_as_env_vars()
+    assert (
+        secret_registry.mask_secrets_in_output("leak: super-secret")
+        == "leak: <secret-hidden>"
+    )
+
+
 def test_get_secret_value_static():
     """Test get_secret_value with static string values."""
     secret_registry = SecretRegistry()

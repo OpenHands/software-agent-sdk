@@ -160,6 +160,7 @@ async def get_settings(request: Request) -> SettingsResponse:
                 mode="json"
             ),
             llm_api_key_is_set=settings.llm_api_key_is_set,
+            app_preferences=settings.app_preferences,
         )
 
 
@@ -169,11 +170,12 @@ async def update_settings(
 ) -> SettingsResponse:
     """Update settings with partial changes.
 
-    Accepts ``agent_settings_diff`` and/or ``conversation_settings_diff``
-    for incremental updates. Diffs are deep-merged; nested objects merge
-    recursively, and a ``null`` value **inside a nested map deletes that
-    entry** — the "unset" primitive that lets a client remove a single map
-    key without round-tripping the whole map. To drop one ACP env-var::
+    Accepts ``agent_settings_diff``, ``conversation_settings_diff``, and/or
+    ``app_preferences_diff`` for incremental updates. The two ``*_settings_diff``
+    fields are deep-merged; nested objects merge recursively, and a ``null``
+    value **inside a nested map deletes that entry** — the "unset" primitive
+    that lets a client remove a single map key without round-tripping the
+    whole map. To drop one ACP env-var::
 
         PATCH /api/settings
         {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
@@ -186,6 +188,11 @@ async def update_settings(
     A ``null`` on a top-level *field* (e.g. ``{"confirmation_mode": null}``)
     is **not** an unset — it flows to model validation as before, so it still
     fails loudly rather than silently resetting the field to its default.
+
+    ``app_preferences_diff`` is a shallow overlay (no deep merge, no unset
+    semantics): each provided field overwrites the persisted value, and
+    omitted fields are left alone. ``disabled_skills`` lists are replaced
+    wholesale rather than merged.
 
     Uses file locking to prevent concurrent updates from overwriting each other.
 
@@ -201,8 +208,9 @@ async def update_settings(
         raise HTTPException(
             status_code=400,
             detail=(
-                "At least one of agent_settings_diff or "
-                "conversation_settings_diff must be provided"
+                "At least one of agent_settings_diff, "
+                "conversation_settings_diff, or app_preferences_diff "
+                "must be provided"
             ),
         )
 
@@ -223,6 +231,7 @@ async def update_settings(
                 "conversation_settings_modified": (
                     "conversation_settings_diff" in update_data
                 ),
+                "app_preferences_modified": "app_preferences_diff" in update_data,
             },
         )
     except (ValueError, ValidationError):
@@ -256,6 +265,7 @@ async def update_settings(
         agent_settings=settings.agent_settings.model_dump(mode="json"),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
         llm_api_key_is_set=settings.llm_api_key_is_set,
+        app_preferences=settings.app_preferences,
     )
 
 
