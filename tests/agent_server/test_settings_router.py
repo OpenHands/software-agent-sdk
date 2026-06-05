@@ -540,6 +540,177 @@ def test_patch_settings_empty_payload_returns_400(client_with_settings):
     assert "At least one of" in response.json()["detail"]
 
 
+# ── app_preferences ─────────────────────────────────────────────────────
+
+
+def test_get_settings_returns_empty_app_preferences_by_default(client_with_settings):
+    """GET /api/settings returns an empty app_preferences block by default."""
+    response = client_with_settings.get("/api/settings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "app_preferences" in body
+    assert body["app_preferences"] == {
+        "language": None,
+        "user_consents_to_analytics": None,
+        "enable_sound_notifications": None,
+        "git_user_name": None,
+        "git_user_email": None,
+        "disabled_skills": [],
+    }
+
+
+def test_patch_settings_writes_app_preferences(client_with_settings):
+    """PATCH /api/settings with app_preferences_diff persists the fields."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "app_preferences_diff": {
+                "language": "fr",
+                "user_consents_to_analytics": True,
+                "enable_sound_notifications": False,
+                "git_user_name": "Ada Lovelace",
+                "git_user_email": "ada@example.com",
+                "disabled_skills": ["openhands/snake", "openhands/python"],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app_preferences"] == {
+        "language": "fr",
+        "user_consents_to_analytics": True,
+        "enable_sound_notifications": False,
+        "git_user_name": "Ada Lovelace",
+        "git_user_email": "ada@example.com",
+        "disabled_skills": ["openhands/snake", "openhands/python"],
+    }
+
+    # Persisted across requests
+    refetch = client_with_settings.get("/api/settings")
+    assert refetch.status_code == 200
+    assert refetch.json()["app_preferences"]["language"] == "fr"
+
+
+def test_patch_settings_app_preferences_diff_is_shallow_overlay(
+    client_with_settings,
+):
+    """Partial app_preferences_diff overlays known fields, leaves others alone."""
+    client_with_settings.patch(
+        "/api/settings",
+        json={
+            "app_preferences_diff": {
+                "language": "fr",
+                "disabled_skills": ["openhands/snake"],
+            }
+        },
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"app_preferences_diff": {"git_user_name": "Ada"}},
+    )
+
+    assert response.status_code == 200
+    prefs = response.json()["app_preferences"]
+    assert prefs["language"] == "fr"
+    assert prefs["git_user_name"] == "Ada"
+    assert prefs["disabled_skills"] == ["openhands/snake"]
+
+
+def test_patch_settings_app_preferences_disabled_skills_replaces_list(
+    client_with_settings,
+):
+    """disabled_skills is replaced wholesale, not merged."""
+    client_with_settings.patch(
+        "/api/settings",
+        json={
+            "app_preferences_diff": {
+                "disabled_skills": ["openhands/snake", "openhands/python"]
+            }
+        },
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"app_preferences_diff": {"disabled_skills": []}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["app_preferences"]["disabled_skills"] == []
+
+
+def test_patch_settings_app_preferences_only_payload_is_accepted(
+    client_with_settings,
+):
+    """app_preferences_diff alone satisfies the "at least one of" check."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"app_preferences_diff": {"language": "fr"}},
+    )
+
+    assert response.status_code == 200
+
+
+def test_patch_settings_app_preferences_rejects_invalid_type(client_with_settings):
+    """An app_preferences_diff that fails validation returns 422."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"app_preferences_diff": {"disabled_skills": "not-a-list"}},
+    )
+
+    assert response.status_code == 422
+
+
+def test_patch_settings_app_preferences_does_not_clobber_agent_settings(
+    client_with_settings,
+):
+    """Writing only app_preferences must not reset agent_settings."""
+    client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "gpt-4o"}}},
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"app_preferences_diff": {"language": "fr"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agent_settings"]["llm"]["model"] == "gpt-4o"
+
+
+def test_persisted_settings_v1_loads_with_empty_app_preferences(
+    temp_persistence_dir, client_with_settings
+):
+    """A v1 settings file (no app_preferences) loads with the default empty block."""
+    # Write a v1 payload directly to disk
+    settings_path = temp_persistence_dir / "settings.json"
+    settings_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "agent_settings": {
+                    "agent_kind": "openhands",
+                    "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
+                    "llm": {"model": "gpt-4o"},
+                },
+                "conversation_settings": {
+                    "schema_version": CONVERSATION_SETTINGS_SCHEMA_VERSION,
+                },
+                "active_profile": None,
+            }
+        )
+    )
+
+    response = client_with_settings.get("/api/settings")
+    assert response.status_code == 200
+    prefs = response.json()["app_preferences"]
+    assert prefs["language"] is None
+    assert prefs["disabled_skills"] == []
+
+
 def test_patch_settings_deep_merges(client_with_settings):
     """PATCH /api/settings deep-merges with existing settings."""
     # First update: set model

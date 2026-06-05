@@ -171,6 +171,14 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/gemini-3.5-flash",
             "temperature": 0.0,
+            # SWE-bench Multimodal runs against this model fail ~97% of
+            # image-bearing instances with an opaque Vertex 500
+            # "Internal error encountered" on the very first LLM call,
+            # while text-only instances complete normally. Fetching the
+            # image client-side and sending it as a base64 ``data:`` URL
+            # bypasses LiteLLM's server-side URL fetch path, which is the
+            # most plausible failure point. See run #26931958101 analysis.
+            "inline_image_urls": True,
         },
     },
     "gpt-5.2": {
