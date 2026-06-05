@@ -629,6 +629,16 @@ def test_is_field_default_only_change_detects_keyword_default_change():
     assert _is_field_default_only_change(old, new) is True
 
 
+def test_is_field_default_only_change_detects_keyword_default_factory_change():
+    """Changing only Field default_factory is classified separately."""
+    old = "Field(default_factory=datetime.now, description='desc')"
+    new = (
+        "Field(default_factory=lambda: datetime.now().astimezone(), description='new')"
+    )
+
+    assert _is_field_default_only_change(old, new) is True
+
+
 def test_is_field_default_only_change_ignores_other_runtime_changes():
     """Changing non-default runtime kwargs is not a default-only change."""
     old = "Field(default='claude-sonnet-4-20250514', alias='model')"
@@ -642,6 +652,14 @@ def test_field_default_repr_supports_positional_default():
     assert (
         _field_default_repr("Field('gpt-5.5', description='Model name.')")
         == "'gpt-5.5'"
+    )
+
+
+def test_field_default_repr_supports_default_factory():
+    """Field default_factory values are normalized for reporting."""
+    assert (
+        _field_default_repr("Field(default_factory=datetime.now, description='desc')")
+        == "datetime.now"
     )
 
 
@@ -936,6 +954,54 @@ def test_field_default_change_is_reported_but_not_breaking(tmp_path):
             object_path="openhands.sdk.Config.model",
             old_default="'claude-sonnet-4-20250514'",
             new_default="'gpt-5.5'",
+        )
+    ]
+
+
+def test_field_default_factory_change_is_reported_but_not_breaking(tmp_path):
+    """Public Field default_factory changes should be collected for release notes."""
+    old_pkg = _write_pkg_init(tmp_path, "old", ["Config"])
+    new_pkg = _write_pkg_init(tmp_path, "new", ["Config"])
+
+    old_init = old_pkg / "__init__.py"
+    new_init = new_pkg / "__init__.py"
+
+    old_init.write_text(
+        old_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(default_factory=datetime.now)\n"
+    )
+    new_init.write_text(
+        new_init.read_text()
+        + "\nfrom datetime import datetime\n"
+        + "from pydantic import BaseModel, Field\n\n"
+        + "class Config(BaseModel):\n"
+        + "    current_datetime: datetime = Field(\n"
+        + "        default_factory=lambda: datetime.now().astimezone(),\n"
+        + "    )\n"
+    )
+
+    old_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "old")])
+    new_root = griffe.load("openhands.sdk", search_paths=[str(tmp_path / "new")])
+
+    field_default_changes: list[FieldDefaultChange] = []
+    total_breaks, undeprecated = _prod._compute_breakages(
+        old_root,
+        new_root,
+        _SDK_CFG,
+        field_default_changes=field_default_changes,
+    )
+
+    assert total_breaks == 0
+    assert undeprecated == 0
+    assert field_default_changes == [
+        _prod.FieldDefaultChange(
+            package="openhands.sdk",
+            object_path="openhands.sdk.Config.current_datetime",
+            old_default="datetime.now",
+            new_default="lambda: datetime.now().astimezone()",
         )
     ]
 
