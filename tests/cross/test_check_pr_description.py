@@ -95,28 +95,25 @@ def test_human_tested_checkbox_must_be_checked():
     )
 
 
-def test_required_template_sections_must_be_present_and_filled():
+def test_required_template_fields_must_be_present_and_filled():
     how_to_test = (
         "## How to Test\n\n"
         "Ran the new validation script against a passing and failing PR body."
     )
     body = VALID_BODY.replace(how_to_test, "## How to Test\n\n<!-- TODO -->")
-    body = body.replace("## Video/Screenshots", "## Screenshots")
+    body = body.replace("## Summary", "## Details")
 
     errors = validate_pr_body(body)
 
     assert "Fill in the `## How to Test` section of the PR template." in errors
-    assert "Keep the `## Video/Screenshots` section from the PR template." in errors
+    assert "Keep the `## Summary` section from the PR template." in errors
 
 
-def test_type_section_must_keep_options_and_select_one():
-    body = VALID_BODY.replace("- [x] Feature", "- [ ] Feature")
-    body = body.replace("- [ ] Refactor", "- [ ] Cleanup")
+def test_optional_template_sections_may_be_removed():
+    body = VALID_BODY.replace("## Issue Number\n\nN/A\n\n", "")
+    body = body.split("## Video/Screenshots", maxsplit=1)[0]
 
-    errors = validate_pr_body(body)
-
-    assert "Keep the `Refactor` checkbox under `## Type`." in errors
-    assert "Select at least one checkbox under `## Type`." not in errors
+    assert validate_pr_body(body) == []
 
 
 def test_body_from_event_reads_pull_request_body(tmp_path: Path):

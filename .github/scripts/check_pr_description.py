@@ -10,23 +10,8 @@ from pathlib import Path
 
 HUMAN_TESTED_TEXT = "A human has tested these changes."
 MIN_HUMAN_NOTE_CHARS = 20
-TEMPLATE_SECTIONS: tuple[str, ...] = (
-    "Why",
-    "Summary",
-    "Issue Number",
-    "How to Test",
-    "Video/Screenshots",
-    "Type",
-    "Notes",
-)
-NONEMPTY_SECTIONS: tuple[str, ...] = ("Why", "Summary", "How to Test")
-TYPE_OPTIONS: tuple[str, ...] = (
-    "Bug fix",
-    "Feature",
-    "Refactor",
-    "Breaking change",
-    "Docs / chore",
-)
+# These are the only PR-template sections that must remain and contain content.
+REQUIRED_TEMPLATE_FIELDS: tuple[str, ...] = ("Why", "Summary", "How to Test")
 
 HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
@@ -44,9 +29,6 @@ def checkbox_is_checked(pattern: re.Pattern[str], text: str) -> bool:
 
 
 HUMAN_TESTED_RE = checkbox_re(HUMAN_TESTED_TEXT)
-TYPE_OPTION_RES: dict[str, re.Pattern[str]] = {
-    option: checkbox_re(option) for option in TYPE_OPTIONS
-}
 
 
 def visible_text(text: str) -> str:
@@ -77,6 +59,7 @@ def extract_sections(body: str) -> dict[str, str]:
 
 
 def extract_human_note(body: str) -> str:
+    """Return human-written text in the required location before the checkbox."""
     human_match = HUMAN_HEADING_RE.search(body)
     if human_match is None:
         return ""
@@ -115,28 +98,11 @@ def validate_pr_body(body: str) -> list[str]:
         errors.append("Keep the `AGENT:` marker from the PR template.")
 
     sections = extract_sections(body)
-    for section in TEMPLATE_SECTIONS:
+    for section in REQUIRED_TEMPLATE_FIELDS:
         if section not in sections:
             errors.append(f"Keep the `## {section}` section from the PR template.")
-
-    for section in NONEMPTY_SECTIONS:
-        if section in sections and not visible_text(sections[section]):
+        elif not visible_text(sections[section]):
             errors.append(f"Fill in the `## {section}` section of the PR template.")
-
-    missing_type_options = [
-        option
-        for option, pattern in TYPE_OPTION_RES.items()
-        if pattern.search(body) is None
-    ]
-    for option in missing_type_options:
-        errors.append(f"Keep the `{option}` checkbox under `## Type`.")
-
-    if not missing_type_options:
-        type_selected = any(
-            checkbox_is_checked(pattern, body) for pattern in TYPE_OPTION_RES.values()
-        )
-        if not type_selected:
-            errors.append("Select at least one checkbox under `## Type`.")
 
     return errors
 
@@ -152,7 +118,10 @@ def body_from_event(event_path: Path) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate pull request description readiness."
+        description=(
+            "Validate pull request description readiness from --body-file "
+            "or a GitHub event payload."
+        )
     )
     parser.add_argument(
         "--body-file", type=Path, help="Read a PR description body from a file."
