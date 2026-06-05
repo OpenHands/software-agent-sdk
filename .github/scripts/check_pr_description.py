@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 HUMAN_TESTED_TEXT = "A human has tested these changes."
+# Reject placeholders while allowing a concise human-written sentence.
 MIN_HUMAN_NOTE_CHARS = 20
 # These are the only PR-template sections that must remain and contain content.
 REQUIRED_TEMPLATE_FIELDS: tuple[str, ...] = ("Why", "Summary", "How to Test")
@@ -32,6 +33,7 @@ HUMAN_TESTED_RE = checkbox_re(HUMAN_TESTED_TEXT)
 
 
 def visible_text(text: str) -> str:
+    """Return PR body content that should count as author-provided text."""
     lines = []
     for line in HTML_COMMENT_RE.sub("", text).splitlines():
         stripped = line.strip()
