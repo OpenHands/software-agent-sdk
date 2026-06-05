@@ -1,6 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -91,6 +91,37 @@ class SecretRegistry(OpenHandsModel):
                 continue
 
         logger.debug(f"Prepared {len(env_vars)} secrets as environment variables")
+        return env_vars
+
+    def get_all_secrets_as_env_vars(
+        self, exclude: Collection[str] | None = None
+    ) -> dict[str, str]:
+        """Resolve every registered secret to an env-var mapping.
+
+        Unlike :meth:`get_secrets_as_env_vars`, which name-scans a single
+        command and injects only the secrets it references, this resolves the
+        whole registry. It is for opaque consumers (e.g. an ACP CLI subprocess)
+        that cannot be name-scanned per command and must receive their
+        credentials upfront. Resolved values are tracked for output masking, and
+        lookup failures are skipped rather than raised.
+
+        Args:
+            exclude: Secret names to skip — e.g. keys a higher-precedence tier
+                will set anyway, or file-content secrets materialised to disk
+                (avoids a wasted, possibly remote, ``get_value()``).
+
+        Returns:
+            Dictionary of environment variables to export (key -> value),
+            omitting empty values and excluded names.
+        """
+        skip = set(exclude or ())
+        env_vars: dict[str, str] = {}
+        for name in self.secret_sources:
+            if name in skip:
+                continue
+            value = self.get_secret_value(name)
+            if value:
+                env_vars[name] = value
         return env_vars
 
     def mask_secrets_in_output(self, text: str) -> str:

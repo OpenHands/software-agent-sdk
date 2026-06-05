@@ -2032,14 +2032,17 @@ class ACPAgent(AgentBase):
         # injected as env vars, so exclude their (large blob) names from the
         # plain env-injection below; materialisation sets only the path env var.
         file_secret_names = self._present_file_secret_names(state)
-        # state.secret_registry overrides ambient os.environ. Skip
-        # keys acp_env will set (avoids a redundant LookupSecret.get_value()).
-        for name in state.secret_registry.secret_sources:
-            if name in self.acp_env or name in file_secret_names:
-                continue
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                env[name] = value
+        # Inject the whole registry: an ACP CLI is a black box we can't
+        # name-scan per command (unlike the regular agent's bash tool), so
+        # credentials must be delivered upfront. Registry values override
+        # ambient os.environ. Skip keys acp_env will set last (avoids a
+        # redundant LookupSecret.get_value()) and file secrets (materialised to
+        # disk below).
+        env.update(
+            state.secret_registry.get_all_secrets_as_env_vars(
+                exclude=set(self.acp_env) | file_secret_names
+            )
+        )
         # Materialise reserved file-content secrets to disk and point their
         # data-dir env vars (CODEX_HOME / GOOGLE_APPLICATION_CREDENTIALS) at the
         # written files. Done before acp_env so an explicit acp_env override of
