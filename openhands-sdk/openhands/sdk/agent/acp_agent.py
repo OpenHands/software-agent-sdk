@@ -73,7 +73,6 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
-from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
     build_session_model_meta,
@@ -1800,49 +1799,21 @@ class ACPAgent(AgentBase):
             )
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
 
-    def _read_conversation_secret(
-        self, state: ConversationState, name: str
-    ) -> str | None:
-        """Read a secret value, preferring the registry over a direct read.
-
-        Prefers ``state.secret_registry`` — the canonical channel, where
-        ``StartConversationRequest.secrets`` land and where ``LocalConversation``
-        seeds ``agent_context.secrets`` at conversation init (covering the
-        canvas-local path that does not call ``create_request``). Falls back to
-        a direct ``agent_context.secrets`` read as a safety net for states not
-        built via ``LocalConversation``. See #1022 / agent-canvas#1039.
-        """
-        if name in state.secret_registry.secret_sources:
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                return value
-        if self.agent_context and self.agent_context.secrets:
-            secret = self.agent_context.secrets.get(name)
-            if secret is not None:
-                return (
-                    secret.get_value()
-                    if isinstance(secret, SecretSource)
-                    else str(secret)
-                )
-        return None
-
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.
 
         A name counts as present if it is configured in
-        :attr:`acp_file_secrets` *and* appears in either credential channel
-        (``state.secret_registry`` or ``agent_context.secrets``). These names
-        are materialised to disk and therefore excluded from the plain env-var
-        injection and the ``<CUSTOM_SECRETS>`` advertisement (their values are
-        file blobs, not env vars the subprocess can reference by name).
+        :attr:`acp_file_secrets` *and* registered in ``state.secret_registry``
+        (which holds ``agent_context.secrets`` too, seeded at conversation
+        init). These names are materialised to disk and therefore excluded from
+        the plain env-var injection and the ``<CUSTOM_SECRETS>`` advertisement
+        (their values are file blobs, not env vars the subprocess can reference
+        by name).
         """
         configured = {spec.secret_name for spec in self.acp_file_secrets}
         if not configured:
             return set()
-        present = set(state.secret_registry.secret_sources)
-        if self.agent_context and self.agent_context.secrets:
-            present |= set(self.agent_context.secrets)
-        return present & configured
+        return set(state.secret_registry.secret_sources) & configured
 
     def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
         """Durable per-conversation directory for a credential file.
@@ -1930,12 +1901,11 @@ class ACPAgent(AgentBase):
     ) -> None:
         """Seed reserved file-content credentials onto disk and point the CLI at them.
 
-        For each spec in :attr:`acp_file_secrets` whose secret is present in
-        either credential channel (see :meth:`_read_conversation_secret`), write
-        its value to the spec's durable per-conversation directory
-        (:meth:`_acp_file_secret_dir`) and set the controlling env var
-        (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``) unless the caller
-        pinned it via ``acp_env``.
+        For each spec in :attr:`acp_file_secrets` whose secret is registered in
+        ``state.secret_registry``, write its value to the spec's durable
+        per-conversation directory (:meth:`_acp_file_secret_dir`) and set the
+        controlling env var (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``)
+        unless the caller pinned it via ``acp_env``.
 
         Seed-if-absent: a non-empty existing file is preserved, never clobbered
         — so a token the CLI rewrites on refresh (Codex) survives a recycle, and
@@ -1951,7 +1921,7 @@ class ACPAgent(AgentBase):
         """
         for spec in self.acp_file_secrets:
             name = spec.secret_name
-            value = self._read_conversation_secret(state, name)
+            value = state.secret_registry.get_secret_value(name)
             if not value:
                 continue
             # Seed where the data-dir env var will actually point: an explicit

@@ -7160,9 +7160,12 @@ class TestACPFileSecretMaterialisation:
         # preserved 0644 file staying world-readable).
         assert refreshed.stat().st_mode & 0o777 == 0o600
 
-    def test_reads_from_agent_context_secrets_drain(self, tmp_path):
-        """The reserved secret can arrive via agent_context.secrets (canvas-local
-        path) rather than the registry."""
+    def test_reads_reserved_secret_seeded_from_agent_context(self, tmp_path):
+        """A reserved file secret supplied via agent_context.secrets (canvas-local
+        path) is seeded into the registry at conversation init and materialised."""
+        from openhands.sdk.conversation.impl.local_conversation import (
+            LocalConversation,
+        )
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
@@ -7171,8 +7174,15 @@ class TestACPFileSecretMaterialisation:
                 secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"a": 1}'))},
             ),
         )
-        state = self._state(tmp_path)
-        env = self._run_start(agent, state, conn=self._make_conn())
+        conv = LocalConversation(
+            agent,
+            workspace=str(tmp_path / "ws"),
+            persistence_dir=str(tmp_path / "conversations"),
+        )
+        try:
+            env = self._run_start(agent, conv.state, conn=self._make_conn())
+        finally:
+            conv.close()
 
         auth_file = Path(env["CODEX_HOME"]) / "auth.json"
         assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
