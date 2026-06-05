@@ -305,10 +305,12 @@ class LocalConversation(BaseConversation):
         self._profile_store = LLMProfileStore()
         self._cipher = cipher
 
-        # Lower priority: agent_context.secrets (covers callers that don't go
-        # through create_request(), e.g. canvas / TypeScript). On resume, keep
-        # any already-persisted registry value; only fill missing entries or
-        # values lost to redacted/no-cipher serialization.
+        # Seed agent_context.secrets into the registry for every agent (regular
+        # and ACP), covering callers that skip create_request() — canvas /
+        # TypeScript, or the server-side agent_settings -> create_agent fold.
+        # Idempotent with the create_request() lift; lower priority than
+        # request.secrets (below). On resume, fill-if-absent so a persisted
+        # value is never downgraded (or lost to redacted/no-cipher serialization).
         if (ctx := getattr(self.agent, "agent_context", None)) is not None:
             ctx_secrets = getattr(ctx, "secrets", None)
             if ctx_secrets:

@@ -105,6 +105,10 @@ class SecretRegistry(OpenHandsModel):
         credentials upfront. Resolved values are tracked for output masking, and
         lookup failures are skipped rather than raised.
 
+        Note: this injects the *whole* registry; least-privilege scoping
+        (provider creds + an explicit allowlist only) is deferred to #1039
+        task 6.
+
         Args:
             exclude: Secret names to skip — e.g. keys a higher-precedence tier
                 will set anyway, or file-content secrets materialised to disk
