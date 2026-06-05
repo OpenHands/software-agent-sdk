@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+HUMAN_TESTED_TEXT = "A human has tested these changes."
+MIN_HUMAN_NOTE_CHARS = 20
+REQUIRED_SECTIONS = (
+    "Why",
+    "Summary",
+    "Issue Number",
+    "How to Test",
+    "Video/Screenshots",
+    "Type",
+    "Notes",
+)
+REQUIRED_FILLED_SECTIONS = ("Why", "Summary", "How to Test")
+TYPE_OPTIONS = ("Bug fix", "Feature", "Refactor", "Breaking change", "Docs / chore")
+
+HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
+HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
+HUMAN_HEADING_RE = re.compile(r"(?im)^\s*HUMAN:\s*$")
+AGENT_HEADING_RE = re.compile(r"(?im)^\s*AGENT:\s*$")
+
+
+def checkbox_re(label: str) -> re.Pattern[str]:
+    return re.compile(rf"(?im)^\s*[-*]\s+\[(?P<mark>[ xX])]\s+{re.escape(label)}\s*$")
+
+
+HUMAN_TESTED_RE = checkbox_re(HUMAN_TESTED_TEXT)
+TYPE_OPTION_RES = {option: checkbox_re(option) for option in TYPE_OPTIONS}
+
+
+def visible_text(text: str) -> str:
+    lines = []
+    for line in HTML_COMMENT_RE.sub("", text).splitlines():
+        stripped = line.strip()
+        if stripped and stripped != "-":
+            lines.append(stripped)
+    return "\n".join(lines).strip()
+
+
+def first_visible_line(text: str) -> str:
+    for line in HTML_COMMENT_RE.sub("", text).splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def extract_sections(body: str) -> dict[str, str]:
+    matches = list(HEADING_RE.finditer(body))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        sections[match.group(1).strip()] = body[start:end]
+    return sections
+
+
+def extract_human_note(body: str) -> str:
+    human_match = HUMAN_HEADING_RE.search(body)
+    if human_match is None:
+        return ""
+
+    checkbox_match = HUMAN_TESTED_RE.search(body, human_match.end())
+    if checkbox_match is None:
+        return ""
+
+    return visible_text(body[human_match.end() : checkbox_match.start()])
+
+
+def validate_pr_body(body: str) -> list[str]:
+    errors: list[str] = []
+
+    if first_visible_line(body) != "HUMAN:":
+        errors.append("The first visible line of the PR description must be `HUMAN:`.")
+
+    human_note = extract_human_note(body)
+    if len(human_note) < MIN_HUMAN_NOTE_CHARS:
+        errors.append(
+            "Add a short human-written note between `HUMAN:` and "
+            "the human-tested checkbox."
+        )
+
+    human_tested = HUMAN_TESTED_RE.search(body)
+    if human_tested is None:
+        errors.append(
+            f"Keep the `- [ ] {HUMAN_TESTED_TEXT}` checkbox in the PR description."
+        )
+    elif human_tested.group("mark").lower() != "x":
+        errors.append(
+            "A human must check `A human has tested these changes.` before review."
+        )
+
+    if AGENT_HEADING_RE.search(body) is None:
+        errors.append("Keep the `AGENT:` marker from the PR template.")
+
+    sections = extract_sections(body)
+    for section in REQUIRED_SECTIONS:
+        if section not in sections:
+            errors.append(f"Keep the `## {section}` section from the PR template.")
+
+    for section in REQUIRED_FILLED_SECTIONS:
+        if section in sections and not visible_text(sections[section]):
+            errors.append(f"Fill in the `## {section}` section of the PR template.")
+
+    missing_type_options = [
+        option
+        for option, pattern in TYPE_OPTION_RES.items()
+        if pattern.search(body) is None
+    ]
+    for option in missing_type_options:
+        errors.append(f"Keep the `{option}` checkbox under `## Type`.")
+
+    if not missing_type_options:
+        type_selected = any(
+            (match := pattern.search(body)) is not None
+            and match.group("mark").lower() == "x"
+            for pattern in TYPE_OPTION_RES.values()
+        )
+        if not type_selected:
+            errors.append("Select at least one checkbox under `## Type`.")
+
+    return errors
+
+
+def body_from_event(event_path: Path) -> str:
+    payload = json.loads(event_path.read_text())
+    pull_request = payload.get("pull_request")
+    if not isinstance(pull_request, dict):
+        raise ValueError("GitHub event payload does not contain a pull_request object")
+    body = pull_request.get("body")
+    return body if isinstance(body, str) else ""
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Validate pull request description readiness."
+    )
+    parser.add_argument(
+        "--body-file", type=Path, help="Read a PR description body from a file."
+    )
+    parser.add_argument(
+        "--event-path",
+        type=Path,
+        default=Path(os.environ["GITHUB_EVENT_PATH"])
+        if "GITHUB_EVENT_PATH" in os.environ
+        else None,
+        help="Read the PR description body from a GitHub event payload.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    if args.body_file is not None:
+        body = args.body_file.read_text()
+    elif args.event_path is not None:
+        body = body_from_event(args.event_path)
+    else:
+        raise SystemExit("Pass --body-file or set GITHUB_EVENT_PATH.")
+
+    errors = validate_pr_body(body)
+    for error in errors:
+        print(f"::error::{error}")
+
+    if errors:
+        print(f"PR description validation failed with {len(errors)} error(s).")
+        return 1
+
+    print("PR description validation passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
