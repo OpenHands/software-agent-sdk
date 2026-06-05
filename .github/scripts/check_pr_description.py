@@ -10,7 +10,7 @@ from pathlib import Path
 
 HUMAN_TESTED_TEXT = "A human has tested these changes."
 MIN_HUMAN_NOTE_CHARS = 20
-REQUIRED_SECTIONS = (
+REQUIRED_SECTIONS: tuple[str, ...] = (
     "Why",
     "Summary",
     "Issue Number",
@@ -19,8 +19,14 @@ REQUIRED_SECTIONS = (
     "Type",
     "Notes",
 )
-REQUIRED_FILLED_SECTIONS = ("Why", "Summary", "How to Test")
-TYPE_OPTIONS = ("Bug fix", "Feature", "Refactor", "Breaking change", "Docs / chore")
+REQUIRED_FILLED_SECTIONS: tuple[str, ...] = ("Why", "Summary", "How to Test")
+TYPE_OPTIONS: tuple[str, ...] = (
+    "Bug fix",
+    "Feature",
+    "Refactor",
+    "Breaking change",
+    "Docs / chore",
+)
 
 HTML_COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
 HEADING_RE = re.compile(r"(?m)^##\s+(.+?)\s*$")
@@ -32,8 +38,15 @@ def checkbox_re(label: str) -> re.Pattern[str]:
     return re.compile(rf"(?im)^\s*[-*]\s+\[(?P<mark>[ xX])]\s+{re.escape(label)}\s*$")
 
 
+def checkbox_is_checked(pattern: re.Pattern[str], text: str) -> bool:
+    match = pattern.search(text)
+    return match is not None and match.group("mark").lower() == "x"
+
+
 HUMAN_TESTED_RE = checkbox_re(HUMAN_TESTED_TEXT)
-TYPE_OPTION_RES = {option: checkbox_re(option) for option in TYPE_OPTIONS}
+TYPE_OPTION_RES: dict[str, re.Pattern[str]] = {
+    option: checkbox_re(option) for option in TYPE_OPTIONS
+}
 
 
 def visible_text(text: str) -> str:
@@ -93,7 +106,7 @@ def validate_pr_body(body: str) -> list[str]:
         errors.append(
             f"Keep the `- [ ] {HUMAN_TESTED_TEXT}` checkbox in the PR description."
         )
-    elif human_tested.group("mark").lower() != "x":
+    elif not checkbox_is_checked(HUMAN_TESTED_RE, body):
         errors.append(
             "A human must check `A human has tested these changes.` before review."
         )
@@ -120,9 +133,7 @@ def validate_pr_body(body: str) -> list[str]:
 
     if not missing_type_options:
         type_selected = any(
-            (match := pattern.search(body)) is not None
-            and match.group("mark").lower() == "x"
-            for pattern in TYPE_OPTION_RES.values()
+            checkbox_is_checked(pattern, body) for pattern in TYPE_OPTION_RES.values()
         )
         if not type_selected:
             errors.append("Select at least one checkbox under `## Type`.")
