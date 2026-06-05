@@ -93,6 +93,11 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
     )
 
 
+def _copy_event_for_fork(event: Event) -> Event:
+    # Mirrors persisted event loading and skips runtime-only fields like executors.
+    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -431,10 +436,8 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            # Deep-copy events from source → fork so the source stays
-            # immutable.
             for event in self._state.events:
-                fork_conv._state.events.append(event.model_copy(deep=True))
+                fork_conv._state.events.append(_copy_event_for_fork(event))
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()

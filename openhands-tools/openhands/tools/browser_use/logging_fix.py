@@ -15,7 +15,7 @@ from openhands.sdk.utils.deprecation import warn_cleanup
 
 warn_cleanup(
     "Monkey patching to prevent browser_use logging interference",
-    cleanup_by="1.26.0",
+    cleanup_by="1.27.0",
     details=(
         "This workaround should be removed once browser_use fixes the "
         "problematic logging configuration code. The upstream PR #3717 "
