@@ -5926,12 +5926,13 @@ class TestACPSecretsEnvInjection:
     """Tests for secret injection into the ACP subprocess environment.
 
     Secrets passed via ``agent_context.secrets`` must land in the subprocess
-    env so the ACP server (Claude Code, Codex CLI, etc.) can use them. This
-    drain is the only thing that delivers ``agent_context.secrets`` to the CLI
-    on paths that don't call ``create_request`` (e.g. canvas-local, which folds
-    ``llm.api_key`` into ``agent_context.secrets`` server-side via
-    ``create_agent`` but never lifts it into ``state.secret_registry``).
-    ``acp_env`` entries take precedence over agent_context secrets.
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them. They
+    reach the subprocess through ``state.secret_registry``: ``LocalConversation``
+    seeds ``agent_context.secrets`` into the registry at init (covering
+    canvas-local, which folds ``llm.api_key`` into ``agent_context.secrets``
+    server-side via ``create_agent`` but never lifts it into ``request.secrets``),
+    and ``_start_acp_server`` injects the registry. ``acp_env`` entries take
+    precedence over registry secrets.
     """
 
     @staticmethod
@@ -5954,8 +5955,13 @@ class TestACPSecretsEnvInjection:
         return conn
 
     @staticmethod
-    def _run_start_capturing_env(agent, tmp_path) -> dict:
-        """Run _start_acp_server and return the env dict passed to the subprocess."""
+    def _run_start_capturing_env(agent, tmp_path, *, state=None) -> dict:
+        """Run _start_acp_server and return the env dict passed to the subprocess.
+
+        Pass ``state`` to run against a conversation-seeded registry (e.g. one
+        built via ``LocalConversation`` so ``agent_context.secrets`` are lifted
+        in); otherwise a bare state is used.
+        """
         from contextlib import ExitStack
 
         from openhands.sdk.utils.async_executor import AsyncExecutor
@@ -5974,14 +5980,15 @@ class TestACPSecretsEnvInjection:
         async def _fake_filter(_src, _dst):
             return None
 
-        state = _make_state(tmp_path)
+        if state is None:
+            state = _make_state(tmp_path)
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
             # Hermetic: exclude the runner's ambient env (e.g. a real
             # GITHUB_TOKEN / ANTHROPIC_API_KEY) so it can't shadow the
-            # registry/drain values under test — env.update(os.environ) runs
-            # before the fill-if-absent secret tiers in _start_acp_server.
+            # registry values under test — env.update(os.environ) runs
+            # before the fill-if-absent registry tier in _start_acp_server.
             stack.enter_context(patch.dict("os.environ", {}, clear=True))
             stack.enter_context(
                 patch(
@@ -6012,14 +6019,19 @@ class TestACPSecretsEnvInjection:
         return captured
 
     def test_static_secret_injected_into_subprocess_env(self, tmp_path):
-        """A StaticSecret in agent_context.secrets lands in the subprocess env.
+        """A StaticSecret in agent_context.secrets reaches the subprocess env.
 
-        This drain is what delivers ``agent_context.secrets`` to the CLI on
-        paths that don't lift them into ``state.secret_registry`` via
+        ``LocalConversation`` seeds ``agent_context.secrets`` into
+        ``state.secret_registry`` at init, and ``_start_acp_server`` injects the
+        registry — the path that delivers ``agent_context.secrets`` to the CLI
+        for callers that don't lift them into ``request.secrets`` via
         ``create_request`` (e.g. canvas-local).
         """
         from pydantic import SecretStr
 
+        from openhands.sdk.conversation.impl.local_conversation import (
+            LocalConversation,
+        )
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
@@ -6032,13 +6044,24 @@ class TestACPSecretsEnvInjection:
                 }
             )
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        conv = LocalConversation(agent, workspace=str(tmp_path))
+        try:
+            env = self._run_start_capturing_env(agent, tmp_path, state=conv.state)
+        finally:
+            conv.close()
         assert env.get("GITHUB_TOKEN") == "ghp_test123"
 
     def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
-        """An explicit acp_env entry wins over the same key in agent_context.secrets."""
+        """An explicit acp_env entry wins over the same key in agent_context.secrets.
+
+        ``agent_context.secrets`` reach env via the registry (seeded at
+        ``LocalConversation.__init__``); ``acp_env`` is applied last and wins.
+        """
         from pydantic import SecretStr
 
+        from openhands.sdk.conversation.impl.local_conversation import (
+            LocalConversation,
+        )
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
@@ -6047,8 +6070,12 @@ class TestACPSecretsEnvInjection:
                 secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
             ),
         )
-        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-            env = self._run_start_capturing_env(agent, tmp_path)
+        conv = LocalConversation(agent, workspace=str(tmp_path))
+        try:
+            with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+                env = self._run_start_capturing_env(agent, tmp_path, state=conv.state)
+        finally:
+            conv.close()
         assert env.get("MY_TOKEN") == "acp-env-wins"
 
     def test_none_value_secret_not_injected(self, tmp_path):
@@ -6121,22 +6148,28 @@ class TestACPSecretRegistryEnvInjection:
     Secrets registered via ``Conversation.update_secrets()`` — or the
     equivalent ``payload.secrets`` channel that app-server callers
     (agent-canvas, the OpenHands cloud app server) use — must land in the
-    ACP subprocess env without each caller having to also build an
-    ``AgentContext(secrets=...)`` shim around the same data.
+    ACP subprocess env. ``agent_context.secrets`` are seeded into the same
+    registry at ``LocalConversation.__init__`` (below ``request.secrets``), so
+    the registry is the single channel ``_start_acp_server`` injects from.
 
-    Same-key precedence is
-    ``acp_env > secret_registry > agent_context.secrets > os.environ``.
-    Conversation secrets (registry + the agent_context drain) override ambient
-    ``os.environ`` so an explicit per-conversation/provider secret wins over a
-    same-named server env var; the registry wins over the drain on collision.
+    Same-key precedence is ``acp_env > secret_registry > os.environ``.
+    Registry secrets override ambient ``os.environ`` so an explicit
+    per-conversation/provider secret wins over a same-named server env var.
     """
 
     @staticmethod
     def _run_start_capturing_env(
-        agent, tmp_path, *, registry_secrets=None, extra_os_env=None
+        agent, tmp_path, *, registry_secrets=None, extra_os_env=None, state=None
     ) -> dict:
-        """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
-        state = _make_state(tmp_path)
+        """Re-uses the env-capture harness from TestACPSecretsEnvInjection.
+
+        Pass ``state`` to run against a conversation-seeded registry (e.g. one
+        built via ``LocalConversation`` so ``agent_context.secrets`` are lifted
+        in); otherwise a bare state is used and ``registry_secrets`` are applied
+        directly.
+        """
+        if state is None:
+            state = _make_state(tmp_path)
         if registry_secrets:
             state.secret_registry.update_secrets(registry_secrets)
 
@@ -6254,18 +6287,22 @@ class TestACPSecretRegistryEnvInjection:
         assert env.get("GITHUB_TOKEN") == "from-acp-env"
         assert secret.calls == []
 
-    def test_registry_secret_takes_precedence_over_agent_context_secret(self, tmp_path):
-        """``secret_registry`` wins over ``agent_context.secrets`` on collision.
+    def test_request_secret_wins_and_context_only_secret_still_reaches_env(
+        self, tmp_path
+    ):
+        """request.secrets win on collision; a context-only key still reaches env.
 
-        Precedence: ``acp_env > secret_registry > agent_context.secrets >
-        os.environ``. The registry is the canonical conversation-secret channel
-        (``StartConversationRequest.secrets`` lands here). On a key collision the
-        registry value is used (the drain skips keys the registry will set); a
-        context-only key is still injected by the drain — proving the two
-        channels coexist without double-injecting.
+        Both channels flow through ``state.secret_registry``: ``LocalConversation``
+        seeds ``agent_context.secrets`` first, then ``request.secrets`` overwrite
+        colliding keys. A key present only in ``agent_context.secrets`` still
+        lands in the registry — and therefore the subprocess env — proving the
+        two channels coexist without one dropping the other.
         """
         from pydantic import SecretStr
 
+        from openhands.sdk.conversation.impl.local_conversation import (
+            LocalConversation,
+        )
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
@@ -6276,12 +6313,16 @@ class TestACPSecretRegistryEnvInjection:
                 }
             )
         )
-        env = self._run_start_capturing_env(
+        conv = LocalConversation(
             agent,
-            tmp_path,
-            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+            workspace=str(tmp_path),
+            secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-request"))},
         )
-        assert env.get("GITHUB_TOKEN") == "from-registry"
+        try:
+            env = self._run_start_capturing_env(agent, tmp_path, state=conv.state)
+        finally:
+            conv.close()
+        assert env.get("GITHUB_TOKEN") == "from-request"
         assert env.get("CONTEXT_ONLY") == "ctx-value"
 
     def test_empty_registry_does_not_change_behaviour(self, tmp_path):
@@ -6324,9 +6365,17 @@ class TestACPSecretRegistryEnvInjection:
         assert env.get("ANTHROPIC_API_KEY") == "from-registry"
 
     def test_agent_context_secret_overrides_ambient_os_environ(self, tmp_path):
-        """An agent_context.secrets drain value overrides ambient os.environ."""
+        """An agent_context secret (seeded into the registry) beats ambient os.environ.
+
+        ``LocalConversation`` lifts ``agent_context.secrets`` into the registry,
+        and registry secrets override the agent-server's own ``os.environ`` so a
+        per-conversation/provider secret wins over a same-named server env var.
+        """
         from pydantic import SecretStr
 
+        from openhands.sdk.conversation.impl.local_conversation import (
+            LocalConversation,
+        )
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
@@ -6334,11 +6383,16 @@ class TestACPSecretRegistryEnvInjection:
                 secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
             )
         )
-        env = self._run_start_capturing_env(
-            agent,
-            tmp_path,
-            extra_os_env={"GITHUB_TOKEN": "ambient-should-lose"},
-        )
+        conv = LocalConversation(agent, workspace=str(tmp_path))
+        try:
+            env = self._run_start_capturing_env(
+                agent,
+                tmp_path,
+                extra_os_env={"GITHUB_TOKEN": "ambient-should-lose"},
+                state=conv.state,
+            )
+        finally:
+            conv.close()
         assert env.get("GITHUB_TOKEN") == "from-context"
 
 
