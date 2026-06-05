@@ -1573,7 +1573,70 @@ def validate_agent_settings(
         migrations=_AGENT_SETTINGS_MIGRATIONS,
         payload_name="AgentSettings",
     )
+    # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
+    # only while advancing ``schema_version``. A payload already at the current
+    # version keeps the ``llm`` tag and would dispatch to the deprecated
+    # ``LLMAgentSettings`` subclass; canonicalize unconditionally so the loader
+    # always returns a ``{openhands, acp}`` variant.
+    if payload.get("agent_kind") == "llm":
+        payload["agent_kind"] = "openhands"
     return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
+
+
+def _merge_patch(base: dict[str, Any], diff: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply an RFC 7386 JSON Merge Patch.
+
+    Nested mappings merge recursively; ``None`` deletes a key; every other value
+    overwrites. Matches the merge semantics used by the settings stores so call
+    sites can delegate without a behavior change.
+    """
+    result = dict(base)
+    for key, value in diff.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = _merge_patch(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def apply_agent_settings_diff(
+    base: Any,
+    diff: Mapping[str, Any] | None,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> OpenHandsAgentSettings | ACPAgentSettings:
+    """Apply a sparse agent-settings diff to a base, narrowing on ``agent_kind``.
+
+    ``agent_kind`` is a one-way narrowing gate, never a conversion knob:
+
+    * When ``diff`` changes ``agent_kind``, start from a *fresh* base for the
+      target variant. Deep-merging across the union boundary would either fail
+      validation (ACP's nullable ``agent_context`` is invalid for OpenHands) or
+      silently drop the outgoing variant's fields (the variants ignore unknown
+      keys), producing a mongrel row.
+    * When ``agent_kind`` is unchanged or omitted, deep-merge the diff within
+      the variant (``None`` unsets a key, per :func:`_merge_patch`).
+
+    ``base`` may be a raw persisted mapping or a settings instance; it is
+    migrated and validated first. The merged result is re-validated against
+    :data:`AgentSettingsConfig`, so the return is always a canonical variant.
+    This is the single owner of agent-settings diff application; settings stores
+    should delegate here instead of hand-rolling the dump/merge/validate dance.
+    """
+    base_settings = validate_agent_settings(base, context=context)
+    if not diff:
+        return base_settings
+    new_kind = diff.get("agent_kind")
+    if new_kind and new_kind != base_settings.agent_kind:
+        merged = _merge_patch({"agent_kind": new_kind}, diff)
+    else:
+        merged = _merge_patch(
+            base_settings.model_dump(mode="json", context={"expose_secrets": True}),
+            diff,
+        )
+    return validate_agent_settings(merged, context=context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
