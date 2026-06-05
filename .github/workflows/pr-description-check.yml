@@ -1,9 +1,12 @@
 ---
 name: PR Description Check
 
+# Use pull_request_target so fork PR descriptions can be checked, but only run
+# trusted validation code from the base branch checkout below.
+
 on:
     pull_request_target:
-        types: [opened, edited, reopened, ready_for_review, synchronize]
+        types: [opened, edited, reopened, ready_for_review]
 
 permissions:
     contents: read
@@ -12,6 +15,7 @@ permissions:
 jobs:
     validate-pr-description:
         name: Validate PR description
+        # Draft PRs may still have incomplete descriptions; validate when review starts.
         if: github.event.pull_request.draft == false
         runs-on: ubuntu-24.04
         steps:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 HUMAN_TESTED_TEXT = "A human has tested these changes."
 MIN_HUMAN_NOTE_CHARS = 20
-REQUIRED_SECTIONS: tuple[str, ...] = (
+TEMPLATE_SECTIONS: tuple[str, ...] = (
     "Why",
     "Summary",
     "Issue Number",
@@ -19,7 +19,7 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "Type",
     "Notes",
 )
-REQUIRED_FILLED_SECTIONS: tuple[str, ...] = ("Why", "Summary", "How to Test")
+NONEMPTY_SECTIONS: tuple[str, ...] = ("Why", "Summary", "How to Test")
 TYPE_OPTIONS: tuple[str, ...] = (
     "Bug fix",
     "Feature",
@@ -115,11 +115,11 @@ def validate_pr_body(body: str) -> list[str]:
         errors.append("Keep the `AGENT:` marker from the PR template.")
 
     sections = extract_sections(body)
-    for section in REQUIRED_SECTIONS:
+    for section in TEMPLATE_SECTIONS:
         if section not in sections:
             errors.append(f"Keep the `## {section}` section from the PR template.")
 
-    for section in REQUIRED_FILLED_SECTIONS:
+    for section in NONEMPTY_SECTIONS:
         if section in sections and not visible_text(sections[section]):
             errors.append(f"Fill in the `## {section}` section of the PR template.")
 
