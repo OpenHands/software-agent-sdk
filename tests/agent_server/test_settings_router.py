@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
@@ -22,6 +22,7 @@ from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CONVERSATION_SETTINGS_SCHEMA_VERSION,
     ACPAgentSettings,
+    ConversationSettings,
     OpenHandsAgentSettings,
 )
 from openhands.sdk.utils.cipher import Cipher
@@ -1007,6 +1008,60 @@ def test_patch_settings_validation_error_does_not_leak_secrets(client_with_setti
     assert "sk-secret-value" not in error_detail
     # And it should be the generic sanitized message
     assert error_detail == "Settings validation failed"
+
+
+def test_patch_settings_validation_error_does_not_persist_partial_update(
+    client_with_settings, temp_persistence_dir
+):
+    """A mixed valid/invalid PATCH must not write any part of the payload."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"llm": {"model": "stable-model"}}},
+    )
+    assert response.status_code == 200, response.text
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "llm": {
+                    "model": "should-not-persist",
+                    "api_key": "sk-should-not-persist",
+                }
+            },
+            "conversation_settings_diff": {"max_iterations": -1},
+        },
+    )
+
+    assert response.status_code == 422
+    settings_text = (temp_persistence_dir / "settings.json").read_text()
+    assert "should-not-persist" not in settings_text
+    assert "sk-should-not-persist" not in settings_text
+
+    response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["agent_settings"]["llm"]["model"] == "stable-model"
+    assert body["conversation_settings"]["max_iterations"] == 500
+
+
+def test_file_settings_store_save_rejects_malformed_constructed_settings(
+    temp_persistence_dir,
+):
+    """The store must reject malformed settings even if callers bypass Pydantic."""
+    store = FileSettingsStore(persistence_dir=temp_persistence_dir, cipher=None)
+    malformed = PersistedSettings.model_construct(
+        schema_version=PERSISTED_SETTINGS_SCHEMA_VERSION,
+        agent_settings={"schema_version": 999, "agent_kind": "bogus"},
+        conversation_settings=ConversationSettings(),
+    )
+
+    with pytest.raises(ValidationError):
+        store.save(malformed)
+
+    assert not (temp_persistence_dir / "settings.json").exists()
 
 
 def test_secret_upsert_updates_existing(client_with_settings):

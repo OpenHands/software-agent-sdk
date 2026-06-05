@@ -360,6 +360,14 @@ class FileSettingsStore(SettingsStore):
             If no cipher is provided, secrets are stored in plaintext.
             This is logged as a security warning on first save.
         """
+        if not isinstance(settings, PersistedSettings):
+            raise TypeError("FileSettingsStore.save() requires PersistedSettings")
+
+        # Revalidate at the persistence boundary. Pydantic assignment or
+        # model_construct() can bypass normal field validation; the store must
+        # never serialize that malformed state to disk.
+        settings = PersistedSettings.model_validate(settings)
+
         _ensure_secure_directory(self.persistence_dir)
 
         # Pass cipher in context for automatic encryption of all secret fields

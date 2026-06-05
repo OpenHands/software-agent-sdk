@@ -125,7 +125,11 @@ class PersistedSettings(BaseModel):
         description="Name of the currently active LLM profile.",
     )
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(
+        populate_by_name=True,
+        validate_assignment=True,
+        revalidate_instances="always",
+    )
 
     @property
     def llm_api_key_is_set(self) -> bool:

@@ -25,6 +25,10 @@ jobs:
                   enable-cache: true
             - name: Install workspace deps (dev)
               run: uv sync --frozen --group dev
+            - name: Run settings schema migration check
+              env:
+                  SETTINGS_SCHEMA_BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+              run: uv run python .github/scripts/check_settings_schema_migrations.py
             - name: Run Python API breakage check
               id: api_breakage
               # Let this step fail so CI is visibly red on breakage.
