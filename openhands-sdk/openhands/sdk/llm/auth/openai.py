@@ -4,7 +4,8 @@ This module implements OAuth PKCE flow for authenticating with OpenAI's ChatGPT
 service, allowing users with ChatGPT Plus/Pro subscriptions to use Codex models
 without consuming API credits.
 
-Uses authlib for OAuth handling and aiohttp for the callback server.
+Uses joserfc for JWT handling, authlib for OAuth utilities, and aiohttp for the
+callback server.
 """
 
 from __future__ import annotations
@@ -22,10 +23,10 @@ from urllib.parse import urlencode
 
 from aiohttp import web
 from authlib.common.security import generate_token
-from authlib.jose import JsonWebKey, jwt
-from authlib.jose.errors import JoseError
 from authlib.oauth2.rfc7636 import create_s256_code_challenge
 from httpx import AsyncClient, Client
+from joserfc import jwk, jwt
+from joserfc.errors import JoseError
 
 from openhands.sdk.llm.auth.credentials import (
     CredentialStore,
@@ -144,11 +145,11 @@ class _JWKSCache:
     """Thread-safe cache for OpenAI's JWKS (JSON Web Key Set)."""
 
     def __init__(self) -> None:
-        self._keys: dict[str, Any] = {}
+        self._keys: jwk.KeySetSerialization = {"keys": []}
         self._fetched_at: float = 0
         self._lock = threading.Lock()
 
-    def get_key_set(self) -> Any:
+    def get_key_set(self) -> jwk.KeySet:
         """Get the JWKS, fetching from OpenAI if cache is stale or empty.
 
         Returns:
@@ -159,9 +160,12 @@ class _JWKSCache:
         """
         with self._lock:
             now = time.time()
-            if not self._keys or (now - self._fetched_at) > JWKS_CACHE_TTL_SECONDS:
+            if (
+                not self._keys["keys"]
+                or (now - self._fetched_at) > JWKS_CACHE_TTL_SECONDS
+            ):
                 self._fetch_jwks()
-            return JsonWebKey.import_key_set(self._keys)
+            return jwk.KeySet.import_key_set(self._keys)
 
     def _fetch_jwks(self) -> None:
         """Fetch JWKS from OpenAI's well-known endpoint."""
@@ -180,7 +184,7 @@ class _JWKSCache:
     def clear(self) -> None:
         """Clear the cache (useful for testing)."""
         with self._lock:
-            self._keys = {}
+            self._keys = {"keys": []}
             self._fetched_at = 0
 
 
@@ -210,13 +214,14 @@ def _extract_chatgpt_account_id(access_token: str) -> str | None:
     try:
         # Fetch JWKS and verify JWT signature
         key_set = _jwks_cache.get_key_set()
-        claims = jwt.decode(access_token, key_set)
+        token = jwt.decode(access_token, key_set)
 
         # Validate standard claims (issuer)
-        claims.validate()
+        claims_registry = jwt.JWTClaimsRegistry()
+        claims_registry.validate(token.claims)
 
         # Extract account ID from nested structure
-        auth_info = claims.get("https://api.openai.com/auth", {})
+        auth_info = token.claims.get("https://api.openai.com/auth", {})
         account_id = auth_info.get("chatgpt_account_id")
 
         if account_id:
@@ -739,6 +744,7 @@ class OpenAISubscriptionAuth:
         llm._is_subscription = True
         # Ensure these stay None even if model info tried to set them
         llm.max_output_tokens = None
+        llm._effective_max_output_tokens = None
         llm.temperature = None
         return llm
 

@@ -17,14 +17,24 @@ on:
                 options:
                     - gaia
                     - swebench
+                    - swebenchpro
                     - swtbench
                     - commit0
                     - swebenchmultimodal
                     - terminalbench
+                    - programbench
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.20.1
+                default: v1.25.0
+
+
+
+
+
+
+
+
 
 
 
@@ -142,36 +152,59 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Print all parameters
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  ACTOR: ${{ github.actor }}
+                  REF: ${{ github.ref }}
+                  BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
+                  SDK_REF: ${{ github.event.inputs.sdk_ref || 'N/A' }}
+                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches || 'false' }}
+                  EVAL_LIMIT: ${{ github.event.inputs.eval_limit || '1' }}
+                  MODEL_IDS: ${{ github.event.inputs.model_ids || '(default)' }}
+                  REASON: ${{ github.event.inputs.reason || 'N/A' }}
+                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
+                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
+                  EXTENSIONS_BRANCH: ${{ github.event.inputs.extensions_branch || 'main' }}
+                  INSTANCE_IDS: ${{ github.event.inputs.instance_ids || 'N/A' }}
+                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '(default)' }}
+                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '(default)' }}
+                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}
+                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+                  TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
+                  AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
+                  PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || 'N/A' }}
+                  LABEL_NAME: ${{ github.event.label.name || 'N/A' }}
               run: |
                   echo "=== Workflow Parameters ==="
-                  echo "Event: ${{ github.event_name }}"
-                  echo "Actor: ${{ github.actor }}"
-                  echo "Ref: ${{ github.ref }}"
+                  echo "Event: $EVENT_NAME"
+                  echo "Actor: $ACTOR"
+                  echo "Ref: $REF"
                   echo ""
                   echo "=== Input Parameters ==="
-                  echo "benchmark: ${{ github.event.inputs.benchmark || 'swebench' }}"
-                  echo "sdk_ref: ${{ github.event.inputs.sdk_ref || 'N/A' }}"
-                  echo "allow_unreleased_branches: ${{ github.event.inputs.allow_unreleased_branches || 'false' }}"
-                  echo "eval_limit: ${{ github.event.inputs.eval_limit || '1' }}"
-                  echo "model_ids: ${{ github.event.inputs.model_ids || '(default)' }}"
-                  echo "reason: ${{ github.event.inputs.reason || 'N/A' }}"
-                  echo "eval_branch: ${{ github.event.inputs.eval_branch || 'main' }}"
-                  echo "benchmarks_branch: ${{ github.event.inputs.benchmarks_branch || 'main' }}"
-                  echo "extensions_branch: ${{ github.event.inputs.extensions_branch || 'main' }}"
-                  echo "instance_ids: ${{ github.event.inputs.instance_ids || 'N/A' }}"
-                  echo "num_infer_workers: ${{ github.event.inputs.num_infer_workers || '(default)' }}"
-                  echo "num_eval_workers: ${{ github.event.inputs.num_eval_workers || '(default)' }}"
-                  echo "enable_conversation_event_logging: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}"
-                  echo "max_retries: ${{ github.event.inputs.max_retries || '3' }}"
-                  echo "tool_preset: ${{ github.event.inputs.tool_preset || 'default' }}"
-                  echo "partial_archive_url: ${{ github.event.inputs.partial_archive_url || 'N/A' }}"
+                  echo "benchmark: $BENCHMARK"
+                  echo "sdk_ref: $SDK_REF"
+                  echo "allow_unreleased_branches: $ALLOW_UNRELEASED_BRANCHES"
+                  echo "eval_limit: $EVAL_LIMIT"
+                  echo "model_ids: $MODEL_IDS"
+                  echo "reason: $REASON"
+                  echo "eval_branch: $EVAL_BRANCH"
+                  echo "benchmarks_branch: $BENCHMARKS_BRANCH"
+                  echo "extensions_branch: $EXTENSIONS_BRANCH"
+                  echo "instance_ids: $INSTANCE_IDS"
+                  echo "num_infer_workers: $NUM_INFER_WORKERS"
+                  echo "num_eval_workers: $NUM_EVAL_WORKERS"
+                  echo "enable_conversation_event_logging: $ENABLE_CONVERSATION_EVENT_LOGGING"
+                  echo "max_retries: $MAX_RETRIES"
+                  echo "tool_preset: $TOOL_PRESET"
+                  echo "agent_type: $AGENT_TYPE"
+                  echo "partial_archive_url: $PARTIAL_ARCHIVE_URL"
                   echo ""
                   echo "=== Environment Variables ==="
-                  echo "EVAL_REPO: ${{ env.EVAL_REPO }}"
-                  echo "EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}"
+                  echo "EVAL_REPO: $EVAL_REPO"
+                  echo "EVAL_WORKFLOW: $EVAL_WORKFLOW"
                   echo ""
                   echo "=== Label (for PR events) ==="
-                  echo "Label: ${{ github.event.label.name || 'N/A' }}"
+                  echo "Label: $LABEL_NAME"
 
     build-and-evaluate:
         needs: print-parameters
@@ -197,16 +230,18 @@ jobs:
                   python-version: '3.13'
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
 
             - name: Validate eval_limit
               if: github.event_name == 'workflow_dispatch'
+              env:
+                  EVAL_LIMIT: ${{ github.event.inputs.eval_limit }}
               run: |
-                  if ! [[ "${{ github.event.inputs.eval_limit }}" =~ ^[1-9][0-9]*$ ]]; then
-                    echo "Error: eval_limit must be a positive integer, got: ${{ github.event.inputs.eval_limit }}"
+                  if ! [[ "$EVAL_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+                    echo "Error: eval_limit must be a positive integer, got: $EVAL_LIMIT"
                     exit 1
                   fi
 
@@ -250,6 +285,15 @@ jobs:
                   DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
                   ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
                   DISPATCH_TOKEN_DEFAULT: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH }}
+                  EVENT_NAME: ${{ github.event_name }}
+                  LABEL_NAME: ${{ github.event.label.name }}
+                  PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+                  PR_NUMBER_VALUE: ${{ github.event.pull_request.number }}
+                  RELEASE_TAG: ${{ github.event.release.tag_name }}
+                  EVAL_LIMIT_INPUT: ${{ github.event.inputs.eval_limit }}
+                  SDK_REF_INPUT: ${{ github.event.inputs.sdk_ref }}
+                  REASON_INPUT: ${{ github.event.inputs.reason }}
+                  MODEL_IDS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_ids || '' }}
               run: |
                   set -euo pipefail
 
@@ -262,8 +306,8 @@ jobs:
                   echo "DISPATCH_TOKEN=$DISPATCH_TOKEN" >> "$GITHUB_ENV"
 
                   # Determine eval limit and SDK SHA based on trigger
-                  if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-                    LABEL="${{ github.event.label.name }}"
+                  if [ "$EVENT_NAME" = "pull_request_target" ]; then
+                    LABEL="$LABEL_NAME"
                     case "$LABEL" in
                       run-eval-1) EVAL_LIMIT=1 ;;
                       run-eval-50) EVAL_LIMIT=50 ;;
@@ -271,25 +315,25 @@ jobs:
                       run-eval-500) EVAL_LIMIT=500 ;;
                       *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
                     esac
-                    SDK_SHA="${{ github.event.pull_request.head.sha }}"
-                    PR_NUMBER="${{ github.event.pull_request.number }}"
+                    SDK_SHA="$PR_HEAD_SHA"
+                    PR_NUMBER="$PR_NUMBER_VALUE"
                     TRIGGER_DESCRIPTION="Label '${LABEL}' on PR #${PR_NUMBER}"
-                  elif [ "${{ github.event_name }}" = "release" ]; then
+                  elif [ "$EVENT_NAME" = "release" ]; then
                     EVAL_LIMIT=50
                     # Use tag instead of target_commitish because release branches are automatically deleted after merge
-                    SDK_SHA=$(git rev-parse "${{ github.event.release.tag_name }}")
+                    SDK_SHA=$(git rev-parse "$RELEASE_TAG")
                     PR_NUMBER=""
-                    TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
+                    TRIGGER_DESCRIPTION="Release $RELEASE_TAG"
                   else
-                    EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
-                    SDK_REF="${{ github.event.inputs.sdk_ref }}"
+                    EVAL_LIMIT="$EVAL_LIMIT_INPUT"
+                    SDK_REF="$SDK_REF_INPUT"
                     # Convert ref to SHA for manual dispatch
                     # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
                     SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
                               git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
                               echo "$SDK_REF")
                     PR_NUMBER=""
-                    REASON="${{ github.event.inputs.reason }}"
+                    REASON="$REASON_INPUT"
                     if [ -z "$REASON" ]; then
                       REASON="manual"
                     fi
@@ -297,7 +341,7 @@ jobs:
                   fi
 
                   # Normalize and validate model IDs
-                  MODELS_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_ids || '' }}"
+                  MODELS_INPUT="$MODEL_IDS_INPUT"
                   if [ -z "$MODELS_INPUT" ]; then
                     MODELS_INPUT="$DEFAULT_MODEL"
                   fi

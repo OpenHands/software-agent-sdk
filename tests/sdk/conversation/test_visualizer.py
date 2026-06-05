@@ -31,6 +31,7 @@ from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
+    ReasoningItemModel,
     TextContent,
 )
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -223,6 +224,48 @@ def test_action_event_visualize():
     assert "Thought:" in text_content
     assert "I need to list files" in text_content
     assert "VisualizerMockAction" in text_content
+
+
+def test_action_event_visualize_omits_empty_responses_reasoning_label():
+    """Empty Responses reasoning items should not render a reasoning heading."""
+    action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
+    event = ActionEvent(
+        thought=[],
+        responses_reasoning_item=ReasoningItemModel(),
+        action=action,
+        tool_name="terminal",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+
+    text_content = event.visualize.plain
+
+    assert "Reasoning:" not in text_content
+    assert "ls -la" in text_content
+
+
+def test_action_event_visualize_renders_responses_reasoning_content():
+    """Responses reasoning plaintext should still render when present."""
+    action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
+    event = ActionEvent(
+        thought=[],
+        responses_reasoning_item=ReasoningItemModel(
+            summary=["Check the directory first"]
+        ),
+        action=action,
+        tool_name="terminal",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+
+    text_content = event.visualize.plain
+
+    assert "Reasoning:" in text_content
+    assert "Check the directory first" in text_content
     assert "ls -la" in text_content
 
 
@@ -268,6 +311,21 @@ def test_message_event_visualize():
     assert "Activated Skills: helper, analyzer" in text_content
     assert "Prompt Extension based on Agent Context:" in text_content
     assert "Additional context" in text_content
+
+
+def test_message_event_visualize_omits_empty_responses_reasoning_label():
+    """Empty Responses reasoning items should not render a reasoning heading."""
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Hello, how can you help me?")],
+        responses_reasoning_item=ReasoningItemModel(),
+    )
+    event = MessageEvent(source="agent", llm_message=message)
+
+    text_content = event.visualize.plain
+
+    assert "Reasoning:" not in text_content
+    assert "Hello, how can you help me?" in text_content
 
 
 def test_agent_error_event_visualize():

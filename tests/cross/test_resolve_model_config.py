@@ -29,6 +29,7 @@ class LLMConfig(BaseModel):
     top_p: float | None = None
     reasoning_effort: str | None = None
     disable_vision: bool | None = None
+    inline_image_urls: bool | None = None
     litellm_extra_body: dict[str, Any] | None = None
 
     @field_validator("model")
@@ -629,10 +630,7 @@ def test_kimi_k2_6_config():
 
     assert model["id"] == "kimi-k2.6"
     assert model["display_name"] == "Kimi K2.6"
-    assert (
-        model["llm_config"]["model"]
-        == "litellm_proxy/accounts/graham-openhands/deployments/mghcd1dc"
-    )
+    assert model["llm_config"]["model"] == "litellm_proxy/moonshot/kimi-k2.6"
     assert model["llm_config"]["temperature"] == 1.0
 
 
@@ -646,6 +644,15 @@ def test_gpt_5_5_config():
     assert model["llm_config"]["reasoning_effort"] == "high"
 
 
+def test_deepseek_v4_pro_config():
+    """Test that deepseek-v4-pro has correct configuration."""
+    model = MODELS["deepseek-v4-pro"]
+
+    assert model["id"] == "deepseek-v4-pro"
+    assert model["display_name"] == "DeepSeek V4 Pro"
+    assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-pro"
+
+
 def test_deepseek_v4_flash_config():
     """Test that deepseek-v4-flash has correct configuration."""
     model = MODELS["deepseek-v4-flash"]
@@ -653,3 +660,82 @@ def test_deepseek_v4_flash_config():
     assert model["id"] == "deepseek-v4-flash"
     assert model["display_name"] == "DeepSeek V4 Flash"
     assert model["llm_config"]["model"] == "litellm_proxy/deepseek/deepseek-v4-flash"
+
+
+def test_gemini_3_5_flash_config():
+    """Test that gemini-3.5-flash has correct configuration."""
+    model = MODELS["gemini-3.5-flash"]
+
+    assert model["id"] == "gemini-3.5-flash"
+    assert model["display_name"] == "Gemini 3.5 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/gemini-3.5-flash"
+    assert model["llm_config"]["temperature"] == 0.0
+
+
+def test_gpt_oss_120b_config():
+    """Test that gpt-oss-120b has correct configuration."""
+    model = MODELS["gpt-oss-120b"]
+
+    assert model["id"] == "gpt-oss-120b"
+    assert model["display_name"] == "GPT OSS 120B"
+    assert (
+        model["llm_config"]["model"] == "litellm_proxy/openrouter/openai/gpt-oss-120b"
+    )
+
+
+def test_nemotron_3_ultra_550b_a55b_config():
+    """Test that nemotron-3-ultra-550b-a55b has correct configuration."""
+    model = MODELS["nemotron-3-ultra-550b-a55b"]
+
+    assert model["id"] == "nemotron-3-ultra-550b-a55b"
+    assert model["display_name"] == "NVIDIA Nemotron-3 Ultra 550B"
+    assert model["llm_config"]["model"] == "litellm_proxy/nemotron-3-ultra-550b-a55b"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95
+
+
+def test_claude_opus_4_8_config():
+    """Test that claude-opus-4-8 has correct configuration."""
+    model = MODELS["claude-opus-4-8"]
+
+    assert model["id"] == "claude-opus-4-8"
+    assert model["display_name"] == "Claude Opus 4.8"
+    assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-8"
+
+
+def test_minimax_m3_config():
+    """Test that minimax-m3 has correct configuration."""
+    model = MODELS["minimax-m3"]
+
+    assert model["id"] == "minimax-m3"
+    assert model["display_name"] == "MiniMax M3"
+    assert model["llm_config"]["model"] == "litellm_proxy/minimax/MiniMax-M3"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95
+
+
+def test_step_3_7_flash_config():
+    """Test that step-3.7-flash has correct configuration.
+
+    The model path must match the eval LiteLLM proxy's `model_name` alias
+    exactly so that `_get_model_info_from_litellm_proxy` matches the
+    registry entry and picks up `supports_vision=true` from the
+    proxy-side `model_info`.
+
+    The retry envelope is bumped above the SDK default (5/8/64) because
+    StepFun caps this model at 10 RPM on the current tier and parallel
+    inference otherwise drains the retry budget before the rate-limit
+    bucket resets, see OpenHands/software-agent-sdk#3496.
+    """
+    model = MODELS["step-3.7-flash"]
+
+    assert model["id"] == "step-3.7-flash"
+    assert model["display_name"] == "Step 3.7 Flash"
+    assert model["llm_config"]["model"] == "litellm_proxy/step-3.7-flash"
+    assert model["llm_config"]["temperature"] == 0.0
+
+    # Retry settings must be at least these values to weather StepFun's
+    # 10 RPM tier under parallel inference.
+    assert model["llm_config"]["num_retries"] >= 10
+    assert model["llm_config"]["retry_min_wait"] >= 15
+    assert model["llm_config"]["retry_max_wait"] >= 90

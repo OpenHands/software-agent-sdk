@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -186,6 +187,45 @@ class TestLocalConversationPlugins:
         assert conversation._hook_processor is not None
         # We can verify hooks were processed by checking the hook_config passed
         # (The actual hook_processor is internal, but we trust the merging works)
+        conversation.close()
+
+    def test_hook_sub_conversations_receive_persistence_base_dir(
+        self, tmp_path: Path, basic_agent
+    ):
+        """Agent hook persistence should not nest under the parent conversation id."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        persistence_base = tmp_path / "state"
+        hook_config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="echo test")])
+            ]
+        )
+
+        processor = MagicMock()
+        processor.on_event = MagicMock()
+        processor.set_conversation_state = MagicMock()
+        processor.run_session_start = MagicMock()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            persistence_dir=persistence_base,
+            hook_config=hook_config,
+            visualizer=None,
+        )
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation.create_hook_callback",
+            return_value=(processor, processor.on_event),
+        ) as mock_create_hook_callback:
+            conversation._ensure_plugins_loaded()
+
+        assert conversation.state.persistence_dir is not None
+        assert Path(conversation.state.persistence_dir).parent == persistence_base
+        assert mock_create_hook_callback.call_args.kwargs["persistence_dir"] == str(
+            persistence_base
+        )
         conversation.close()
 
     def test_plugins_not_loaded_until_needed(self, tmp_path: Path, basic_agent):

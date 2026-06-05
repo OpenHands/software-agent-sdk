@@ -1,10 +1,15 @@
 """Tests for Laminar observability configuration."""
 
+import asyncio
+import contextvars
 import inspect
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from openhands.sdk.agent.agent import Agent
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 
 
 @pytest.fixture(autouse=True)
@@ -236,3 +241,304 @@ def test_lmnr_force_http_passed_to_laminar(force_http_value, expected_force_http
             os.environ["LMNR_FORCE_HTTP"] = original_force_http
         elif "LMNR_FORCE_HTTP" in os.environ:
             del os.environ["LMNR_FORCE_HTTP"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-context root-span propagation
+# ---------------------------------------------------------------------------
+#
+# Regression tests for the orphan-trace bug where ``@observe``-decorated
+# methods on a Conversation, when called from a different asyncio task or
+# thread than the one that constructed the Conversation, started a fresh
+# trace instead of attaching to the conversation's root span. The fix moves
+# from ``Laminar.start_active_span`` (which relies on contextvars
+# propagation) to ``Laminar.start_span`` + ``Laminar.use_span`` re-attached
+# at every entry point.
+
+
+class _DummyOwner:
+    """Mimics a ``BaseConversation`` for the purposes of the observe wrapper."""
+
+    def __init__(self, root_span):
+        from openhands.sdk.observability.laminar import RootSpan
+
+        # Build a RootSpan-like object without invoking real lmnr.
+        self._observability_root_span = RootSpan.__new__(RootSpan)
+        self._observability_root_span.span = root_span
+        self._observability_root_span._ended = False
+
+
+def test_observe_calls_use_span_with_owner_root_span_on_sync():
+    """Sync ``@observe``'d methods must re-attach the owner's root span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar  # noqa: F401  ensure module is importable
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            # Force-enable observability for the duration of this call.
+            lam._observability_enabled = True
+            # Stub the lmnr-level ``observe`` so the wrapper just calls through.
+            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+
+                @lam.observe(name="conversation.send_message")
+                def send_message(self, msg: str) -> str:
+                    return f"got {msg}"
+
+                owner = _DummyOwner(sentinel_span)
+                assert send_message(owner, "hi") == "got hi"
+
+        assert used_with == [sentinel_span], (
+            f"expected use_span to be called once with owner's root span, "
+            f"got {used_with!r}"
+        )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_observe_with_owner_root_span_preserves_wrapped_exceptions():
+    """Exceptions from wrapped functions must not be treated as use_span errors."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            lam._observability_enabled = True
+            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+
+                @lam.observe(name="conversation.run")
+                def run(self) -> None:
+                    raise ValueError("boom")
+
+                owner = _DummyOwner(sentinel_span)
+                with pytest.raises(ValueError, match="boom"):
+                    run(owner)
+
+        assert used_with == [sentinel_span]
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_observe_calls_use_span_with_owner_root_span_on_async():
+    """Async ``@observe``'d methods must re-attach the owner's root span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        sentinel_span = MagicMock(name="root-span")
+        used_with: list = []
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            used_with.append(span)
+            yield span
+
+        with patch.object(Laminar, "use_span", side_effect=fake_use_span):
+            lam._observability_enabled = True
+            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+
+                @lam.observe(name="conversation.run")
+                async def run(self) -> str:
+                    return "done"
+
+                owner = _DummyOwner(sentinel_span)
+                # Run from a fresh, empty contextvars Context to mimic a
+                # task created outside the conversation's async ancestry.
+
+                async def _call_in_isolated_context():
+                    new_ctx = contextvars.Context()
+                    return await asyncio.tasks.Task(run(owner), context=new_ctx)
+
+                result = asyncio.run(_call_in_isolated_context())
+                assert result == "done"
+
+        assert used_with == [sentinel_span], (
+            f"expected use_span to be called once even from an isolated "
+            f"context, got {used_with!r}"
+        )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_sets_user_id():
+    """RootSpan must call Laminar.set_trace_user_id when user_id is provided."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            root = lam.RootSpan("conversation", session_id="sess-1", user_id="user-42")
+            assert root.span is mock_span
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_called_once_with("user-42")
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_root_span_skips_user_id_when_none():
+    """RootSpan must not call set_trace_user_id when user_id is None."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        @contextlib_compat()
+        def fake_use_span(span, *args, **kwargs):
+            yield span
+
+        with (
+            patch.object(Laminar, "start_span", return_value=mock_span),
+            patch.object(Laminar, "use_span", side_effect=fake_use_span),
+            patch.object(Laminar, "set_trace_session_id") as mock_session,
+            patch.object(Laminar, "set_trace_user_id") as mock_user,
+        ):
+            lam._observability_enabled = True
+            lam.RootSpan("conversation", session_id="sess-1")
+            mock_session.assert_called_once_with("sess-1")
+            mock_user.assert_not_called()
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
+def test_two_concurrent_conversations_do_not_collide():
+    """Each conversation must own its own root span (no global stack).
+
+    Before the fix, a process-wide ``SpanManager`` LIFO stack meant a second
+    conversation constructed while the first was alive would corrupt the
+    first's root span on close.
+    """
+    from openhands.sdk.conversation.base import BaseConversation
+
+    # Bypass ABC instantiation by calling ``BaseConversation.__init__`` on a
+    # bare ``object``-like instance. We only exercise the span-management
+    # methods, which are concrete on the base class.
+    class _BareConvo:
+        pass
+
+    c1 = _BareConvo()
+    c2 = _BareConvo()
+    BaseConversation.__init__(c1)  # type: ignore[arg-type]
+    BaseConversation.__init__(c2)  # type: ignore[arg-type]
+
+    # Patch the symbol in the module where it's looked up at call time, and
+    # force observability on so the shortcut early-return doesn't fire.
+    from openhands.sdk.conversation import base as base_mod
+
+    with (
+        patch.object(base_mod, "should_enable_observability", return_value=True),
+        patch.object(
+            base_mod,
+            "start_root_span",
+            side_effect=lambda *a, **k: MagicMock(spec_set=["end"]),
+        ) as mock_start,
+    ):
+        BaseConversation._start_observability_span(c1, "session-1")  # type: ignore[arg-type]
+        BaseConversation._start_observability_span(c2, "session-2")  # type: ignore[arg-type]
+
+        # Each conversation has its own root span – no shared stack.
+        assert c1._observability_root_span is not c2._observability_root_span  # type: ignore[attr-defined]
+
+        # Closing c2 must NOT end c1's root span.
+        c2_root = c2._observability_root_span  # type: ignore[attr-defined]
+        c1_root = c1._observability_root_span  # type: ignore[attr-defined]
+        BaseConversation._end_observability_span(c2)  # type: ignore[arg-type]
+        c2_root.end.assert_called_once()
+        c1_root.end.assert_not_called()
+
+        # And vice versa.
+        BaseConversation._end_observability_span(c1)  # type: ignore[arg-type]
+        c1_root.end.assert_called_once()
+
+        assert mock_start.call_count == 2
+
+
+# Tiny shim because we want a generator-based context manager helper that
+# also works as a side_effect for patch().
+def contextlib_compat():
+    import contextlib
+
+    return contextlib.contextmanager
+
+
+def test_deprecated_shims_emit_warnings():
+    """The legacy global-stack API must emit DeprecationWarning so external
+    callers (none found in the org-wide audit, but still) are alerted before
+    the 1.27.0 removal.
+
+    We patch ``_current_version`` to ``1.22.0`` because the helper only emits
+    warnings once the running SDK has reached the ``deprecated_in`` version
+    (so during 1.21.x development the warnings are silent; they activate the
+    moment 1.22.0 ships).
+    """
+    from openhands.sdk.observability import laminar as lam
+
+    # Force observability off so the shim's start_root_span returns None and
+    # we don't reach into a real Laminar SDK.
+    with (
+        patch.object(lam, "should_enable_observability", return_value=False),
+        patch(
+            "openhands.sdk.utils.deprecation._current_version",
+            return_value="1.22.0",
+        ),
+    ):
+        with pytest.warns(DeprecationWarning, match="start_active_span"):
+            lam.start_active_span("conversation", session_id="sid")
+        with pytest.warns(DeprecationWarning, match="end_active_span"):
+            lam.end_active_span()
+        with pytest.warns(DeprecationWarning, match="SpanManager.start_active_span"):
+            lam.SpanManager().start_active_span("conversation")
+        with pytest.warns(DeprecationWarning, match="SpanManager.end_active_span"):
+            lam.SpanManager().end_active_span()
+
+
+def test_async_agent_and_conversation_paths_are_observed():
+    """The async twins must be ``@observe``-wrapped like their sync versions.
+
+    Regression test for the async-parity gap (issue #3449): ``Agent.astep`` and
+    ``LocalConversation.arun`` lost the tracing decorators their sync twins
+    (``Agent.step`` / ``LocalConversation.run``) carry. The ``observe`` wrapper
+    renames the underlying code object to ``async_wrapper``/``sync_wrapper``, so
+    its presence is detectable via ``__code__.co_name``.
+    """
+    assert Agent.step.__code__.co_name == "sync_wrapper"
+    assert Agent.astep.__code__.co_name == "async_wrapper"
+    assert LocalConversation.run.__code__.co_name == "sync_wrapper"
+    assert LocalConversation.arun.__code__.co_name == "async_wrapper"

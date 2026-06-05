@@ -17,6 +17,9 @@ jobs:
             github.event_name == 'workflow_dispatch' ||
             !github.event.release.prerelease
         runs-on: ubuntu-24.04
+        permissions:
+            actions: write
+            contents: read
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
@@ -38,7 +41,7 @@ jobs:
                   echo "📦 Version: $VERSION"
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
@@ -73,4 +76,15 @@ jobs:
                   echo "✅ All packages built and published successfully!"
                   echo ""
                   echo "📋 Note: Version bump PRs will be created by the 'Create Version Bump PRs' workflow"
-                  echo "   which triggers automatically after this workflow completes."
+                  echo "   which is dispatched after this publish succeeds."
+
+            - name: Dispatch version bump workflow
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
+              run: |
+                  gh workflow run version-bump-prs.yml \
+                    --repo "${{ github.repository }}" \
+                    -f "version=${VERSION}"
+
+                  echo "🚀 Dispatched version-bump-prs.yml for v${VERSION}"

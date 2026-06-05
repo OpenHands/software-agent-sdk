@@ -3,8 +3,129 @@
 import json
 import tempfile
 
-from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
+import pytest
+from pydantic import ValidationError
+
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher, HookType
 from openhands.sdk.hooks.types import HookEventType
+
+
+def test_command_hook_requires_command():
+    with pytest.raises(ValidationError, match="'command' is required"):
+        HookDefinition(type=HookType.COMMAND)
+
+
+def test_command_hook_valid():
+    h = HookDefinition(command="echo hi")
+    assert h.type == HookType.COMMAND
+    assert h.command == "echo hi"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"type": "agent", "system_prompt": "Block writes to /etc"},
+        {"type": "agent"},
+    ],
+    ids=["with-system-prompt", "without-system-prompt"],
+)
+def test_agent_hook_valid(kwargs):
+    h = HookDefinition(**kwargs)
+    assert h.type == HookType.AGENT
+
+
+@pytest.mark.parametrize(
+    "kwargs,expected",
+    [
+        ({"command": "block.sh"}, "block.sh"),
+        (
+            {
+                "type": "agent",
+                "name": "block-deletions",
+                "system_prompt": "Block rm -rf",
+            },
+            "agent-hook:block-deletions",
+        ),
+        (
+            {"type": "agent", "system_prompt": "Block network calls to external IPs"},
+            "agent-hook:Block network calls ",
+        ),
+        ({"type": "agent", "system_prompt": "A" * 100}, f"agent-hook:{'A' * 20}"),
+        ({"type": "agent"}, "agent-hook:agent"),
+    ],
+    ids=[
+        "command",
+        "agent-named",
+        "agent-prompt-prefix",
+        "agent-prompt-truncated",
+        "agent-fallback",
+    ],
+)
+def test_display_command(kwargs, expected):
+    h = HookDefinition(**kwargs)
+    assert h.display_command == expected
+
+
+def test_multiple_agent_hooks_are_distinguishable():
+    hooks = [
+        HookDefinition(
+            type=HookType.AGENT,
+            name="block-deletions",
+            system_prompt="Block rm -rf",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Block network calls to external IPs",
+        ),
+        HookDefinition(
+            type=HookType.AGENT,
+            system_prompt="Verify all tasks are complete",
+        ),
+    ]
+    assert len({h.display_command for h in hooks}) == 3
+
+
+@pytest.mark.parametrize(
+    "kwargs,match",
+    [
+        (
+            {"type": "agent", "command": "echo hi"},
+            "'command' must not be set when type is 'agent'",
+        ),
+        ({"type": "command"}, "'command' is required"),
+    ],
+    ids=["agent-rejects-command", "command-requires-command"],
+)
+def test_hook_definition_validation_errors(kwargs, match):
+    with pytest.raises(Exception, match=match):
+        HookDefinition(**kwargs)
+
+
+def test_agent_hook_rejects_async():
+    with pytest.raises(Exception, match="not supported for agent hooks"):
+        HookDefinition.model_validate({"type": "agent", "async": True})
+
+
+def test_agent_hook_from_json():
+    data = {
+        "stop": [
+            {
+                "hooks": [
+                    {
+                        "type": "agent",
+                        "system_prompt": "Verify all tasks are done",
+                        "timeout": 30,
+                    }
+                ]
+            }
+        ]
+    }
+    config = HookConfig.from_dict(data)
+    hooks = config.get_hooks_for_event(HookEventType.STOP)
+    assert len(hooks) == 1
+    assert hooks[0].type == HookType.AGENT
+    assert hooks[0].system_prompt == "Verify all tasks are done"
+    assert hooks[0].timeout == 30
 
 
 class TestHookMatcher:
@@ -309,3 +430,47 @@ class TestAsyncHooks:
         start_hooks = config.get_hooks_for_event(HookEventType.SESSION_START)
         assert len(start_hooks) == 1
         assert start_hooks[0].async_ is True
+
+
+def test_issue_2749():
+    """Prompt-based stop hooks should not cause a validation error.
+
+    https://github.com/OpenHands/software-agent-sdk/issues/2749
+    """
+    data = {
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "prompt",
+                            "prompt": "Evaluate if we should stop.",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    config = HookConfig.from_dict(data)
+    hooks = config.get_hooks_for_event(HookEventType.STOP)
+    assert len(hooks) == 1
+    assert hooks[0].type.value == "prompt"
+    assert hooks[0].prompt == "Evaluate if we should stop."
+
+
+@pytest.mark.parametrize(
+    ("hook_type", "match"),
+    [
+        (HookType.COMMAND, "command"),
+        (HookType.PROMPT, "'prompt' is required"),
+    ],
+    ids=["command_requires_command", "prompt_requires_prompt"],
+)
+def test_issue_2749_validation(hook_type: HookType, match: str):
+    """Validator should enforce required fields based on hook type.
+
+    https://github.com/OpenHands/software-agent-sdk/issues/2749
+    """
+    with pytest.raises(ValidationError, match=match):
+        HookDefinition(type=hook_type)  # type: ignore[call-arg]

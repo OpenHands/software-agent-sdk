@@ -2,6 +2,23 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .acp_providers import (
+    ACP_PROVIDERS,
+    ACPFileSecretSpec,
+    ACPModelOption,
+    ACPProviderInfo,
+    build_session_model_meta,
+    default_acp_file_secrets,
+    detect_acp_provider_by_agent_name,
+    get_acp_provider,
+)
+from .api_models import (
+    SecretCreateRequest,
+    SecretItemResponse,
+    SecretsListResponse,
+    SettingsResponse,
+    SettingsUpdateRequest,
+)
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -18,11 +35,10 @@ if TYPE_CHECKING:
         CONVERSATION_SETTINGS_SCHEMA_VERSION,
         ACPAgentSettings,
         AgentKind,
-        AgentSettings,
+        AgentSettingsBase,
         AgentSettingsConfig,
         CondenserSettings,
         ConversationSettings,
-        LLMAgentSettings,
         OpenHandsAgentSettings,
         SettingsChoice,
         SettingsFieldSchema,
@@ -41,7 +57,7 @@ _MODEL_EXPORTS = {
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
+    "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",
     "ConversationSettings",
@@ -59,52 +75,49 @@ _MODEL_EXPORTS = {
 }
 
 __all__ = [
+    "ACP_PROVIDERS",
+    "ACPFileSecretSpec",
+    "ACPModelOption",
+    "ACPProviderInfo",
+    "build_session_model_meta",
+    "default_acp_file_secrets",
     "AGENT_SETTINGS_SCHEMA_VERSION",
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
     "AgentKind",
-    "AgentSettings",
+    "AgentSettingsBase",
     "AgentSettingsConfig",
     "CondenserSettings",
     "ConversationSettings",
-    "LLMAgentSettings",
     "OpenHandsAgentSettings",
     "SETTINGS_METADATA_KEY",
     "SETTINGS_SECTION_METADATA_KEY",
+    # API models for settings endpoints
+    "SecretCreateRequest",
+    "SecretItemResponse",
+    "SecretsListResponse",
     "SettingProminence",
     "SettingsChoice",
     "SettingsFieldMetadata",
     "SettingsFieldSchema",
+    "SettingsResponse",
     "SettingsSchema",
     "SettingsSectionMetadata",
     "SettingsSectionSchema",
+    "SettingsUpdateRequest",
     "VerificationSettings",
     "create_agent_from_settings",
     "default_agent_settings",
+    "detect_acp_provider_by_agent_name",
     "export_agent_settings_schema",
     "export_settings_schema",
     "field_meta",
+    "get_acp_provider",
     "validate_agent_settings",
 ]
 
 
 def __getattr__(name: str) -> Any:
-    if name == "LLMAgentSettings":
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            f"Importing {name!r} from openhands.sdk.settings",
-            deprecated_in="1.19.0",
-            removed_in="1.22.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` directly. "
-                "``LLMAgentSettings`` was renamed in v1.19.0."
-            ),
-            stacklevel=3,
-        )
-        from . import model
-
-        return getattr(model, name)
     if name in _MODEL_EXPORTS:
         from . import model
 

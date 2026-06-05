@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.git_changes import get_changes_in_repo, get_git_changes
 from openhands.sdk.git.models import GitChange, GitChangeStatus
 
@@ -211,8 +212,6 @@ def test_get_changes_in_repo_staged_and_unstaged():
 
 def test_get_changes_in_repo_non_git_directory():
     """Test get_changes_in_repo with a non-git directory."""
-    from openhands.sdk.git.exceptions import GitRepositoryError
-
     with tempfile.TemporaryDirectory() as temp_dir:
         # Don't initialize git repo
         (Path(temp_dir) / "file.txt").write_text("Content")
@@ -223,8 +222,6 @@ def test_get_changes_in_repo_non_git_directory():
 
 def test_get_changes_in_repo_nonexistent_directory():
     """Test get_changes_in_repo with a nonexistent directory."""
-    from openhands.sdk.git.exceptions import GitRepositoryError
-
     # The function will raise an exception for nonexistent directories
     with pytest.raises(GitRepositoryError):
         get_changes_in_repo("/nonexistent/directory")
@@ -339,6 +336,81 @@ def test_git_changes_with_gitignore():
         assert "__pycache__/module.pyc" not in paths
 
 
+def test_get_git_changes_skips_vanished_nested_repo():
+    """Test that get_git_changes skips nested repos that vanish (TOCTOU).
+
+    Simulates a directory disappearing between glob scan and
+    validate_git_repository by patching get_changes_in_repo to raise
+    GitRepositoryError for one nested directory.
+    """
+    from unittest.mock import patch
+
+    from openhands.sdk.git.exceptions import GitRepositoryError
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Create a file in the main repo
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        # Create a valid nested repo
+        nested = Path(temp_dir) / "goodrepo"
+        nested.mkdir()
+        setup_git_repo(str(nested))
+        (nested / "nested.txt").write_text("nested file")
+
+        # Create a second nested repo that will "vanish"
+        vanished = Path(temp_dir) / "vanished"
+        vanished.mkdir()
+        (vanished / ".git").mkdir()  # just enough for glob to find it
+
+        # Patch get_changes_in_repo to raise for the vanished directory
+        original_fn = get_changes_in_repo
+
+        def patched_get_changes(repo_dir, ref=None):
+            if str(Path(repo_dir).resolve()) == str(vanished.resolve()):
+                raise GitRepositoryError(f"Directory does not exist: {repo_dir}")
+            return original_fn(repo_dir, ref=ref)
+
+        with patch(
+            "openhands.sdk.git.git_changes.get_changes_in_repo",
+            side_effect=patched_get_changes,
+        ):
+            changes = get_git_changes(temp_dir)
+
+        paths = {c.path.as_posix() for c in changes}
+        assert "main.txt" in paths
+        assert "goodrepo/nested.txt" in paths
+        # vanished repo should be skipped, not crash
+        assert all("vanished/" not in p for p in paths)
+
+
+def test_get_changes_in_repo_rejects_broken_gitfile():
+    """A .git file is not enough if git cannot resolve it."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        (Path(temp_dir) / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+
+        with pytest.raises(GitRepositoryError):
+            get_changes_in_repo(temp_dir)
+
+
+def test_get_git_changes_skips_broken_nested_gitfile():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "main.txt").write_text("main repo file")
+
+        nested = Path(temp_dir) / "broken"
+        nested.mkdir()
+        (nested / ".git").write_text("gitdir: /path/that/does/not/exist\n")
+        (nested / "nested.txt").write_text("nested file")
+
+        changes = get_git_changes(temp_dir)
+
+        paths = {c.path.as_posix() for c in changes}
+        assert "main.txt" in paths
+        assert all("broken/" not in p for p in paths)
+
+
 def test_git_changes_with_binary_files():
     """Test git changes detection with binary files."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -362,3 +434,133 @@ def test_git_changes_with_binary_files():
 
         for change in changes:
             assert change.status == GitChangeStatus.ADDED
+
+
+def test_get_changes_in_repo_ref_head_shows_only_uncommitted():
+    """``ref='HEAD'`` should yield git status semantics: working tree vs HEAD."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Commit a baseline file so HEAD exists.
+        (Path(temp_dir) / "committed.txt").write_text("baseline")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'initial'", temp_dir)
+
+        # Add an extra commit. Without ref='HEAD' this would still appear in
+        # the changeset (origin auto-detection + empty-tree fallback compares
+        # against the empty tree). With ref='HEAD' it must NOT appear.
+        (Path(temp_dir) / "second.txt").write_text("second commit")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'second'", temp_dir)
+
+        # Now create one untracked + one modified file vs HEAD.
+        (Path(temp_dir) / "committed.txt").write_text("baseline modified")
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        paths = {str(c.path) for c in changes}
+        # Files committed at HEAD must not appear; only working-tree changes.
+        assert "second.txt" not in paths
+        assert "committed.txt" in paths
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_ref_raises():
+    """An explicit ref that does not resolve should raise ``GitCommandError``."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="definitely-not-a-real-ref")
+
+
+def test_get_changes_in_repo_ref_head_on_empty_repo_returns_untracked_as_added():
+    """``ref='HEAD'`` on a freshly init'd repo (no commits) must not raise.
+
+    Reproduces the Changes-tab bug for new conversation workspaces: the
+    runtime ``git init``s the workspace, the GUI requests ``ref=HEAD`` to get
+    git-status semantics, but ``HEAD`` does not resolve. Untracked files
+    should surface as ADDED instead of bubbling up a ``GitCommandError``.
+    """
+    # Arrange
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        # Act
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+
+        # Assert
+        assert changes == [
+            GitChange(status=GitChangeStatus.ADDED, path=Path("untracked.txt"))
+        ]
+
+
+def test_get_changes_in_repo_ref_head_on_orphan_branch_returns_untracked_as_added():
+    """``ref='HEAD'`` on an orphan branch (HEAD unborn but other branches
+    have commits) must not raise.
+
+    The original empty-repo fix used ``_repo_has_commits`` to detect "no
+    commits anywhere" and skip the ``rev-parse --verify HEAD^{commit}``
+    step. That check returns ``True`` here (commits exist on ``main``),
+    so without an additional safety net the user sees the same
+    ``Git command failed: git --no-pager rev-parse --verify 'HEAD^{commit}'``
+    400 in the Changes tab.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+
+        # Land a commit on the default branch so the repo "has commits".
+        (Path(temp_dir) / "committed.txt").write_text("on main")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'on main'", temp_dir)
+
+        # Switch to an orphan branch: HEAD now points to refs/heads/orphan,
+        # which doesn't exist as a commit yet.
+        run_bash_command("git checkout --orphan orphan", temp_dir)
+        run_bash_command("git rm -rf --cached .", temp_dir)
+        (Path(temp_dir) / "untracked.txt").write_text("new")
+
+        # Act / Assert: must not raise GitCommandError; untracked file shows
+        # up as added (mirrors the empty-repo behavior).
+        changes = get_changes_in_repo(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert "untracked.txt" in paths
+
+
+def test_get_changes_in_repo_invalid_non_head_ref_still_raises_after_fix():
+    """The ``HEAD`` fallback must not swallow typos in other refs.
+
+    Regression guard for the new ``except GitCommandError`` in
+    ``get_valid_ref``: it only short-circuits when the *override* is
+    exactly ``"HEAD"``. Any other unresolved ref must still raise so a
+    typo (e.g. ``ref=mian``) doesn't silently render as "no changes".
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "f.txt").write_text("hi")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        with pytest.raises(GitCommandError):
+            get_changes_in_repo(temp_dir, ref="not-a-real-branch-name")
+
+
+def test_get_git_changes_propagates_ref():
+    """``get_git_changes`` should pass the ref through to inner-repo lookups."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        setup_git_repo(temp_dir)
+        (Path(temp_dir) / "a.txt").write_text("a")
+        run_bash_command("git add .", temp_dir)
+        run_bash_command("git commit -m 'init'", temp_dir)
+
+        # Working-tree-only addition.
+        (Path(temp_dir) / "b.txt").write_text("b")
+
+        changes = get_git_changes(temp_dir, ref="HEAD")
+        paths = {str(c.path) for c in changes}
+        assert paths == {"b.txt"}

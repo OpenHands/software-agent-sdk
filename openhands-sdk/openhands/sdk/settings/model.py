@@ -1,9 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import copy
+import itertools
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    TypeVar,
+    cast,
+    get_args,
+    get_origin,
+)
 from uuid import UUID
 
 from fastmcp.mcp_config import MCPConfig
@@ -12,8 +24,10 @@ from pydantic import (
     Discriminator,
     Field,
     SecretStr,
+    SerializationInfo,
     Tag,
     TypeAdapter,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -23,11 +37,29 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.tool import Tool
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
+from openhands.sdk.utils.pydantic_secrets import (
+    MissingCipherError,
+    decrypt_str_with_cipher_or_keep,
+    resolve_expose_mode,
+    serialize_secret,
+    validate_secret,
+    validate_secret_dict,
+)
+from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
+from .acp_providers import (
+    ACPFileSecretSpec,
+    ACPProviderInfo,
+    default_acp_file_secrets,
+    get_acp_provider,
+)
 from .metadata import (
     SETTINGS_METADATA_KEY,
     SETTINGS_SECTION_METADATA_KEY,
@@ -42,6 +74,103 @@ if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
+
+
+logger = get_logger(__name__)
+
+
+def _walk_mcp_secret_values(
+    config: dict[str, Any],
+    transform: Callable[[str], str],
+) -> dict[str, Any]:
+    """Return a copy of ``config`` with ``transform`` applied to every string
+    value inside each MCP server's ``env`` / ``headers``. Does not mutate input."""
+    config = copy.deepcopy(config)
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return config
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        for key in ("env", "headers"):
+            mapping = server.get(key)
+            if not isinstance(mapping, dict):
+                continue
+            server[key] = {
+                k: (transform(v) if isinstance(v, str) else v)
+                for k, v in mapping.items()
+            }
+    return config
+
+
+def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
+    """Decrypt a single MCP ``env`` / ``headers`` value when it is a
+    Fernet token. Thin local wrapper that binds the user-facing
+    log description; the leaf decryption lives in
+    :func:`decrypt_str_with_cipher_or_keep` and is shared with every
+    other dict-of-string secret-bearing field."""
+    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP env/headers")
+
+
+# ---------------------------------------------------------------------------
+# Shared ``mcp_config`` field (de)serialization, used verbatim by every
+# settings variant that exposes an ``mcp_config: MCPConfig | None`` field
+# (``OpenHandsAgentSettings`` and ``ACPAgentSettings``). Kept here as plain
+# functions so the per-class ``@field_validator`` / ``@field_serializer``
+# stubs — which pydantic requires to live on each model — stay one-liners and
+# the encrypt/decrypt logic has a single source of truth.
+# ---------------------------------------------------------------------------
+
+
+def normalize_empty_mcp_config(value: Any) -> Any:
+    """Coerce an empty/absent ``mcp_config`` to ``None`` (else pass through)."""
+    return None if value in (None, {}) else value
+
+
+def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
+    """Decrypt MCP ``env`` / ``headers`` values when a cipher is in context.
+
+    The on-disk load path. Values that aren't valid Fernet tokens pass through
+    as plaintext (e.g. migrating from a build that wrote them unencrypted).
+    Mirrors :func:`serialize_mcp_config`'s per-value encryption.
+    """
+    if not isinstance(value, dict):
+        return value
+    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+    if cipher is None:
+        return value
+    return _walk_mcp_secret_values(
+        value, lambda v: _decrypt_mcp_value_or_keep(cipher, v)
+    )
+
+
+def serialize_mcp_config(
+    value: MCPConfig | None, info: SerializationInfo
+) -> dict[str, Any]:
+    """Serialize an ``mcp_config`` field, masking/encrypting env+headers per
+    the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
+    if value is None:
+        return {}
+    dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
+    ctx = info.context or {}
+    mode = resolve_expose_mode(ctx)
+
+    if mode == "plaintext":
+        return dumped
+
+    if mode == "encrypted":
+        cipher: Cipher | None = ctx.get("cipher")
+        if cipher is None:
+            raise MissingCipherError(
+                "Cannot encrypt MCP env/headers: no cipher configured. "
+                "Set OH_SECRET_KEY environment variable."
+            )
+        # cipher.encrypt returns None only for None input; SecretStr(v) never is.
+        return _walk_mcp_secret_values(
+            dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
+        )
+
+    return sanitize_dict(dumped)
 
 
 SettingsValueType = Literal[
@@ -165,6 +294,7 @@ class VerificationSettings(BaseModel):
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable iterative refinement",
+                prominence=SettingProminence.CRITICAL,
                 depends_on=("critic_enabled",),
             ).model_dump()
         },
@@ -224,65 +354,34 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
-
-    # -- Deprecated (moved to ConversationSettings) --
-    confirmation_mode: bool = Field(
-        default=False,
-        description="Require user confirmation before executing risky actions.",
-        deprecated=(
-            "Deprecated in 1.17.0; use ConversationSettings.confirmation_mode "
-            "instead. Will be removed in 1.22.0."
-        ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Confirmation mode",
-                prominence=SettingProminence.MAJOR,
-            ).model_dump()
-        },
-    )
-    security_analyzer: SecurityAnalyzerType | None = Field(
+    critic_api_key: str | SecretStr | None = Field(
         default=None,
-        description=("Security analyzer that evaluates actions before execution."),
-        deprecated=(
-            "Deprecated in 1.17.0; use ConversationSettings.security_analyzer "
-            "instead. Will be removed in 1.22.0."
+        description=(
+            "API key used to authenticate with the critic service. "
+            "When None, the LLM's ``api_key`` is reused, which preserves "
+            "the auto-configuration path for the All-Hands LLM proxy."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="Security analyzer",
-                prominence=SettingProminence.MAJOR,
-                depends_on=("confirmation_mode",),
+                label="Critic API Key",
+                prominence=SettingProminence.CRITICAL,
+                depends_on=("critic_enabled",),
             ).model_dump()
         },
     )
 
-    @field_validator("confirmation_mode", mode="before")
+    @field_validator("critic_api_key")
     @classmethod
-    def _warn_confirmation_mode(cls, v: Any) -> Any:
-        if v:
-            from openhands.sdk.utils.deprecation import warn_deprecated
+    def _validate_critic_api_key(
+        cls, v: str | SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        return validate_secret(v, info)
 
-            warn_deprecated(
-                "VerificationSettings.confirmation_mode",
-                deprecated_in="1.17.0",
-                removed_in="1.22.0",
-                details="Use ConversationSettings.confirmation_mode instead.",
-            )
-        return v
-
-    @field_validator("security_analyzer", mode="before")
-    @classmethod
-    def _warn_security_analyzer(cls, v: Any) -> Any:
-        if v is not None:
-            from openhands.sdk.utils.deprecation import warn_deprecated
-
-            warn_deprecated(
-                "VerificationSettings.security_analyzer",
-                deprecated_in="1.17.0",
-                removed_in="1.22.0",
-                details="Use ConversationSettings.security_analyzer instead.",
-            )
-        return v
+    @field_serializer("critic_api_key", when_used="always")
+    def _serialize_critic_api_key(
+        self, v: SecretStr | None, info: SerializationInfo
+    ) -> Any:
+        return serialize_secret(v, info)
 
 
 def _default_llm_settings() -> LLM:
@@ -293,8 +392,48 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 2
+AGENT_SETTINGS_SCHEMA_VERSION = 3
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
+
+
+class AgentSettingsBase(BaseModel):
+    """Shared base for all agent-settings variants.
+
+    Provides the three pieces common to every variant:
+
+    - :attr:`schema_version` — used for persisted-payload migrations.
+    - :meth:`export_schema` — structured field description for UIs.
+    - :meth:`create_agent` — canonical construction path; concrete subclasses
+      must override this.
+
+    The ``llm`` field is intentionally *not* hoisted here — its semantics
+    differ between variants (execution config vs. attribution identity) and
+    the metadata overrides would make a shared field awkward.
+
+    Use :data:`AgentSettingsConfig` as the type for fields that may hold
+    either the :class:`OpenHandsAgentSettings` or :class:`ACPAgentSettings`
+    variant. Use :func:`validate_agent_settings` to validate raw payloads.
+    """
+
+    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
+
+    @classmethod
+    def export_schema(cls) -> SettingsSchema:
+        """Export a structured schema describing configurable settings."""
+        return export_settings_schema(cls)
+
+    def create_agent(self) -> AgentBase:
+        """Build an agent from these settings.
+
+        Subclasses (:class:`OpenHandsAgentSettings`, :class:`ACPAgentSettings`)
+        override this to return the appropriate
+        :class:`~openhands.sdk.agent.base.AgentBase` subclass.
+        Calling this on the base class directly raises :exc:`NotImplementedError`.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement create_agent()"
+        )
+
 
 PersistedSettingsMigrator = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -375,7 +514,7 @@ def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     persisted payloads carried ``agent_kind: 'llm'``. The two classes are
     field-compatible (``LLMAgentSettings`` is a subclass of
     ``OpenHandsAgentSettings`` that only narrows the discriminator literal),
-    and ``LLMAgentSettings`` is scheduled for removal in v1.22.0. Rewriting
+    and ``LLMAgentSettings``'s import aliases were removed in v1.24.0. Rewriting
     the discriminator on read lets callers that explicitly validate as
     ``OpenHandsAgentSettings`` (the canonical class) accept legacy data
     without losing any fields.
@@ -384,6 +523,19 @@ def _migrate_agent_settings_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
     migrated["schema_version"] = 2
     if migrated.get("agent_kind") == "llm":
         migrated["agent_kind"] = "openhands"
+    return migrated
+
+
+def _migrate_agent_settings_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop deprecated verification fields moved to ``ConversationSettings``."""
+    migrated = dict(payload)
+    verification = migrated.get("verification")
+    if isinstance(verification, Mapping):
+        verification = dict(verification)
+        verification.pop("confirmation_mode", None)
+        verification.pop("security_analyzer", None)
+        migrated["verification"] = verification
+    migrated["schema_version"] = 3
     return migrated
 
 
@@ -398,6 +550,7 @@ def _migrate_conversation_settings_v0_to_v1(
 _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_agent_settings_v0_to_v1,
     1: _migrate_agent_settings_v1_to_v2,
+    2: _migrate_agent_settings_v2_to_v3,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -441,7 +594,7 @@ class ConversationSettings(BaseModel):
     agent_definitions: list[AgentDefinition] = Field(
         default_factory=list,
         exclude=True,
-        description="Agent definitions for DelegateTool / TaskSetTool.",
+        description="Agent definitions for task tools.",
     )
     plugins: list[PluginSource] | None = Field(
         default=None,
@@ -605,28 +758,18 @@ ACPServerKind = Literal["claude-code", "codex", "gemini-cli", "custom"]
 """Known ACP backend servers the GUI can pick from.
 
 ``custom`` means the user supplies the raw ``acp_command`` themselves;
-the other choices map to a default npx command (see
-:data:`_DEFAULT_ACP_COMMANDS`).
+the other choices map to a default npx command stored in
+:data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
 """
 
 
-_DEFAULT_ACP_COMMANDS: dict[str, list[str]] = {
-    "claude-code": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
-    "codex": ["npx", "-y", "@zed-industries/codex-acp"],
-    # gemini-cli's ACP mode is activated via ``--acp`` (``--experimental-acp``
-    # is deprecated in the gemini-cli >=0.38 releases).
-    "gemini-cli": ["npx", "-y", "@google/gemini-cli", "--acp"],
-}
-
-
-class OpenHandsAgentSettings(BaseModel):
+class OpenHandsAgentSettings(AgentSettingsBase):
     """Settings for a standard LLM-backed :class:`Agent`.
 
     This is the long-standing ``AgentSettings`` shape; fields here build
     the default ``Agent`` (LLM + tools + MCP + condenser + critic).
     """
 
-    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["openhands"] = Field(
         default="openhands",
         description=(
@@ -678,6 +821,21 @@ class OpenHandsAgentSettings(BaseModel):
             ).model_dump()
         },
     )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable LLM switching tool",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+
     mcp_config: MCPConfig | None = Field(
         default=None,
         description="MCP server configuration for the agent.",
@@ -716,23 +874,23 @@ class OpenHandsAgentSettings(BaseModel):
         },
     )
 
+    # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
+    # module-level helpers — these stubs just bind them to the field.
     @field_validator("mcp_config", mode="before")
     @classmethod
     def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        if value in (None, {}):
-            return None
-        return value
+        return normalize_empty_mcp_config(value)
+
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
+        return decrypt_mcp_config_secrets(value, info)
 
     @field_serializer("mcp_config")
-    def _serialize_mcp_config(self, value: MCPConfig | None) -> dict[str, Any]:
-        if value is None:
-            return {}
-        return value.model_dump(exclude_none=True, exclude_defaults=True)
-
-    @classmethod
-    def export_schema(cls) -> SettingsSchema:
-        """Export a structured schema describing configurable agent settings."""
-        return export_settings_schema(cls)
+    def _serialize_mcp_config(
+        self, value: MCPConfig | None, info: SerializationInfo
+    ) -> dict[str, Any]:
+        return serialize_mcp_config(value, info)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -746,11 +904,23 @@ class OpenHandsAgentSettings(BaseModel):
             agent = settings.create_agent()
         """
         from openhands.sdk.agent import Agent
+        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
+
+        # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
+        mcp_config = (
+            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+            if self.mcp_config is not None
+            else {}
+        )
+        include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
+        if self.enable_switch_llm_tool:
+            include_default_tools.append(SwitchLLMTool.__name__)
 
         return Agent(
             llm=self.llm,
             tools=self.tools,
-            mcp_config=self._serialize_mcp_config(self.mcp_config),
+            mcp_config=mcp_config,
+            include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             condenser=self.build_condenser(self.llm),
             critic=self.build_critic(),
@@ -763,13 +933,24 @@ class OpenHandsAgentSettings(BaseModel):
 
         from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
-        return LLMSummarizingCondenser(llm=llm, max_size=self.condenser.max_size)
+        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+        condenser_llm.reset_metrics()
+        return LLMSummarizingCondenser(
+            llm=condenser_llm, max_size=self.condenser.max_size
+        )
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
 
-        Returns ``None`` when the critic is disabled or when the LLM
-        has no ``api_key`` (the critic service requires authentication).
+        Returns ``None`` when the critic is disabled or when no API key
+        is available (the critic service requires authentication).
+
+        If ``verification.critic_api_key`` is set it is used to
+        authenticate with the critic service; otherwise the LLM's
+        ``api_key`` is reused. This preserves the existing
+        auto-configuration path for the All-Hands LLM proxy while
+        letting deployments route the critic through a different
+        provider (e.g. an LLM proxy with its own credential).
 
         If ``verification.critic_server_url`` or
         ``verification.critic_model_name`` are set they override the
@@ -779,7 +960,7 @@ class OpenHandsAgentSettings(BaseModel):
         if not self.verification.critic_enabled:
             return None
 
-        api_key = self.llm.api_key
+        api_key = self.verification.critic_api_key or self.llm.api_key
         if api_key is None:
             return None
 
@@ -807,7 +988,7 @@ class OpenHandsAgentSettings(BaseModel):
         )
 
 
-class ACPAgentSettings(BaseModel):
+class ACPAgentSettings(AgentSettingsBase):
     """Settings for an ACP (Agent Client Protocol) agent.
 
     ``create_agent()`` returns an :class:`ACPAgent` that delegates to a
@@ -820,7 +1001,6 @@ class ACPAgentSettings(BaseModel):
     bookkeeping and pricing lookups, not for making LLM requests.
     """
 
-    schema_version: int = Field(default=AGENT_SETTINGS_SCHEMA_VERSION, ge=1)
     agent_kind: Literal["acp"] = Field(
         default="acp",
         description=(
@@ -888,7 +1068,13 @@ class ACPAgentSettings(BaseModel):
     )
     acp_env: dict[str, str] = Field(
         default_factory=dict,
-        description="Extra environment variables passed to the ACP subprocess.",
+        description=(
+            "DEPRECATED (removed in 1.29.0): extra environment variables passed "
+            "to the ACP subprocess. Provide arbitrary subprocess env vars through "
+            "the conversation secrets channel (agent_context.secrets / "
+            "StartConversationRequest.secrets, which route through "
+            "state.secret_registry) instead."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="ACP environment variables",
@@ -901,6 +1087,25 @@ class ACPAgentSettings(BaseModel):
             ).model_dump(),
         },
     )
+
+    @field_validator("acp_env", mode="before")
+    @classmethod
+    def _decrypt_acp_env_values(cls, value: Any, info: ValidationInfo) -> Any:
+        """Decrypt persisted ACP environment values when a cipher is available.
+
+        Legacy plaintext values pass through unchanged so the next save can
+        re-encrypt them, matching MCP env/header handling. The matching
+        on-the-wire validator on :class:`~openhands.sdk.agent.ACPAgent`
+        handles the conversation-start round-trip; both delegate to the
+        shared :func:`validate_secret_dict` helper.
+        """
+        return validate_secret_dict(value, info, description="ACP env")
+
+    @field_serializer("acp_env", when_used="always")
+    def _serialize_acp_env(self, value: dict[str, str], info):
+        """Mask ``acp_env`` values via :func:`serialize_secret`."""
+        return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
+
     acp_model: str | None = Field(
         default=None,
         description=(
@@ -955,6 +1160,70 @@ class ACPAgentSettings(BaseModel):
             ).model_dump(),
         },
     )
+    mcp_config: MCPConfig | None = Field(
+        default=None,
+        description=(
+            "MCP servers to make available to the ACP subprocess. Unlike the "
+            "OpenHands agent — where these become in-process MCP tools — the "
+            "servers are forwarded to the ACP server at session creation and it "
+            "owns the connection. Remote (http/sse) servers are only forwarded "
+            "when the ACP server advertises support for that transport; stdio "
+            "servers (which run inside the runtime) are always forwarded."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="MCP configuration",
+                prominence=SettingProminence.MINOR,
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+
+    # Same shared ``mcp_config`` (de)serialization as OpenHandsAgentSettings.
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
+        return normalize_empty_mcp_config(value)
+
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
+        return decrypt_mcp_config_secrets(value, info)
+
+    @field_serializer("mcp_config")
+    def _serialize_mcp_config(
+        self, value: MCPConfig | None, info: SerializationInfo
+    ) -> dict[str, Any]:
+        return serialize_mcp_config(value, info)
+
+    # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
+    # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
+    # it (e.g. when conversations share a sandbox under grouping), not the end
+    # user. See ``ACPAgent.acp_isolate_data_dir`` for the full rationale.
+    acp_isolate_data_dir: bool = Field(
+        default=False,
+        description=(
+            "Give the ACP subprocess a per-conversation CLI data/config root "
+            "instead of the shared user HOME. Forwarded to "
+            ":attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`; off by "
+            "default. Enable from the deploying application when several "
+            "conversations share one sandbox (see #1019)."
+        ),
+    )
+    # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
+    # settings-form UI (no SETTINGS_METADATA_KEY): it's a list of structured
+    # specs a downstream application supplies in code to support other ACP CLIs,
+    # not an end-user field. The built-in providers work via the default.
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=lambda: list(default_acp_file_secrets()),
+        description=(
+            "Reserved 'file-content' credential secrets the SDK materialises to "
+            "disk before launching the ACP subprocess (e.g. Codex auth.json, "
+            "Gemini Vertex SA JSON). Defaults to the built-in supported "
+            "providers; override to support other ACP servers with different "
+            "file-auth schemes."
+        ),
+    )
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
@@ -970,52 +1239,177 @@ class ACPAgentSettings(BaseModel):
             ).model_dump()
         },
     )
+    agent_context: AgentContext | None = Field(
+        default=None,
+        description=(
+            "Prompt-only context for the ACP server. ``secrets`` here are "
+            "advertised to the agent (names/descriptions) and injected into the "
+            "subprocess env through two channels: ``state.secret_registry`` (on "
+            "the Python path, ``create_request`` lifts ``agent_context.secrets`` "
+            "into the registry) and a direct drain in "
+            "``ACPAgent._start_acp_server`` for callers that build the request "
+            "outside Python (e.g. canvas-local). ``create_agent`` also folds "
+            "provider credentials into these secrets."
+        ),
+    )
 
-    @classmethod
-    def export_schema(cls) -> SettingsSchema:
-        """Export a structured schema describing configurable ACP settings."""
-        return export_settings_schema(cls)
+    @property
+    def provider_info(self) -> ACPProviderInfo | None:
+        """Registry entry for :attr:`acp_server`, or ``None`` for ``'custom'``."""
+        return get_acp_provider(self.acp_server)
 
     @property
     def api_key_env_var(self) -> str | None:
         """Env var name the ACP subprocess expects for its API key.
 
-        Returns ``None`` for ``'custom'`` servers — users manage credentials
-        entirely via :attr:`acp_env` in that case.
-
-        Mapping:
-        - ``claude-code``  → ``ANTHROPIC_API_KEY``
-        - ``codex``        → ``OPENAI_API_KEY``
-        - ``gemini-cli``   → ``GEMINI_API_KEY``
-        - ``custom``       → ``None``
+        Delegates to the :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`
+        registry.  Returns ``None`` for ``'custom'`` servers — users manage
+        credentials entirely via :attr:`acp_env` in that case.
         """
-        return {
-            "claude-code": "ANTHROPIC_API_KEY",
-            "codex": "OPENAI_API_KEY",
-            "gemini-cli": "GEMINI_API_KEY",
-        }.get(self.acp_server)
+        info = self.provider_info
+        return info.api_key_env_var if info is not None else None
+
+    @property
+    def base_url_env_var(self) -> str | None:
+        """Env var for proxy/base-URL routing, or ``None`` if unsupported.
+
+        Delegates to the :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`
+        registry.
+        """
+        info = self.provider_info
+        return info.base_url_env_var if info is not None else None
+
+    def resolve_provider_env(self) -> dict[str, str]:
+        """Derive provider-native env vars from the attribution LLM settings.
+
+        Built-in ACP providers read credentials and optional base URLs from
+        provider-specific env var names. This helper translates the generic
+        :attr:`llm` settings into that provider-native subprocess environment.
+        Custom servers return an empty mapping.
+        """
+        env: dict[str, str] = {}
+
+        api_key = self.llm.api_key
+        if api_key is not None and self.api_key_env_var:
+            key_value = (
+                api_key.get_secret_value()
+                if isinstance(api_key, SecretStr)
+                else str(api_key)
+            )
+            key_value = key_value.strip()
+            if key_value:
+                env[self.api_key_env_var] = key_value
+
+        base_url = self.llm.base_url
+        if base_url is not None and self.base_url_env_var:
+            base_url_value = str(base_url).strip()
+            if base_url_value:
+                env[self.base_url_env_var] = base_url_value
+
+        return env
+
+    def resolve_acp_env(self) -> dict[str, str]:
+        """Return the user-supplied ACP subprocess env vars.
+
+        Only the explicit :attr:`acp_env` entries — the user-facing
+        arbitrary-env-var input that becomes ``ACPAgent.acp_env``. Provider
+        credentials are **no longer** folded in here; :meth:`create_agent`
+        routes them through :attr:`agent_context` secrets →
+        ``state.secret_registry`` instead (the canonical, cipher-protected
+        channel the regular agent uses). At spawn time ``ACPAgent`` injects
+        ``acp_env`` and the registry secrets into the subprocess env.
+
+        .. deprecated:: 1.24.0
+            :attr:`acp_env` is deprecated and will be removed in 1.29.0. Pass
+            arbitrary subprocess env vars through the conversation secrets
+            channel instead.
+        """
+        if self.acp_env:
+            warn_deprecated(
+                "ACPAgentSettings.acp_env",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=(
+                    "Provide arbitrary ACP subprocess env vars through the "
+                    "conversation secrets channel (agent_context.secrets / "
+                    "StartConversationRequest.secrets, which route through "
+                    "state.secret_registry) instead."
+                ),
+            )
+        return dict(self.acp_env)
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
 
         Uses :attr:`acp_command` verbatim when non-empty; otherwise looks
-        up the default for :attr:`acp_server`. Raises ``ValueError`` when
-        the server is ``'custom'`` but no explicit command is set (there
-        is no sensible default to fall back to).
+        up the default from :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
+        Raises ``ValueError`` when :attr:`acp_server` is ``'custom'`` but
+        no explicit command is set (there is no sensible default to fall back to).
+
+        The result is routed through :meth:`_prefer_pinned_binary`, which swaps
+        an ``npx`` command for the pinned binary when it is on ``PATH`` (a no-op
+        otherwise).
         """
         if self.acp_command:
-            return list(self.acp_command)
-        if self.acp_server == "custom":
+            command = list(self.acp_command)
+        elif self.acp_server == "custom":
             raise ValueError(
                 "ACPAgentSettings.acp_command must be set when "
                 "acp_server='custom' — there is no default to fall back to"
             )
-        default = _DEFAULT_ACP_COMMANDS.get(self.acp_server)
-        if default is None:
-            raise ValueError(
-                f"No default ACP command for acp_server={self.acp_server!r}"
-            )
-        return list(default)
+        else:
+            info = get_acp_provider(self.acp_server)
+            if info is None:
+                raise ValueError(
+                    f"No default ACP command for acp_server={self.acp_server!r}"
+                )
+            command = list(info.default_command)
+        return self._prefer_pinned_binary(command)
+
+    @staticmethod
+    def _parse_npx_invocation(command: Sequence[str]) -> tuple[str, list[str]] | None:
+        """Parse an ``npx``-style launch command into ``(package, extra_args)``.
+
+        ``["npx", "-y", "@scope/pkg", "--flag"]`` → ``("@scope/pkg", ["--flag"])``,
+        skipping any leading ``npx`` flags such as ``-y`` / ``--yes``. Returns
+        ``None`` when *command* is not an ``npx`` invocation (e.g. an
+        already-resolved binary path), so callers leave it untouched.
+        """
+        if not command or command[0] != "npx":
+            return None
+        # Drop leading npx flags (-y, --yes, ...) to find the package name.
+        rest = list(itertools.dropwhile(lambda arg: arg.startswith("-"), command[1:]))
+        if not rest:
+            return None
+        package, *extra_args = rest
+        return package, extra_args
+
+    def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
+        """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
+
+        When *command* is an ``npx`` invocation of this provider's package and
+        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
+        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        ``--acp``) — running the agent-server image's pinned wrapper instead of
+        downloading npm-latest. Returned unchanged otherwise: no pinned binary
+        (custom server), a non-matching/non-npx command, or the binary not on
+        ``PATH`` (local dev).
+        """
+        info = get_acp_provider(self.acp_server)
+        if info is None or info.binary_name is None:
+            return command
+
+        default_parsed = self._parse_npx_invocation(info.default_command)
+        actual_parsed = self._parse_npx_invocation(command)
+        if default_parsed is None or actual_parsed is None:
+            return command
+
+        default_pkg, _ = default_parsed
+        actual_pkg, extra = actual_parsed
+        if actual_pkg != default_pkg or shutil.which(info.binary_name) is None:
+            return command
+
+        return [info.binary_name, *extra]
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
@@ -1023,32 +1417,86 @@ class ACPAgentSettings(BaseModel):
         The subprocess command is resolved via :meth:`resolve_acp_command`
         which maps :attr:`acp_server` to a default when no explicit
         :attr:`acp_command` is set.
+
+        Provider credentials (``llm.api_key`` → :attr:`api_key_env_var`,
+        ``llm.base_url`` → :attr:`base_url_env_var`) are folded into
+        :attr:`agent_context` secrets rather than ``acp_env``. They then ride
+        the canonical ``agent_context.secrets`` → ``create_request`` →
+        ``request.secrets`` → ``state.secret_registry`` channel (encrypted
+        across the conversation-start boundary), exactly like the regular
+        agent's credentials, and reach the subprocess from the registry.
+        ``acp_env`` carries only the user's explicit arbitrary env vars.
         """
         from openhands.sdk.agent import ACPAgent
+        from openhands.sdk.secret import StaticSecret
+
+        # Fold provider creds into agent_context.secrets (not acp_env): on
+        # acp_env they would be dropped to ``**********`` by stores that dump
+        # agent_settings without cipher context; on agent_context.secrets they
+        # ride the StoredConversation.secrets + agent-server Cipher boundary.
+        # Wrap as StaticSecret (a SecretSource) so they validate when
+        # create_request lifts agent_context.secrets into request.secrets
+        # (typed dict[str, SecretSource]).
+        provider_secrets: dict[str, StaticSecret] = {
+            name: StaticSecret(value=SecretStr(value))
+            for name, value in self.resolve_provider_env().items()
+        }
+        agent_context = self.agent_context
+        if provider_secrets:
+            existing = (
+                dict(agent_context.secrets)
+                if agent_context is not None and agent_context.secrets
+                else {}
+            )
+            # Explicit context secrets win over provider-derived ones.
+            merged_secrets = {**provider_secrets, **existing}
+            agent_context = (
+                agent_context.model_copy(update={"secrets": merged_secrets})
+                if agent_context is not None
+                else AgentContext(current_datetime=None, secrets=merged_secrets)
+            )
+
+        # Bypass ``_serialize_mcp_config``: the subprocess needs real
+        # env/headers, not the masked/encrypted on-disk form.
+        mcp_config = (
+            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+            if self.mcp_config is not None
+            else {}
+        )
 
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
+            # Pass acp_env directly rather than via resolve_acp_env() so the
+            # deprecation warning is not emitted twice on the create_agent path:
+            # _start_acp_server already warns (ACPAgent.acp_env) at spawn, and
+            # resolve_acp_env()'s warning (ACPAgentSettings.acp_env) is reserved
+            # for explicit callers of that public method.
             acp_env=dict(self.acp_env),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            acp_isolate_data_dir=self.acp_isolate_data_dir,
+            acp_file_secrets=list(self.acp_file_secrets),
+            agent_context=agent_context,
+            mcp_config=mcp_config,
         )
 
 
 class LLMAgentSettings(OpenHandsAgentSettings):
-    """Deprecated name for :class:`OpenHandsAgentSettings`.
+    """Legacy ``agent_kind='llm'`` variant of :class:`OpenHandsAgentSettings`.
 
     ``LLMAgentSettings`` was the public class name before the v1.19.0 rename.
-    It is kept as a :class:`OpenHandsAgentSettings` subclass so existing
-    callers keep working. Importing this name from ``openhands.sdk.settings``
-    (or ``openhands.sdk``) emits a :class:`DeprecationWarning` via the
-    module-level ``__getattr__`` — no construction-time overhead.
+    The public import aliases (``from openhands.sdk import LLMAgentSettings`` and
+    ``from openhands.sdk.settings import LLMAgentSettings``) were removed in
+    v1.24.0 — use :class:`OpenHandsAgentSettings` for all new code.
 
-    Use :class:`OpenHandsAgentSettings` for all new code.
-
-    Scheduled for removal in v1.22.0.
+    The class itself is retained (reachable at
+    ``openhands.sdk.settings.model.LLMAgentSettings``) because it remains a
+    member of the settings discriminated union: it keeps ``agent_kind='llm'`` so
+    persisted legacy payloads still deserialize and the API-breakage checker
+    sees no field-value change versus the published release.
     """
 
     # Keep agent_kind as Literal["llm"] so the API-breakage checker sees no
@@ -1095,8 +1543,9 @@ to validate/construct instances from raw payloads. Use
 :func:`default_agent_settings` for the default (LLM-agent) shape.
 
 Named ``AgentSettingsConfig`` rather than ``AgentSettings`` because the
-latter is retained as a (deprecated) concrete class for backwards
-compatibility with v1.17.x callers — see :class:`AgentSettings`.
+old concrete ``AgentSettings`` class was removed after its deprecation
+deadline. Use this union for fields that accept any supported settings
+variant.
 """
 
 
@@ -1107,75 +1556,24 @@ _AGENT_SETTINGS_ADAPTER: TypeAdapter[
 
 def validate_agent_settings(
     data: Any,
+    *,
+    context: Mapping[str, Any] | None = None,
 ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
-    """Validate ``data`` as an :data:`AgentSettingsConfig` discriminated union.
+    """Load and validate an agent-settings payload.
 
-    This is the drop-in replacement for the old
-    ``AgentSettings.model_validate(...)`` classmethod.
+    Persisted payloads are migrated to the current schema version before
+    validation, including legacy ``agent_kind: "llm"`` payloads from before the
+    ``OpenHandsAgentSettings`` rename.
     """
-    return _AGENT_SETTINGS_ADAPTER.validate_python(data)
-
-
-class AgentSettings(LLMAgentSettings):
-    """Deprecated legacy name for :class:`OpenHandsAgentSettings`.
-
-    Before the discriminated-union redesign, ``AgentSettings`` was the
-    single concrete class for agent configuration. It is kept as a
-    :class:`LLMAgentSettings` subclass (which itself is a
-    :class:`OpenHandsAgentSettings` subclass) so every v1.17 attribute and
-    method (``agent``, ``llm``, ``tools``, ``mcp_config``,
-    ``condenser``, ``verification``, ``build_condenser``,
-    ``build_critic``, ``create_agent``, …) resolves through
-    inheritance — existing callers keep working, though direct
-    construction now emits a :class:`DeprecationWarning`.
-
-    Inherits from :class:`LLMAgentSettings` so that ``agent_kind`` remains
-    ``"llm"`` (matching the PyPI 1.19.x API surface seen by the breakage
-    checker), while new code should use :class:`OpenHandsAgentSettings`
-    directly.
-
-    For new code:
-
-    * Use :class:`OpenHandsAgentSettings` to build an explicit LLM-backed
-      agent, or :class:`ACPAgentSettings` for an ACP-delegating one.
-    * Use :data:`AgentSettingsConfig` as the type for fields that may
-      hold either variant (FastAPI / Pydantic pick the variant from
-      the ``agent_kind`` discriminator).
-    * Use :func:`validate_agent_settings` to validate raw payloads
-      into the correct variant.
-
-    Scheduled for removal in v1.22.0 (5 minor releases after the
-    discriminated-union landing in v1.17.1).
-    """
-
-    @classmethod
-    def from_persisted(
-        cls, data: Any
-    ) -> OpenHandsAgentSettings | LLMAgentSettings | ACPAgentSettings:
-        """Load persisted agent settings, applying any schema migrations."""
-        payload = _apply_persisted_migrations(
-            data,
-            current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-            migrations=_AGENT_SETTINGS_MIGRATIONS,
-            payload_name="AgentSettings",
-        )
-        return validate_agent_settings(payload)
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "AgentSettings",
-            deprecated_in="1.17.0",
-            removed_in="1.22.0",
-            details=(
-                "Use ``OpenHandsAgentSettings`` (for an LLM agent) or "
-                "``ACPAgentSettings`` (for an ACP agent) directly; use "
-                "``AgentSettingsConfig`` as the type for fields that accept "
-                "either variant."
-            ),
-        )
-        super().__init__(*args, **kwargs)
+    if isinstance(data, OpenHandsAgentSettings | ACPAgentSettings):
+        return data
+    payload = _apply_persisted_migrations(
+        data,
+        current_version=AGENT_SETTINGS_SCHEMA_VERSION,
+        migrations=_AGENT_SETTINGS_MIGRATIONS,
+        payload_name="AgentSettings",
+    )
+    return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
@@ -1199,7 +1597,7 @@ def create_agent_from_settings(
 
 
 def export_agent_settings_schema() -> SettingsSchema:
-    """Export a combined schema for the :data:`AgentSettings` union.
+    """Export a combined schema for the :data:`AgentSettingsConfig` union.
 
     Walks both variants, tags each non-shared section with its variant,
     and returns a single :class:`SettingsSchema`. The discriminator

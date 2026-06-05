@@ -4,25 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
+from base64 import urlsafe_b64encode
+from concurrent.futures import Future
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
+from acp.schema import PromptResponse
+from pydantic import Field, SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
-    _build_session_meta,
+    _classify_acp_init_error,
+    _codex_auth_file,
+    _codex_base_url_overrides,
     _estimate_cost_from_tokens,
+    _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
+    _mask_json_value,
     _maybe_set_session_model,
+    _mcp_config_to_acp_servers,
     _OpenHandsACPBridge,
-    _resolve_bypass_mode,
+    _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
 )
+from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
 from openhands.sdk.conversation.state import (
@@ -35,9 +47,12 @@ from openhands.sdk.event import (
     MessageEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.skills import KeywordTrigger, Skill
 from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 from openhands.sdk.workspace.local import LocalWorkspace
 
@@ -47,8 +62,30 @@ from openhands.sdk.workspace.local import LocalWorkspace
 # ---------------------------------------------------------------------------
 
 
+class _FakeLookupSecret(SecretSource):
+    """Module-level stand-in for ``LookupSecret`` used by registry tests.
+
+    Defined at module scope (not inside a test method) so its ``__qualname__``
+    does not contain ``<locals>``. ``DiscriminatedUnionMixin`` rejects
+    subclasses whose qualname contains ``<locals>`` during ``SecretSource``
+    union validation, and any such local subclass leaks into the global
+    ``__subclasses__`` registry — breaking unrelated serialization tests
+    that run later on the same xdist worker.
+    """
+
+    stored_value: str
+
+    def get_value(self) -> str | None:
+        return self.stored_value
+
+
 def _make_agent(**kwargs) -> ACPAgent:
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
+
+
+def _make_cipher() -> Cipher:
+    """Deterministic Fernet cipher for round-trip tests."""
+    return Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
 
 
 def _make_state(tmp_path) -> ConversationState:
@@ -238,6 +275,104 @@ class TestACPAgentSerialization:
         assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "test"]
 
+    def test_acp_env_decrypts_ciphertext_with_cipher_in_context(self):
+        """Round-trip Fernet-encrypted ``acp_env`` values via cipher context.
+
+        Regression for a real production bug in v1.24.0: the on-disk →
+        ACPAgentSettings → ACPAgent path could leave Fernet ciphertext as
+        the field value because only the settings-side variant had a
+        decryption ``field_validator``. The conversation-start flow
+        validates the full :class:`StoredConversation` with cipher
+        context after the agent was already constructed (without cipher)
+        from ``StartConversationRequest.agent_settings`` — and without
+        the validator here, the ciphertext survives that re-validation
+        and reaches the ACP subprocess as the env-var value. The
+        provider call then fails (e.g. Anthropic reads the Fernet token
+        as ``ANTHROPIC_BASE_URL`` and 400s on URL parsing).
+        """
+        cipher = _make_cipher()
+        encrypted_key = cipher.encrypt(SecretStr("sk-real"))
+        encrypted_url = cipher.encrypt(SecretStr("https://api.example.com"))
+        assert encrypted_key is not None
+        assert encrypted_url is not None
+
+        # Build the wire payload an agent-server would receive: an
+        # ACPAgent dict whose ``acp_env`` values are Fernet ciphertext.
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {
+                "ANTHROPIC_API_KEY": encrypted_key,
+                "ANTHROPIC_BASE_URL": encrypted_url,
+            },
+        }
+
+        restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {
+            "ANTHROPIC_API_KEY": "sk-real",
+            "ANTHROPIC_BASE_URL": "https://api.example.com",
+        }
+
+    def test_acp_env_no_cipher_in_context_leaves_ciphertext_untouched(self):
+        """The ``cipher is None`` branch of the validator is exercised on
+        every code path that round-trips an agent dict without supplying
+        a cipher (e.g. test serialization helpers, JSON-only diagnostic
+        dumps). In that mode the ciphertext must survive verbatim — both
+        because there's nothing to decrypt with, and because mutating it
+        would defeat a downstream caller that *will* validate again with
+        the cipher present (the conversation-start re-validation step).
+        """
+        cipher = _make_cipher()
+        encrypted = cipher.encrypt(SecretStr("sk-real"))
+        assert encrypted is not None
+
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"ANTHROPIC_API_KEY": encrypted},
+        }
+        restored = AgentBase.model_validate(data)
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"ANTHROPIC_API_KEY": encrypted}
+
+    def test_acp_env_plaintext_passes_through_with_cipher(self):
+        """First writes from clients that never went through the encryption
+        pipeline carry plaintext. They must still validate cleanly when the
+        server happens to have a cipher in context."""
+        cipher = _make_cipher()
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"FOO": "plaintext-value"},
+        }
+        restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"FOO": "plaintext-value"}
+
+    def test_acp_env_undecryptable_ciphertext_passes_through_with_warning(self, caplog):
+        """Cipher mismatch / corruption shouldn't crash agent construction.
+
+        Mirrors the MCP env/header pattern: a ciphertext we can't decrypt
+        is left in place with a logged warning so the operator can repair
+        it, rather than turning into a hard failure that bricks the
+        agent.
+        """
+        cipher = _make_cipher()
+        # Looks like a Fernet token (prefix matches) but isn't a valid
+        # one — try_decrypt_str returns None.
+        bogus = "gAAAAA" + ("x" * 80)
+        data = {
+            "kind": "ACPAgent",
+            "acp_command": ["echo", "test"],
+            "acp_env": {"BUSTED": bogus},
+        }
+        with caplog.at_level("WARNING"):
+            restored = AgentBase.model_validate(data, context={"cipher": cipher})
+        assert isinstance(restored, ACPAgent)
+        assert restored.acp_env == {"BUSTED": bogus}
+        assert any("could not be decrypted" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # Feature validation (init_state guards)
@@ -261,13 +396,20 @@ class TestACPAgentValidation:
             agent.init_state(state, on_event=events.append)
         return events
 
-    def test_rejects_mcp_config(self, tmp_path):
+    def test_allows_mcp_config(self, tmp_path):
+        """mcp_config is forwarded to the ACP subprocess, not rejected.
+
+        The servers are translated and passed to new_session/load_session
+        (see test_acp_mcp.py); here we just assert init_state no longer raises.
+        """
         agent = ACPAgent(
             acp_command=["echo"],
             mcp_config={"mcpServers": {"test": {"command": "echo"}}},
         )
-        with pytest.raises(NotImplementedError, match="mcp_config"):
-            self._init_with_patches(agent, tmp_path)
+        # Should not raise; supports_openhands_mcp stays False (no in-process
+        # tools — the ACP server owns the connection).
+        self._init_with_patches(agent, tmp_path)
+        assert agent.supports_openhands_mcp is False
 
     def test_allows_agent_context_for_prompt_extensions(self, tmp_path):
         agent = ACPAgent(
@@ -530,6 +672,246 @@ class TestACPAgentInitState:
         assert "ACP server" in events[0].system_prompt.text
         assert events[0].tools == []
 
+    def test_init_state_no_dynamic_context_without_agent_context(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is None
+
+    def test_init_state_populates_dynamic_context_from_suffix(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "Team rules." in events[0].dynamic_context.text
+
+    def test_init_state_sets_pending_state_for_new_session(self, tmp_path):
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "pending_first_prompt"
+        assert agent._installed_suffix is not None
+        assert "Team rules." in agent._installed_suffix
+
+    def test_init_state_sets_installed_when_suffix_marker_persisted(self, tmp_path):
+        """A successful first turn persists ``acp_suffix_installed`` — on resume
+        the ACPAgent reads that marker and skips re-injection."""
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            "acp_session_id": "prior-session-id",
+            "acp_suffix_installed": True,
+        }
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "installed"
+
+    def test_init_state_pending_when_session_id_only_no_suffix_marker(self, tmp_path):
+        """Persisted ``acp_session_id`` without ``acp_suffix_installed`` means
+        the prior session was created but its first prompt never completed
+        (cancelled / crashed before ``_finalize_successful_turn``).  The
+        ACP subprocess never received the suffix; on resume we must
+        re-inject it on the next turn rather than infer "installed" from
+        session-id presence alone.
+        """
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {"acp_session_id": "prior-session-id"}
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "pending_first_prompt"
+
+    def test_init_state_includes_registry_secrets_in_suffix(self, tmp_path):
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(agent_context=AgentContext(current_datetime=None))
+        state = _make_state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "REGISTRY_TOKEN": StaticSecret(
+                    value=SecretStr("tok"), description="Registry token"
+                )
+            }
+        )
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
+
+    def test_init_state_renders_registry_secrets_without_agent_context(self, tmp_path):
+        """The <CUSTOM_SECRETS> block should render from secret_registry alone.
+
+        Callers that ship secrets through the canonical conversation
+        channel (``StartConversationRequest.secrets`` →
+        ``Conversation.update_secrets`` → ``secret_registry``) but don't
+        attach an ``AgentContext`` shouldn't see those secrets silently
+        dropped from the system suffix — the values still flow into the
+        subprocess env via ``_start_acp_server``, so the agent needs to
+        know they're available.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()  # no agent_context
+        state = _make_state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "REGISTRY_TOKEN": StaticSecret(
+                    value=SecretStr("tok"), description="Registry token"
+                )
+            }
+        )
+        events: list = []
+
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        assert events[0].dynamic_context is not None
+        assert "REGISTRY_TOKEN" in events[0].dynamic_context.text
+
+    # -- Cold-start error surfacing (issue #1024) --------------------------
+
+    def _init_state_failure(self, tmp_path, exc: BaseException):
+        """Run init_state with ``_start_acp_server`` raising ``exc``.
+
+        Returns ``(state, events, raised)`` where ``raised`` is the exception
+        that escaped init_state (asserted to be the original ``exc``).
+        """
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        events: list = []
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(type(exc)) as excinfo:
+                agent.init_state(state, on_event=events.append)
+        assert excinfo.value is exc, "original exception must propagate unchanged"
+        return state, events
+
+    def test_init_state_surfaces_auth_required(self, tmp_path):
+        """An auth-required protocol error becomes a typed ACPAuthRequired event
+        with ERROR status — instead of bypassing emission and reaching the
+        client as a generic "remote conversation ended with error"."""
+        exc = ACPRequestError(-32000, "Authentication required")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].source == "agent"
+        assert errors[0].code == "ACPAuthRequired"
+        assert "Authentication required" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_spawn_error(self, tmp_path):
+        """A missing/unexecutable CLI binary (FileNotFoundError /
+        PermissionError from create_subprocess_exec) becomes ACPSpawnError."""
+        for exc in (
+            FileNotFoundError("no such file: claude-agent-acp"),
+            PermissionError("permission denied"),
+        ):
+            state, events = self._init_state_failure(tmp_path, exc)
+            errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+            assert len(errors) == 1
+            assert errors[0].code == "ACPSpawnError"
+            assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_surfaces_generic_init_error(self, tmp_path):
+        """Any other handshake/session failure falls back to ACPInitError."""
+        exc = RuntimeError("protocol handshake timed out")
+        state, events = self._init_state_failure(tmp_path, exc)
+
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPInitError"
+        assert "protocol handshake timed out" in errors[0].detail
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_init_state_truncates_long_detail(self, tmp_path):
+        """detail is capped at 500 chars, matching the run-loop error path."""
+        exc = RuntimeError("x" * 1000)
+        _state, events = self._init_state_failure(tmp_path, exc)
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors[0].detail) == 500
+
+    def test_init_state_reraises_even_if_emission_fails(self, tmp_path):
+        """A failure while surfacing the error must never mask the original
+        exception — the re-raise contract run()/arun() rely on is preserved."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        exc = RuntimeError("boom")
+
+        def _explode(_event):
+            raise ValueError("on_event is broken")
+
+        with patch(
+            "openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server",
+            side_effect=exc,
+        ):
+            with pytest.raises(RuntimeError, match="boom") as excinfo:
+                agent.init_state(state, on_event=_explode)
+        assert excinfo.value is exc
+
+
+# ---------------------------------------------------------------------------
+# _classify_acp_init_error
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyACPInitError:
+    def test_auth_required_code(self):
+        exc = ACPRequestError(-32000, "Authentication required")
+        assert _classify_acp_init_error(exc) == "ACPAuthRequired"
+
+    def test_other_request_error_is_init_error(self):
+        # A protocol error that isn't auth-required (e.g. internal error) is a
+        # generic init failure, not an auth failure.
+        exc = ACPRequestError(-32603, "Internal error")
+        assert _classify_acp_init_error(exc) == "ACPInitError"
+
+    def test_file_not_found_is_spawn_error(self):
+        assert _classify_acp_init_error(FileNotFoundError()) == "ACPSpawnError"
+
+    def test_permission_error_is_spawn_error(self):
+        assert _classify_acp_init_error(PermissionError()) == "ACPSpawnError"
+
+    def test_broken_pipe_is_init_error(self):
+        # A transport drop during the handshake is an OSError subclass but not a
+        # spawn failure — it must classify as ACPInitError, not ACPSpawnError.
+        assert _classify_acp_init_error(BrokenPipeError()) == "ACPInitError"
+
+    def test_generic_exception_is_init_error(self):
+        assert _classify_acp_init_error(RuntimeError("x")) == "ACPInitError"
+
 
 # ---------------------------------------------------------------------------
 # _OpenHandsACPBridge
@@ -608,6 +990,210 @@ class TestOpenHandsACPClient:
     async def test_ext_notification_is_noop(self):
         client = _OpenHandsACPBridge()
         await client.ext_notification("test", {})  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Tool-call event emission (started + terminal, no per-progress fan-out)
+# ---------------------------------------------------------------------------
+
+
+def _mk_tool_start(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str = "git status",
+    kind: str = "execute",
+    status: str = "in_progress",
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallStart
+
+    start = MagicMock(spec=ToolCallStart)
+    start.tool_call_id = tool_call_id
+    start.title = title
+    start.kind = kind
+    start.status = status
+    start.raw_input = raw_input
+    start.raw_output = raw_output
+    start.content = content
+    return start
+
+
+def _mk_tool_progress(
+    tool_call_id: str = "tc-1",
+    *,
+    title: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    raw_input: Any | None = None,
+    raw_output: Any | None = None,
+    content: Any | None = None,
+) -> Any:
+    from acp.schema import ToolCallProgress
+
+    progress = MagicMock(spec=ToolCallProgress)
+    progress.tool_call_id = tool_call_id
+    progress.title = title
+    progress.kind = kind
+    progress.status = status
+    progress.raw_input = raw_input
+    progress.raw_output = raw_output
+    progress.content = content
+    return progress
+
+
+class TestACPToolCallProgressCollapse:
+    """The bridge persists exactly one ``started`` + one terminal event.
+
+    Each ``ToolCallProgress`` carries the *full cumulative* output, so emitting
+    one event per frame is O(n^2) storage + WebSocket relay. The bridge instead
+    streams one early ``started`` event and one terminal (``completed`` /
+    ``failed``) event per ``tool_call_id`` — the action->observation pair —
+    while silently accumulating the intermediate frames so the terminal event
+    still carries the final output.
+    """
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_emits_started_event(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+
+        assert len(events) == 1
+        assert isinstance(events[0], ACPToolCallEvent)
+        assert events[0].tool_call_id == "tc-1"
+        assert events[0].status == "in_progress"
+        assert events[0].is_error is False
+
+    @pytest.mark.asyncio
+    async def test_intermediate_progress_frames_are_not_emitted(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        # Several non-terminal progress frames with growing cumulative output.
+        for chunk in ("a", "ab", "abc"):
+            await client.session_update(
+                "s1", _mk_tool_progress(status="in_progress", raw_output=chunk)
+            )
+
+        # Only the started event was persisted — the intermediate frames are
+        # accumulated silently (this is the O(n^2)->O(1) collapse).
+        assert len(events) == 1
+        assert events[0].status == "in_progress"
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle_emits_exactly_two_events(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="pending"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="in_progress", raw_output="partial")
+        )
+        await client.session_update(
+            "s1", _mk_tool_progress(status="completed", raw_output="partial-final")
+        )
+
+        assert len(events) == 2
+        started, terminal = events
+        assert started.status == "pending"
+        assert terminal.status == "completed"
+        # Terminal event carries the final cumulative output.
+        assert terminal.raw_output == "partial-final"
+        assert terminal.is_error is False
+
+    @pytest.mark.asyncio
+    async def test_failed_terminal_sets_is_error(self) -> None:
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update(
+            "s1", _mk_tool_progress(status="failed", raw_output="boom")
+        )
+
+        assert len(events) == 2
+        assert events[-1].status == "failed"
+        assert events[-1].is_error is True
+
+    @pytest.mark.asyncio
+    async def test_single_shot_completed_start_emits_once(self) -> None:
+        """A ToolCallStart that is already terminal is the only event."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update(
+            "s1", _mk_tool_start(status="completed", raw_output="done")
+        )
+
+        assert len(events) == 1
+        assert events[0].status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_redundant_terminal_progress_does_not_double_emit(self) -> None:
+        """Only the first transition into a terminal status emits."""
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+
+        await client.session_update("s1", _mk_tool_start(status="in_progress"))
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+        # A trailing duplicate terminal frame must not produce a third event.
+        await client.session_update("s1", _mk_tool_progress(status="completed"))
+
+        assert len(events) == 2
+        assert [e.status for e in events] == ["in_progress", "completed"]
+
+    def test_finalize_flush_completes_orphaned_tool_calls(self) -> None:
+        """A card the server opened but never closed is flushed to completed."""
+        agent = _make_agent()
+        client = _OpenHandsACPBridge()
+        events: list[Any] = []
+        client.on_event = events.append
+        agent._client = client
+
+        # One still-running call and one already-terminal call.
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "live-1",
+                "title": "long task",
+                "tool_kind": "execute",
+                "status": "in_progress",
+                "raw_input": None,
+                "raw_output": "partial output",
+                "content": None,
+            }
+        )
+        client.accumulated_tool_calls.append(
+            {
+                "tool_call_id": "done-1",
+                "title": "quick task",
+                "tool_kind": "read",
+                "status": "completed",
+                "raw_input": None,
+                "raw_output": "ok",
+                "content": None,
+            }
+        )
+
+        agent._flush_inflight_tool_calls_as_completed()
+
+        # Only the non-terminal call is flushed (the terminal one is untouched).
+        assert len(events) == 1
+        assert events[0].tool_call_id == "live-1"
+        assert events[0].status == "completed"
+        assert events[0].is_error is False
+        assert events[0].raw_output == "partial output"
+        # The accumulator entry is now terminal so it won't be flushed again.
+        assert client.accumulated_tool_calls[0]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -918,6 +1504,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -965,6 +1554,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -1020,6 +1612,9 @@ class TestACPAgentStep:
         conversation = MagicMock()
         conversation.state = state
         self._wire_passthrough_mocks(agent)
+        assert agent.agent_context is not None
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()
+        agent._suffix_install_state = "pending_first_prompt"
 
         agent.step(conversation, on_event=lambda _: None)
 
@@ -1032,6 +1627,63 @@ class TestACPAgentStep:
         assert "AgentSkills triggered review instructions." in prompt_text
         assert "<name>agentskill-review</name>" in prompt_text
         assert "<description>AgentSkills review catalog.</description>" in prompt_text
+
+    def test_step_does_not_re_inject_suffix_on_second_turn(self, tmp_path):
+        """Suffix must not appear in subsequent turns after the first injection."""
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Turn 2.")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+        # Simulate: suffix was already installed on the first turn.
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "installed"
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        prompt_text = "\n\n".join(
+            b.text for b in agent._conn.prompt.await_args.args[0] if hasattr(b, "text")
+        )
+        assert "Team rules." not in prompt_text
+
+    def test_step_suffix_install_state_transitions_to_installed(self, tmp_path):
+        """After the first turn the install state must be 'installed' AND the
+        ``acp_suffix_installed`` marker must be persisted into
+        ``state.agent_state`` so a subsequent agent-server restart can tell
+        the suffix was actually installed (rather than inferring from the
+        mere presence of ``acp_session_id``)."""
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        state = _make_state(tmp_path)
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="First.")]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        self._wire_passthrough_mocks(agent)
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "pending_first_prompt"
+
+        agent.step(conversation, on_event=lambda _: None)
+
+        assert agent._suffix_install_state == "installed"
+        assert state.agent_state.get("acp_suffix_installed") is True
 
     def test_step_with_reasoning_surfaces_via_action_event(self, tmp_path):
         """Reasoning traces are preserved in ActionEvent.reasoning_content."""
@@ -1168,6 +1820,758 @@ class TestACPAgentStep:
         assert wired_during_prompt == [on_token]
         # And unwired afterward so a late token chunk is a no-op.
         assert mock_client.on_token is None
+
+
+# ---------------------------------------------------------------------------
+# Async step (astep) — regression coverage for #3348
+# ---------------------------------------------------------------------------
+
+
+class TestACPAgentAstep:
+    """Native ``ACPAgent.astep`` must not fall back to ``AgentBase.astep``
+    (which wraps ``step`` in ``loop.run_in_executor``).  Doing so would
+    move post-prompt callbacks and state updates onto an executor worker
+    thread, outside ``LocalConversation.arun``'s controlled event
+    serialization. See #3348.
+    """
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_astep_overrides_default_agentbase_implementation(self):
+        """Structural guard: if this flips back, ``AgentBase.astep``'s
+        ``run_in_executor`` wrapper resumes and #3348 reopens.
+        """
+        assert ACPAgent.astep is not AgentBase.astep
+
+    def test_astep_runs_post_prompt_callbacks_on_caller_thread(self, tmp_path):
+        """Post-prompt ``on_event`` callbacks must fire on the caller
+        thread. If astep schedules ``step`` on a worker thread (the buggy
+        default), callbacks and final state updates run outside the async
+        run task's serialization model — see #3348.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        caller_thread_id = threading.get_ident()
+        prompt_thread_id: list[int] = []
+        on_event_thread_ids: list[int] = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            # Must execute on the portal loop's thread, not the caller's
+            # — proves we actually crossed the loop boundary.
+            prompt_thread_id.append(threading.get_ident())
+            mock_client.accumulated_text.append("answer")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+
+            def _capture_event(event):
+                on_event_thread_ids.append(threading.get_ident())
+
+            asyncio.run(agent.astep(conversation, on_event=_capture_event))
+        finally:
+            executor.close()
+
+        assert len(prompt_thread_id) == 1
+        assert prompt_thread_id[0] != caller_thread_id
+
+        # FinishAction + ObservationEvent — both on caller thread.
+        assert len(on_event_thread_ids) >= 2
+        for tid in on_event_thread_ids:
+            assert tid == caller_thread_id, (
+                f"on_event ran on thread {tid} instead of caller "
+                f"{caller_thread_id} — astep regressed to thread-pool path"
+            )
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+
+    def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
+        """astep's error path must call ``_emit_turn_error`` AND re-raise.
+
+        Guards against a silently swallowed ``raise`` in the
+        ``except Exception`` branch — without re-raise,
+        ``LocalConversation.arun()`` would not transition out of the
+        loop and the failure would be invisible to ``RemoteConversation``.
+        Mirrors the contract that sync ``step()`` already enforces.
+        """
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _failing_prompt(prompt_blocks, session_id):
+            raise RuntimeError("simulated upstream failure")
+
+        agent._conn.prompt = _failing_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            with pytest.raises(RuntimeError, match="simulated upstream failure"):
+                asyncio.run(agent.astep(conversation, on_event=emitted.append))
+        finally:
+            executor.close()
+
+        # _emit_turn_error emits exactly two events: MessageEvent + typed
+        # ConversationErrorEvent.  Both must land before re-raise.
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
+        error_messages = [
+            e
+            for e in emitted
+            if isinstance(e, MessageEvent) and "ACP error" in _message_text(e)
+        ]
+        typed_errors = [
+            e
+            for e in emitted
+            if isinstance(e, ConversationErrorEvent) and e.code == "ACPPromptError"
+        ]
+        assert len(error_messages) == 1, (
+            f"expected one error MessageEvent, got {emitted}"
+        )
+        assert len(typed_errors) == 1, (
+            f"expected one ConversationErrorEvent, got {emitted}"
+        )
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_astep_times_out_while_tool_call_is_inflight(self, tmp_path):
+        """A hard ACP prompt timeout still fires during an active tool call.
+
+        Mirroring OpenHands command handling, active output/heartbeats keep the
+        runtime alive but do not let a never-ending command suppress the hard
+        turn deadline. The timeout path must cancel the ACP session and close
+        any streamed tool cards as failed.
+        """
+        from concurrent.futures import Future
+
+        agent = _make_agent(acp_prompt_timeout=0.02)
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+        cancel_called = threading.Event()
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        class _FakePortal:
+            def __init__(self) -> None:
+                self.prompt_future: Future = Future()
+
+            def start_task_soon(self, fn, *args):  # noqa: ANN001, ANN202
+                if args:
+                    entry = {
+                        "tool_call_id": "git-1",
+                        "title": "git status",
+                        "tool_kind": "execute",
+                        "status": "in_progress",
+                        "raw_input": None,
+                        "raw_output": None,
+                        "content": None,
+                    }
+                    mock_client.accumulated_tool_calls.append(entry)
+                    mock_client._emit_tool_call_event(entry)
+                    return self.prompt_future
+
+                cancel_called.set()
+                cancel_future: Future = Future()
+                cancel_future.set_result(None)
+                return cancel_future
+
+        mock_executor = MagicMock()
+        mock_executor.portal = _FakePortal()
+        agent._executor = mock_executor
+
+        with patch("openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT", 0.01):
+            asyncio.run(agent.astep(conversation, on_event=emitted.append))
+
+        assert cancel_called.is_set()
+        assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+        assert any(
+            isinstance(e, ACPToolCallEvent)
+            and e.tool_call_id == "git-1"
+            and e.status == "failed"
+            and e.is_error
+            for e in emitted
+        )
+
+        def _message_text(ev: MessageEvent) -> str:
+            first = ev.llm_message.content[0]
+            return first.text if isinstance(first, TextContent) else ""
+
+        assert any(
+            isinstance(e, MessageEvent)
+            and "ACP prompt timed out after" in _message_text(e)
+            for e in emitted
+        )
+        assert not any(
+            isinstance(e, ActionEvent) and isinstance(e.action, FinishAction)
+            for e in emitted
+        )
+
+    def test_astep_emits_failed_tool_calls_on_cancellation(self, tmp_path):
+        """``asyncio.CancelledError`` during astep must close in-flight
+        ``ACPToolCallEvent``s as ``failed`` and re-raise.
+
+        ``asyncio.CancelledError`` inherits from ``BaseException`` (not
+        ``Exception``), so the generic ``except Exception`` handler does
+        not catch it — without an explicit ``except asyncio.CancelledError``
+        branch, the cancel races straight to ``finally`` (which only
+        clears callbacks).  Any ``pending`` / ``in_progress`` tool cards
+        already streamed would then stay live forever
+        (``LocalConversation._emit_orphaned_action_errors`` only patches
+        ``ActionEvent``s, not ``ACPToolCallEvent``s).
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):
+                # Seed an in-flight tool call AFTER _reset_client_for_turn
+                # has run (which clears accumulated_tool_calls).  In
+                # production the bridge accumulates these inside
+                # session_update as ToolCallStart / ToolCallProgress
+                # notifications arrive.
+                mock_client.accumulated_tool_calls.append(
+                    {
+                        "tool_call_id": "tc-cancel-1",
+                        "title": "in-flight tool",
+                        "status": "in_progress",
+                        "tool_kind": None,
+                        "raw_input": None,
+                        "raw_output": None,
+                        "content": None,
+                    }
+                )
+                # Signal caller loop that we're holding inside the prompt
+                # so the cancel races deterministically.
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                # Block beyond the cancel-drain timeout so this test exercises
+                # the non-quiesced cancellation path that must synthesize
+                # failed ACP tool-call events.
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    with patch(
+                        "openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT",
+                        0.01,
+                    ):
+                        await task
+                await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+            finally:
+                prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        failed_tool_events = [
+            e
+            for e in emitted
+            if isinstance(e, ACPToolCallEvent)
+            and e.tool_call_id == "tc-cancel-1"
+            and e.status == "failed"
+        ]
+        assert len(failed_tool_events) == 1, (
+            f"expected one terminal failed event for tc-cancel-1, "
+            f"got: {[(type(e).__name__, getattr(e, 'status', None)) for e in emitted]}"
+        )
+        assert failed_tool_events[0].is_error is True
+
+    def test_astep_finalizes_and_reraises_completed_cancelled_prompt(self, tmp_path):
+        """If a cancelled ACP prompt drains successfully, keep the completed turn.
+
+        The ACP server may finish the prompt while ``session/cancel`` is being
+        delivered. In that case the remote session has accepted the assistant
+        turn, so OpenHands must finalize the same turn locally instead of
+        discarding the response and later resuming from diverged session history.
+        The original cancellation still propagates so explicit user stop intent
+        wins at the conversation layer.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                await mock_client.session_update(
+                    session_id,
+                    AgentMessageChunk(
+                        session_update="agent_message_chunk",
+                        content=TextContentBlock(type="text", text="done"),
+                    ),
+                )
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert any(
+            isinstance(e, ActionEvent)
+            and isinstance(e.action, FinishAction)
+            and e.action.message == "done"
+            for e in emitted
+        )
+
+    def test_astep_cancelled_prompt_error_pauses_without_turn_error(self, tmp_path):
+        """Explicit cancellation should not emit stale prompt errors."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            cancel_called = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                raise RuntimeError("late prompt failure")
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+                caller_loop.call_soon_threadsafe(cancel_called.set)
+                prompt_released.set()
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted.append)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(cancel_called.wait(), timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        assert not any(
+            isinstance(e, MessageEvent)
+            and e.source == "agent"
+            and any(
+                isinstance(c, TextContent) and c.text.startswith("ACP error:")
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+        assert not any(isinstance(e, ConversationErrorEvent) for e in emitted)
+        assert agent._restart_session_on_next_turn is True
+
+    def test_astep_double_cancel_during_drain_restarts_next_turn(self, tmp_path):
+        """A second cancellation during drain should quarantine the live prompt."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_double_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+
+            async def _raise_during_drain(self, future):  # noqa: ARG001
+                assert future is not None
+                assert not future.done()
+                raise asyncio.CancelledError
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            with patch.object(
+                ACPAgent,
+                "_drain_cancelled_prompt",
+                new=_raise_during_drain,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                task.cancel()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                finally:
+                    prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_double_cancel())
+        finally:
+            executor.close()
+
+        assert agent._restart_session_on_next_turn is True
+
+    def test_astep_double_cancel_during_cancel_send_restarts_next_turn(self, tmp_path):
+        """A second cancellation during session/cancel should quarantine prompt."""
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancelled_cancel_send() -> None:
+            prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _raise_during_cancel_send(self):  # noqa: ARG001
+                raise asyncio.CancelledError
+
+            agent._conn.prompt = _fake_prompt
+            agent._session_id = "test-session"
+
+            with patch.object(
+                ACPAgent,
+                "_arequest_session_cancel",
+                new=_raise_during_cancel_send,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=lambda _: None)
+                )
+                await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+                task.cancel()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                finally:
+                    prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancelled_cancel_send())
+        finally:
+            executor.close()
+
+        assert agent._restart_session_on_next_turn is True
+
+    def test_cleanup_interruption_finalizes_completed_prompt(self, tmp_path):
+        """A completed prompt should be finalized if cleanup is cancelled."""
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._session_id = "test-session"
+
+        prompt_future: Future[PromptResponse | None] = Future()
+        prompt_future.set_result(None)
+        emitted = []
+
+        with conversation.state as state:
+            agent._handle_cancelled_cleanup_interruption(
+                prompt_future,
+                0.1,
+                state,
+                emitted.append,
+            )
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert agent._restart_session_on_next_turn is False
+        assert any(isinstance(event, ActionEvent) for event in emitted)
+
+    def test_astep_cancellation_does_not_mark_suffix_installed(self, tmp_path):
+        """Cancellation before a turn completes must leave
+        ``_suffix_install_state`` as ``pending_first_prompt``.
+
+        Otherwise the local state would say "installed" while the ACP
+        server never received the suffix (the cancel landed before the
+        portal task could persist it), and the next turn would skip
+        re-injection.  Mirrors the ``_build_acp_prompt`` contract that
+        the install state is only committed via
+        ``_finalize_successful_turn`` → ``_commit_suffix_installation``.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                system_message_suffix="Team rules.", current_datetime=None
+            )
+        )
+        conversation = self._make_conversation_with_message(tmp_path)
+        agent._installed_suffix = agent.agent_context.to_acp_prompt_context()  # type: ignore[union-attr]
+        agent._suffix_install_state = "pending_first_prompt"
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            prompt_entered = asyncio.Event()
+            prompt_released = threading.Event()
+            caller_loop = asyncio.get_running_loop()
+
+            async def _fake_prompt(prompt_blocks, session_id):
+                caller_loop.call_soon_threadsafe(prompt_entered.set)
+                released = await asyncio.to_thread(prompt_released.wait, 10.0)
+                assert released
+                return None
+
+            async def _fake_cancel(session_id):
+                assert session_id == "test-session"
+
+            agent._conn.prompt = _fake_prompt
+            agent._conn.cancel = _fake_cancel
+            agent._session_id = "test-session"
+
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=lambda _: None)
+            )
+            await asyncio.wait_for(prompt_entered.wait(), timeout=5.0)
+            task.cancel()
+            try:
+                with pytest.raises(asyncio.CancelledError):
+                    with patch(
+                        "openhands.sdk.agent.acp_agent._ACP_CANCEL_DRAIN_TIMEOUT",
+                        0.01,
+                    ):
+                        await task
+            finally:
+                prompt_released.set()
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        # Cancellation hit before _finalize_successful_turn ran, so the
+        # suffix install state must remain pending — a subsequent turn
+        # will re-inject the suffix.
+        assert agent._suffix_install_state == "pending_first_prompt", (
+            f"suffix install state was prematurely flipped to "
+            f"{agent._suffix_install_state!r} — next turn would skip suffix"
+        )
+        # ``acp_suffix_installed`` must also not be persisted into
+        # ``agent_state``: otherwise a process restart between this
+        # cancelled turn and the next would read the marker and skip
+        # re-injection (issue #3359 review thread 7).
+        assert conversation.state.agent_state.get("acp_suffix_installed") is not True, (
+            "acp_suffix_installed was persisted despite cancellation — "
+            "a process restart would skip suffix re-injection"
+        )
+
+    def test_astep_does_not_deadlock_under_reentrant_state_lock(self, tmp_path):
+        """End-to-end shape of the #3348 bug.
+
+        Covers direct callers that hold ``state.lock`` on the loop thread
+        across ``await astep(...)`` while a post-prompt callback
+        re-acquires it. With astep overridden, the callback runs on the
+        same thread as the lock owner — FIFOLock's reentrancy lets it
+        through. Without the override, this hangs.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        state = conversation.state
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            mock_client.accumulated_text.append("done")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+
+            # stats_callback-shaped re-entry: take the state lock briefly
+            # from each event callback.  Same-thread reentry must succeed.
+            def _capture_event(event):
+                with state:
+                    pass
+
+            async def _arun_shaped() -> None:
+                with state:
+                    await asyncio.wait_for(
+                        agent.astep(conversation, on_event=_capture_event),
+                        timeout=10.0,
+                    )
+
+            asyncio.run(_arun_shaped())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1459,7 +2863,10 @@ class TestACPAgentTelemetry:
         mock_client = _OpenHandsACPBridge()
         agent._client = mock_client
         agent._conn = MagicMock()
-        agent._session_id = "test-session"
+        # A bearer-secret-looking id so the log-hygiene assertion below is
+        # meaningful: the timeout warning must fingerprint it to ``...<last-8>``,
+        # never emit the full id.
+        agent._session_id = "sk-resume-secret-DEADBEEF"
 
         mock_usage = MagicMock()
         mock_usage.input_tokens = 100
@@ -1497,6 +2904,9 @@ class TestACPAgentTelemetry:
             agent.step(conversation, on_event=lambda _: None)
 
         assert "UsageUpdate not received within 2.0s" in caplog.text
+        # Bearer session id is fingerprinted, not leaked, in the timeout warning.
+        assert "sk-resume-secret-DEADBEEF" not in caplog.text
+        assert "...DEADBEEF" in caplog.text
         assert len(agent.llm.metrics.token_usages) == 1
         assert len(agent.llm.metrics.costs) == 0
         assert agent.llm.metrics.accumulated_cost == 0.0
@@ -2530,34 +3940,6 @@ class TestClientForkTextRouting:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_bypass_mode
-# ---------------------------------------------------------------------------
-
-
-class TestResolveBypassMode:
-    def test_claude_agent(self):
-        assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
-
-    def test_claude_agent_with_scope(self):
-        assert (
-            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
-            == "bypassPermissions"
-        )
-
-    def test_codex_acp(self):
-        assert _resolve_bypass_mode("codex-acp") == "full-access"
-
-    def test_codex_acp_with_version(self):
-        assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
-
-    def test_unknown_server_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("some-other-agent") == "full-access"
-
-    def test_empty_name_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("") == "full-access"
-
-
-# ---------------------------------------------------------------------------
 # acp_session_mode field
 # ---------------------------------------------------------------------------
 
@@ -2635,6 +4017,54 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "chatgpt"
 
+    def test_gemini_oauth_personal_when_creds_file_present(self, tmp_path):
+        """gemini-cli's OAuth login is selected when ~/.gemini/oauth_creds.json
+        exists, with no GEMINI_API_KEY needed."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) == "oauth-personal"
+
+    def test_gemini_oauth_preferred_over_api_key(self, tmp_path):
+        """OAuth login takes precedence over GEMINI_API_KEY (mirrors chatgpt)."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+
+        env = {"GEMINI_API_KEY": "g-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "oauth-personal"
+
+    def test_gemini_api_key_fallback_when_no_oauth_file(self, tmp_path):
+        """Falls back to GEMINI_API_KEY when oauth-personal is offered but the
+        creds file is absent (e.g. in a server image)."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": "g-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+    def test_gemini_oauth_offered_but_no_creds_no_key(self, tmp_path):
+        """oauth-personal offered, no creds file and no API key -> None."""
+        methods = [
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, {}) is None
+
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 
@@ -2645,51 +4075,420 @@ class TestSelectAuthMethod:
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, env) is None
 
+    # -- CODEX_HOME-aware chatgpt detection (issue #1020) ------------------
+
+    def test_chatgpt_detected_under_relocated_codex_home(self, tmp_path):
+        """chatgpt is selected when auth.json lives under a relocated CODEX_HOME,
+        even though ~/.codex/auth.json does not exist."""
+        codex_home = tmp_path / "conv" / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        methods = [self._make_auth_method("chatgpt")]
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert (
+                _select_auth_method(methods, {"CODEX_HOME": str(codex_home)})
+                == "chatgpt"
+            )
+
+    def test_codex_home_without_auth_file_falls_back(self, tmp_path):
+        """A CODEX_HOME without auth.json is not detected as chatgpt; it falls
+        back to the API key when offered."""
+        codex_home = tmp_path / "empty_codex_home"
+        codex_home.mkdir()
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_codex_auth_file_honors_codex_home(self, tmp_path):
+        """_codex_auth_file points at $CODEX_HOME/auth.json when set, else
+        ~/.codex/auth.json."""
+        home = tmp_path / "home"
+        home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=home):
+            assert _codex_auth_file({}) == home / ".codex" / "auth.json"
+        ch = tmp_path / "ch"
+        assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- Gemini Vertex AI service-account detection (issue #1020) ----------
+
+    def test_vertex_ai_selected_when_credentials_file_present(self, tmp_path):
+        """vertex-ai is selected when GOOGLE_APPLICATION_CREDENTIALS points at an
+        existing service-account JSON."""
+        sa = tmp_path / "gcloud-credentials.json"
+        sa.write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa), "GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_preferred_over_personal_oauth(self, tmp_path):
+        """The materialised Vertex SA (deployable) wins over a host-bound
+        personal OAuth login file."""
+        sa = tmp_path / "sa.json"
+        sa.write_text("{}", encoding="utf-8")
+        gem_dir = tmp_path / ".gemini"
+        gem_dir.mkdir()
+        (gem_dir / "oauth_creds.json").write_text("{}", encoding="utf-8")
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("oauth-personal"),
+        ]
+        env = {"GOOGLE_APPLICATION_CREDENTIALS": str(sa)}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "vertex-ai"
+
+    def test_vertex_ai_offered_but_no_credentials_file(self, tmp_path):
+        """vertex-ai offered but GOOGLE_APPLICATION_CREDENTIALS missing/empty ->
+        falls through to the API-key fallback."""
+        methods = [
+            self._make_auth_method("vertex-ai"),
+            self._make_auth_method("gemini-api-key"),
+        ]
+        env = {"GEMINI_API_KEY": "g"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "gemini-api-key"
+
+
+# ---------------------------------------------------------------------------
+# _codex_base_url_overrides (codex ignores OPENAI_BASE_URL)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexBaseUrlOverrides:
+    def test_pins_base_url_for_codex(self):
+        # The documented one-liner: override the built-in openai provider's URL.
+        ov = _codex_base_url_overrides(
+            "codex-acp", [], {"OPENAI_BASE_URL": "https://proxy.example"}
+        )
+        assert ov == ["-c", 'openai_base_url="https://proxy.example"']
+
+    def test_detects_codex_in_any_token(self):
+        # e.g. launched via npx with the scoped package name
+        ov = _codex_base_url_overrides(
+            "npx",
+            ["-y", "@zed-industries/codex-acp@0.15.0"],
+            {"OPENAI_BASE_URL": "https://p"},
+        )
+        assert ov == ["-c", 'openai_base_url="https://p"']
+
+    def test_noop_for_non_codex(self):
+        assert (
+            _codex_base_url_overrides(
+                "claude-agent-acp", [], {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
+    def test_noop_when_no_base_url(self):
+        assert _codex_base_url_overrides("codex-acp", [], {}) == []
+
+    def test_noop_when_caller_already_set_base_url(self):
+        args = ["-c", 'openai_base_url="https://other"']
+        assert (
+            _codex_base_url_overrides(
+                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
+    def test_noop_when_caller_already_set_provider(self):
+        args = ["-c", 'model_provider="custom"']
+        assert (
+            _codex_base_url_overrides(
+                "codex-acp", args, {"OPENAI_BASE_URL": "https://p"}
+            )
+            == []
+        )
+
 
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
 
 
-class TestBuildSessionMeta:
-    def test_claude_agent_adds_model_override(self):
-        assert _build_session_meta("claude-agent-acp", "claude-opus-4-6") == {
-            "claudeCode": {"options": {"model": "claude-opus-4-6"}}
-        }
-
-    def test_codex_agent_does_not_use_session_meta(self):
-        assert _build_session_meta("codex-acp", "gpt-5.4") == {}
-
-    def test_missing_model_does_not_add_session_meta(self):
-        assert _build_session_meta("claude-agent-acp", None) == {}
-
-
 class TestMaybeSetSessionModel:
     @pytest.mark.asyncio
     async def test_codex_agent_uses_protocol_model_override(self):
         conn = AsyncMock()
-        await _maybe_set_session_model(conn, "codex-acp", "session-1", "gpt-5.4")
+        applied = await _maybe_set_session_model(
+            conn, "codex-acp", "session-1", "gpt-5.4"
+        )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gpt-5.4",
             session_id="session-1",
         )
+        # The override was actually pushed to the server via the protocol call.
+        assert applied is True
 
     @pytest.mark.asyncio
-    async def test_non_codex_agent_skips_protocol_override(self):
+    async def test_meta_key_provider_skips_protocol_override_at_init(self):
+        # claude-agent-acp selects its *initial* model via session _meta, so the
+        # one-shot init set_session_model call is skipped (even though the
+        # provider now supports the protocol call for runtime switches).
         conn = AsyncMock()
-        await _maybe_set_session_model(
+        applied = await _maybe_set_session_model(
             conn,
             "claude-agent-acp",
             "session-1",
             "claude-opus-4-6",
         )
         conn.set_session_model.assert_not_called()
+        # Not applied *via this call* — claude rode the model in via _meta on
+        # new_session, which the caller accounts for separately.
+        assert applied is False
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
         conn = AsyncMock()
-        await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        applied = await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
         conn.set_session_model.assert_not_called()
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_does_not_apply_override_at_init(self):
+        # An unknown/custom server gets neither _meta nor the protocol call on a
+        # fresh session, so the override never reaches the server.
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "some-custom-acp", "session-1", "whatever"
+        )
+        conn.set_session_model.assert_not_called()
+        assert applied is False
+
+
+class TestReapplySessionModelOnResume:
+    """Resume reapplies the persisted model via the runtime-switch gate."""
+
+    @pytest.mark.asyncio
+    async def test_claude_reapplies_persisted_model_on_resume(self):
+        # claude selects its initial model via _meta (supports_set_session_model
+        # =False) but DOES support set_session_model for runtime switches.
+        # load_session() carries no _meta, so on resume the persisted model must
+        # be reapplied via the runtime-switch gate — _maybe_set_session_model
+        # would skip it.
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "claude-agent-acp", "sess-1", "claude-haiku-4-5-20251001"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-haiku-4-5-20251001", session_id="sess-1"
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_codex_reapplies_persisted_model_on_resume(self):
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "codex-acp", "sess-1", "gpt-5.4/low"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.4/low", session_id="sess-1"
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_missing_model_skips_reapply(self):
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "claude-agent-acp", "sess-1", None
+        )
+        conn.set_session_model.assert_not_called()
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_attempts_reapply(self):
+        # provider=None (custom server) is allowed to attempt the switch by
+        # set_acp_model, and such switches are persisted as authoritative — so
+        # resume must mirror that and attempt the reapply too (otherwise the
+        # resumed session would silently revert to the server default).
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "some-custom-acp", "sess-1", "whatever"
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="whatever", session_id="sess-1"
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_known_unsupported_provider_skips_reapply(self):
+        from openhands.sdk.settings.acp_providers import ACPProviderInfo
+
+        unsupported = ACPProviderInfo(
+            key="legacy",
+            display_name="Legacy",
+            default_command=("legacy",),
+            api_key_env_var=None,
+            base_url_env_var=None,
+            default_session_mode="default",
+            agent_name_patterns=("legacy",),
+            supports_set_session_model=False,
+            supports_runtime_model_switch=False,
+            session_meta_key=None,
+        )
+        conn = AsyncMock()
+        with patch(
+            "openhands.sdk.agent.acp_agent.detect_acp_provider_by_agent_name",
+            return_value=unsupported,
+        ):
+            applied = await _reapply_session_model_on_resume(
+                conn, "legacy-acp", "sess-1", "x"
+            )
+        conn.set_session_model.assert_not_called()
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_client_rejection_is_swallowed_on_resume(self):
+        # A client/protocol rejection (method-not-found = server doesn't support
+        # the call, or invalid model id) must not break resume — mirrors the
+        # load_session fallback. The error is logged, not raised.
+        conn = AsyncMock()
+        conn.set_session_model.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
+        applied = await _reapply_session_model_on_resume(
+            conn, "some-custom-acp", "sess-1", "whatever"
+        )
+        conn.set_session_model.assert_awaited_once()
+        # Rejected => the live session kept the server default, so the override
+        # must NOT be reported as applied.
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_any_request_error_is_swallowed_on_resume(self):
+        # Any ACPRequestError (here a -32603 server error) is tolerated on
+        # resume — like the load_session fallback — so a flaky/stale server
+        # can't break session startup; the session keeps the server default.
+        conn = AsyncMock()
+        conn.set_session_model.side_effect = ACPRequestError(
+            code=-32603, message="internal error"
+        )
+        applied = await _reapply_session_model_on_resume(
+            conn, "codex-acp", "sess-1", "gpt-5.4/low"
+        )
+        conn.set_session_model.assert_awaited_once()
+        assert applied is False
+
+
+class TestSetACPModel:
+    """Runtime (mid-conversation) model switching via set_session_model."""
+
+    @staticmethod
+    def _wire(agent: ACPAgent, agent_name: str) -> ACPAgent:
+        agent._conn = MagicMock()
+        agent._session_id = "sess-1"
+        agent._agent_name = agent_name
+        executor = MagicMock()
+        executor.run_async = MagicMock()
+        agent._executor = executor
+        return agent
+
+    def test_switches_model_on_live_codex_session(self):
+        agent = self._wire(_make_agent(), "codex-acp")
+        agent.set_acp_model("gpt-5.4/low")
+        agent._conn.set_session_model.assert_called_once_with(
+            model_id="gpt-5.4/low", session_id="sess-1"
+        )
+        agent._executor.run_async.assert_called_once()
+        # Sentinel LLM + metrics reflect the live model for cost/token tracking.
+        assert agent.llm.model == "gpt-5.4/low"
+        assert agent.llm.metrics.model_name == "gpt-5.4/low"
+
+    def test_claude_provider_supports_runtime_switch(self):
+        agent = self._wire(_make_agent(), "claude-agent-acp")
+        agent.set_acp_model("claude-haiku-4-5-20251001")
+        agent._conn.set_session_model.assert_called_once_with(
+            model_id="claude-haiku-4-5-20251001", session_id="sess-1"
+        )
+
+    def test_unknown_provider_still_attempts_switch(self):
+        # A custom/unrecognised server (provider=None) is allowed to attempt
+        # the call; the ACP layer errors if it isn't actually supported.
+        agent = self._wire(_make_agent(), "some-custom-acp")
+        agent.set_acp_model("whatever")
+        agent._conn.set_session_model.assert_called_once()
+
+    def test_rejects_empty_model(self):
+        agent = self._wire(_make_agent(), "codex-acp")
+        with pytest.raises(ValueError, match="non-empty"):
+            agent.set_acp_model("   ")
+        agent._conn.set_session_model.assert_not_called()
+
+    def test_raises_before_session_initialized(self):
+        agent = _make_agent()  # no _conn / _session_id / _executor
+        with pytest.raises(RuntimeError, match="not initialized"):
+            agent.set_acp_model("gpt-5.4")
+
+    def test_raises_for_provider_without_protocol_support(self):
+        from openhands.sdk.settings.acp_providers import ACPProviderInfo
+
+        unsupported = ACPProviderInfo(
+            key="legacy",
+            display_name="Legacy",
+            default_command=("legacy",),
+            api_key_env_var=None,
+            base_url_env_var=None,
+            default_session_mode="default",
+            agent_name_patterns=("legacy",),
+            supports_set_session_model=False,
+            supports_runtime_model_switch=False,
+            session_meta_key=None,
+        )
+        agent = self._wire(_make_agent(), "legacy-acp")
+        with patch(
+            "openhands.sdk.agent.acp_agent.detect_acp_provider_by_agent_name",
+            return_value=unsupported,
+        ):
+            with pytest.raises(ValueError, match="does not support runtime"):
+                agent.set_acp_model("x")
+        agent._conn.set_session_model.assert_not_called()
+
+    def test_translates_acp_request_error_to_value_error(self):
+        # A protocol-level rejection (e.g. method-not-found on a custom server,
+        # or an invalid model id) must surface as a ValueError — not leak as a
+        # raw acp.exceptions.RequestError — so the agent-server maps it to 400.
+        agent = self._wire(_make_agent(), "codex-acp")
+        agent._executor.run_async.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
+        with pytest.raises(ValueError, match="rejected set_session_model"):
+            agent.set_acp_model("bogus-model")
+        # The sentinel LLM must not be mutated when the switch fails.
+        assert agent.llm.model != "bogus-model"
+
+    def test_propagates_server_internal_error(self):
+        # JSON-RPC -32603 is a server-internal failure, not a bad client
+        # request. It must propagate (as the raw ACPRequestError -> 5xx) rather
+        # than be mislabeled as a 400-class ValueError, mirroring the retriable
+        # handling on the prompt path.
+        agent = self._wire(_make_agent(), "codex-acp")
+        agent._executor.run_async.side_effect = ACPRequestError(
+            code=-32603, message="internal error"
+        )
+        with pytest.raises(ACPRequestError):
+            agent.set_acp_model("some-model")
+        # The sentinel LLM must not be mutated when the switch fails.
+        assert agent.llm.model != "some-model"
+
+    def test_passes_timeout_to_run_async(self):
+        # The protocol round-trip runs under the conversation state lock, so it
+        # must be bounded to avoid wedging the lock if the server never answers.
+        agent = self._wire(_make_agent(acp_prompt_timeout=42.0), "codex-acp")
+        agent.set_acp_model("gpt-5.4/low")
+        _, kwargs = agent._executor.run_async.call_args
+        assert kwargs["timeout"] == 42.0
 
 
 # ---------------------------------------------------------------------------
@@ -2972,14 +4771,6 @@ class TestACPPromptRetry:
 # ---------------------------------------------------------------------------
 
 
-class TestGeminiBypassMode:
-    def test_gemini_cli_uses_yolo(self):
-        assert _resolve_bypass_mode("gemini-cli") == "yolo"
-
-    def test_gemini_cli_with_version(self):
-        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
-
-
 class TestGeminiSessionModel:
     @pytest.mark.asyncio
     async def test_gemini_cli_uses_protocol_model_override(self):
@@ -3216,6 +5007,20 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_not_awaited()
         assert agent._session_id == "fresh-sess"
 
+    def test_cancel_drain_restart_keeps_retry_flag_when_init_fails(self, tmp_path):
+        """A failed replacement session should leave the deferred restart armed."""
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        agent._restart_session_on_next_turn = True
+
+        with patch.object(ACPAgent, "init_state", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                agent._restart_session_after_drain_timeout(
+                    state, on_event=lambda _: None
+                )
+
+        assert agent._restart_session_on_next_turn is True
+
     def test_init_state_writes_session_id_into_agent_state(self, tmp_path):
         """init_state lands the session id in state.agent_state so
         ConversationState's base_state.json persistence carries it forward.
@@ -3253,6 +5058,34 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "stored-sess"
 
+    def test_cancel_drain_restart_preserves_session_id_for_resume(self, tmp_path):
+        """A cancelled-prompt drain timeout restarts the subprocess, but should
+        still load the persisted ACP session so the server keeps conversation
+        memory.
+        """
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_suffix_installed": True,
+        }
+        conn = self._make_conn()
+
+        with self._transport_patches(conn):
+            agent._restart_session_after_drain_timeout(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "stored-sess"
+        assert state.agent_state["acp_session_id"] == "stored-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+        assert state.agent_state["acp_suffix_installed"] is True
+        assert agent._suffix_install_state == "installed"
+
     def test_load_session_failure_falls_back_to_new_session(self, tmp_path):
         """ACPRequestError on load_session → new_session is called."""
         agent = _make_agent()
@@ -3268,6 +5101,204 @@ class TestACPSessionIdPersistence:
         conn.load_session.assert_awaited_once()
         conn.new_session.assert_awaited_once()
         assert agent._session_id == "replacement-sess"
+
+    # ----- explicit acp_resume_session_id (the durable-mirror override) -----
+
+    def test_acp_resume_session_id_drives_load_session_when_no_fs_state(self, tmp_path):
+        """``acp_resume_session_id`` resumes even when ``agent_state`` is empty.
+
+        Cloud sandboxes lose ``base_state.json`` on recycle, so the FS-persisted
+        ``acp_session_id`` is gone.  The app-server mirrors the id into durable
+        storage and passes it back via ``acp_resume_session_id`` — that should
+        still drive ``load_session``.
+        """
+        agent = _make_agent(acp_resume_session_id="externally-stored-sess")
+        state = _make_state(tmp_path)
+        assert "acp_session_id" not in state.agent_state
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "externally-stored-sess"
+        assert kwargs["cwd"] == str(tmp_path)
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "externally-stored-sess"
+
+    def test_acp_resume_session_id_overrides_fs_session_id(self, tmp_path):
+        """The explicit field wins over the FS-persisted id when they differ."""
+        agent = _make_agent(acp_resume_session_id="durable-sess")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "fs-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "durable-sess"
+        conn.new_session.assert_not_awaited()
+        assert agent._session_id == "durable-sess"
+
+    def test_acp_resume_session_id_failure_falls_back_to_new_session(self, tmp_path):
+        """If the server can't load the explicit id, fall back to new_session.
+
+        The ACP server may have lost its own session storage (no PVC, different
+        host …); failing closed by aborting is worse than starting fresh.
+        Matches the existing ``load_session`` failure path.
+        """
+        agent = _make_agent(acp_resume_session_id="missing-sess")
+        state = _make_state(tmp_path)
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert agent._session_id == "replacement-sess"
+
+    def test_acp_resume_session_id_matches_fs_id_uses_fs_cwd(self, tmp_path):
+        """When the explicit id equals the FS id, the FS cwd is reused.
+
+        Avoids a spurious "infer cwd from current workspace" branch when the
+        agent_state was just hydrated from the same id.
+        """
+        agent = _make_agent(acp_resume_session_id="same-sess")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "same-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        conn = self._make_conn()
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        _, kwargs = conn.load_session.call_args
+        assert kwargs["session_id"] == "same-sess"
+
+    def test_session_ids_redacted_in_resume_log_lines(self, tmp_path, caplog):
+        """Resume / fallback log lines must not emit plaintext session ids.
+
+        ACP session ids are bearer tokens; log aggregators retain lines for
+        weeks, so they're a serialization boundary in their own right. The
+        ``_start_acp_server`` log lines must emit only a short suffix
+        fingerprint, never the full id.
+        """
+        sensitive_explicit = "explicit-do-not-log-abc12345-LONGTAIL"
+        sensitive_fs = "fs-session-do-not-log-OTHERTAIL"
+
+        agent = _make_agent(acp_resume_session_id=sensitive_explicit)
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": sensitive_fs}
+        conn = self._make_conn()
+        with caplog.at_level("INFO"):
+            self._patched_start_acp_server(agent, state, conn=conn)
+        messages = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert sensitive_explicit not in messages
+        assert sensitive_fs not in messages
+        assert sensitive_explicit[-8:] in messages  # fingerprint suffix present
+
+        caplog.clear()
+        agent2 = _make_agent(acp_resume_session_id=sensitive_explicit)
+        state2 = _make_state(tmp_path)
+        conn2 = self._make_conn(
+            new_session_id="replacement",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+        with caplog.at_level("WARNING"):
+            self._patched_start_acp_server(agent2, state2, conn=conn2)
+        fail_warnings = "\n".join(
+            rec.getMessage()
+            for rec in caplog.records
+            if "load_session" in rec.getMessage()
+        )
+        assert sensitive_explicit not in fail_warnings
+
+    def test_fingerprint_session_id_helper(self):
+        """``_fingerprint_session_id`` returns a last-8 suffix, never the full id."""
+        from openhands.sdk.agent.acp_agent import _fingerprint_session_id
+
+        assert _fingerprint_session_id(None) == "<none>"
+        assert _fingerprint_session_id("short") == "<short>"
+        assert _fingerprint_session_id("exactly8") == "<short>"
+        long_sid = "a" * 24 + "12345678"
+        out = _fingerprint_session_id(long_sid)
+        assert long_sid not in out
+        assert out.endswith("12345678")
+        assert out.startswith("...")
+
+    # ----- acp_resume_session_id is a bearer secret on the wire -----
+
+    def test_acp_resume_session_id_redacted_by_default(self):
+        """Default serialization must mask ``acp_resume_session_id``."""
+        sensitive = "super-secret-resume-id-do-not-leak"
+        agent = _make_agent(acp_resume_session_id=sensitive)
+
+        data_json = agent.model_dump_json()
+        assert sensitive not in data_json, (
+            f"plaintext id leaked into model_dump_json: {data_json}"
+        )
+        data = json.loads(data_json)
+        assert data.get("acp_resume_session_id") == REDACTED_SECRET_VALUE
+
+        py_dump = agent.model_dump()
+        py_value = py_dump.get("acp_resume_session_id")
+        assert sensitive not in repr(py_value)
+        assert sensitive not in str(py_value)
+
+    def test_acp_resume_session_id_none_serializes_as_none(self):
+        """Absence is not a secret — ``None`` must round-trip as ``null``."""
+        agent = _make_agent()
+        data = json.loads(agent.model_dump_json())
+        assert data.get("acp_resume_session_id") is None
+
+    def test_acp_resume_session_id_redacted_sentinel_loads_as_none(self):
+        """Default-redacted dump must reload as ``None``, not ``'**********'``.
+
+        Without the matching validator, ``model_validate_json`` of a default
+        dump would leave the field set to the literal sentinel — calling
+        ``session/load`` with that fails server-side and we'd fall back to
+        ``new_session`` every time, defeating the durable-mirror design.
+        """
+        sensitive = "super-secret-resume-id-do-not-leak"
+        agent = _make_agent(acp_resume_session_id=sensitive)
+        reloaded = ACPAgent.model_validate_json(agent.model_dump_json())
+        assert reloaded.acp_resume_session_id is None
+
+    def test_acp_resume_session_id_plaintext_roundtrip(self):
+        """Plaintext dump (trusted backend) reloads verbatim without a cipher."""
+        sensitive = "super-secret-resume-id-do-not-leak"
+        agent = _make_agent(acp_resume_session_id=sensitive)
+        exposed = agent.model_dump_json(context={"expose_secrets": "plaintext"})
+        assert json.loads(exposed)["acp_resume_session_id"] == sensitive
+        reloaded = ACPAgent.model_validate_json(exposed)
+        assert reloaded.acp_resume_session_id == sensitive
+
+    def test_acp_resume_session_id_encrypted_roundtrip(self):
+        """Encrypted dump + cipher in context decrypts back to the real id."""
+        sensitive = "super-secret-resume-id-do-not-leak"
+        agent = _make_agent(acp_resume_session_id=sensitive)
+        cipher = Cipher(secret_key="test-cipher-secret-key-for-roundtrip-only")
+
+        encrypted_json = agent.model_dump_json(
+            context={"expose_secrets": "encrypted", "cipher": cipher}
+        )
+        assert sensitive not in encrypted_json
+
+        reloaded = ACPAgent.model_validate_json(
+            encrypted_json, context={"cipher": cipher}
+        )
+        assert reloaded.acp_resume_session_id == sensitive
 
     def test_session_id_not_on_serialized_agent(self):
         """Session id must not leak onto the agent model — it lives in
@@ -3337,6 +5368,313 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_not_awaited()
         assert agent._session_id == "legacy-sess"
 
+    def test_resume_preserves_persisted_model_when_load_session_omits_models(
+        self, tmp_path
+    ):
+        """Resume must not blank the persisted ``acp_current_model_*`` when
+        ``load_session`` returns no ``models`` field.
+
+        The ``models`` capability is UNSTABLE; some agents only attach it to
+        ``new_session`` responses, not ``load_session``. Previously
+        ``init_state`` unconditionally overwrote ``agent_state`` with the
+        freshly-extracted (possibly ``None``) values, dropping the chip on
+        every resume. The contract is: only update model state when we
+        actually learned something new.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "claude-opus-4-1",
+            "acp_available_models": [
+                {
+                    "model_id": "claude-opus-4-1",
+                    "name": "Opus 4.1",
+                    "description": None,
+                }
+            ],
+        }
+        # ``load_session`` returns a response whose ``models`` field is
+        # absent — same shape as a server that doesn't surface the
+        # UNSTABLE capability on resume responses.
+        conn = self._make_conn()
+        load_response = MagicMock(spec=[])  # spec=[] → no .models attribute
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # Persisted values survive the resume even though load_session
+        # didn't re-report them.
+        assert state.agent_state["acp_current_model_id"] == "claude-opus-4-1"
+        assert state.agent_state["acp_available_models"] == [
+            {"model_id": "claude-opus-4-1", "name": "Opus 4.1", "description": None}
+        ]
+
+    def test_resume_with_forced_model_preserves_persisted_available_models(
+        self, tmp_path
+    ):
+        """Resume with a switched ``acp_model`` must not blank the persisted
+        ``acp_available_models``.
+
+        Regression: ``current_model_id = self.acp_model or reported`` becomes
+        non-null from the forced ``acp_model`` even when ``load_session`` omits
+        the UNSTABLE ``models`` block (so ``_available_models`` is empty). The
+        list persistence must be gated on actually receiving a list, not on
+        ``current_model_id`` being set — otherwise the picker payload is wiped
+        on every resume of a switched conversation.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        # A prior runtime switch made ``model-b`` the authoritative model.
+        agent = _make_agent(acp_model="model-b")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "model-a",
+            "acp_available_models": [
+                {"model_id": "model-a", "name": "Model A", "description": None},
+                {"model_id": "model-b", "name": "Model B", "description": None},
+            ],
+        }
+        conn = self._make_conn()
+        load_response = MagicMock(spec=[])  # no .models block
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # current_model_id reflects the forced (switched) model...
+        assert state.agent_state["acp_current_model_id"] == "model-b"
+        # ...but the previously persisted list is preserved, not clobbered.
+        assert state.agent_state["acp_available_models"] == [
+            {"model_id": "model-a", "name": "Model A", "description": None},
+            {"model_id": "model-b", "name": "Model B", "description": None},
+        ]
+
+    def test_resume_with_explicit_empty_models_clears_stale_list(self, tmp_path):
+        """Resume where the server *explicitly* reports ``availableModels: []``
+        must CLEAR the persisted list — not preserve it.
+
+        Regression: a truthy ``if self._available_models`` check couldn't tell
+        an omitted ``models`` block (preserve) from an explicit empty list
+        (clear), so a server that dropped its models kept advertising stale
+        picker options after resume. The ``None`` (absent) vs ``[]`` (reported
+        empty) distinction from ``_extract_session_models`` fixes this.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "model-a",
+            "acp_available_models": [
+                {"model_id": "model-a", "name": "Model A", "description": None},
+            ],
+        }
+        # load_session DOES carry a ``models`` block, but the server now offers
+        # no models (explicit empty list).
+        conn = self._make_conn()
+        load_response = MagicMock()
+        load_response.models = MagicMock()
+        load_response.models.current_model_id = ""
+        load_response.models.available_models = []
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # The stale list is cleared (overwritten with []), not preserved.
+        assert state.agent_state["acp_available_models"] == []
+        # ...and the stale current id is cleared in lock-step: the server
+        # reported a ``models`` block with no usable current id, so leaving the
+        # old id would render a chip that points at a model absent from the
+        # (now-empty) picker list.
+        assert "acp_current_model_id" not in state.agent_state
+
+    def test_resume_with_reported_models_but_no_current_clears_stale_id(self, tmp_path):
+        """Resume where the server reports a non-empty ``availableModels`` list
+        but no usable ``currentModelId`` must CLEAR the stale persisted current
+        id while adopting the freshly reported list.
+
+        This is the asymmetric-gating case: ``_available_models`` is reported
+        (so the list is overwritten) while ``_current_model_id`` is ``None``.
+        The current id must follow the list's "reported" signal, not silently
+        keep a stale value the server no longer claims.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "model-a",
+            "acp_available_models": [
+                {"model_id": "model-a", "name": "Model A", "description": None},
+            ],
+        }
+        # load_session carries a models block listing models, but with no
+        # current selection (e.g. the server cleared its current model).
+        conn = self._make_conn()
+        load_response = MagicMock()
+        load_response.models = MagicMock()
+        load_response.models.current_model_id = ""
+        model_x = MagicMock()
+        model_x.model_id = "model-x"
+        model_x.name = "Model X"
+        model_x.description = None
+        load_response.models.available_models = [model_x]
+        conn.load_session = AsyncMock(return_value=load_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # The stale current id is dropped (server reported none)...
+        assert "acp_current_model_id" not in state.agent_state
+        # ...while the freshly reported picker list replaces the stale one.
+        assert [m["model_id"] for m in state.agent_state["acp_available_models"]] == [
+            "model-x"
+        ]
+
+    def test_resume_rejected_override_with_absent_models_clears_stale_id(
+        self, tmp_path
+    ):
+        """Resume where ``set_session_model`` is rejected AND ``load_session``
+        omits the ``models`` block must CLEAR the stale persisted current id.
+
+        This is the case the preserve-on-resume rule would otherwise keep:
+        ``truly_resumed`` is true and ``_available_models`` is ``None`` (server
+        didn't report a block), so the only signal that the persisted id is now
+        wrong is that we attempted to force ``acp_model`` and the server rejected
+        it (``_model_override_applied`` is False). The persisted id named that
+        rejected override, so it no longer reflects the live session.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        # ``model-x`` was the authoritative model last launch (applied + persisted).
+        agent = _make_agent(acp_model="model-x")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "resumable-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "model-x",
+        }
+        # load_session succeeds (id preserved => truly_resumed) but carries no
+        # models block, and the server now rejects the reapply of ``model-x``.
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+        load_response = MagicMock(spec=[])  # no .models block
+        conn.load_session = AsyncMock(return_value=load_response)
+        conn.set_session_model = AsyncMock(
+            side_effect=ACPRequestError(code=-32601, message="method not found")
+        )
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # Resume kept the same session id (so this is a true resume)...
+        assert state.agent_state["acp_session_id"] == "resumable-sess"
+        # ...the override was not applied, so neither the live attr nor the
+        # persisted hint may claim ``model-x``.
+        assert agent.current_model_id is None
+        assert agent._model_override_applied is False
+        assert "acp_current_model_id" not in state.agent_state
+
+    def test_fresh_replacement_clears_stale_model_when_new_session_omits_models(
+        self, tmp_path
+    ):
+        """Fresh replacement (load_session failed → new_session) with no
+        ``models`` block in the response must clear the persisted
+        ``acp_current_model_*`` rather than carry the old session's values
+        forward.
+
+        Otherwise ``acp_session_id`` points at the replacement session while
+        the model fields still describe the dead one — ``ConversationInfo``
+        renders the wrong chip.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_current_model_id": "claude-opus-4-1",
+            "acp_available_models": [
+                {"model_id": "claude-opus-4-1", "name": "Opus 4.1"}
+            ],
+        }
+        # load_session fails → new_session runs; its response has no .models.
+        new_session_response = MagicMock(spec=["session_id"])
+        new_session_response.session_id = "replacement-sess"
+        conn = self._make_conn(
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+        conn.new_session = AsyncMock(return_value=new_session_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        # Replacement id wins, and the stale model fields are gone.
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert "acp_current_model_id" not in state.agent_state
+        assert "acp_available_models" not in state.agent_state
+
+    def test_cwd_mismatch_clears_stale_model_when_new_session_omits_models(
+        self, tmp_path
+    ):
+        """Same contract as the load_session-failure case, but reached via
+        the cwd-mismatch branch in ``_start_acp_server`` (which sets
+        ``prior_session_id = None`` before falling through to new_session).
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "old-sess",
+            "acp_session_cwd": "/some/other/place",
+            "acp_current_model_id": "claude-opus-4-1",
+            "acp_available_models": [
+                {"model_id": "claude-opus-4-1", "name": "Opus 4.1"}
+            ],
+        }
+        new_session_response = MagicMock(spec=["session_id"])
+        new_session_response.session_id = "fresh-sess"
+        conn = self._make_conn()
+        conn.new_session = AsyncMock(return_value=new_session_response)
+
+        agent._executor = AsyncExecutor()
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_not_awaited()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "fresh-sess"
+        assert "acp_current_model_id" not in state.agent_state
+        assert "acp_available_models" not in state.agent_state
+
     def test_fallback_replacement_id_lands_in_agent_state(self, tmp_path):
         """When load_session fails and new_session runs, init_state must
         overwrite state.agent_state['acp_session_id'] with the new id so
@@ -3364,6 +5702,35 @@ class TestACPSessionIdPersistence:
         conn.new_session.assert_awaited_once()
         assert state.agent_state["acp_session_id"] == "replacement-sess"
         assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+
+    def test_fallback_replacement_clears_suffix_marker(self, tmp_path):
+        """If load_session fails, the replacement session has not seen any
+        suffix yet, even if the stale session had persisted the marker.
+        """
+        agent = _make_agent(
+            agent_context=AgentContext(system_message_suffix="Team rules.")
+        )
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stale-sess",
+            "acp_session_cwd": str(tmp_path),
+            "acp_suffix_installed": True,
+        }
+        conn = self._make_conn(
+            new_session_id="replacement-sess",
+            load_exc=ACPRequestError(-32602, "unknown session"),
+        )
+
+        with self._transport_patches(conn):
+            agent.init_state(state, on_event=lambda _: None)
+
+        conn.load_session.assert_awaited_once()
+        conn.new_session.assert_awaited_once()
+        assert state.agent_state["acp_session_id"] == "replacement-sess"
+        assert state.agent_state["acp_session_cwd"] == str(tmp_path)
+        assert state.agent_state.get("acp_suffix_installed") is not True
+        assert agent._suffix_install_state == "pending_first_prompt"
 
     def test_resume_path_still_applies_session_mode_and_model(self, tmp_path):
         """load_session must be followed by the same set_session_model and
@@ -3397,6 +5764,96 @@ class TestACPSessionIdPersistence:
             mode_id="full-access",
             session_id="stored-sess",
         )
+
+    @staticmethod
+    def _models_block(current_model_id: str, model_ids: list[str]):
+        """Build a response ``.models`` block mock for the resolution tests."""
+        models = MagicMock()
+        models.current_model_id = current_model_id
+        entries = []
+        for mid in model_ids:
+            m = MagicMock()
+            m.model_id = mid
+            m.name = mid
+            m.description = None
+            entries.append(m)
+        models.available_models = entries
+        return models
+
+    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
+        self, tmp_path
+    ):
+        """Fresh session on an unknown/custom provider with ``acp_model`` set:
+        the override is never pushed to the server (no ``_meta``, no protocol
+        call), so ``current_model_id`` must reflect what the server reported —
+        not the override the live session isn't actually running.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        new_response = MagicMock()
+        new_response.session_id = "fresh-sess"
+        new_response.models = self._models_block("server-model", ["server-model"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "some-custom-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        # Unknown provider => the override never reached the server.
+        conn.set_session_model.assert_not_awaited()
+        assert agent.current_model_id == "server-model"
+
+    def test_known_provider_surfaces_applied_override(self, tmp_path):
+        """Fresh session on a provider that applies the override via the
+        protocol call (codex): ``current_model_id`` reflects the override, since
+        it was actually pushed to the server.  Guards the precedence the QA
+        verified — the fix must not regress the happy override path.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        new_response = MagicMock()
+        new_response.session_id = "fresh-sess"
+        new_response.models = self._models_block("server-old", ["server-old"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.new_session = AsyncMock(return_value=new_response)
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
+
+    def test_resume_rejected_override_surfaces_server_model(self, tmp_path):
+        """Resume where ``set_session_model`` is rejected: the live session keeps
+        the server default, so ``current_model_id`` must fall back to what the
+        server reported on ``load_session`` rather than claiming the override.
+        """
+        agent = _make_agent(acp_model="caller-model")
+        state = _make_state(tmp_path)
+        state.agent_state = {
+            **state.agent_state,
+            "acp_session_id": "stored-sess",
+            "acp_session_cwd": str(tmp_path),
+        }
+        load_response = MagicMock()
+        load_response.models = self._models_block("server-resumed", ["server-resumed"])
+        conn = self._make_conn()
+        conn.initialize.return_value.agent_info.name = "codex-acp"
+        conn.initialize.return_value.auth_methods = []
+        conn.load_session = AsyncMock(return_value=load_response)
+        # Server rejects the reapply — swallowed, session keeps its own model.
+        conn.set_session_model = AsyncMock(
+            side_effect=ACPRequestError(code=-32601, message="method not found")
+        )
+
+        self._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        assert agent.current_model_id == "server-resumed"
 
     def test_roundtrip_via_conversation_state_persistence(self, tmp_path):
         """End-to-end round-trip through ConversationState persistence:
@@ -3469,7 +5926,11 @@ class TestACPSecretsEnvInjection:
     """Tests for secret injection into the ACP subprocess environment.
 
     Secrets passed via ``agent_context.secrets`` must land in the subprocess
-    env so the ACP server (Claude Code, Codex CLI, etc.) can use them.
+    env so the ACP server (Claude Code, Codex CLI, etc.) can use them. This
+    drain is the only thing that delivers ``agent_context.secrets`` to the CLI
+    on paths that don't call ``create_request`` (e.g. canvas-local, which folds
+    ``llm.api_key`` into ``agent_context.secrets`` server-side via
+    ``create_agent`` but never lifts it into ``state.secret_registry``).
     ``acp_env`` entries take precedence over agent_context secrets.
     """
 
@@ -3517,6 +5978,11 @@ class TestACPSecretsEnvInjection:
         agent._executor = AsyncExecutor()
 
         with ExitStack() as stack:
+            # Hermetic: exclude the runner's ambient env (e.g. a real
+            # GITHUB_TOKEN / ANTHROPIC_API_KEY) so it can't shadow the
+            # registry/drain values under test — env.update(os.environ) runs
+            # before the fill-if-absent secret tiers in _start_acp_server.
+            stack.enter_context(patch.dict("os.environ", {}, clear=True))
             stack.enter_context(
                 patch(
                     "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
@@ -3546,7 +6012,12 @@ class TestACPSecretsEnvInjection:
         return captured
 
     def test_static_secret_injected_into_subprocess_env(self, tmp_path):
-        """A StaticSecret in agent_context.secrets lands in the subprocess env."""
+        """A StaticSecret in agent_context.secrets lands in the subprocess env.
+
+        This drain is what delivers ``agent_context.secrets`` to the CLI on
+        paths that don't lift them into ``state.secret_registry`` via
+        ``create_request`` (e.g. canvas-local).
+        """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
@@ -3576,7 +6047,8 @@ class TestACPSecretsEnvInjection:
                 secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
             ),
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
         assert env.get("MY_TOKEN") == "acp-env-wins"
 
     def test_none_value_secret_not_injected(self, tmp_path):
@@ -3604,3 +6076,1625 @@ class TestACPSecretsEnvInjection:
         )
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
+
+    def test_acp_env_still_injected(self, tmp_path):
+        """``acp_env`` (user arbitrary env vars) is still injected at spawn."""
+        agent = _make_agent(acp_env={"MY_TOKEN": "acp-env-value"})
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
+        assert env.get("MY_TOKEN") == "acp-env-value"
+
+    def test_empty_acp_env_does_not_warn(self, tmp_path):
+        """An empty ``acp_env`` must not emit the deprecation warning."""
+        import warnings
+
+        agent = _make_agent()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self._run_start_capturing_env(agent, tmp_path)
+        assert not [w for w in caught if "acp_env" in str(w.message)]
+
+
+class _CountingLookupSecret(SecretSource):
+    """A lookup source that records each ``get_value()`` call (to assert it is
+    *not* invoked when ``acp_env`` shadows the key)."""
+
+    stored_value: str
+    calls: list[int] = Field(default_factory=list)
+
+    def get_value(self) -> str | None:
+        self.calls.append(1)
+        return self.stored_value
+
+
+class _BrokenSecret(SecretSource):
+    """A source whose ``get_value()`` raises, to verify a failing lookup is
+    treated as "skip" rather than taking the subprocess down."""
+
+    def get_value(self) -> str | None:
+        raise OSError("network down")
+
+
+class TestACPSecretRegistryEnvInjection:
+    """Tests for secret injection from the conversation's secret_registry.
+
+    Secrets registered via ``Conversation.update_secrets()`` — or the
+    equivalent ``payload.secrets`` channel that app-server callers
+    (agent-canvas, the OpenHands cloud app server) use — must land in the
+    ACP subprocess env without each caller having to also build an
+    ``AgentContext(secrets=...)`` shim around the same data.
+
+    Same-key precedence is
+    ``acp_env > secret_registry > agent_context.secrets > os.environ``.
+    Conversation secrets (registry + the agent_context drain) override ambient
+    ``os.environ`` so an explicit per-conversation/provider secret wins over a
+    same-named server env var; the registry wins over the drain on collision.
+    """
+
+    @staticmethod
+    def _run_start_capturing_env(
+        agent, tmp_path, *, registry_secrets=None, extra_os_env=None
+    ) -> dict:
+        """Re-uses the env-capture harness from TestACPSecretsEnvInjection."""
+        state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
+
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPSecretsEnvInjection._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            # Hermetic: replace the runner's ambient env with extra_os_env (or
+            # nothing), so it can't shadow the registry values under test and so
+            # tests can inject a controlled ambient var to assert precedence.
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_registry_string_secret_injected_into_subprocess_env(self, tmp_path):
+        """A string secret in secret_registry lands in the subprocess env.
+
+        The canvas / OpenHands ``payload.secrets`` channel ends up here
+        via ``Conversation.update_secrets()`` → ``SecretRegistry.update_secrets``;
+        without this injection the secret is invisible to the ACP CLI.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "sk-from-registry"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "sk-from-registry"
+
+    def test_registry_lookup_secret_injected_into_subprocess_env(self, tmp_path):
+        """A LookupSecret (callable) in secret_registry resolves and injects.
+
+        This is the wire shape canvas actually sends: a ``LookupSecret``
+        whose ``get_value()`` fetches over HTTP from the agent-server's
+        ``/api/settings/secrets/{name}`` endpoint.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "OPENAI_API_KEY": _FakeLookupSecret(stored_value="sk-fake-openai")
+            },
+        )
+        assert env.get("OPENAI_API_KEY") == "sk-fake-openai"
+
+    def test_acp_env_takes_precedence_over_registry_secret(self, tmp_path):
+        """An explicit ``acp_env`` entry wins over the same key in the registry."""
+        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-acp-env"
+
+    def test_acp_env_shadow_skips_registry_lookup(self, tmp_path):
+        """``acp_env`` shadowing a key must not trigger ``get_value()``.
+
+        LookupSecret performs an HTTP request in production; calling it for
+        a key that ``acp_env`` is about to override wastes a round-trip and
+        can emit spurious lookup-failure warnings.
+        """
+        secret = _CountingLookupSecret(stored_value="from-registry")
+        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": secret},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-acp-env"
+        assert secret.calls == []
+
+    def test_registry_secret_takes_precedence_over_agent_context_secret(self, tmp_path):
+        """``secret_registry`` wins over ``agent_context.secrets`` on collision.
+
+        Precedence: ``acp_env > secret_registry > agent_context.secrets >
+        os.environ``. The registry is the canonical conversation-secret channel
+        (``StartConversationRequest.secrets`` lands here). On a key collision the
+        registry value is used (the drain skips keys the registry will set); a
+        context-only key is still injected by the drain — proving the two
+        channels coexist without double-injecting.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context")),
+                    "CONTEXT_ONLY": StaticSecret(value=SecretStr("ctx-value")),
+                }
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"GITHUB_TOKEN": "from-registry"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-registry"
+        assert env.get("CONTEXT_ONLY") == "ctx-value"
+
+    def test_empty_registry_does_not_change_behaviour(self, tmp_path):
+        """An empty secret_registry must not raise or alter the spawn env."""
+        agent = _make_agent(acp_env={"FOO": "bar"})
+        env = self._run_start_capturing_env(agent, tmp_path, registry_secrets=None)
+        assert env.get("FOO") == "bar"
+
+    def test_failing_registry_lookup_swallowed(self, tmp_path):
+        """A secret source that raises is dropped, not propagated.
+
+        ``SecretRegistry.get_secret_value`` already catches lookup
+        errors and returns ``None``; the spawn-env loop must treat
+        that ``None`` as "skip", so a transient secret-source failure
+        (network blip, expired token) doesn't take the whole ACP
+        subprocess down.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"BROKEN": _BrokenSecret()},
+        )
+        assert "BROKEN" not in env
+
+    def test_registry_secret_overrides_ambient_os_environ(self, tmp_path):
+        """A registry secret overrides a same-named ambient os.environ var.
+
+        Conversation/provider creds must win over the agent-server's own
+        environment (os.environ is the wrong process for a remote server).
+        Before this change the ambient value silently won.
+        """
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "from-registry"},
+            extra_os_env={"ANTHROPIC_API_KEY": "ambient-should-lose"},
+        )
+        assert env.get("ANTHROPIC_API_KEY") == "from-registry"
+
+    def test_agent_context_secret_overrides_ambient_os_environ(self, tmp_path):
+        """An agent_context.secrets drain value overrides ambient os.environ."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"GITHUB_TOKEN": StaticSecret(value=SecretStr("from-context"))}
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={"GITHUB_TOKEN": "ambient-should-lose"},
+        )
+        assert env.get("GITHUB_TOKEN") == "from-context"
+
+
+class TestACPEnvConflictSuppression:
+    """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
+
+    When CLAUDE_CONFIG_DIR is present in the subprocess environment the agent
+    uses a credential file for OAuth.  If ANTHROPIC_API_KEY or
+    ANTHROPIC_BASE_URL are also present they redirect requests to a proxy that
+    does not support OAuth bearer tokens, breaking auth silently.
+
+    _start_acp_server must strip the conflicting vars regardless of where they
+    came from: acp_env, os.environ, secret_registry, or agent_context.secrets.
+    """
+
+    @staticmethod
+    def _make_conn():
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = "claude-agent-acp"
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = []
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-conflict"
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start_capturing_env(
+        agent, tmp_path, *, extra_os_env=None, registry_secrets=None
+    ) -> dict:
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict = {}
+        conn = TestACPEnvConflictSuppression._make_conn()
+
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_create_subprocess_exec(*_args, env=None, **_kwargs):
+            captured.update(env or {})
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        state = _make_state(tmp_path)
+        if registry_secrets:
+            state.secret_registry.update_secrets(registry_secrets)
+        agent._executor = AsyncExecutor()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_create_subprocess_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            # Hermetic: clear the runner's ambient env so it can't shadow the
+            # values under test; extra_os_env is the only os.environ content
+            # (used by the test that injects ANTHROPIC_API_KEY via os.environ).
+            stack.enter_context(
+                patch.dict("os.environ", extra_os_env or {}, clear=True)
+            )
+            agent._start_acp_server(state)
+
+        return captured
+
+    def test_claude_config_dir_suppresses_api_key_from_acp_env(self, tmp_path):
+        """ANTHROPIC_API_KEY from acp_env is stripped when CLAUDE_CONFIG_DIR present."""
+        agent = _make_agent(
+            acp_env={
+                "CLAUDE_CONFIG_DIR": "/tmp/claude-creds",
+                "ANTHROPIC_API_KEY": "sk-conflict",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            }
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-creds"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_claude_config_dir_suppresses_api_key_from_os_environ(self, tmp_path):
+        """ANTHROPIC_API_KEY leaking in from os.environ is stripped too."""
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={
+                "ANTHROPIC_API_KEY": "sk-leaked",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_claude_config_dir_suppresses_api_key_from_registry(self, tmp_path):
+        """ANTHROPIC_API_KEY injected via secret_registry is stripped too.
+
+        This is the channel provider creds now travel on (folded into
+        ``agent_context.secrets`` by ``create_agent`` → lifted into the
+        registry by ``create_request``).
+        """
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "ANTHROPIC_API_KEY": "sk-from-registry",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
+        )
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
+        """ANTHROPIC_API_KEY drained from agent_context.secrets is stripped too.
+
+        Covers the canvas-local channel: provider creds folded into
+        ``agent_context.secrets`` reach env via the drain, and must still be
+        stripped when CLAUDE_CONFIG_DIR is active.
+        """
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+            agent_context=AgentContext(
+                secrets={
+                    "ANTHROPIC_API_KEY": StaticSecret(
+                        value=SecretStr("sk-from-secret")
+                    ),
+                    "ANTHROPIC_BASE_URL": StaticSecret(
+                        value=SecretStr("https://proxy.example.com")
+                    ),
+                }
+            ),
+        )
+        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
+            env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_BASE_URL" not in env
+
+    def test_no_suppression_without_claude_config_dir(self, tmp_path):
+        """Without CLAUDE_CONFIG_DIR, ANTHROPIC_API_KEY passes through unchanged."""
+        agent = _make_agent(
+            acp_env={"ANTHROPIC_API_KEY": "sk-valid"},
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
+        assert "CLAUDE_CONFIG_DIR" not in env
+
+
+class TestACPAgentCurrentModelIdProperty:
+    """``current_model_id`` is a read-only property backed by a PrivateAttr.
+
+    ``AgentBase`` is frozen so the value can't live on the agent as a
+    regular Pydantic field; it doesn't round-trip through ``model_dump``
+    either.  Cross-process consumers (the OpenHands app_server) should
+    read it off ``ConversationInfo`` instead — the agent-server lifts the
+    value off the agent into the API response.
+    """
+
+    def test_defaults_to_none(self):
+        agent = _make_agent()
+        assert agent.current_model_id is None
+
+    def test_reflects_private_attr(self):
+        # ``_init`` writes the resolved model into ``_current_model_id``
+        # after consulting the server response + the caller override.
+        agent = _make_agent()
+        agent._current_model_id = "claude-sonnet-4-5"
+        assert agent.current_model_id == "claude-sonnet-4-5"
+
+    def test_acp_model_override_wins_over_server_report(self):
+        """When ``acp_model`` is set, ``current_model_id`` reflects the override.
+
+        Mirrors the resolution logic in ``_init``: a caller-provided
+        ``acp_model`` takes precedence over whatever the server happens to
+        report — both for the ``set_session_model`` path (Codex / Gemini)
+        and the ``session _meta`` path (Claude Code).
+        """
+        agent = _make_agent(acp_model="gpt-5")
+        agent._current_model_id = agent.acp_model or "fallback-from-server"
+        assert agent.current_model_id == "gpt-5"
+
+    def test_does_not_round_trip_through_json(self):
+        # Locks in the deliberate design choice: PrivateAttr → not serialized.
+        # Cross-process consumers must read from ``ConversationInfo``.
+        agent = _make_agent()
+        agent._current_model_id = "claude-opus-4-1"
+        clone = ACPAgent.model_validate_json(agent.model_dump_json())
+        assert clone.current_model_id is None
+
+
+class TestExtractSessionModels:
+    """``_extract_session_models`` reads the model the ACP server reports.
+
+    The ``models`` capability is marked UNSTABLE in the spec. The second
+    element distinguishes **absent** (``None`` — block missing) from
+    **present-but-empty** (``[]`` — server reports no models), which the
+    resume-persistence logic relies on to preserve vs. clear the stored list.
+    """
+
+    def test_returns_both_when_response_carries_them(self):
+        m1 = MagicMock()
+        m1.model_id = "default"
+        m1.name = "Default (recommended)"
+        m1.description = "Opus 4.7 with 1M context · Most capable"
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "default"
+        response.models.available_models = [m1]
+        cur, avail = _extract_session_models(response)
+        assert cur == "default"
+        # Normalized into our stable ACPModelInfo, not the raw acp type.
+        assert avail == [
+            ACPModelInfo(
+                model_id="default",
+                name="Default (recommended)",
+                description="Opus 4.7 with 1M context · Most capable",
+            )
+        ]
+
+    def test_returns_none_list_when_models_block_absent(self):
+        # Older agents don't include the ``models`` block at all -> None, so
+        # callers know nothing was reported (and can preserve prior state).
+        response = MagicMock(spec=[])
+        cur, avail = _extract_session_models(response)
+        assert cur is None
+        assert avail is None
+
+    def test_returns_empty_list_when_available_models_missing(self):
+        # ``models`` block present but ``availableModels`` absent/None: the
+        # block WAS reported, so we return ``[]`` (present, no models), not None.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "gpt-5"
+        response.models.available_models = None
+        cur, avail = _extract_session_models(response)
+        assert cur == "gpt-5"
+        assert avail == []
+
+    def test_returns_none_list_when_response_is_none(self):
+        # ``load_session`` can return ``None`` for servers that don't
+        # implement the call — the helper must not crash, and reports "absent".
+        assert _extract_session_models(None) == (None, None)
+
+    def test_returns_none_list_when_models_field_is_none(self):
+        response = MagicMock()
+        response.models = None
+        assert _extract_session_models(response) == (None, None)
+
+    def test_returns_none_when_current_model_id_is_empty_string(self):
+        # An empty string is treated the same as a missing field — we don't
+        # want to surface "" as a real model name. The block is present, so
+        # available_models is [] (not None).
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = ""
+        response.models.available_models = []
+        assert _extract_session_models(response) == (None, [])
+
+    def test_returns_none_when_current_model_id_is_not_a_string(self):
+        # Defensive: an agent returning a non-string here is malformed.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = 42
+        response.models.available_models = []
+        assert _extract_session_models(response) == (None, [])
+
+
+class TestExtractSessionModelsNormalization:
+    """``_extract_session_models`` normalizes raw acp entries to ACPModelInfo.
+
+    The SDK deliberately re-maps the (UNSTABLE) ``acp.schema`` ``ModelInfo``
+    into our own stable type at this boundary, tolerating partial/malformed
+    entries rather than leaking the vendored shape or raising.
+    """
+
+    def _raw(self, model_id: Any, name: Any = None, description: Any = None) -> Any:
+        m = MagicMock()
+        m.model_id = model_id
+        m.name = name
+        m.description = description
+        return m
+
+    def test_maps_fields_through(self):
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "gpt-5.4/low"
+        response.models.available_models = [
+            self._raw("gpt-5.4/low", "gpt-5.4 (low)", "Strong everyday model."),
+        ]
+        _cur, avail = _extract_session_models(response)
+        assert avail == [
+            ACPModelInfo(
+                model_id="gpt-5.4/low",
+                name="gpt-5.4 (low)",
+                description="Strong everyday model.",
+            )
+        ]
+
+    def test_drops_entries_without_usable_id(self):
+        # A malformed entry (missing/non-string id) must not blow up session
+        # bring-up, and must not surface as an empty-id picker option — it's
+        # dropped, while valid entries alongside it survive.
+        response = MagicMock()
+        response.models = MagicMock()
+        response.models.current_model_id = "good"
+        response.models.available_models = [
+            self._raw(model_id=42),  # non-string -> "" -> dropped
+            self._raw(model_id="good", name="Good"),
+            self._raw(model_id="", name="Empty"),  # empty -> dropped
+        ]
+        _cur, avail = _extract_session_models(response)
+        assert avail == [ACPModelInfo(model_id="good", name="Good", description=None)]
+
+
+class TestACPAgentAvailableModelsProperty:
+    """``available_models`` exposes the server's model list verbatim.
+
+    No server-side curation: the property hands back the normalized
+    ``ACPModelInfo`` list so clients render the picker and resolve
+    ``current_model_id`` to a display label themselves.
+    """
+
+    def test_defaults_to_empty(self):
+        assert _make_agent().available_models == []
+
+    def test_reflects_private_attr(self):
+        agent = _make_agent()
+        models = [
+            ACPModelInfo(
+                model_id="default",
+                name="Default (recommended)",
+                description="Opus 4.7 with 1M context · Most capable",
+            ),
+            ACPModelInfo(model_id="sonnet", name="Sonnet"),
+        ]
+        agent._available_models = models
+        assert agent.available_models == models
+
+    def test_returns_a_copy(self):
+        # Mutating the returned list must not corrupt the agent's state.
+        agent = _make_agent()
+        agent._available_models = [ACPModelInfo(model_id="default")]
+        got = agent.available_models
+        got.append(ACPModelInfo(model_id="injected"))
+        assert [m.model_id for m in agent.available_models] == ["default"]
+
+
+class TestACPAgentSupportsRuntimeModelSwitch:
+    """``supports_runtime_model_switch`` mirrors ``set_acp_model``'s gate.
+
+    It refuses only for a *known* provider that declares no support, attempts
+    optimistically for unknown/custom servers, and is ``False`` before a
+    session exists.
+    """
+
+    def test_false_before_session(self):
+        # No live session (``_session_id is None``) -> nothing to switch.
+        agent = _make_agent()
+        agent._agent_name = "codex-acp"
+        assert agent.supports_runtime_model_switch is False
+
+    def test_true_for_known_switch_capable_provider(self):
+        agent = _make_agent()
+        agent._session_id = "sess-1"
+        agent._agent_name = "codex-acp"
+        assert agent.supports_runtime_model_switch is True
+
+    def test_optimistic_true_for_unknown_provider(self):
+        # Mirrors set_acp_model, which attempts the call for unknown/custom
+        # servers rather than refusing — so the picker isn't needlessly hidden.
+        agent = _make_agent()
+        agent._session_id = "sess-1"
+        agent._agent_name = "some-third-party-acp-server"
+        assert agent.supports_runtime_model_switch is True
+
+    def test_false_for_known_unsupported_provider(self, monkeypatch):
+        # A known provider that declares no support is the one case we refuse.
+        import openhands.sdk.agent.acp_agent as acp_agent_module
+
+        unsupported = MagicMock()
+        unsupported.supports_runtime_model_switch = False
+        monkeypatch.setattr(
+            acp_agent_module,
+            "detect_acp_provider_by_agent_name",
+            lambda _name: unsupported,
+        )
+        agent = _make_agent()
+        agent._session_id = "sess-1"
+        agent._agent_name = "locked-down-provider"
+        assert agent.supports_runtime_model_switch is False
+
+
+# ---------------------------------------------------------------------------
+
+# MCP forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestMcpConfigToAcpServers:
+    """Unit tests for the mcp_config -> ACP server translation + gating."""
+
+    @staticmethod
+    def _caps(http: bool, sse: bool):
+        from acp.schema import McpCapabilities
+
+        return McpCapabilities(http=http, sse=sse)
+
+    def test_stdio_always_forwarded(self):
+        from acp.schema import McpServerStdio
+
+        cfg = {
+            "mcpServers": {
+                "fetch": {
+                    "command": "uvx",
+                    "args": ["mcp-server-fetch"],
+                    "env": {"API_KEY": "x"},
+                }
+            }
+        }
+        # Even with no advertised remote capabilities, stdio is forwarded.
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False))
+        assert len(out) == 1
+        srv = out[0]
+        assert isinstance(srv, McpServerStdio)
+        assert srv.name == "fetch"
+        assert srv.command == "uvx"
+        assert srv.args == ["mcp-server-fetch"]
+        assert [(e.name, e.value) for e in srv.env] == [("API_KEY", "x")]
+
+    def test_http_gated_on_capability(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "headers": {"Authorization": "Bearer y"},
+                }
+            }
+        }
+        # Dropped when the server doesn't advertise http.
+        assert _mcp_config_to_acp_servers(cfg, self._caps(http=False, sse=False)) == []
+        # Forwarded when advertised.
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert out[0].type == "http"
+        assert out[0].url == "https://h/mcp"
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer y")
+        ]
+
+    def test_sse_gated_on_capability(self):
+        from acp.schema import SseMcpServer
+
+        cfg = {"mcpServers": {"s": {"url": "https://s/sse", "transport": "sse"}}}
+        assert _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False)) == []
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        assert len(out) == 1
+        assert isinstance(out[0], SseMcpServer)
+        assert out[0].type == "sse"
+
+    def test_streamable_http_maps_to_http(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "s": {"url": "https://h/mcp", "transport": "streamable-http"}
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=True))
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+
+    def test_empty_and_malformed_configs(self):
+        caps = self._caps(http=True, sse=True)
+        assert _mcp_config_to_acp_servers({}, caps) == []
+        assert _mcp_config_to_acp_servers({"mcpServers": {}}, caps) == []
+        # Not a dict -> skipped, no crash.
+        assert _mcp_config_to_acp_servers({"mcpServers": {"bad": 123}}, caps) == []
+        # No command and no url -> skipped.
+        assert _mcp_config_to_acp_servers({"mcpServers": {"x": {}}}, caps) == []
+
+    def test_none_capabilities_drops_remote_keeps_stdio(self):
+        from acp.schema import McpServerStdio
+
+        cfg = {
+            "mcpServers": {
+                "fetch": {"command": "echo"},
+                "remote": {"url": "https://h/mcp"},
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, None)
+        assert [type(s).__name__ for s in out] == [McpServerStdio.__name__]
+
+
+class TestACPMcpForwarding:
+    """The translated servers reach new_session AND load_session (resume)."""
+
+    @staticmethod
+    def _conn_with_caps(*, http=True, sse=True, load_exc=None):
+        conn = TestACPSessionIdPersistence._make_conn(load_exc=load_exc)
+        conn.initialize.return_value.agent_capabilities.mcp_capabilities = (
+            TestMcpConfigToAcpServers._caps(http=http, sse=sse)
+        )
+        return conn
+
+    def test_new_session_receives_mcp_servers(self, tmp_path):
+        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once()
+        servers = conn.new_session.call_args.kwargs["mcp_servers"]
+        assert [s.name for s in servers] == ["fetch"]
+
+    def test_resume_load_session_receives_mcp_servers(self, tmp_path):
+        """The key correctness point: resume must re-pass MCP servers, since
+        load_session does not persist them server-side."""
+        agent = _make_agent(mcp_config={"mcpServers": {"fetch": {"command": "echo"}}})
+        state = _make_state(tmp_path)
+        state.agent_state = {**state.agent_state, "acp_session_id": "stored-sess"}
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.load_session.assert_awaited_once()
+        servers = conn.load_session.call_args.kwargs["mcp_servers"]
+        assert [s.name for s in servers] == ["fetch"]
+        conn.new_session.assert_not_awaited()
+
+    def test_no_mcp_config_forwards_empty_list(self, tmp_path):
+        agent = _make_agent()
+        state = _make_state(tmp_path)
+        conn = self._conn_with_caps()
+
+        TestACPSessionIdPersistence._patched_start_acp_server(agent, state, conn=conn)
+
+        conn.new_session.assert_awaited_once()
+        assert conn.new_session.call_args.kwargs["mcp_servers"] == []
+
+
+# ---------------------------------------------------------------------------
+# Reserved file-content secret materialisation (issue #1020)
+# ---------------------------------------------------------------------------
+
+
+class TestACPFileSecretMaterialisation:
+    """Codex auth.json / Gemini Vertex SA JSON materialise to the durable
+    per-conversation root, with the right data-dir env var, seed-if-absent.
+    """
+
+    @staticmethod
+    def _make_conn(*, agent_name: str = "codex-acp", auth_method: str | None = None):
+        conn = MagicMock()
+        init_response = MagicMock()
+        init_response.agent_info = MagicMock()
+        init_response.agent_info.name = agent_name
+        init_response.agent_info.version = "1.0"
+        init_response.auth_methods = [MagicMock(id=auth_method)] if auth_method else []
+        # MagicMock(id=...) doesn't set .id; assign explicitly.
+        for m in init_response.auth_methods:
+            m.id = auth_method
+        conn.initialize = AsyncMock(return_value=init_response)
+        new_response = MagicMock()
+        new_response.session_id = "sess-new"
+        new_response.models = None
+        conn.new_session = AsyncMock(return_value=new_response)
+        conn.load_session = AsyncMock(return_value=MagicMock())
+        conn.set_session_mode = AsyncMock()
+        conn.set_session_model = AsyncMock()
+        conn.authenticate = AsyncMock()
+        conn.close = AsyncMock()
+        return conn
+
+    @staticmethod
+    def _run_start(agent, state, *, conn):
+        """Run the real _start_acp_server with transport mocked; return the env
+        dict handed to the subprocess."""
+        from contextlib import ExitStack
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        captured: dict[str, Any] = {}
+        mock_process = MagicMock()
+        mock_process.stdin = MagicMock()
+        mock_process.stdout = MagicMock()
+
+        async def _fake_exec(*_args, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock_process
+
+        async def _fake_filter(_src, _dst):
+            return None
+
+        agent._executor = AsyncExecutor()
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.create_subprocess_exec",
+                    new=_fake_exec,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.ClientSideConnection",
+                    return_value=conn,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent._filter_jsonrpc_lines",
+                    new=_fake_filter,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "openhands.sdk.agent.acp_agent.asyncio.StreamReader",
+                    return_value=MagicMock(),
+                )
+            )
+            agent._start_acp_server(state)
+        return captured["env"]
+
+    @staticmethod
+    def _state(tmp_path, *, persisted: bool = True):
+        from openhands.sdk.agent.acp_agent import ACPAgent
+
+        agent = ACPAgent(acp_command=["codex-acp"])
+        workspace = LocalWorkspace(working_dir=str(tmp_path / "ws"))
+        (tmp_path / "ws").mkdir()
+        persistence_dir = (
+            str(tmp_path / "conversations" / uuid.uuid4().hex) if persisted else None
+        )
+        state = ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=persistence_dir,
+        )
+        return state
+
+    def test_codex_auth_json_materialises_to_conversation_root(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        auth_file = codex_home / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"tokens": "x"}'
+        # 0600 file inside a 0700 dir, and the shared acp/ parent is 0700 too.
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert codex_home.stat().st_mode & 0o777 == 0o700
+        assert codex_home.parent.stat().st_mode & 0o777 == 0o700
+        # The blob is not exported as an env var.
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_gemini_vertex_sa_materialises_and_points_at_file(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {
+                "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                    value=SecretStr('{"type": "service_account"}')
+                )
+            }
+        )
+        env = self._run_start(
+            agent, state, conn=self._make_conn(agent_name="gemini-cli")
+        )
+
+        gac = Path(env["GOOGLE_APPLICATION_CREDENTIALS"])
+        assert gac == Path(persist) / "acp" / "gemini-cli" / "gcloud-credentials.json"
+        assert gac.read_text(encoding="utf-8") == '{"type": "service_account"}'
+        # 0600 file inside a 0700 dir (symmetry with the Codex test).
+        assert gac.stat().st_mode & 0o777 == 0o600
+        assert gac.parent.stat().st_mode & 0o777 == 0o700
+        assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_seed_if_absent_does_not_clobber_existing_file(self, tmp_path):
+        """A non-empty existing credential file (e.g. a token the CLI refreshed)
+        is preserved; the stale pasted blob does not overwrite it."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        # Pre-seed a "refreshed" auth.json with deliberately wide (0644) perms.
+        codex_home = Path(persist) / "acp" / "codex"
+        codex_home.mkdir(parents=True)
+        refreshed = codex_home / "auth.json"
+        refreshed.write_text('{"refreshed": true}', encoding="utf-8")
+        refreshed.chmod(0o644)
+
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"stale": true}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert Path(env["CODEX_HOME"]) == codex_home
+        # Contents preserved (not clobbered by the stale paste)...
+        assert refreshed.read_text(encoding="utf-8") == '{"refreshed": true}'
+        # ...but perms are still clamped to 0600 (regression: QA found a
+        # preserved 0644 file staying world-readable).
+        assert refreshed.stat().st_mode & 0o777 == 0o600
+
+    def test_reads_from_agent_context_secrets_drain(self, tmp_path):
+        """The reserved secret can arrive via agent_context.secrets (canvas-local
+        path) rather than the registry."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                current_datetime=None,
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"a": 1}'))},
+            ),
+        )
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        auth_file = Path(env["CODEX_HOME"]) / "auth.json"
+        assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_acp_env_pin_wins_and_credential_seeds_where_it_points(self, tmp_path):
+        """An explicit acp_env[CODEX_HOME] keeps its precedence, and the
+        credential is seeded *there* so the file and env stay consistent."""
+        from openhands.sdk.secret import StaticSecret
+
+        pinned = tmp_path / "pinned_codex"
+        # Pre-create the pinned dir with deliberately wide (0755) perms.
+        pinned.mkdir()
+        pinned.chmod(0o755)
+        agent = _make_agent(acp_env={"CODEX_HOME": str(pinned)})
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"k": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert env["CODEX_HOME"] == str(pinned)
+        # The credential lands under the pinned dir, not the conversation root.
+        assert (pinned / "auth.json").read_text(encoding="utf-8") == '{"k": 1}'
+        # The pinned dir's user-chosen perms are NOT silently narrowed...
+        assert pinned.stat().st_mode & 0o777 == 0o755
+        # ...but the credential file itself is still 0600.
+        assert (pinned / "auth.json").stat().st_mode & 0o777 == 0o600
+
+    def test_fallback_root_when_not_persisted(self, tmp_path):
+        """With no persistence_dir, the file lands under the workspace tree —
+        still seed-if-absent, no TemporaryDirectory."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        expected = Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        assert Path(env["CODEX_HOME"]) == expected
+        assert (expected / "auth.json").is_file()
+
+    def test_no_file_secret_when_secret_absent(self, tmp_path):
+        """No reserved secret present -> no data-dir env var is set."""
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        env = self._run_start(agent, state, conn=self._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_materialisation_oserror_fails_fast(self, tmp_path):
+        """If the credential can't be written (e.g. read-only mount), the error
+        propagates out of _start_acp_server (so init_state surfaces a typed
+        ConversationErrorEvent) instead of being swallowed and leaving the CLI
+        to fail at auth time with no SDK breadcrumb."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with patch(
+            "openhands.sdk.agent.acp_agent._write_secret_file",
+            side_effect=OSError("[Errno 30] Read-only file system"),
+        ):
+            with pytest.raises(OSError, match="Read-only file system"):
+                self._run_start(agent, state, conn=self._make_conn())
+
+    def test_vertex_warns_when_project_unset(self, tmp_path, caplog):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(value=SecretStr("{}"))}
+        )
+        with caplog.at_level("WARNING"):
+            self._run_start(agent, state, conn=self._make_conn(agent_name="gemini-cli"))
+        assert any("GOOGLE_CLOUD_PROJECT" in rec.message for rec in caplog.records)
+
+    def test_present_file_secret_names_helper(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent()
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(value=SecretStr("t")),
+            }
+        )
+        assert agent._present_file_secret_names(state) == {"CODEX_AUTH_JSON"}
+
+    def test_blob_excluded_from_custom_secrets_advertisement(self, tmp_path):
+        """The <CUSTOM_SECRETS> advertisement lists plain secrets but not the
+        file-content blob (it's not an env var the agent can reference)."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(current_datetime=None),
+        )
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {
+                "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                "PLAIN_TOKEN": StaticSecret(
+                    value=SecretStr("t"), description="A plain token"
+                ),
+            }
+        )
+        events: list = []
+        with patch("openhands.sdk.agent.acp_agent.ACPAgent._start_acp_server"):
+            agent.init_state(state, on_event=events.append)
+
+        suffix = events[0].dynamic_context
+        assert suffix is not None
+        assert "PLAIN_TOKEN" in suffix.text
+        assert "CODEX_AUTH_JSON" not in suffix.text
+
+    def test_downstream_can_override_specs_with_custom_provider(self, tmp_path):
+        """A downstream app supplies its own ACPFileSecretSpec for a custom CLI;
+        the SDK mechanism materialises it without any registry change."""
+        from openhands.sdk import ACPFileSecretSpec
+        from openhands.sdk.secret import StaticSecret
+
+        custom = ACPFileSecretSpec(
+            secret_name="MYCLI_TOKEN_JSON",
+            filename="token.json",
+            env_var="MYCLI_HOME",
+            subdir="mycli",
+            env_points_to="dir",
+        )
+        agent = _make_agent(acp_file_secrets=[custom])
+        state = self._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"MYCLI_TOKEN_JSON": StaticSecret(value=SecretStr('{"t": 1}'))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        home = Path(env["MYCLI_HOME"])
+        assert home == Path(persist) / "acp" / "mycli"
+        assert (home / "token.json").read_text(encoding="utf-8") == '{"t": 1}'
+        assert "MYCLI_TOKEN_JSON" not in env
+        # The built-in Codex/Gemini specs were replaced, so their secrets would
+        # NOT be materialised by this agent.
+        assert agent._present_file_secret_names(state) == {"MYCLI_TOKEN_JSON"}
+
+    def test_empty_specs_disables_materialisation(self, tmp_path):
+        """With acp_file_secrets=[], a CODEX_AUTH_JSON secret is treated as an
+        ordinary env var (no file written, no CODEX_HOME) — downstream opt-out."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(acp_file_secrets=[])
+        state = self._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("blob"))}
+        )
+        env = self._run_start(agent, state, conn=self._make_conn())
+
+        assert "CODEX_HOME" not in env
+        # Not configured as a file-secret, so it flows through as a plain env var.
+        assert env.get("CODEX_AUTH_JSON") == "blob"
+
+    def test_settings_pass_file_secrets_through_create_agent(self):
+        """ACPAgentSettings defaults to the built-in specs and forwards them to
+        the constructed ACPAgent."""
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+        from openhands.sdk.settings.model import ACPAgentSettings
+
+        settings = ACPAgentSettings(acp_server="codex")
+        agent = settings.create_agent()
+        names = {s.secret_name for s in agent.acp_file_secrets}
+        assert "CODEX_AUTH_JSON" in names
+        assert {s.secret_name for s in agent.acp_file_secrets} == {
+            s.secret_name for s in default_acp_file_secrets()
+        }
+
+
+# ---------------------------------------------------------------------------
+# Per-conversation CLI data-dir isolation (issue #1019)
+# ---------------------------------------------------------------------------
+
+
+class TestACPDataDirIsolation:
+    """``acp_isolate_data_dir`` relocates each provider's CLI data/config root to
+    ``<persistence_dir>/acp/<provider>`` so conversations sharing one sandbox
+    don't race on a shared HOME. Reuses the materialisation harness so the two
+    features are exercised against the same _start_acp_server path.
+    """
+
+    _H = TestACPFileSecretMaterialisation
+
+    @staticmethod
+    def _agent(command, **kw):
+        return ACPAgent(acp_command=command, acp_isolate_data_dir=True, **kw)
+
+    def test_codex_sets_codex_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        data_dir = Path(env["CODEX_HOME"])
+        assert data_dir == Path(persist) / "acp" / "codex"
+        assert data_dir.is_dir()
+        assert data_dir.stat().st_mode & 0o777 == 0o700
+
+    def test_gemini_sets_home_to_conversation_root(self, tmp_path):
+        agent = self._agent(["npx", "-y", "@google/gemini-cli", "--acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="gemini-cli")
+            )
+        assert Path(env["HOME"]) == Path(persist) / "acp" / "gemini-cli"
+
+    def test_disabled_by_default_leaves_home_shared(self, tmp_path):
+        # Same codex command, isolation OFF (the default): no CODEX_HOME injected.
+        agent = ACPAgent(acp_command=["codex-acp"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+
+    def test_unknown_command_no_ops(self, tmp_path):
+        agent = self._agent(["my-custom-acp", "serve"])
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert "CODEX_HOME" not in env
+        assert "CLAUDE_CONFIG_DIR" not in env
+
+    def test_acp_env_pin_wins(self, tmp_path):
+        agent = self._agent(["codex-acp"], acp_env={"CODEX_HOME": "/pinned/codex"})
+        state = self._H._state(tmp_path)
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert env["CODEX_HOME"] == "/pinned/codex"
+
+    def test_falls_back_to_workspace_when_not_persisted(self, tmp_path):
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path, persisted=False)
+        assert state.persistence_dir is None
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        assert (
+            Path(env["CODEX_HOME"])
+            == Path(state.workspace.working_dir) / ".openhands" / "acp" / "codex"
+        )
+
+    def test_composes_with_materialised_codex_auth(self, tmp_path):
+        """Isolation and file-secret materialisation agree on one CODEX_HOME."""
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["codex-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"tokens": "x"}'))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(agent, state, conn=self._H._make_conn())
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home == Path(persist) / "acp" / "codex"
+        # Materialisation seeded auth.json into the SAME dir isolation points at.
+        assert (codex_home / "auth.json").read_text(
+            encoding="utf-8"
+        ) == '{"tokens": "x"}'
+
+    # --- Claude carve-out: must not knock out an active API key --------------
+
+    def test_claude_skips_when_api_key_active(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        state.secret_registry.update_secrets(
+            {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-live"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        # Setting CLAUDE_CONFIG_DIR would trip _ENV_CONFLICT_MAP and strip the
+        # key, so isolation is skipped and the working key survives.
+        assert "CLAUDE_CONFIG_DIR" not in env
+        assert env["ANTHROPIC_API_KEY"] == "sk-live"
+
+    def test_claude_isolates_under_oauth_token(self, tmp_path):
+        from openhands.sdk.secret import StaticSecret
+
+        agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
+        state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
+        state.secret_registry.update_secrets(
+            {"CLAUDE_CODE_OAUTH_TOKEN": StaticSecret(value=SecretStr("oauth-xyz"))}
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            env = self._H._run_start(
+                agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
+            )
+        assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
+
+
+# ---------------------------------------------------------------------------
+# Secret masking (#1023)
+# ---------------------------------------------------------------------------
+
+
+def _redacting_mask(text: str) -> str:
+    """Stand-in for ``secret_registry.mask_secrets_in_output``: replaces the
+    literal secret with the same sentinel the real registry uses."""
+    return text.replace("SEKRET", "<secret-hidden>")
+
+
+class TestMaskJsonValue:
+    """Unit tests for the recursive JSON masker helper."""
+
+    def test_masks_bare_string(self):
+        assert _mask_json_value("token=SEKRET", _redacting_mask) == (
+            "token=<secret-hidden>"
+        )
+
+    def test_masks_nested_dict_and_list(self):
+        value = {
+            "command": "curl -H 'Authorization: Bearer SEKRET'",
+            "args": ["--data", "key=SEKRET"],
+            "count": 3,
+            "ok": True,
+            "nothing": None,
+        }
+        masked = _mask_json_value(value, _redacting_mask)
+        assert masked["command"] == "curl -H 'Authorization: Bearer <secret-hidden>'"
+        assert masked["args"] == ["--data", "key=<secret-hidden>"]
+        # Non-string leaves pass through unchanged.
+        assert masked["count"] == 3
+        assert masked["ok"] is True
+        assert masked["nothing"] is None
+
+    def test_non_string_scalar_passthrough(self):
+        assert _mask_json_value(42, _redacting_mask) == 42
+        assert _mask_json_value(None, _redacting_mask) is None
+
+
+class TestACPBridgeMasking:
+    """``_OpenHandsACPBridge`` masks injected secrets before they reach the
+    ``on_token`` / ``on_event`` sinks (persisted + network-relayed)."""
+
+    @pytest.mark.asyncio
+    async def test_message_chunk_masked_in_relay_and_accumulation(self):
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "the token is SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["the token is <secret-hidden>"]
+        assert client.accumulated_text == ["the token is <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_thought_chunk_masked(self):
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "I will use SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert client.accumulated_thoughts == ["I will use <secret-hidden>"]
+
+    @pytest.mark.asyncio
+    async def test_tool_call_start_masks_raw_fields(self):
+        from acp.schema import ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Running: echo SEKRET"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = {"command": "echo SEKRET"}
+        start.raw_output = "leaked SEKRET here"
+        start.content = None
+
+        await client.session_update("sess-1", start)
+
+        assert len(events) == 1
+        evt = events[0]
+        assert evt.title == "Running: echo <secret-hidden>"
+        assert evt.raw_input == {"command": "echo <secret-hidden>"}
+        assert evt.raw_output == "leaked <secret-hidden> here"
+        # The accumulator itself must hold masked values so the supersede /
+        # flush path can't re-leak them.
+        stored = client.accumulated_tool_calls[0]
+        assert stored["title"] == "Running: echo <secret-hidden>"
+        assert stored["raw_input"] == {"command": "echo <secret-hidden>"}
+        assert stored["raw_output"] == "leaked <secret-hidden> here"
+
+    @pytest.mark.asyncio
+    async def test_tool_call_progress_masks_terminal_output(self):
+        from acp.schema import ToolCallProgress, ToolCallStart
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        events: list = []
+        client.on_event = events.append
+
+        start = MagicMock(spec=ToolCallStart)
+        start.tool_call_id = "tc-1"
+        start.title = "Run"
+        start.kind = "execute"
+        start.status = "in_progress"
+        start.raw_input = None
+        start.raw_output = None
+        start.content = None
+        await client.session_update("sess-1", start)
+
+        # Terminal progress frame carries the secret in its cumulative output.
+        progress = MagicMock(spec=ToolCallProgress)
+        progress.tool_call_id = "tc-1"
+        progress.title = None
+        progress.kind = None
+        progress.status = "completed"
+        progress.raw_input = None
+        progress.raw_output = "result: SEKRET"
+        progress.content = None
+        await client.session_update("sess-1", progress)
+
+        # The terminal event (emitted on the in_progress->completed transition)
+        # carries masked output.
+        assert events[-1].status == "completed"
+        assert events[-1].raw_output == "result: <secret-hidden>"
+        assert (
+            client.accumulated_tool_calls[0]["raw_output"] == "result: <secret-hidden>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_masking_when_mask_unset(self):
+        """A standalone bridge (mask is None) passes text through unchanged
+        and never raises."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        assert client.mask is None
+        tokens: list[str] = []
+        client.on_token = tokens.append
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "raw SEKRET"
+
+        await client.session_update("sess-1", chunk)
+
+        assert tokens == ["raw SEKRET"]
+        assert client.accumulated_text == ["raw SEKRET"]
+
+    def test_mask_value_swallows_mask_errors(self):
+        """A failing masker must never crash session_update — fall back to the
+        original value (matches the regular terminal tool's masking contract)."""
+
+        def _boom(_text: str) -> str:
+            raise RuntimeError("masker exploded")
+
+        client = _OpenHandsACPBridge()
+        client.mask = _boom
+        assert client._mask_value("keep SEKRET") == "keep SEKRET"
+
+    def test_reset_preserves_mask(self):
+        """mask is conversation-lifetime (bound once in _start_acp_server), so a
+        per-turn reset() must NOT clear it — unlike on_token/on_event."""
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client.reset()
+        assert client.mask is _redacting_mask
+
+    @pytest.mark.asyncio
+    async def test_fork_session_text_masked(self):
+        """ask_agent() joins _fork_accumulated_text and returns it to the
+        caller, so fork-session chunks must be masked too."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client.mask = _redacting_mask
+        client._fork_session_id = "fork-1"
+
+        chunk = MagicMock(spec=AgentMessageChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "fork says SEKRET"
+
+        await client.session_update("fork-1", chunk)
+
+        assert client._fork_accumulated_text == ["fork says <secret-hidden>"]
+
+
+class TestACPStepMasksPersistedTurn:
+    """End-to-end: the persisted FinishAction text is masked at the join
+    boundary, including secrets split across streamed chunks."""
+
+    def _make_conversation_with_message(self, tmp_path, text="Hello"):
+        state = _make_state(tmp_path)
+        state.events.append(
+            SystemPromptEvent(
+                source="agent",
+                system_prompt=TextContent(text="ACP-managed agent"),
+                tools=[],
+            )
+        )
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=text)]),
+            )
+        )
+        conversation = MagicMock()
+        conversation.state = state
+        return conversation
+
+    def test_finish_action_masks_secret_split_across_chunks(self, tmp_path):
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        # Seed the mask set via the canonical registry path (get_secret_value
+        # records the resolved value in _exported_values) — the same path
+        # _start_acp_server drives for StartConversationRequest secrets.
+        reg = conversation.state.secret_registry
+        reg.update_secrets({"TOKEN": "supersecret"})
+        reg.get_secret_value("TOKEN")
+        events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        def _fake_run_async(_coro, **_kwargs):
+            # Populate accumulated_text directly, bypassing session_update (and
+            # thus per-chunk masking) on purpose: this isolates the join-boundary
+            # re-mask in _finalize_successful_turn. The secret straddles two
+            # chunks, so neither chunk matches alone — only the reassembled join
+            # does, which is exactly what the persistence-boundary mask catches.
+            mock_client.accumulated_text.append("the value is super")
+            mock_client.accumulated_text.append("secret now")
+
+        mock_executor = MagicMock()
+        mock_executor.run_async = _fake_run_async
+        agent._executor = mock_executor
+
+        agent.step(conversation, on_event=events.append)
+
+        finish = next(
+            e for e in events if isinstance(getattr(e, "action", None), FinishAction)
+        )
+        assert "supersecret" not in finish.action.message
+        assert finish.action.message == "the value is <secret-hidden> now"

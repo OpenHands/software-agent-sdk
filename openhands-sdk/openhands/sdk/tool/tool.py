@@ -1,3 +1,4 @@
+import asyncio
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -160,6 +161,18 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         Default implementation does nothing. Subclasses should override
         this method to perform cleanup (e.g., closing connections,
         terminating processes, etc.).
+        """
+        pass
+
+    def interrupt(self) -> None:
+        """Interrupt any in-flight execution (e.g., send Ctrl+C).
+
+        Called from a *different* thread when a conversation interrupt
+        fires while this tool is still executing.  Implementations should
+        be thread-safe and idempotent.
+
+        The default is a no-op; tools with long-running operations
+        (terminal subprocesses, browser navigations, …) should override.
         """
         pass
 
@@ -376,6 +389,21 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 "Output must be dict or BaseModel when no output schema is defined"
             )
 
+    async def acall(
+        self, action: ActionT, conversation: "LocalConversation | None" = None
+    ) -> Observation:
+        """Run this tool asynchronously when called directly.
+
+        The default implementation runs :meth:`__call__` in a thread via the
+        event loop's executor, so callers can await a single tool invocation
+        without blocking the event loop.
+
+        The SDK's internal async dispatch path does not call this hook; it
+        dispatches through :meth:`__call__` directly from its own executor.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self, action, conversation)
+
     def to_mcp_tool(
         self,
         input_schema: dict[str, Any] | None = None,
@@ -569,8 +597,7 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
             (action_type,),
             {
                 "security_risk": Field(
-                    # We do NOT add default value to make it an required field
-                    # default=risk.SecurityRisk.UNKNOWN
+                    default=risk.SecurityRisk.UNKNOWN,
                     description="The LLM's assessment of the safety risk of this action.",  # noqa:E501
                 ),
                 "__annotations__": {"security_risk": risk.SecurityRisk},

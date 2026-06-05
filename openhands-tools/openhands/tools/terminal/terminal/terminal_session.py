@@ -22,6 +22,7 @@ from openhands.tools.terminal.terminal.interface import (
     TerminalInterface,
     TerminalSessionBase,
 )
+from openhands.tools.terminal.timeout_policy import foreground_timeout_rejection_for
 from openhands.tools.terminal.utils.command import (
     escape_bash_special_chars,
     split_bash_commands,
@@ -408,6 +409,18 @@ class TerminalSession(TerminalSessionBase):
         logger.debug(f"RECEIVED ACTION: {action}")
         command = action.command.strip()
         is_input: bool = action.is_input
+
+        rejection = foreground_timeout_rejection_for(
+            command=command,
+            is_input=is_input,
+            timeout=action.timeout,
+        )
+        if rejection is not None:
+            return TerminalObservation.from_text(
+                text=rejection,
+                command=command,
+                is_error=True,
+            )
 
         # If the previous command is not completed,
         # we need to check if the command is empty

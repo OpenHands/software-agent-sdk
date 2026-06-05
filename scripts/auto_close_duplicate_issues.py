@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if not REPOSITORY_PATTERN.fullmatch(args.repository):
-        raise ValueError(f"Invalid repository format: {args.repository}")
+        parser.error(f"Invalid repository format: {args.repository}")
     return args
 
 
@@ -182,17 +182,21 @@ def find_latest_auto_close_comment(
         comment_created_at = comment.get("created_at")
         if not isinstance(comment_created_at, str):
             comment_created_at = None
-        if latest_comment is not None:
-            if comment_created_at is None:
-                continue
-            if latest_created_at is not None:
-                try:
-                    if parse_timestamp(comment_created_at) < parse_timestamp(
-                        latest_created_at
-                    ):
-                        continue
-                except ValueError:
+        if latest_comment is None:
+            latest_comment = comment
+            latest_canonical_issue = canonical_issue
+            latest_created_at = comment_created_at
+            continue
+        if comment_created_at is None:
+            continue
+        if latest_created_at is not None:
+            try:
+                if parse_timestamp(comment_created_at) < parse_timestamp(
+                    latest_created_at
+                ):
                     continue
+            except ValueError:
+                continue
         latest_comment = comment
         latest_canonical_issue = canonical_issue
         latest_created_at = comment_created_at

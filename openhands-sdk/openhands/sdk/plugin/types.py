@@ -367,36 +367,3 @@ class CommandDefinition(BaseModel):
 # =============================================================================
 # These are re-exported here for backward compatibility. Import from
 # openhands.sdk.marketplace instead.
-
-# Names of deprecated marketplace exports
-_DEPRECATED_MARKETPLACE_NAMES = frozenset(
-    {
-        "MARKETPLACE_MANIFEST_DIRS",
-        "MARKETPLACE_MANIFEST_FILE",
-        "Marketplace",
-        "MarketplaceEntry",
-        "MarketplaceMetadata",
-        "MarketplaceOwner",
-        "MarketplacePluginEntry",
-        "MarketplacePluginSource",
-    }
-)
-
-
-def __getattr__(name: str) -> Any:
-    """Provide deprecated marketplace names with warnings via lazy import."""
-    if name in _DEPRECATED_MARKETPLACE_NAMES:
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            f"Importing {name} from openhands.sdk.plugin.types",
-            deprecated_in="1.16.0",
-            removed_in="1.21.0",
-            details="Import from openhands.sdk.marketplace instead.",
-            stacklevel=3,
-        )
-        # Lazy import to avoid circular dependency
-        import openhands.sdk.marketplace.types as marketplace_types
-
-        return getattr(marketplace_types, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

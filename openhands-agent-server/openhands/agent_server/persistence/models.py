@@ -23,38 +23,81 @@ from pydantic import (
 )
 
 from openhands.sdk.settings import (
-    AGENT_SETTINGS_SCHEMA_VERSION,
-    AgentSettings,
     AgentSettingsConfig,
     ConversationSettings,
     default_agent_settings,
-)
-from openhands.sdk.settings.model import (
-    _AGENT_SETTINGS_MIGRATIONS,
-    _apply_persisted_migrations,
+    validate_agent_settings,
 )
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 class SettingsUpdatePayload(TypedDict, total=False):
-    """Typed payload for PersistedSettings.update() method."""
+    """Typed payload for PersistedSettings.update() method.
+
+    The ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
+    objects merge recursively, and a ``None`` value *inside a nested map*
+    deletes that entry (the "unset" primitive) — e.g. send
+    ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
+    whole map. A ``None`` on a top-level *field* is not treated as delete; it
+    flows to validation as before.
+    """
 
     agent_settings_diff: dict[str, Any]
     conversation_settings_diff: dict[str, Any]
+    active_profile: str | None
 
 
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge overlay dict into base dict.
+def _deep_merge(
+    base: dict[str, Any],
+    overlay: dict[str, Any],
+    *,
+    unset_nulls: bool = False,
+) -> dict[str, Any]:
+    """Recursively merge ``overlay`` into ``base``.
 
-    For nested dicts, merges recursively. For other types, overlay wins.
+    - Nested dicts are merged recursively.
+    - **Inside a nested map** a ``None`` value **removes** that key — the
+      "unset" primitive a plain deep-merge lacks. It lets a
+      ``PATCH /api/settings`` diff delete a single map entry (one
+      ``acp_env`` / MCP ``env`` key) without round-tripping the whole map::
+
+          {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+
+    - **At the top level** (a settings *field* like ``confirmation_mode`` or
+      ``acp_env`` itself) a ``None`` is left as-is and flows to model
+      validation — exactly as before this primitive existed. So a stray
+      ``{"confirmation_mode": null}`` still fails loudly (422) instead of
+      silently resetting a field to its default. This scoping is deliberate:
+      ``unset`` is for *entries within* a map, not for nulling whole fields.
+    - For any other scalar/list value, the overlay wins.
+
+    ``unset_nulls`` is ``False`` for the top-level call and ``True`` for every
+    recursive (nested) call — that's what draws the field-vs-entry line above.
+
+    Corner case: a key **absent from** ``base`` whose overlay value is a dict
+    is assigned wholesale (no recursion), so any ``null`` entries inside that
+    dict are stored as-is rather than treated as deletes. This is intentional
+    — you can't delete an entry from a map that doesn't exist yet — but it
+    means "initialize a new map and unset a key within it" in one diff won't
+    strip the null; downstream validation handles the resulting value.
     """
     result = dict(base)
     for key, value in overlay.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
+        if value is None and unset_nulls:
+            # Nested map entry: a null member removes the key (no-op if absent).
+            result.pop(key, None)
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge(result[key], value, unset_nulls=True)
         else:
+            # Top-level null (unset_nulls=False) falls here: set as-is and let
+            # model validation decide (preserves pre-existing behavior).
             result[key] = value
     return result
+
+
+PERSISTED_SETTINGS_SCHEMA_VERSION = 1
 
 
 class PersistedSettings(BaseModel):
@@ -63,11 +106,23 @@ class PersistedSettings(BaseModel):
     Agent settings (LLM config, MCP config, condenser) live in ``agent_settings``.
     Conversation settings (max_iterations, confirmation_mode) live in
     ``conversation_settings``.
+
+    The ``active_profile`` field tracks which LLM profile was last activated,
+    allowing frontends to display which profile is currently in use.
     """
+
+    schema_version: int = Field(
+        default=PERSISTED_SETTINGS_SCHEMA_VERSION,
+        description="Persisted settings file schema version.",
+    )
 
     agent_settings: AgentSettingsConfig = Field(default_factory=default_agent_settings)
     conversation_settings: ConversationSettings = Field(
         default_factory=ConversationSettings
+    )
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active LLM profile.",
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -86,9 +141,15 @@ class PersistedSettings(BaseModel):
     def update(self, payload: SettingsUpdatePayload) -> None:
         """Apply a batch of changes from a nested dict.
 
-        Accepts ``agent_settings_diff`` and ``conversation_settings_diff``
-        for partial updates. Uses ``from_persisted()`` to apply any schema
-        migrations if the incoming diff contains an older schema version.
+        Accepts ``agent_settings_diff``, ``conversation_settings_diff``, and
+        ``active_profile`` for partial updates. Uses ``from_persisted()`` to
+        apply any schema migrations if the incoming diff contains an older
+        schema version.
+
+        When ``agent_kind`` changes in the diff, the update is treated as a
+        variant replacement: the incoming diff is validated as-is rather than
+        merged with the old variant's fields. Same-kind updates retain deep-merge
+        behavior for incremental field edits.
 
         Thread Safety:
             This method is NOT thread-safe for concurrent in-memory updates.
@@ -120,14 +181,37 @@ class PersistedSettings(BaseModel):
 
         try:
             if isinstance(agent_update, dict):
-                agent_merged = _deep_merge(
-                    self.agent_settings.model_dump(
-                        mode="json", context={"expose_secrets": "plaintext"}
-                    ),
-                    agent_update,
-                )
+                # Check if this is a variant (agent_kind) switch
+                old_kind = self.agent_settings.agent_kind
+                new_kind = agent_update.get("agent_kind")
+                is_kind_switch = new_kind is not None and new_kind != old_kind
+
+                if is_kind_switch:
+                    # Variant replacement: validate the diff as-is rather than
+                    # deep-merging it onto the old variant. A kind switch picks a
+                    # different member of the AgentSettingsConfig union, and the
+                    # old variant's serialized fields are not a valid base for the
+                    # new one (e.g. ACP's acp_command has no place in
+                    # OpenHandsAgentSettings and would fail validation).
+                    #
+                    # Consequence (intentional): fields the two variants happen to
+                    # share (e.g. ``llm``) are NOT carried over — they fall back to
+                    # the new variant's defaults unless the caller restates them in
+                    # this same diff. Switching kinds is a fresh start on the new
+                    # variant, mirroring the frontend's "fresh base on kind switch"
+                    # behaviour. Callers that want to preserve a shared field must
+                    # include it in the switch payload.
+                    agent_merged = agent_update
+                else:
+                    # Same-kind update: deep-merge for incremental field edits
+                    agent_merged = _deep_merge(
+                        self.agent_settings.model_dump(
+                            mode="json", context={"expose_secrets": "plaintext"}
+                        ),
+                        agent_update,
+                    )
                 try:
-                    new_agent = AgentSettings.from_persisted(agent_merged)
+                    new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original
                     # exception may contain secret values in Pydantic errors
@@ -153,12 +237,37 @@ class PersistedSettings(BaseModel):
                 self.agent_settings = new_agent
             if new_conv is not None:
                 self.conversation_settings = new_conv
+
+            # Update active_profile if explicitly provided (including None to clear)
+            if "active_profile" in payload:
+                self.active_profile = payload["active_profile"]
         finally:
             # Clear merged dicts to minimize plaintext exposure window
             if agent_merged is not None:
                 agent_merged.clear()
             if conv_merged is not None:
                 conv_merged.clear()
+
+    @classmethod
+    def from_persisted(
+        cls, data: Any, *, context: dict[str, Any] | None = None
+    ) -> PersistedSettings:
+        """Load persisted settings, applying top-level and nested migrations."""
+        if not isinstance(data, dict):
+            return cls.model_validate(data, context=context)
+
+        payload = dict(data)
+        version = payload.get("schema_version", 0) or 0
+        if type(version) is not int:
+            raise ValueError("PersistedSettings schema_version must be an integer")
+        if version > PERSISTED_SETTINGS_SCHEMA_VERSION:
+            raise ValueError(
+                "PersistedSettings schema_version "
+                f"{version} is newer than supported version "
+                f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
+        return cls.model_validate(payload, context=context)
 
     @field_serializer("agent_settings")
     def agent_settings_serializer(
@@ -172,33 +281,30 @@ class PersistedSettings(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _normalize_inputs(cls, data: dict | object) -> dict | object:
+    def _normalize_inputs(
+        cls, data: dict | object, info: ValidationInfo
+    ) -> dict | object:
         """Normalize inputs during deserialization.
 
         Applies schema migrations for both agent and conversation settings,
         ensuring forward compatibility when loading settings files saved with
         older schema versions.
 
-        Note: We keep agent_settings as a dict here so that Pydantic's normal
-        validation handles it with context. This allows cipher-based decryption
-        to work properly through nested field validators (e.g., LLM._validate_secrets).
+        Agent settings are normalized through ``validate_agent_settings``
+        so the same migration entry point is used for settings files and direct
+        SDK callers. The validation context is forwarded so cipher-based secret
+        decryption still works during the nested settings validation.
         """
         if not isinstance(data, dict):
             return data
 
-        # Apply migrations for agent_settings but keep as dict
-        # The dict will be validated by Pydantic with context for decryption
         agent_settings = data.get("agent_settings")
         if isinstance(agent_settings, dict):
             coerced = _coerce_dict_secrets(agent_settings)
-            # Apply migrations only, return dict for Pydantic to validate with context
-            migrated = _apply_persisted_migrations(
+            data["agent_settings"] = validate_agent_settings(
                 coerced,
-                current_version=AGENT_SETTINGS_SCHEMA_VERSION,
-                migrations=_AGENT_SETTINGS_MIGRATIONS,
-                payload_name="AgentSettings",
+                context=info.context,
             )
-            data["agent_settings"] = migrated
 
         # Apply migrations for conversation_settings
         conv_settings = data.get("conversation_settings")
@@ -344,31 +450,60 @@ class Secrets(BaseModel):
         return data
 
 
-# ── Response Models for API ──────────────────────────────────────────────
+# ── Workspaces ───────────────────────────────────────────────────────────
+
+WORKSPACES_SCHEMA_VERSION = 1
 
 
-class CustomSecretCreate(BaseModel):
-    """Request model for creating a custom secret."""
-
-    name: str
-    value: SecretStr
-    description: str | None = None
-
-
-class CustomSecretResponse(BaseModel):
-    """Response model for a custom secret (without value)."""
-
-    name: str
-    description: str | None = None
+class WorkspaceItem(BaseModel):
+    # ``id`` is opaque server-side (dedupe is by ``path``), but the GUI sets
+    # ``id == path`` for both workspaces and parents. Capping ``id`` below
+    # ``path`` would 422 long but otherwise-valid filesystem paths, so the
+    # two caps must stay aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
+    parent_path: str | None = Field(default=None, alias="parentPath", max_length=4096)
+    model_config = ConfigDict(populate_by_name=True)
 
 
-class SecretsResponse(BaseModel):
-    """Response model listing available secrets."""
+class WorkspaceParentItem(BaseModel):
+    # See ``WorkspaceItem.id`` — keep ``id`` and ``path`` caps aligned.
+    id: str = Field(..., min_length=1, max_length=4096)
+    name: str = Field(..., min_length=1, max_length=256)
+    path: str = Field(..., min_length=1, max_length=4096)
 
-    secrets: list[CustomSecretResponse]
+
+class PersistedWorkspaces(BaseModel):
+    schema_version: int = Field(default=WORKSPACES_SCHEMA_VERSION)
+    workspaces: list[WorkspaceItem] = Field(default_factory=list)
+    workspace_parents: list[WorkspaceParentItem] = Field(
+        default_factory=list, alias="workspaceParents"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_persisted(cls, data: Any) -> PersistedWorkspaces:
+        if not isinstance(data, dict):
+            return cls.model_validate(data)
+        payload = dict(data)
+        version = payload.get("schema_version", WORKSPACES_SCHEMA_VERSION)
+        if not isinstance(version, int):
+            raise ValueError("PersistedWorkspaces schema_version must be an integer")
+        if version > WORKSPACES_SCHEMA_VERSION:
+            raise ValueError(
+                f"PersistedWorkspaces schema_version {version} is newer than "
+                f"supported {WORKSPACES_SCHEMA_VERSION}"
+            )
+        payload["schema_version"] = WORKSPACES_SCHEMA_VERSION
+        return cls.model_validate(payload)
 
 
 # ── Helper Functions ─────────────────────────────────────────────────────
+#
+# Note: API request/response models have been moved to the SDK to enable
+# sharing between SDK clients and the agent-server. See:
+#   openhands.sdk.settings.api_models (SecretCreateRequest, SecretItemResponse, etc.)
 
 
 def _coerce_dict_secrets(d: dict[str, Any]) -> dict[str, Any]:

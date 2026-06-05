@@ -20,11 +20,14 @@ jobs:
         permissions:
             actions: write
             contents: write
+            pull-requests: read
         steps:
             - name: Extract version from branch name
               id: version
+              env:
+                  PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
               run: |
-                  BRANCH="${{ github.event.pull_request.head.ref }}"
+                  BRANCH="$PR_HEAD_REF"
                   VERSION="${BRANCH#rel-}"
 
                   if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -60,16 +63,98 @@ jobs:
                   echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
                   echo "📌 Previous release tag: ${PREV_TAG:-<none>}"
 
+            - name: Build release-note-required preamble
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PREAMBLE_PATH: release-note-preamble.md
+                  PREV_TAG: ${{ steps.prev_tag.outputs.prev_tag }}
+              run: |
+                  python3 <<'PY'
+                  import json
+                  import os
+                  import subprocess
+                  from pathlib import Path
+
+                  repo = os.environ['GITHUB_REPOSITORY']
+                  prev_tag = os.environ.get('PREV_TAG', '').strip()
+                  preamble_path = Path(os.environ['PREAMBLE_PATH'])
+
+                  args = [
+                      'gh',
+                      'search',
+                      'prs',
+                      '--repo',
+                      repo,
+                      '--state',
+                      'closed',
+                      '--merged',
+                      '--label',
+                      'release-note-required',
+                      '--limit',
+                      '200',
+                      '--json',
+                      'number,title,url,author',
+                  ]
+                  if prev_tag:
+                      published_at = subprocess.check_output(
+                          [
+                              'gh',
+                              'release',
+                              'view',
+                              prev_tag,
+                              '--repo',
+                              repo,
+                              '--json',
+                              'publishedAt',
+                              '--jq',
+                              '.publishedAt',
+                          ],
+                          text=True,
+                      ).strip()
+                      if published_at:
+                          args.extend(['--merged-at', f'>={published_at}'])
+
+                  prs = json.loads(subprocess.check_output(args, text=True) or '[]')
+                  prs.sort(key=lambda pr: pr['number'])
+
+                  if not prs:
+                      preamble_path.write_text('')
+                      raise SystemExit(0)
+
+                  lines = [
+                      '## Behavioral compatibility notes',
+                      '',
+                      'The following merged PRs were labeled `release-note-required` and are called out explicitly in this release:',
+                      '',
+                  ]
+                  for pr in prs:
+                      author = (pr.get('author') or {}).get('login')
+                      attribution = f' (@{author})' if author else ''
+                      lines.append(
+                          f"- [#{pr['number']}]({pr['url']}) {pr['title']}{attribution}"
+                      )
+                  lines.append('')
+                  preamble_path.write_text('\n'.join(lines))
+                  PY
+
+
             - name: Create GitHub Release
               if: steps.check.outputs.exists == 'false'
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PREAMBLE_PATH: release-note-preamble.md
                   VERSION: ${{ steps.version.outputs.version }}
                   PREV_TAG: ${{ steps.prev_tag.outputs.prev_tag }}
               run: |
-                  NOTES_FLAG=()
+                  NOTES_START_FLAG=()
                   if [ -n "$PREV_TAG" ]; then
-                    NOTES_FLAG=(--notes-start-tag "$PREV_TAG")
+                    NOTES_START_FLAG=(--notes-start-tag "$PREV_TAG")
+                  fi
+
+                  PREAMBLE_FLAG=()
+                  if [ -s "$PREAMBLE_PATH" ]; then
+                    PREAMBLE_FLAG=(--notes "$(cat "$PREAMBLE_PATH")")
                   fi
 
                   gh release create "v${VERSION}" \
@@ -77,7 +162,8 @@ jobs:
                     --target "${{ github.event.pull_request.merge_commit_sha }}" \
                     --title "v${VERSION}" \
                     --generate-notes \
-                    "${NOTES_FLAG[@]}"
+                    "${PREAMBLE_FLAG[@]}" \
+                    "${NOTES_START_FLAG[@]}"
 
                   echo "✅ Release v${VERSION} created!"
                   echo "🔗 https://github.com/${{ github.repository }}/releases/tag/v${VERSION}"
@@ -94,6 +180,36 @@ jobs:
 
                   echo "🚀 Dispatched pypi-release.yml for v${VERSION}"
 
+            - name: Dispatch Agent Server image build
+              # server.yml builds versioned Docker images (e.g. 1.21.0-python) when
+              # triggered on a tag ref. Tags created by GITHUB_TOKEN don't trigger
+              # workflow runs automatically, so we dispatch it explicitly here.
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  gh workflow run server.yml \
+                    --repo "${{ github.repository }}" \
+                    --ref "v${VERSION}"
+
+                  echo "🐳 Dispatched server.yml image build for v${VERSION}"
+
+            - name: Dispatch release binaries workflow
+              # Same GITHUB_TOKEN limitation applies to release-binaries.yml
+              # which triggers on release:published events.
+              if: steps.check.outputs.exists == 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ steps.version.outputs.version }}
+              run: |
+                  gh workflow run release-binaries.yml \
+                    --repo "${{ github.repository }}" \
+                    --ref "v${VERSION}" \
+                    -f release_tag="v${VERSION}"
+
+                  echo "📦 Dispatched release-binaries.yml for v${VERSION}"
+
             - name: Summary
               env:
                   VERSION: ${{ steps.version.outputs.version }}
@@ -104,3 +220,5 @@ jobs:
                   echo "- **Release**: https://github.com/${{ github.repository }}/releases/tag/v${VERSION}" >> "$GITHUB_STEP_SUMMARY"
                   echo "" >> "$GITHUB_STEP_SUMMARY"
                   echo "The \`pypi-release.yml\` workflow was dispatched to publish packages to PyPI." >> "$GITHUB_STEP_SUMMARY"
+                  echo "The \`server.yml\` workflow was dispatched to build versioned Docker images." >> "$GITHUB_STEP_SUMMARY"
+                  echo "The \`release-binaries.yml\` workflow was dispatched to build and attach release binaries." >> "$GITHUB_STEP_SUMMARY"
