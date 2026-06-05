@@ -23,10 +23,10 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -35,9 +35,14 @@ from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    EnvVariable,
+    HttpHeader,
+    HttpMcpServer,
     ImageContentBlock,
+    McpServerStdio,
     PromptResponse,
     RequestPermissionResponse,
+    SseMcpServer,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -68,16 +73,20 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
-from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
+    ACPFileSecretSpec,
     build_session_model_meta,
+    default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
+    detect_acp_provider_by_command,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
+    validate_secret,
     validate_secret_dict,
 )
 
@@ -144,6 +153,36 @@ _ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
     "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
 }
 
+# Number of trailing characters of an ACP session id retained in log lines
+# for correlation.  ACP session ids are server-issued tokens whose possession
+# alone is enough to call ``session/load`` — they're effectively bearer
+# tokens.  ``model_dump`` / ``model_dump_json`` already redact the
+# ``acp_resume_session_id`` field; log aggregators (Datadog, CloudWatch, …)
+# are another serialization boundary that retains lines for weeks, so the
+# same redaction applies there.  Eight trailing characters give enough
+# entropy to correlate across log lines for one conversation but not enough
+# to brute-force the full id.
+_SESSION_ID_LOG_SUFFIX_LEN: Final[int] = 8
+
+
+def _fingerprint_session_id(session_id: str | None) -> str:
+    """Render an ACP session id as a short, non-reversible fingerprint.
+
+    ACP session ids are effectively bearer tokens (anyone holding one can
+    call ``session/load`` against the ACP server), so the full value must
+    not appear in logs — see :data:`_SESSION_ID_LOG_SUFFIX_LEN`.
+
+    Returns ``"<none>"`` for ``None``, ``"<short>"`` for ids shorter than
+    or equal to the suffix length (e.g. test fixtures), and ``"...<last-N>"``
+    otherwise.
+    """
+    if session_id is None:
+        return "<none>"
+    if len(session_id) <= _SESSION_ID_LOG_SUFFIX_LEN:
+        return "<short>"
+    return f"...{session_id[-_SESSION_ID_LOG_SUFFIX_LEN:]}"
+
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -209,6 +248,21 @@ _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 _GEMINI_OAUTH_PATH = Path(".gemini") / "oauth_creds.json"
 
 
+def _codex_auth_file(env: dict[str, str]) -> Path:
+    """Path to Codex's ChatGPT-subscription ``auth.json``, honoring ``CODEX_HOME``.
+
+    Codex reads ``$CODEX_HOME/auth.json`` when ``CODEX_HOME`` is set — which the
+    SDK does after materialising a relocated, per-conversation ``auth.json``
+    (see :meth:`ACPAgent._materialise_file_secrets`) — and ``~/.codex/auth.json``
+    otherwise. Detection must follow the same relocation or a materialised
+    subscription token is never recognised (issue #1020).
+    """
+    codex_home = env.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home) / "auth.json"
+    return Path.home() / _CHATGPT_AUTH_PATH
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -218,21 +272,26 @@ def _select_auth_method(
     Returns the ``id`` of the first matching method, or ``None`` if no
     supported credential source is available (the server may not require auth).
 
-    Subscription / OAuth logins (whose cached credential file is present) are
-    checked first so they take precedence over explicit API keys, which serve
-    as the fallback:
+    File-backed subscription / SA logins are checked first so they take
+    precedence over explicit API keys, which serve as the fallback:
 
-    - ``chatgpt`` (codex-acp) — ``~/.codex/auth.json``
+    - ``chatgpt`` (codex-acp) — ``$CODEX_HOME/auth.json`` or ``~/.codex/auth.json``
+    - ``vertex-ai`` (gemini-cli) — service-account JSON at
+      ``GOOGLE_APPLICATION_CREDENTIALS`` (the deployable Gemini path; preferred
+      over personal OAuth, which is host-bound and undeployable)
     - ``oauth-personal`` (gemini-cli) — ``~/.gemini/oauth_creds.json``
 
-    In a server image these files are absent (no interactive login), so the
-    API-key fallback (e.g. ``GEMINI_API_KEY``) is used instead.
+    In a server image the interactive-login files are absent, so the API-key
+    fallback (e.g. ``GEMINI_API_KEY``) is used instead.
     """
     method_ids = {m.id for m in auth_methods}
-    # Prefer subscription / OAuth logins when their cached credential file is
-    # present.
-    if "chatgpt" in method_ids and (Path.home() / _CHATGPT_AUTH_PATH).is_file():
+    # Prefer file-backed subscription / service-account logins when their
+    # credential file is present.
+    if "chatgpt" in method_ids and _codex_auth_file(env).is_file():
         return "chatgpt"
+    gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if "vertex-ai" in method_ids and gac and Path(gac).is_file():
+        return "vertex-ai"
     if "oauth-personal" in method_ids and (Path.home() / _GEMINI_OAUTH_PATH).is_file():
         return "oauth-personal"
     # Fall back to explicit API key env vars.
@@ -240,6 +299,55 @@ def _select_auth_method(
         if method_id in method_ids and env_var in env:
             return method_id
     return None
+
+
+def _codex_base_url_overrides(
+    command: str, args: list[str], env: dict[str, str]
+) -> list[str]:
+    """Translate ``OPENAI_BASE_URL`` into the codex config key that sets it.
+
+    Unlike claude-agent-acp (which honours ``ANTHROPIC_BASE_URL``) and gemini-cli
+    (whose base URL is supplied via the ``authenticate`` gateway), **codex does
+    not read the ``OPENAI_BASE_URL`` env var** — its supported base-URL config
+    lives in ``config.toml`` (see the codex "Advanced configuration" docs). Its
+    built-in ``openai`` provider otherwise targets ``https://api.openai.com``, so
+    a caller that points codex at a gateway/proxy (eval LiteLLM proxy, a
+    corporate egress, etc.) via ``OPENAI_BASE_URL`` alone would have every turn
+    hit the real OpenAI API with the wrong key and fail ``401 invalid_api_key``
+    — surfaced opaquely as ACP ``-32603 Internal error``. (codex-acp 0.11.1
+    happened to honour the env var; 0.15.0 does not, so the eval/canvas/cloud
+    codex-via-proxy flows broke on the bump.)
+
+    The documented one-liner is ``openai_base_url`` — it overrides the built-in
+    ``openai`` provider's base URL without inventing a separate provider, so the
+    provider's defaults (``OPENAI_API_KEY`` env key, Responses ``wire_api``) keep
+    applying and per-conversation keys keep working. No-op for non-codex servers,
+    when ``OPENAI_BASE_URL`` is unset, or when the caller already pinned a base
+    URL / ``model_provider`` (via ``acp_args``/``-c``), which takes precedence.
+    """
+    if not any("codex-acp" in tok for tok in (command, *args)):
+        return []
+    base_url = env.get("OPENAI_BASE_URL")
+    if not base_url:
+        return []
+    if any("openai_base_url" in tok or "model_provider" in tok for tok in args):
+        return []
+    return ["-c", f'openai_base_url="{base_url}"']
+
+
+def _write_secret_file(path: Path, value: str) -> None:
+    """Write ``value`` to ``path`` as a ``0600`` file.
+
+    ``os.open`` creates a *new* file at ``0600``, but ``O_CREAT`` does not
+    narrow an existing file's mode. So ``fchmod`` the raw fd to ``0600`` before
+    any bytes land — clamping the mode while we still hold the fd guarantees the
+    secret content never exists with wider permissions even when the file
+    pre-existed (e.g. a ``0644`` empty file from another tool).
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(value)
 
 
 def _extract_session_models(
@@ -280,6 +388,103 @@ def _extract_session_models(
         info for info in (ACPModelInfo.from_protocol(m) for m in raw) if info.model_id
     ]
     return current, available
+
+
+# The ACP MCP server union accepted by new_session() / load_session().
+_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+
+
+def _mcp_config_to_acp_servers(
+    mcp_config: dict[str, Any],
+    mcp_capabilities: Any,
+) -> list[_ACPMcpServer]:
+    """Translate an OpenHands ``mcp_config`` dict into ACP MCP server objects.
+
+    Reads the standard ``{"mcpServers": {name: {...}}}`` shape (the same shape
+    :attr:`AgentBase.mcp_config` carries for the built-in Agent) and returns the
+    list to pass to ``new_session()`` / ``load_session()`` so the ACP
+    subprocess connects to those servers itself.  Unlike the built-in Agent
+    these are *not* turned into in-process OpenHands MCP tools
+    (:attr:`ACPAgent.supports_openhands_mcp` stays ``False``) — the ACP server
+    owns the MCP connection and exposes the tools through its own turn.
+
+    Each entry maps by transport:
+
+    - ``command`` present → :class:`McpServerStdio` (always forwarded; the
+      protocol gates only the remote transports behind a capability flag).
+    - ``url`` present, transport ``sse`` → :class:`SseMcpServer`, forwarded only
+      when the server advertises ``mcp_capabilities.sse``.
+    - ``url`` present, any other / absent transport → :class:`HttpMcpServer`
+      (covers ``http`` and ``streamable-http``), forwarded only when the server
+      advertises ``mcp_capabilities.http``.
+
+    A remote server whose transport the ACP server does not advertise is dropped
+    with a warning rather than failing init — one misconfigured server should
+    not sink the whole conversation.  ``env`` / ``headers`` maps are converted
+    to the protocol's ``[{name, value}]`` list form; their values were already
+    decrypted by :class:`AgentBase`'s ``mcp_config`` validator.
+    """
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    http_ok = bool(getattr(mcp_capabilities, "http", False))
+    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    result: list[_ACPMcpServer] = []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            logger.warning("Skipping malformed ACP MCP server %r", name)
+            continue
+        command = spec.get("command")
+        url = spec.get("url")
+        if command:
+            env = [
+                EnvVariable(name=str(k), value=str(v))
+                for k, v in (spec.get("env") or {}).items()
+            ]
+            result.append(
+                McpServerStdio(
+                    name=str(name),
+                    command=str(command),
+                    args=[str(a) for a in (spec.get("args") or [])],
+                    env=env,
+                )
+            )
+        elif url:
+            headers = [
+                HttpHeader(name=str(k), value=str(v))
+                for k, v in (spec.get("headers") or {}).items()
+            ]
+            is_sse = str(spec.get("transport") or "http").lower() == "sse"
+            if not (sse_ok if is_sse else http_ok):
+                logger.warning(
+                    "ACP server does not advertise %s MCP support; "
+                    "dropping MCP server %r (%s)",
+                    "SSE" if is_sse else "HTTP",
+                    name,
+                    url,
+                )
+                continue
+            # Construct each transport explicitly so the ``type`` literal stays
+            # narrow (the union's two arms require distinct ``Literal``s).
+            if is_sse:
+                result.append(
+                    SseMcpServer(
+                        type="sse", name=str(name), url=str(url), headers=headers
+                    )
+                )
+            else:
+                result.append(
+                    HttpMcpServer(
+                        type="http", name=str(name), url=str(url), headers=headers
+                    )
+                )
+        else:
+            logger.warning(
+                "Skipping ACP MCP server %r: needs a 'command' (stdio) or "
+                "'url' (http/sse)",
+                name,
+            )
+    return result
 
 
 async def _maybe_set_session_model(
@@ -359,7 +564,7 @@ async def _reapply_session_model_on_resume(
             "Could not reapply model %r on resumed session %s (%s); the live "
             "session may run on the server default until the next switch",
             acp_model,
-            session_id,
+            _fingerprint_session_id(session_id),
             e,
         )
         return False
@@ -432,6 +637,24 @@ def _image_url_to_acp_block(url: str) -> ImageContentBlock | None:
     return image_block(data="", mime_type="image/png", uri=url)
 
 
+def _mask_json_value(value: Any, mask: Callable[[str], str]) -> Any:
+    """Recursively apply *mask* to every string leaf of a JSON-like value.
+
+    ACP tool-call ``raw_input`` / ``raw_output`` / ``content`` blocks are
+    arbitrary JSON (a bare string, a dict of params, a list of content
+    blocks). ``SecretRegistry.mask_secrets_in_output`` is a pure string op,
+    so walk the structure and mask each leaf string; non-string leaves
+    (ints, bools, ``None``) pass through unchanged.
+    """
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, dict):
+        return {k: _mask_json_value(v, mask) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_json_value(v, mask) for v in value]
+    return value
+
+
 def _serialize_tool_content(content: list[Any] | None) -> list[dict[str, Any]] | None:
     """Serialize ACP tool call content blocks to plain dicts for JSON storage."""
     if not content:
@@ -485,6 +708,34 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
     except Exception:
         logger.debug("_filter_jsonrpc_lines stopped", exc_info=True)
         dest.feed_eof()
+
+
+def _classify_acp_init_error(exc: BaseException) -> str:
+    """Map a cold-start failure to a structured ``ConversationErrorEvent`` code.
+
+    ACP's spawn + auth + ``session/new`` runs in :meth:`ACPAgent.init_state`,
+    which ``LocalConversation.run()``/``arun()`` invoke *before* their try-block
+    (via ``_ensure_agent_ready()``).  These cold-start failures — far more common
+    on cloud than locally — therefore bypass the run loop's error emission, so
+    ``init_state`` surfaces them itself.  The code tells clients *which* failure
+    occurred so they can react (e.g. prompt re-auth vs. report a missing binary):
+
+    - ``ACPAuthRequired``: the ACP server reported a JSON-RPC auth-required error
+      (code ``-32000``) from ``authenticate``/``new_session`` — missing, expired,
+      or rejected credentials.  The most actionable cloud failure, so it gets its
+      own code.
+    - ``ACPSpawnError``: the subprocess could not be launched — the CLI binary is
+      missing or not executable (``FileNotFoundError`` / ``PermissionError`` from
+      ``create_subprocess_exec``).
+    - ``ACPInitError``: anything else during the protocol handshake or session
+      creation (timeouts, transport drops, unexpected protocol errors, cwd
+      mismatch surfaced by the server).
+    """
+    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
+        return "ACPAuthRequired"
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return "ACPSpawnError"
+    return "ACPInitError"
 
 
 class _OpenHandsACPBridge:
@@ -547,6 +798,13 @@ class _OpenHandsACPBridge:
         # signal that the ACP subprocess is still actively working.  Set by
         # ACPAgent.step() to keep the agent-server's idle timer alive.
         self.on_activity: Any = None  # Callable[[], None] | None
+        # Secret masker — set per turn by ACPAgent to
+        # ``state.secret_registry.mask_secrets_in_output``. Applied to streamed
+        # text chunks and tool-call raw_input/raw_output/content before they
+        # reach ``on_token`` / ``on_event`` so a subprocess that echoes an
+        # injected credential never lands in the (persisted, network-relayed)
+        # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
+        self.mask: Callable[[str], str] | None = None
         self._last_activity_signal: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
@@ -590,6 +848,37 @@ class _OpenHandsACPBridge:
         self._usage_received.pop(session_id, None)
         return self._turn_usage_updates.pop(session_id, None)
 
+    def _mask_value(self, value: Any) -> Any:
+        """Mask injected secrets in *value* (string or JSON-like), no-op if unset.
+
+        Defensive: on mask failure, returns the original value unchanged and
+        logs at DEBUG — this may transiently leak the credential but prevents a
+        crash, matching the regular terminal tool's masking contract. (Masking
+        is a pure ``str.replace`` and should never raise in practice.)
+        """
+        if self.mask is None:
+            return value
+        try:
+            return _mask_json_value(value, self.mask)
+        except Exception:
+            logger.debug("secret masking failed", exc_info=True)
+            return value
+
+    def _mask_tool_call_entry(self, entry: dict[str, Any]) -> None:
+        """Mask title / raw_input / raw_output / content of a tool-call entry.
+
+        Applied in place at ingestion (``session_update``) so the accumulator
+        itself never holds plaintext secrets, and every downstream emitter
+        (``_emit_tool_call_event`` and the supersede path in
+        ``_cancel_inflight_tool_calls``) carries masked values for free.
+        ``title`` is normally a benign server-set label, but a misbehaving ACP
+        server could echo a credential there (e.g. ``Running: curl -H
+        'Authorization: Bearer <token>'``), so it is masked too.
+        """
+        for key in ("title", "raw_input", "raw_output", "content"):
+            if entry.get(key) is not None:
+                entry[key] = self._mask_value(entry[key])
+
     # -- Client protocol methods ------------------------------------------
 
     async def session_update(
@@ -600,16 +889,26 @@ class _OpenHandsACPBridge:
     ) -> None:
         logger.debug("ACP session_update: type=%s", type(update).__name__)
 
-        # Route fork session updates to the fork accumulator
+        # Route fork session updates to the fork accumulator. ask_agent() joins
+        # and returns this text to the caller (a UI/network sink), so mask it
+        # like the main-turn path — a secret echoed in a fork session must not
+        # leak in cleartext.
         if self._fork_session_id is not None and session_id == self._fork_session_id:
             if isinstance(update, AgentMessageChunk):
                 if isinstance(update.content, TextContentBlock):
-                    self._fork_accumulated_text.append(update.content.text)
+                    self._fork_accumulated_text.append(
+                        self._mask_value(update.content.text)
+                    )
             return
 
         if isinstance(update, AgentMessageChunk):
             if isinstance(update.content, TextContentBlock):
-                text = update.content.text
+                # Mask once, then use the masked chunk for both the persisted
+                # accumulation and the live ``on_token`` relay. A secret split
+                # across two chunks slips through here (each piece alone won't
+                # match); the joined response is re-masked at the persistence
+                # boundary in ``_finalize_successful_turn`` to catch that.
+                text = self._mask_value(update.content.text)
                 self.accumulated_text.append(text)
                 if self.on_token is not None:
                     try:
@@ -619,7 +918,7 @@ class _OpenHandsACPBridge:
             self._maybe_signal_activity()
         elif isinstance(update, AgentThoughtChunk):
             if isinstance(update.content, TextContentBlock):
-                self.accumulated_thoughts.append(update.content.text)
+                self.accumulated_thoughts.append(self._mask_value(update.content.text))
         elif isinstance(update, UsageUpdate):
             # Store the update for step()/ask_agent() to process in one place.
             self._context_window = update.size
@@ -638,15 +937,25 @@ class _OpenHandsACPBridge:
                 "raw_output": update.raw_output,
                 "content": _serialize_tool_content(update.content),
             }
+            self._mask_tool_call_entry(entry)
             self.accumulated_tool_calls.append(entry)
             logger.debug("ACP tool call start: %s", update.tool_call_id)
+            # Emit one early "started" event — the action half of the
+            # action->observation pair. (If the server reports a terminal
+            # status on the very first notification, this single event is
+            # also the observation; the matching terminal-transition guard
+            # below then suppresses any redundant re-emission.)
             self._emit_tool_call_event(entry)
             self._maybe_signal_activity()
         elif isinstance(update, ToolCallProgress):
-            # Find the existing tool call entry and merge updates
+            # Find the existing tool call entry and merge updates. Track the
+            # status seen *before* this frame so we can detect the single
+            # transition into a terminal state.
             target: dict[str, Any] | None = None
+            prev_status: str | None = None
             for tc in self.accumulated_tool_calls:
                 if tc["tool_call_id"] == update.tool_call_id:
+                    prev_status = tc.get("status")
                     if update.title is not None:
                         tc["title"] = update.title
                     if update.kind is not None:
@@ -662,7 +971,25 @@ class _OpenHandsACPBridge:
                     target = tc
                     break
             logger.debug("ACP tool call progress: %s", update.tool_call_id)
+            # Mask the merged entry on every frame so the accumulator (and thus
+            # the terminal event and any _cancel_inflight_tool_calls supersede)
+            # never carries plaintext secrets. ``status`` is left untouched, so
+            # the terminal-transition check below is unaffected.
             if target is not None:
+                self._mask_tool_call_entry(target)
+            # Persist exactly one terminal event per tool call. Intermediate
+            # progress frames each carry the *full cumulative* output; emitting
+            # one per frame is O(n^2) storage + WebSocket relay (the bug this
+            # method fixes). We accumulate them into ``target`` silently and
+            # emit only on the first transition into a terminal status, so the
+            # terminal event still carries the complete final output. This is
+            # the observation half of the action->observation pair.
+            became_terminal = (
+                target is not None
+                and target.get("status") in _TERMINAL_TOOL_CALL_STATUSES
+                and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
+            )
+            if target is not None and became_terminal:
                 self._emit_tool_call_event(target)
             self._maybe_signal_activity()
         else:
@@ -832,7 +1159,12 @@ class ACPAgent(AgentBase):
     )
     acp_env: dict[str, str] = Field(
         default_factory=dict,
-        description="Additional environment variables for the ACP server process",
+        description=(
+            "DEPRECATED (removed in 1.29.0): additional environment variables for "
+            "the ACP server process. Route subprocess env/credentials through "
+            "state.secret_registry (e.g. agent_context.secrets / "
+            "StartConversationRequest.secrets) instead."
+        ),
     )
 
     @field_validator("acp_env", mode="before")
@@ -890,6 +1222,96 @@ class ACPAgent(AgentBase):
             "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
             "ACP, applied via the protocol-level set_session_model call. "
             "If None, the server picks its default."
+        ),
+    )
+    acp_resume_session_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit ACP session id to resume. When set, takes "
+            "precedence over the id persisted in ``state.agent_state`` and "
+            "is used to call ``session/load`` on the ACP server. Designed "
+            "for environments where the per-conversation filesystem (and "
+            "therefore ``base_state.json``) does not survive across restarts "
+            "(e.g. cloud sandbox recycles), but the id has been mirrored "
+            "into durable storage elsewhere. Falls back to a fresh session "
+            "if the server cannot load the id. Treated as a secret on the "
+            "wire — possession of the id is enough to resume the underlying "
+            "ACP session, so default serialization redacts it; pass "
+            "``expose_secrets='plaintext'`` (trusted backend) or "
+            "``expose_secrets='encrypted'`` plus a cipher (frontend round-"
+            "trip) when the value must cross a serialization boundary."
+        ),
+    )
+
+    @field_serializer("acp_resume_session_id", when_used="always")
+    def _serialize_acp_resume_session_id(self, value: str | None, info):
+        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
+
+        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
+        cannot leak into logs, trace exports, or PR review attachments.
+        Trusted backend callers opt into plaintext via Pydantic's context
+        (``expose_secrets='plaintext'``); frontend round-trips use the
+        ``"encrypted"`` mode with a cipher in the context.
+        """
+        if value is None:
+            return None
+        return serialize_secret(SecretStr(value), info)
+
+    @field_validator("acp_resume_session_id", mode="before")
+    @classmethod
+    def _validate_acp_resume_session_id(
+        cls, value: Any, info: ValidationInfo
+    ) -> str | None:
+        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
+
+        Without this validator, ``model_validate_json`` of a previously
+        serialized agent would put garbage in ``acp_resume_session_id``:
+
+        - Default-redacted dumps would reload as the literal ``"**********"``
+          sentinel — calling ``session/load`` with that fails server-side and
+          we fall back to a fresh session every time, defeating the whole
+          point of the durable mirror.
+        - Encrypted dumps (frontend round-trip) would reload as the raw
+          Fernet ciphertext — same failure mode, plus the ciphertext sits
+          in ``state.agent_state`` on disk.
+
+        :func:`validate_secret` returns ``None`` for empty/redacted values
+        and decrypts when a cipher is present in the validation context.
+        We unwrap the returned ``SecretStr`` so the field's runtime type
+        stays ``str | None`` (the rest of the SDK reads it directly).
+        """
+        secret = validate_secret(value, info)
+        return secret.get_secret_value() if secret is not None else None
+
+    acp_file_secrets: list[ACPFileSecretSpec] = Field(
+        default_factory=lambda: list(default_acp_file_secrets()),
+        description=(
+            "Reserved 'file-content' credential secrets to materialise to disk "
+            "before launching the subprocess (e.g. Codex auth.json, Gemini "
+            "Vertex SA JSON). The SDK owns the mechanism (write the file in the "
+            "runtime pod, set the env var, seed-if-absent); these specs are the "
+            "policy. Defaults to the built-in supported providers; a downstream "
+            "application may override or extend this to support other ACP "
+            "servers with different file-auth schemes."
+        ),
+    )
+    acp_isolate_data_dir: bool = Field(
+        default=False,
+        description=(
+            "Give the ACP subprocess a per-conversation CLI data/config root "
+            "instead of the shared user ``HOME``. When True and the provider is "
+            "recognised, point its data-dir env var "
+            "(``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` / ``HOME``; see "
+            "``ACPProviderInfo.data_dir_env_var``) at "
+            "``<persistence_dir>/acp/<provider>`` — the same per-conversation "
+            "tree materialised file-secrets use. Required for correctness when "
+            "several of a user's conversations share one sandbox "
+            "(``SandboxGroupingStrategy != NO_GROUPING``), where they would "
+            "otherwise race on one set of CLI auth/config/cache/lock files "
+            "(see #1019). Off by default: with one sandbox per conversation the "
+            "shared HOME is already private, and relocating it would hide a "
+            "pre-existing interactive login. Downstream policy decides when to "
+            "enable it; the SDK owns where the root lives."
         ),
     )
 
@@ -1049,7 +1471,14 @@ class ACPAgent(AgentBase):
 
     @property
     def supports_openhands_mcp(self) -> bool:
-        """``False`` — MCP configuration is owned by the ACP subprocess."""
+        """``False`` — OpenHands does not create in-process MCP *tools* here.
+
+        This stays ``False`` even though ``mcp_config`` is honored: any
+        configured MCP servers are forwarded to the ACP subprocess at session
+        creation (see :func:`_mcp_config_to_acp_servers`) rather than connected
+        in-process. The ACP server owns the MCP connection and surfaces the
+        tools through its own turn.
+        """
         return False
 
     @property
@@ -1145,17 +1574,14 @@ class ACPAgent(AgentBase):
         """Spawn the ACP server and initialize a session."""
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
-        # server tools, MCP configuration, and context-window management remain
-        # owned by the server.
+        # server tools and context-window management remain owned by the server.
+        # mcp_config IS supported: its servers are forwarded to the subprocess at
+        # session creation (see _mcp_config_to_acp_servers) rather than turned
+        # into in-process OpenHands MCP tools.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
                 "the ACP server manages its own tools"
-            )
-        if self.mcp_config:
-            raise NotImplementedError(
-                "ACPAgent does not support mcp_config; "
-                "configure MCP on the ACP server instead"
             )
         if self.condenser is not None:
             raise NotImplementedError(
@@ -1172,10 +1598,17 @@ class ACPAgent(AgentBase):
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
         self._installed_suffix = self._render_suffix(state)
-        # A prior session id in agent_state means we may be resuming; used by
-        # ``truly_resumed`` below to decide whether the model state reported
-        # for this launch describes the resumed session or a fresh one.
-        prior_session_id = state.agent_state.get("acp_session_id")
+        # A prior session id means we may be resuming; used by ``truly_resumed``
+        # below to decide whether the model state reported for this launch
+        # describes the resumed session or a fresh one. An explicit
+        # ``acp_resume_session_id`` (e.g. a cloud session-id mirror feeding the
+        # id back after base_state.json was wiped) takes precedence over the
+        # FS-persisted id, matching the precedence in ``_start_acp_server`` — so
+        # ``truly_resumed`` (``self._session_id == prior_session_id``) stays
+        # correct whether the resumed id came from the FS or the explicit field.
+        prior_session_id = self.acp_resume_session_id or state.agent_state.get(
+            "acp_session_id"
+        )
         # ``acp_suffix_installed`` is persisted by
         # ``_commit_suffix_installation`` only after the first prompt has
         # actually returned successfully, so on resume we know whether the
@@ -1197,6 +1630,28 @@ class ACPAgent(AgentBase):
         except Exception as e:
             logger.error("Failed to start ACP server: %s", e)
             self._cleanup()
+            # init_state runs *outside* run()/arun()'s try-block (it is reached
+            # via _ensure_agent_ready() before the loop starts), so a cold-start
+            # failure — bad/expired auth, missing CLI binary, cwd mismatch — would
+            # otherwise bypass error emission and reach the client as a generic
+            # "remote conversation ended with error".  Emit a typed
+            # ConversationErrorEvent and flip the status to ERROR here, mirroring
+            # what the regular Agent (and ACPAgent.astep) do from inside the run
+            # loop, so clients render their existing error banner instead.
+            # Best-effort: surfacing the error must never mask the original
+            # exception, which still propagates to preserve the existing
+            # cleanup/re-raise contract that run()/arun() rely on.
+            try:
+                state.execution_status = ConversationExecutionStatus.ERROR
+                on_event(
+                    ConversationErrorEvent(
+                        source="agent",
+                        code=_classify_acp_init_error(e),
+                        detail=str(e)[:500],
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to surface ACP init error to client")
             raise
 
         # A successful resume keeps the prior id; cwd mismatch and load_session
@@ -1305,9 +1760,25 @@ class ACPAgent(AgentBase):
         would silently drop the advertisement, leaving the agent ignorant of
         secrets that are nonetheless about to land in its env via
         ``_start_acp_server``.
+
+        Reserved file-content secrets (Codex ``auth.json``, Gemini Vertex SA —
+        see :meth:`_materialise_file_secrets`) are dropped from the
+        advertisement: their values are written to disk, not injected as env
+        vars, so advertising them as available env vars would mislead the agent.
         """
-        secret_infos = state.secret_registry.get_secret_infos()
-        if self.agent_context is None:
+        # Advertise from state.secret_registry alone — it now holds
+        # agent_context.secrets too (seeded at conversation init, with their
+        # descriptions), so it is the single source for the <CUSTOM_SECRETS>
+        # block. Reserved file-content secrets are written to disk, not injected
+        # as env vars, so drop them from the advertisement.
+        file_secret_names = self._present_file_secret_names(state)
+        secret_infos = [
+            info
+            for info in state.secret_registry.get_secret_infos()
+            if info.get("name") not in file_secret_names
+        ]
+        agent_context = self.agent_context
+        if agent_context is None:
             # No caller-supplied context. Only synthesize an empty one for the
             # renderer if we actually have a registry-secret advertisement to
             # emit — otherwise return None so we don't start injecting other
@@ -1316,48 +1787,282 @@ class ACPAgent(AgentBase):
             # suppress.
             if not secret_infos:
                 return None
-            return AgentContext(current_datetime=None).to_acp_prompt_context(
-                additional_secret_infos=secret_infos
-            )
-        return self.agent_context.to_acp_prompt_context(
-            additional_secret_infos=secret_infos
-        )
+            agent_context = AgentContext(current_datetime=None)
+        elif agent_context.secrets:
+            # The registry already carries these (and their descriptions), so
+            # clear the agent_context copy to advertise from the registry alone
+            # rather than re-merging a redundant second source.
+            agent_context = agent_context.model_copy(update={"secrets": {}})
+        return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
+
+    def _present_file_secret_names(self, state: ConversationState) -> set[str]:
+        """Reserved file-content secret names supplied for this conversation.
+
+        A name counts as present if it is configured in
+        :attr:`acp_file_secrets` *and* registered in ``state.secret_registry``
+        (which holds ``agent_context.secrets`` too, seeded at conversation
+        init). These names are materialised to disk and therefore excluded from
+        the plain env-var injection and the ``<CUSTOM_SECRETS>`` advertisement
+        (their values are file blobs, not env vars the subprocess can reference
+        by name).
+        """
+        configured = {spec.secret_name for spec in self.acp_file_secrets}
+        if not configured:
+            return set()
+        return set(state.secret_registry.secret_sources) & configured
+
+    def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
+        """Durable per-conversation directory for a credential file.
+
+        ``<persistence_dir>/acp/{subdir}`` — the same per-conversation tree the
+        regular agent persists ``base_state.json`` / events to, so a token the
+        CLI refreshes on disk survives a pod recycle (``/workspace`` persists
+        across pause/resume; see #1018/#1019). Falls back to a per-conversation
+        directory under the workspace when the conversation is not persisted
+        (e.g. in-memory tests) — still seed-if-absent, still no
+        ``TemporaryDirectory``. Returned absolute so the subprocess (which
+        inherits the agent-server's cwd) resolves it unambiguously.
+        """
+        if state.persistence_dir:
+            root = Path(state.persistence_dir) / "acp" / subdir
+        else:
+            root = Path(state.workspace.working_dir) / ".openhands" / "acp" / subdir
+        return Path(os.path.abspath(root))
+
+    def _isolate_acp_data_dir(
+        self, state: ConversationState, env: dict[str, str]
+    ) -> None:
+        """Relocate the CLI's data/config root to a per-conversation directory.
+
+        When :attr:`acp_isolate_data_dir` is set, point the recognised provider's
+        data-dir env var (``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` / ``HOME``) at
+        ``<persistence_dir>/acp/<provider>`` — the same per-conversation tree
+        :meth:`_materialise_file_secrets` seeds auth into, so a relocated
+        ``CODEX_HOME`` and a materialised ``auth.json`` always agree on one
+        directory. This stops conversations that share a sandbox
+        (``SandboxGroupingStrategy != NO_GROUPING``) from racing on a single
+        shared HOME's CLI auth/config/cache/lock files (#1019). The override
+        replaces an ambient value (e.g. the agent-server's own ``CODEX_HOME``):
+        the per-conversation root is what isolation is for.
+
+        No-ops for an unrecognised command or a provider without a relocation
+        lever. An explicit ``acp_env`` pin of the data-dir var wins (it has the
+        highest precedence and is honoured as the materialisation target too), so
+        leave it untouched.
+
+        Claude carve-out: ``CLAUDE_CONFIG_DIR`` also activates Claude Code's
+        OAuth credential-file flow, and :data:`_ENV_CONFLICT_MAP` then strips
+        ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL``. Relocating it while an API
+        key is the active credential (no OAuth token present) would delete a
+        working key + proxy URL and break auth, so skip Claude in that case;
+        codex/gemini have no such coupling. (Claude's transcripts are already
+        cwd-keyed, so the residual shared state is the mostly-inert global
+        config.)
+
+        ``HOME`` (gemini-cli's only lever — it hard-codes ``~/.gemini`` and
+        ignores ``XDG``) has a wider blast radius than the surgical
+        ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR``: it also relocates the home dir
+        seen by anything the CLI subprocess itself spawns (``git``, ``npm``,
+        ``node``, shells — e.g. ``~/.gitconfig``, ``~/.npmrc``, the npm cache).
+        That is accepted as the cost of isolating Gemini at all; callers that
+        need a narrower scope can pin ``HOME`` via ``acp_env`` (honoured below)
+        or leave isolation off for Gemini.
+
+        Ordering contract: this runs *after* the ``secret_registry`` injection
+        and the ``acp_env`` update in :meth:`_start_acp_server`, so the
+        credential vars it inspects (``ANTHROPIC_API_KEY`` /
+        ``CLAUDE_CODE_OAUTH_TOKEN``) are already hydrated into ``env``. Calling it
+        earlier would misread the active credential and wrongly relocate Claude.
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None or provider.data_dir_env_var is None:
+            return
+        env_var = provider.data_dir_env_var
+        if env_var in self.acp_env:
+            return
+        # Relies on the ordering contract above: ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN must already be hydrated into env.
+        if (
+            env_var == "CLAUDE_CONFIG_DIR"
+            and env.get("ANTHROPIC_API_KEY")
+            and "CLAUDE_CODE_OAUTH_TOKEN" not in env
+        ):
+            return
+        data_dir = self._acp_file_secret_dir(state, provider.key)
+        data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        env[env_var] = str(data_dir)
+
+    def _materialise_file_secrets(
+        self, state: ConversationState, env: dict[str, str]
+    ) -> None:
+        """Seed reserved file-content credentials onto disk and point the CLI at them.
+
+        For each spec in :attr:`acp_file_secrets` whose secret is registered in
+        ``state.secret_registry``, write its value to the spec's durable
+        per-conversation directory (:meth:`_acp_file_secret_dir`) and set the
+        controlling env var (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``)
+        unless the caller pinned it via ``acp_env``.
+
+        Seed-if-absent: a non-empty existing file is preserved, never clobbered
+        — so a token the CLI rewrites on refresh (Codex) survives a recycle, and
+        a stale pasted blob can't overwrite the live one. Files are ``0600`` in
+        ``0700`` directories. The blob secret itself is not exported as an env
+        var (callers exclude it via :meth:`_present_file_secret_names`); only
+        the path env var is set.
+
+        If the caller pinned the data-dir env var via the (deprecated)
+        ``acp_env``, the credential is seeded *where that pin points* so the file
+        and env stay consistent — and ``acp_env`` keeps its precedence over the
+        env var.
+        """
+        for spec in self.acp_file_secrets:
+            name = spec.secret_name
+            value = state.secret_registry.get_secret_value(name)
+            if not value:
+                continue
+            # Seed where the data-dir env var will actually point: an explicit
+            # acp_env pin (which wins in env precedence) overrides the default
+            # per-conversation root, so honor it as the write target too.
+            pinned = self.acp_env.get(spec.env_var)
+            if pinned and spec.env_points_to == "dir":
+                directory = Path(pinned)
+                target = directory / spec.filename
+            elif pinned:  # env_points_to == "file"
+                target = Path(pinned)
+                directory = target.parent
+            else:
+                directory = self._acp_file_secret_dir(state, spec.subdir)
+                target = directory / spec.filename
+            try:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                # Tighten the SDK-owned per-conversation dir in case it
+                # pre-existed or umask widened mkdir's mode. Skip for an
+                # externally-pinned acp_env dir (e.g. a deliberately
+                # group-readable shared mount) so we don't silently narrow
+                # permissions the user chose.
+                if not pinned:
+                    directory.chmod(0o700)
+                    # Also clamp the shared SDK-owned `acp/` parent, which
+                    # parents=True may have created under the process umask
+                    # (e.g. 0o755); the leaf chmod above only covers <subdir>.
+                    # Stop at `acp/` — its parent is the persistence layer's.
+                    directory.parent.chmod(0o700)
+                if target.is_file() and target.stat().st_size > 0:
+                    # Seed-if-absent: keep the (possibly CLI-refreshed) contents,
+                    # but still clamp perms — a pre-existing credential file may
+                    # be world-readable (e.g. 0644 from another tool/restore).
+                    target.chmod(0o600)
+                    logger.info(
+                        "ACP file-secret %r already present at %s; preserving "
+                        "(seed-if-absent)",
+                        name,
+                        target,
+                    )
+                else:
+                    _write_secret_file(target, value)
+                    logger.info("Materialised ACP file-secret %r -> %s", name, target)
+            except OSError:
+                # Fail fast rather than swallowing: if the credential the caller
+                # supplied can't be written (read-only/full workspace mount, etc.)
+                # its data-dir env var would never be set and the subprocess would
+                # fail at auth time with a cryptic CLI error and no SDK breadcrumb.
+                # Re-raising lets init_state surface a typed ConversationErrorEvent
+                # (ACPInitError) that names the materialisation failure.
+                logger.exception(
+                    "Failed to materialise ACP file-secret %r under %s",
+                    name,
+                    directory,
+                )
+                raise
+            # acp_env (applied last in _start_acp_server) keeps precedence; only
+            # set the env var here when the caller did not pin it.
+            if spec.env_var not in self.acp_env:
+                env[spec.env_var] = str(
+                    directory if spec.env_points_to == "dir" else target
+                )
+            for companion in spec.warn_if_unset:
+                if not env.get(companion) and companion not in self.acp_env:
+                    logger.warning(
+                        "ACP file-secret %r materialised but %s is unset; the "
+                        "provider may fail to authenticate until it is configured",
+                        name,
+                        companion,
+                    )
 
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
         self._client = client
+        # Bind the secret masker for the conversation's lifetime. It's derived
+        # from state.secret_registry (stable for the conversation) and is a pure
+        # read of _exported_values, so it has none of the cross-thread/state-lock
+        # hazards that make on_event/on_token strictly per-turn. Binding it here
+        # (rather than per-turn in _reset_client_for_turn) keeps it available for
+        # session updates AND for ask_agent() forks, which run on the shared
+        # client and may fire while no step()/astep() turn is active.
+        client.mask = state.secret_registry.mask_secrets_in_output
 
-        # Build the subprocess environment top-down, highest precedence first:
-        #   acp_env > os.environ > default_environment >
-        #   state.secret_registry > agent_context.secrets
+        # Build the subprocess environment. Precedence, highest first:
+        #   acp_env > state.secret_registry > os.environ > default_environment
         #
-        # Secret tiers fill-if-absent. The ``name in env`` guard does double
-        # duty: it preserves higher-precedence values and avoids calling
-        # SecretSource.get_value() for keys already satisfied — important
-        # because LookupSecret can make an HTTP request.
+        # Conversation credentials intentionally OVERRIDE ambient os.environ: an
+        # explicit per-conversation / provider secret must win over a same-named
+        # variable in the agent-server's own environment. acp_env (deprecated)
+        # stays highest.
+        #
+        # agent_context.secrets are seeded into secret_registry at
+        # LocalConversation.__init__ (lower priority than request.secrets), so
+        # the registry is now the single channel for all secrets including
+        # provider credentials folded in by ACPAgentSettings.create_agent().
         env = default_environment()
         env.update(os.environ)
+        if self.acp_env:
+            warn_deprecated(
+                "ACPAgent.acp_env",
+                deprecated_in="1.24.0",
+                removed_in="1.29.0",
+                details=(
+                    "Route ACP subprocess env/credentials through "
+                    "state.secret_registry (e.g. agent_context.secrets / "
+                    "StartConversationRequest.secrets) instead."
+                ),
+            )
+        # Reserved file-content credential secrets (Codex auth.json, Gemini
+        # Vertex SA — see _materialise_file_secrets) are written to disk, not
+        # injected as env vars, so exclude their (large blob) names from the
+        # plain env-injection below; materialisation sets only the path env var.
+        file_secret_names = self._present_file_secret_names(state)
+        # Inject the whole registry: an ACP CLI is a black box we can't
+        # name-scan per command (unlike the regular agent's bash tool), so
+        # credentials must be delivered upfront. Registry values override
+        # ambient os.environ. Skip keys acp_env will set last (avoids a
+        # redundant LookupSecret.get_value()) and file secrets (materialised to
+        # disk below).
+        env.update(
+            state.secret_registry.get_all_secrets_as_env_vars(
+                exclude=set(self.acp_env) | file_secret_names
+            )
+        )
+        # Materialise reserved file-content secrets to disk and point their
+        # data-dir env vars (CODEX_HOME / GOOGLE_APPLICATION_CREDENTIALS) at the
+        # written files. Done before acp_env so an explicit acp_env override of
+        # those vars still wins.
+        self._materialise_file_secrets(state, env)
+        # acp_env (deprecated) has highest precedence.
         env.update(self.acp_env)
-        for name in state.secret_registry.secret_sources:
-            if name in env:
-                continue
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                env[name] = value
-        if self.agent_context and self.agent_context.secrets:
-            for name, secret in self.agent_context.secrets.items():
-                if name in env:
-                    continue
-                value = (
-                    secret.get_value()
-                    if isinstance(secret, SecretSource)
-                    else str(secret)
-                )
-                if value:
-                    env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
+
+        # Relocate the CLI's data/config root to a per-conversation directory so
+        # sandbox-sharing conversations don't race on a shared HOME (#1019).
+        # Ordering is load-bearing — this must run AFTER the registry /
+        # registry injection and the acp_env update above (so the credential
+        # vars its Claude carve-out inspects — ANTHROPIC_API_KEY /
+        # CLAUDE_CODE_OAUTH_TOKEN — are already in env, and an acp_env pin wins)
+        # and BEFORE the conflict-strip below (so a CLAUDE_CONFIG_DIR it sets is
+        # still subject to the strip).
+        if self.acp_isolate_data_dir:
+            self._isolate_acp_data_dir(state, env)
 
         # Strip env vars that conflict with an active auth mechanism.
         # E.g. CLAUDE_CONFIG_DIR (OAuth credential file) conflicts with
@@ -1369,17 +2074,53 @@ class ACPAgent(AgentBase):
 
         command = self.acp_command[0]
         args = list(self.acp_command[1:]) + list(self.acp_args)
+        # codex ignores OPENAI_BASE_URL; translate it into the config key it
+        # reads. Reads the *fully assembled* env above, so it fires regardless of
+        # which channel delivered OPENAI_BASE_URL (agent_context.secrets,
+        # state.secret_registry / StartConversationRequest.secrets, acp_env,
+        # os.environ) — i.e. eval, canvas, and cloud all route the same way.
+        args += _codex_base_url_overrides(command, args, env)
 
         working_dir = str(state.workspace.working_dir)
 
-        # Prior ACP session id — survives agent-server restarts via
+        # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
         # Its presence is the signal to resume; its absence means fresh start.
         # ACP servers key persistence by ``cwd``; if the workspace moved we
         # drop the id so we don't accidentally resume (or silently load) a
         # session the server associates with a different directory.
-        prior_session_id: str | None = state.agent_state.get("acp_session_id")
-        prior_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        #
+        # ``acp_resume_session_id`` (set on the agent config) takes precedence
+        # over the FS-persisted id. This lets cloud deployments mirror the id
+        # into a durable store and pass it back on the first launch of a fresh
+        # sandbox, even when ``base_state.json`` was wiped along with the
+        # previous sandbox filesystem.
+        #
+        # Note the asymmetry on the cwd guard: for an FS-persisted id we have
+        # the cwd it was created under and can refuse to load when it differs,
+        # because resuming the wrong session silently would be catastrophic.
+        # For an explicit ``acp_resume_session_id`` we do *not* have that
+        # recorded cwd — the contract is "the caller knows what they're doing"
+        # (the app-server only mirrors ids for conversations whose sandbox
+        # always lands in the same ``working_dir``). We therefore assume
+        # cwd-compatibility and let the ACP server's own ``session/load``
+        # validation be the last line of defence: a server-side cwd mismatch
+        # returns an ``ACPRequestError``, already caught below and falling back
+        # to ``new_session`` — the same recovery path as a forgotten id.
+        fs_session_id: str | None = state.agent_state.get("acp_session_id")
+        fs_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        if self.acp_resume_session_id and self.acp_resume_session_id != fs_session_id:
+            logger.info(
+                "Using explicit acp_resume_session_id (%s); "
+                "filesystem agent_state had id=%s",
+                _fingerprint_session_id(self.acp_resume_session_id),
+                _fingerprint_session_id(fs_session_id),
+            )
+            prior_session_id: str | None = self.acp_resume_session_id
+            prior_session_cwd: str | None = working_dir
+        else:
+            prior_session_id = fs_session_id
+            prior_session_cwd = fs_session_cwd
         if prior_session_id is not None and prior_session_cwd not in (
             None,
             working_dir,
@@ -1387,7 +2128,7 @@ class ACPAgent(AgentBase):
             logger.warning(
                 "ACP session %s was created with cwd=%s; current cwd=%s differs, "
                 "starting a fresh session instead of resuming",
-                prior_session_id,
+                _fingerprint_session_id(prior_session_id),
                 prior_session_cwd,
                 working_dir,
             )
@@ -1449,6 +2190,25 @@ class ACPAgent(AgentBase):
                 agent_version,
             )
 
+            # Translate any configured MCP servers into ACP protocol objects,
+            # gating remote (http/sse) transports on what this server advertised
+            # in its initialize response. The same list is passed to both
+            # new_session and load_session: load_session does not persist the
+            # prior MCP set server-side, so a resume must re-send it or the
+            # restored session would silently lose its MCP servers.
+            mcp_caps = (
+                init_response.agent_capabilities.mcp_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
+            if acp_mcp_servers:
+                logger.info(
+                    "Forwarding %d MCP server(s) to ACP session: %s",
+                    len(acp_mcp_servers),
+                    [s.name for s in acp_mcp_servers],
+                )
+
             # Authenticate if the server requires it.  Some ACP servers
             # (e.g. codex-acp) require an explicit authenticate call
             # before session creation.  We auto-detect the method from
@@ -1496,21 +2256,21 @@ class ACPAgent(AgentBase):
                     load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
-                        mcp_servers=[],
+                        mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
                     reported_model_id, available_models = _extract_session_models(
                         load_response
                     )
                     logger.info(
-                        "Resumed ACP session: %s (cwd=%s)",
-                        session_id,
+                        "Resumed ACP session %s (cwd=%s)",
+                        _fingerprint_session_id(session_id),
                         working_dir,
                     )
                 except ACPRequestError as e:
                     logger.warning(
                         "ACP load_session(%s) failed (%s); starting a fresh session",
-                        prior_session_id,
+                        _fingerprint_session_id(prior_session_id),
                         e,
                     )
 
@@ -1526,7 +2286,11 @@ class ACPAgent(AgentBase):
                 # _meta dict in the JSON-RPC request — do NOT wrap in _meta=
                 # (that double-nests).
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
-                response = await conn.new_session(cwd=working_dir, **session_meta)
+                response = await conn.new_session(
+                    cwd=working_dir,
+                    mcp_servers=acp_mcp_servers,
+                    **session_meta,
+                )
                 session_id = response.session_id
                 reported_model_id, available_models = _extract_session_models(response)
                 # Initial-selection protocol call for providers that use it
@@ -1606,7 +2370,8 @@ class ACPAgent(AgentBase):
         clears them.  ``on_event`` is fired from inside
         ``_OpenHandsACPBridge.session_update`` as tool-call notifications
         arrive, so consumers see ACPToolCallEvents streamed live instead of
-        a single end-of-turn burst.
+        a single end-of-turn burst.  The secret masker is bound once in
+        ``_start_acp_server`` (conversation-stable), not here.
         """
         self._client.reset()
         self._client.on_token = on_token
@@ -1657,6 +2422,28 @@ class ACPAgent(AgentBase):
                     tc.get("tool_call_id"),
                     exc_info=True,
                 )
+
+    def _flush_inflight_tool_calls_as_completed(self) -> None:
+        """Emit a terminal ``completed`` ACPToolCallEvent for every accumulated
+        tool call still sitting at a non-terminal status.
+
+        The prompt returned successfully, so a tool card the server opened but
+        never closed (it sent ``ToolCallStart`` but no terminal
+        ``ToolCallProgress``) is treated as completed. Since we now persist
+        exactly one early ``started`` event and one terminal event per call,
+        this guarantees the action->observation pairing holds for *every*
+        call — without it, a server that omits the closing frame would leave
+        the early ``started`` event as the last word, and the relaxed canvas
+        render gate would show that card spinning forever. Reuses
+        ``_emit_tool_call_event`` so truncation and error-swallowing match the
+        live terminal path. No-op once every call is already terminal (the
+        common case, since ``conn.prompt`` only returns after its tools run).
+        """
+        for tc in self._client.accumulated_tool_calls:
+            if tc.get("status") in _TERMINAL_TOOL_CALL_STATUSES:
+                continue
+            tc["status"] = "completed"
+            self._client._emit_tool_call_event(tc)
 
     async def _arequest_session_cancel(self) -> None:
         """Async variant of _request_session_cancel that waits for cancel send."""
@@ -1843,7 +2630,7 @@ class ACPAgent(AgentBase):
                 logger.warning(
                     "UsageUpdate not received within %.1fs for session %s",
                     _USAGE_UPDATE_TIMEOUT,
-                    self._session_id,
+                    _fingerprint_session_id(self._session_id),
                 )
         return response
 
@@ -1895,12 +2682,20 @@ class ACPAgent(AgentBase):
             usage_update=usage_update,
         )
 
-        # ACPToolCallEvents were already emitted live from
-        # _OpenHandsACPBridge.session_update as each ToolCallStart /
-        # ToolCallProgress notification arrived — no end-of-turn fan-out
-        # here. FinishAction closes out the turn below.
-        response_text = "".join(self._client.accumulated_text)
-        thought_text = "".join(self._client.accumulated_thoughts)
+        # Tool cards were already streamed live from
+        # _OpenHandsACPBridge.session_update: one early ``started`` event per
+        # ToolCallStart and one terminal event per call. Close out any card the
+        # server opened but never terminated so every ``started`` has its
+        # matching terminal observation before the turn's FinishAction lands.
+        self._flush_inflight_tool_calls_as_completed()
+
+        # Re-mask the joined text at this persistence boundary: the chunks were
+        # already masked individually as they streamed, but a secret split
+        # across two chunks only reassembles in the join, so this is where it
+        # gets caught before landing in the persisted event stream.
+        mask = state.secret_registry.mask_secrets_in_output
+        response_text = mask("".join(self._client.accumulated_text))
+        thought_text = mask("".join(self._client.accumulated_thoughts))
         if not response_text:
             response_text = "(No response from ACP server)"
 
@@ -2414,11 +3209,14 @@ class ACPAgent(AgentBase):
                         logger.warning(
                             "UsageUpdate not received within %.1fs for fork session %s",
                             _USAGE_UPDATE_TIMEOUT,
-                            fork_session_id,
+                            _fingerprint_session_id(fork_session_id),
                         )
                 fork_elapsed = time.monotonic() - fork_t0
 
-                result = "".join(client._fork_accumulated_text)
+                # Re-mask the joined fork text at this return boundary — mirrors
+                # _finalize_successful_turn, catching a secret split across fork
+                # chunks that per-chunk masking can't match.
+                result = client._mask_value("".join(client._fork_accumulated_text))
                 usage_update = client.pop_turn_usage_update(fork_session_id)
                 self._record_usage(
                     response,
@@ -2537,7 +3335,7 @@ class ACPAgent(AgentBase):
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,
             provider.key if provider else "unknown",
-            self._session_id,
+            _fingerprint_session_id(self._session_id),
         )
 
     def close(self) -> None:

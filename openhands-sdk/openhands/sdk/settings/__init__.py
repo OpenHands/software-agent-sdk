@@ -4,13 +4,16 @@ from typing import TYPE_CHECKING, Any
 
 from .acp_providers import (
     ACP_PROVIDERS,
+    ACPFileSecretSpec,
     ACPModelOption,
     ACPProviderInfo,
     build_session_model_meta,
+    default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     get_acp_provider,
 )
 from .api_models import (
+    AppPreferences,
     SecretCreateRequest,
     SecretItemResponse,
     SecretsListResponse,
@@ -43,6 +46,7 @@ if TYPE_CHECKING:
         SettingsSchema,
         SettingsSectionSchema,
         VerificationSettings,
+        apply_agent_settings_diff,
         create_agent_from_settings,
         default_agent_settings,
         export_agent_settings_schema,
@@ -65,6 +69,7 @@ _MODEL_EXPORTS = {
     "SettingsSchema",
     "SettingsSectionSchema",
     "VerificationSettings",
+    "apply_agent_settings_diff",
     "create_agent_from_settings",
     "default_agent_settings",
     "export_agent_settings_schema",
@@ -74,9 +79,12 @@ _MODEL_EXPORTS = {
 
 __all__ = [
     "ACP_PROVIDERS",
+    "ACPFileSecretSpec",
     "ACPModelOption",
     "ACPProviderInfo",
+    "AppPreferences",
     "build_session_model_meta",
+    "default_acp_file_secrets",
     "AGENT_SETTINGS_SCHEMA_VERSION",
     "CONVERSATION_SETTINGS_SCHEMA_VERSION",
     "ACPAgentSettings",
@@ -102,6 +110,7 @@ __all__ = [
     "SettingsSectionSchema",
     "SettingsUpdateRequest",
     "VerificationSettings",
+    "apply_agent_settings_diff",
     "create_agent_from_settings",
     "default_agent_settings",
     "detect_acp_provider_by_agent_name",

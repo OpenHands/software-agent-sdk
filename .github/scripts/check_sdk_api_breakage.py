@@ -507,10 +507,13 @@ def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
     )
 
 
+FIELD_DEFAULT_KWARGS = ("default", "default_factory")
+
+
 def _field_default_node(call: ast.Call) -> ast.AST | None:
-    """Return the AST node representing a ``Field`` default value."""
+    """Return the AST node representing a ``Field`` default value/factory."""
     for kw in call.keywords:
-        if kw.arg == "default":
+        if kw.arg in FIELD_DEFAULT_KWARGS:
             return kw.value
     if call.args:
         return call.args[0]
@@ -518,19 +521,19 @@ def _field_default_node(call: ast.Call) -> ast.AST | None:
 
 
 def _remove_field_default(call: ast.Call) -> ast.Call:
-    """Return a copy of a ``Field(...)`` call without its default value."""
+    """Return a copy of a ``Field(...)`` call without its default value/factory."""
     args = list(call.args)
     if args:
         args = args[1:]
     return ast.Call(
         func=call.func,
         args=args,
-        keywords=[kw for kw in call.keywords if kw.arg != "default"],
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_DEFAULT_KWARGS],
     )
 
 
 def _field_default_repr(value: object) -> str | None:
-    """Return the string form of a ``Field`` default value, if present."""
+    """Return the string form of a ``Field`` default value/factory, if present."""
     call = _parse_field_call(value)
     if call is None:
         return None

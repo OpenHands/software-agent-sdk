@@ -116,14 +116,41 @@ class LLMConvertibleEvent(Event, ABC):
                     j += 1
 
                 # Create combined message for the response
-                messages.append(_combine_action_events(batch_events))
+                msg = _combine_action_events(batch_events)
+                if messages and _can_merge_user_messages(messages[-1], msg):
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
+                    )
+                else:
+                    messages.append(msg)
                 i = j
             else:
                 # Regular event - direct conversion
-                messages.append(event.to_llm_message())
+                msg = event.to_llm_message()
+                if messages and _can_merge_user_messages(messages[-1], msg):
+                    messages[-1].content = list(messages[-1].content) + list(
+                        msg.content
+                    )
+                else:
+                    messages.append(msg)
                 i += 1
 
         return messages
+
+
+def _is_plain_user_message(message: Message) -> bool:
+    """A plain user turn with no tool-call metadata — safe to coalesce."""
+    return (
+        message.role == "user"
+        and message.tool_calls is None
+        and message.tool_call_id is None
+        and message.name is None
+    )
+
+
+def _can_merge_user_messages(previous: Message, current: Message) -> bool:
+    """Return whether two user messages can be safely sent as one LLM turn."""
+    return _is_plain_user_message(previous) and _is_plain_user_message(current)
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:

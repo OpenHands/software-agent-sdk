@@ -103,6 +103,10 @@ from openhands.sdk.llm.streaming import (
     TokenCallbackType,
     _invoke_token_callback,
 )
+from openhands.sdk.llm.utils.image_inline import (
+    amaybe_inline_image_urls,
+    maybe_inline_image_urls,
+)
 from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -387,6 +391,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "If None (default), auto-detect based on model. "
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
+        ),
+    )
+    inline_image_urls: bool | None = Field(
+        default=None,
+        description=(
+            "If True, fetch any http(s) image URL in outgoing messages and "
+            "inline it as a base64 ``data:`` URL before sending. If None "
+            "(default), auto-detect based on model (some APIs such as "
+            "Moonshot's public Kimi endpoint reject URL-formatted images "
+            "and require base64). Set this explicitly when the model is "
+            "reached through a proxy alias that hides the underlying "
+            "provider (e.g. ``litellm_proxy/<custom-alias>``). Note: "
+            "inlining only runs when ``vision_is_active()`` is True, so "
+            "the alias must still be recognised as vision-capable by "
+            "litellm — otherwise images are not sent at all and there is "
+            "nothing to inline."
         ),
     )
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
@@ -910,18 +930,63 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         dict[str, Any],
         dict[str, Any],
     ]:
-        """Shared setup for :meth:`completion` and :meth:`acompletion`.
+        """Shared setup for :meth:`completion`.
 
         Returns:
             (formatted_messages, cc_tools, use_mock_tools, call_kwargs,
              telemetry_ctx)
         """
+        formatted_messages = self.format_messages_for_llm(messages)
+        return self._finalize_completion_params(
+            formatted_messages, tools, add_security_risk_prediction, kwargs
+        )
+
+    async def _aprepare_completion_params(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[ChatCompletionToolParam],
+        bool,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Async variant of :meth:`_prepare_completion_params`.
+
+        Uses :meth:`aformat_messages_for_llm` so the (potentially blocking)
+        image-inlining pass is offloaded to a worker thread instead of running
+        on the event loop.
+        """
+        formatted_messages = await self.aformat_messages_for_llm(messages)
+        return self._finalize_completion_params(
+            formatted_messages, tools, add_security_risk_prediction, kwargs
+        )
+
+    def _finalize_completion_params(
+        self,
+        formatted_messages: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition] | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[ChatCompletionToolParam],
+        bool,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Finalize chat completion params from already-formatted messages.
+
+        Shared post-formatting steps for :meth:`_prepare_completion_params`
+        and :meth:`_aprepare_completion_params`: tool conversion, mock-tool
+        prompt substitution, kwargs normalization and telemetry context.
+        """
         # Defensive copy — this method mutates kwargs (e.g. kwargs["tools"])
         # and the caller should not observe those side-effects.
         kwargs = dict(kwargs)
-
-        # 1) serialize messages
-        formatted_messages = self.format_messages_for_llm(messages)
 
         # 2) choose function-calling strategy
         use_native_fc = self.native_tool_calling
@@ -998,17 +1063,77 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         dict[str, Any],
         dict[str, Any],
     ]:
-        """Shared setup for :meth:`responses` and :meth:`aresponses`.
+        """Shared setup for :meth:`responses`.
 
         Returns:
             (instructions, input_items, resp_tools, call_kwargs,
              telemetry_ctx)
         """
+        instructions, input_items = self.format_messages_for_responses(messages)
+        return self._finalize_responses_params(
+            instructions,
+            input_items,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+        )
+
+    async def _aprepare_responses_params(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None,
+        include: list[str] | None,
+        store: bool | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        str | None,
+        list[dict[str, Any]],
+        list[Any] | None,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Async variant of :meth:`_prepare_responses_params`.
+
+        Uses :meth:`aformat_messages_for_responses` so the image-inlining
+        pass runs off the event loop.
+        """
+        instructions, input_items = await self.aformat_messages_for_responses(messages)
+        return self._finalize_responses_params(
+            instructions,
+            input_items,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+        )
+
+    def _finalize_responses_params(
+        self,
+        instructions: str | None,
+        input_items: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition] | None,
+        include: list[str] | None,
+        store: bool | None,
+        add_security_risk_prediction: bool,
+        kwargs: dict[str, Any],
+    ) -> tuple[
+        str | None,
+        list[dict[str, Any]],
+        list[Any] | None,
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Finalize Responses params from already-formatted inputs.
+
+        Shared post-formatting steps for :meth:`_prepare_responses_params`
+        and :meth:`_aprepare_responses_params`.
+        """
         # Defensive copy — select_responses_options may mutate kwargs.
         kwargs = dict(kwargs)
-
-        # Build instructions + input list using dedicated Responses formatter
-        instructions, input_items = self.format_messages_for_responses(messages)
 
         # Convert Tool objects to Responses ToolParam
         # (Responses path always supports function tools)
@@ -1229,7 +1354,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             use_mock_tools,
             call_kwargs,
             telemetry_ctx,
-        ) = self._prepare_completion_params(
+        ) = await self._aprepare_completion_params(
             messages, tools, add_security_risk_prediction, kwargs
         )
 
@@ -1438,7 +1563,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             resp_tools,
             call_kwargs,
             telemetry_ctx,
-        ) = self._prepare_responses_params(
+        ) = await self._aprepare_responses_params(
             messages, tools, include, store, add_security_risk_prediction, kwargs
         )
 
@@ -1554,15 +1679,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return api_key_value
 
-    def _transport_call(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        enable_streaming: bool = False,
-        on_token: TokenCallbackType | None = None,
-        **kwargs,
-    ) -> ModelResponse:
-        # litellm.modify_params is GLOBAL; guard it for thread-safety
+    @contextmanager
+    def _transport_ctx(self):
+        """Guard a litellm transport call.
+
+        ``litellm.modify_params`` is GLOBAL, so it is guarded for thread-safety,
+        and the noisy provider/litellm warnings are filtered out for the call.
+        """
         with self._litellm_modify_params_ctx(self.modify_params):
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -1575,51 +1698,68 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
                 warnings.filterwarnings(
                     "ignore",
-                    message=r"There is no current event loop",
+                    message="There is no current event loop",
                     category=DeprecationWarning,
                 )
-                warnings.filterwarnings(
-                    "ignore",
-                    category=UserWarning,
-                )
+                warnings.filterwarnings("ignore", category=UserWarning)
                 warnings.filterwarnings(
                     "ignore",
                     category=DeprecationWarning,
                     message="Accessing the 'model_fields' attribute.*",
                 )
-                api_key_value = self._get_litellm_api_key_value()
+                yield
 
-                # When streaming, request usage in the final chunk so that
-                # detailed token breakdowns (prompt_tokens_details with
-                # cached_tokens, etc.) are not silently discarded by
-                # litellm's streaming handler.
-                if enable_streaming:
-                    kwargs.setdefault("stream_options", {"include_usage": True})
+    def _prepare_transport_kwargs(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Build the keyword arguments for a litellm (a)completion call."""
+        # When streaming, request usage in the final chunk so that detailed
+        # token breakdowns (prompt_tokens_details with cached_tokens, etc.) are
+        # not silently discarded by litellm's streaming handler.
+        if enable_streaming:
+            kwargs.setdefault("stream_options", {"include_usage": True})
+        return dict(
+            model=self.model,
+            api_key=self._get_litellm_api_key_value(),
+            api_base=self.base_url,
+            api_version=self.api_version,
+            timeout=self.timeout,
+            drop_params=self.drop_params,
+            seed=self.seed,
+            messages=messages,
+            **{**self._aws_kwargs(), **kwargs},
+        )
 
-                # Some providers need renames handled in _normalize_call_kwargs.
-                ret = litellm_completion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    **{**self._aws_kwargs(), **kwargs},
+    def _transport_call(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool = False,
+        on_token: TokenCallbackType | None = None,
+        **kwargs,
+    ) -> ModelResponse:
+        with self._transport_ctx():
+            ret = litellm_completion(
+                **self._prepare_transport_kwargs(
+                    messages=messages, enable_streaming=enable_streaming, **kwargs
                 )
-                if enable_streaming and on_token is not None:
-                    assert isinstance(ret, CustomStreamWrapper)
-                    chunks = []
-                    for chunk in ret:
-                        on_token(chunk)
-                        chunks.append(chunk)
-                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+            )
+            if enable_streaming and on_token is not None:
+                assert isinstance(ret, CustomStreamWrapper)
+                chunks: list[ModelResponseStream] = []
+                for chunk in ret:
+                    on_token(chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-                assert isinstance(ret, ModelResponse), (
-                    f"Expected ModelResponse, got {type(ret)}"
-                )
-                return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     async def _atransport_call(
         self,
@@ -1630,55 +1770,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
-        with self._litellm_modify_params_ctx(self.modify_params):
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=DeprecationWarning, module="httpx.*"
+        with self._transport_ctx():
+            ret = await litellm_acompletion(
+                **self._prepare_transport_kwargs(
+                    messages=messages, enable_streaming=enable_streaming, **kwargs
                 )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r".*content=.*upload.*",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"There is no current event loop",
-                    category=DeprecationWarning,
-                )
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings(
-                    "ignore",
-                    category=DeprecationWarning,
-                    message="Accessing the 'model_fields' attribute.*",
-                )
-                api_key_value = self._get_litellm_api_key_value()
+            )
+            if enable_streaming and on_token is not None:
+                assert isinstance(ret, CustomStreamWrapper)
+                chunks: list[ModelResponseStream] = []
+                async for chunk in ret:
+                    await _invoke_token_callback(on_token, chunk)
+                    chunks.append(chunk)
+                ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
-                if enable_streaming:
-                    kwargs.setdefault("stream_options", {"include_usage": True})
-
-                ret = await litellm_acompletion(
-                    model=self.model,
-                    api_key=api_key_value,
-                    api_base=self.base_url,
-                    api_version=self.api_version,
-                    timeout=self.timeout,
-                    drop_params=self.drop_params,
-                    seed=self.seed,
-                    messages=messages,
-                    **{**self._aws_kwargs(), **kwargs},
-                )
-                if enable_streaming and on_token is not None:
-                    assert isinstance(ret, CustomStreamWrapper)
-                    chunks = []
-                    async for chunk in ret:
-                        await _invoke_token_callback(on_token, chunk)
-                        chunks.append(chunk)
-                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
-
-                assert isinstance(ret, ModelResponse), (
-                    f"Expected ModelResponse, got {type(ret)}"
-                )
-                return ret
+            assert isinstance(ret, ModelResponse), (
+                f"Expected ModelResponse, got {type(ret)}"
+            )
+            return ret
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
@@ -1923,13 +2032,48 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 ].cache_prompt = True  # Last item inside the message content
                 break
 
-    def format_messages_for_llm(self, messages: list[Message]) -> list[dict]:
-        """Formats Message objects for LLM consumption."""
+    def _inline_required(self) -> bool:
+        """Resolve whether http(s) image URLs must be downloaded and inlined."""
+        if self.inline_image_urls is not None:
+            return self.inline_image_urls
+        return get_features(
+            self._model_name_for_capabilities()
+        ).requires_inline_image_data
 
+    def _begin_chat_messages(
+        self, messages: list[Message]
+    ) -> tuple[list[Message], bool]:
+        """Deepcopy ``messages`` and apply prompt-caching flags.
+
+        Shared by the sync and async chat-formatting paths. Returns the
+        detached message list and the resolved ``vision_enabled`` flag so
+        callers can plug in their own (sync or async) inline-image pass
+        without duplicating the boilerplate.
+        """
         messages = copy.deepcopy(messages)
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
+        return messages, self.vision_is_active()
 
+    def _prepare_chat_messages(self, messages: list[Message]) -> list[Message]:
+        """Apply the cache+inline+resize passes, returning detached messages."""
+        messages, vision_enabled = self._begin_chat_messages(messages)
+        # Inline first (URL → data:), then resize (data: → smaller data:).
+        # The resize pass only operates on ``data:image/*`` URLs, so chaining
+        # gives us "free" large-image protection for inlined images.
+        messages = maybe_inline_image_urls(
+            messages,
+            inline_required=self._inline_required(),
+            vision_enabled=vision_enabled,
+        )
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_model_info_provider(),
+            vision_enabled=vision_enabled,
+        )
+        return messages
+
+    def _to_chat_dicts(self, messages: list[Message]) -> list[dict]:
         model_features = get_features(self._model_name_for_capabilities())
         cache_enabled = self.is_caching_prompt_active()
         vision_enabled = self.vision_is_active()
@@ -1940,14 +2084,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
-
-        messages = maybe_resize_messages_for_provider(
-            messages,
-            provider=self._infer_model_info_provider(),
-            vision_enabled=vision_enabled,
-        )
-
-        formatted_messages = [
+        return [
             message.to_chat_dict(
                 cache_enabled=cache_enabled,
                 vision_enabled=vision_enabled,
@@ -1958,19 +2095,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             for message in messages
         ]
 
-        return formatted_messages
+    def format_messages_for_llm(self, messages: list[Message]) -> list[dict]:
+        """Formats Message objects for LLM consumption."""
+        return self._to_chat_dicts(self._prepare_chat_messages(messages))
 
-    def format_messages_for_responses(
-        self, messages: list[Message]
-    ) -> tuple[str | None, list[dict[str, Any]]]:
-        """Prepare (instructions, input[]) for the OpenAI Responses API.
+    async def aformat_messages_for_llm(self, messages: list[Message]) -> list[dict]:
+        """Async variant that runs the blocking inline/resize pass off-loop.
 
-        - Skips prompt caching flags and string serializer concerns
-        - Uses Message.to_responses_value to get either instructions (system)
-          or input items (others)
-        - Concatenates system instructions into a single instructions string
-        - For subscription mode, system prompts are prepended to user content
+        Keep in sync with ``_prepare_chat_messages``: any new message
+        preparation pass added there must also be added here (and in
+        ``aformat_messages_for_responses``), because ``await`` cannot be
+        used inside the synchronous helper.
         """
+        messages, vision_enabled = self._begin_chat_messages(messages)
+        messages = await amaybe_inline_image_urls(
+            messages,
+            inline_required=self._inline_required(),
+            vision_enabled=vision_enabled,
+        )
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_model_info_provider(),
+            vision_enabled=vision_enabled,
+        )
+        return self._to_chat_dicts(messages)
+
+    def _prepare_responses_messages(self, messages: list[Message]) -> list[Message]:
+        """Detach messages and optionally strip reasoning items."""
         msgs = copy.deepcopy(messages)
 
         # Subscription mode (store=false): strip reasoning items from prior
@@ -1980,11 +2131,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             for m in msgs:
                 if m.role == "assistant" and m.responses_reasoning_item is not None:
                     m.responses_reasoning_item = None
+        return msgs
 
-        # Determine vision based on model detection
+    def _build_responses_payload(
+        self, msgs: list[Message]
+    ) -> tuple[str | None, list[dict[str, Any]]]:
         vision_active = self.vision_is_active()
-
-        # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
         system_chunks: list[str] = []
@@ -2009,16 +2161,75 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
 
-    def get_token_count(self, messages: list[Message]) -> int:
+    def format_messages_for_responses(
+        self, messages: list[Message]
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Prepare (instructions, input[]) for the OpenAI Responses API.
+
+        - Skips prompt caching flags and string serializer concerns
+        - Uses Message.to_responses_value to get either instructions (system)
+          or input items (others)
+        - Concatenates system instructions into a single instructions string
+        - For subscription mode, system prompts are prepended to user content
+        - Inlines http(s) image URLs as base64 when the active model requires it
+        """
+        msgs = self._prepare_responses_messages(messages)
+        msgs = maybe_inline_image_urls(
+            msgs,
+            inline_required=self._inline_required(),
+            vision_enabled=self.vision_is_active(),
+        )
+        return self._build_responses_payload(msgs)
+
+    async def aformat_messages_for_responses(
+        self, messages: list[Message]
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Async variant that runs the blocking inline pass off-loop.
+
+        Keep in sync with ``format_messages_for_responses``: any new
+        message preparation pass added there must also be added here.
+        """
+        msgs = self._prepare_responses_messages(messages)
+        msgs = await amaybe_inline_image_urls(
+            msgs,
+            inline_required=self._inline_required(),
+            vision_enabled=self.vision_is_active(),
+        )
+        return self._build_responses_payload(msgs)
+
+    def get_token_count(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        add_security_risk_prediction: bool = False,
+    ) -> int:
         logger.debug(
             "Message objects now include serialized tool calls in token counting"
         )
         formatted_messages = self.format_messages_for_llm(messages)
+        cc_tools = [
+            tool.to_openai_tool(
+                add_security_risk_prediction=add_security_risk_prediction,
+            )
+            for tool in tools or []
+        ]
+        use_mock_tools = self.should_mock_tool_calls(cc_tools)
+        if use_mock_tools:
+            tool_call_state: dict[str, Any] = {}
+            formatted_messages, _ = self.pre_request_prompt_mock(
+                formatted_messages,
+                cc_tools,
+                tool_call_state,
+                include_security_params=add_security_risk_prediction,
+            )
+            cc_tools = []
+
         try:
             return int(
                 token_counter(
                     model=self.model,
                     messages=formatted_messages,
+                    tools=cc_tools or None,
                     custom_tokenizer=self._tokenizer,
                 )
             )

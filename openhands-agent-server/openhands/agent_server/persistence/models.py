@@ -24,6 +24,7 @@ from pydantic import (
 
 from openhands.sdk.settings import (
     AgentSettingsConfig,
+    AppPreferences,
     ConversationSettings,
     default_agent_settings,
     validate_agent_settings,
@@ -40,10 +41,17 @@ class SettingsUpdatePayload(TypedDict, total=False):
     ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
     whole map. A ``None`` on a top-level *field* is not treated as delete; it
     flows to validation as before.
+
+    ``app_preferences_diff`` is a shallow overlay — fields present in the diff
+    overwrite the persisted values, fields absent are left alone. There is no
+    deep-merge or "unset" semantic because :class:`AppPreferences` has no
+    nested maps; ``disabled_skills`` is a list and callers expect a list write
+    to replace, not merge.
     """
 
     agent_settings_diff: dict[str, Any]
     conversation_settings_diff: dict[str, Any]
+    app_preferences_diff: dict[str, Any]
     active_profile: str | None
 
 
@@ -97,7 +105,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 1
+PERSISTED_SETTINGS_SCHEMA_VERSION = 2
 
 
 class PersistedSettings(BaseModel):
@@ -109,6 +117,11 @@ class PersistedSettings(BaseModel):
 
     The ``active_profile`` field tracks which LLM profile was last activated,
     allowing frontends to display which profile is currently in use.
+
+    The ``app_preferences`` field stores frontend app-level preferences
+    (language, sound notifications, analytics consent, git identity,
+    disabled skills) that don't affect agent execution. See
+    :class:`openhands.sdk.settings.AppPreferences`.
     """
 
     schema_version: int = Field(
@@ -123,6 +136,14 @@ class PersistedSettings(BaseModel):
     active_profile: str | None = Field(
         default=None,
         description="Name of the currently active LLM profile.",
+    )
+    app_preferences: AppPreferences = Field(
+        default_factory=AppPreferences,
+        description=(
+            "Frontend app-level user preferences (language, sound notifications, "
+            "analytics opt-in, git identity, disabled skills). Persisted but not "
+            "interpreted by the agent-server."
+        ),
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -145,6 +166,11 @@ class PersistedSettings(BaseModel):
         ``active_profile`` for partial updates. Uses ``from_persisted()`` to
         apply any schema migrations if the incoming diff contains an older
         schema version.
+
+        When ``agent_kind`` changes in the diff, the update is treated as a
+        variant replacement: the incoming diff is validated as-is rather than
+        merged with the old variant's fields. Same-kind updates retain deep-merge
+        behavior for incremental field edits.
 
         Thread Safety:
             This method is NOT thread-safe for concurrent in-memory updates.
@@ -176,12 +202,35 @@ class PersistedSettings(BaseModel):
 
         try:
             if isinstance(agent_update, dict):
-                agent_merged = _deep_merge(
-                    self.agent_settings.model_dump(
-                        mode="json", context={"expose_secrets": "plaintext"}
-                    ),
-                    agent_update,
-                )
+                # Check if this is a variant (agent_kind) switch
+                old_kind = self.agent_settings.agent_kind
+                new_kind = agent_update.get("agent_kind")
+                is_kind_switch = new_kind is not None and new_kind != old_kind
+
+                if is_kind_switch:
+                    # Variant replacement: validate the diff as-is rather than
+                    # deep-merging it onto the old variant. A kind switch picks a
+                    # different member of the AgentSettingsConfig union, and the
+                    # old variant's serialized fields are not a valid base for the
+                    # new one (e.g. ACP's acp_command has no place in
+                    # OpenHandsAgentSettings and would fail validation).
+                    #
+                    # Consequence (intentional): fields the two variants happen to
+                    # share (e.g. ``llm``) are NOT carried over — they fall back to
+                    # the new variant's defaults unless the caller restates them in
+                    # this same diff. Switching kinds is a fresh start on the new
+                    # variant, mirroring the frontend's "fresh base on kind switch"
+                    # behaviour. Callers that want to preserve a shared field must
+                    # include it in the switch payload.
+                    agent_merged = agent_update
+                else:
+                    # Same-kind update: deep-merge for incremental field edits
+                    agent_merged = _deep_merge(
+                        self.agent_settings.model_dump(
+                            mode="json", context={"expose_secrets": "plaintext"}
+                        ),
+                        agent_update,
+                    )
                 try:
                     new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
@@ -204,11 +253,28 @@ class PersistedSettings(BaseModel):
                         f"Failed to update conversation settings: {type(e).__name__}"
                     ) from None
 
+            # Validate app_preferences before mutating anything else
+            prefs_update = payload.get("app_preferences_diff")
+            new_prefs: AppPreferences | None = None
+            if isinstance(prefs_update, dict):
+                merged_prefs = {
+                    **self.app_preferences.model_dump(mode="json"),
+                    **prefs_update,
+                }
+                try:
+                    new_prefs = AppPreferences.model_validate(merged_prefs)
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to update app preferences: {type(e).__name__}"
+                    ) from None
+
             # Phase 2: Apply validated changes atomically
             if new_agent is not None:
                 self.agent_settings = new_agent
             if new_conv is not None:
                 self.conversation_settings = new_conv
+            if new_prefs is not None:
+                self.app_preferences = new_prefs
 
             # Update active_profile if explicitly provided (including None to clear)
             if "active_profile" in payload:
