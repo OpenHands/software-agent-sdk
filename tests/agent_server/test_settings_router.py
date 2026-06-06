@@ -503,6 +503,16 @@ def test_patch_settings_updates_active_profile(client_with_settings):
     assert refetch.json()["active_profile"] is None
 
 
+def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
+    """PATCH /api/settings validates active profile names."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"active_profile": "not a valid profile"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     client_with_settings, temp_persistence_dir
 ):

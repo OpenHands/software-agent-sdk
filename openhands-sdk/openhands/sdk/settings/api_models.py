@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
+
 
 if TYPE_CHECKING:
     from .model import AgentSettingsConfig, ConversationSettings
@@ -143,6 +145,7 @@ class SettingsUpdateRequest(BaseModel):
     app_preferences_diff: dict[str, Any] | None = None
     active_profile: str | None = Field(
         default=None,
+        pattern=PROFILE_NAME_PATTERN,
         description="Name of the active LLM profile to persist; null clears it.",
     )
 

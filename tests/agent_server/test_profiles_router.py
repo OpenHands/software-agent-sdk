@@ -1115,4 +1115,6 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
     response = client.get("/api/profiles")
 
     assert response.status_code == 200
-    assert response.json()["profiles"] == []
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None
