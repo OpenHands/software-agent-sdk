@@ -1,0 +1,46 @@
+{
+  "backing_model": "litellm_proxy/anthropic/claude-haiku-4-5-20251001",
+  "gateway_model": "openhands_haiku_eval_proxy",
+  "messages": [
+    {
+      "content": "Answer directly and do not use tools.",
+      "role": "system"
+    },
+    {
+      "content": "Write a haiku about a software agent opening an OpenAI-compatible gateway.",
+      "role": "user"
+    }
+  ],
+  "profile_name": "haiku_eval_proxy",
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "Agent awakens\nGateway opens to the mind\nTokens flow like streams",
+          "function_call": null,
+          "refusal": null,
+          "role": "assistant",
+          "tool_calls": null
+        }
+      }
+    ],
+    "created": 1780740375,
+    "id": "chatcmpl-d99e0fdea5314ceeb5f7e048a405f3d7",
+    "model": "openhands_haiku_eval_proxy",
+    "object": "chat.completion",
+    "service_tier": null,
+    "system_fingerprint": null,
+    "usage": {
+      "completion_tokens": 0,
+      "completion_tokens_details": null,
+      "prompt_tokens": 0,
+      "prompt_tokens_details": null,
+      "total_tokens": 0
+    }
+  }
+}

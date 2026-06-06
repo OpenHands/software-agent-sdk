@@ -651,6 +651,97 @@ def test_openai_chat_completions_gateway_over_real_server(
                 UUID(conversation_id)
 
 
+def test_openai_gateway_replays_frozen_llm_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import asyncio
+
+    from openai import OpenAI
+
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+    )
+    from openhands.agent_server.models import StartConversationRequest
+    from openhands.sdk import Message, TextContent
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.testing import TestLLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    fixtures_dir = Path(__file__).parents[1] / "fixtures" / "openai_gateway"
+    fixtures = [
+        json.loads((fixtures_dir / "openai_nano_completion.json").read_text()),
+        json.loads((fixtures_dir / "litellm_haiku_completion.json").read_text()),
+    ]
+
+    profiles_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    for fixture in fixtures:
+        store.save(
+            fixture["profile_name"],
+            LLM(model=fixture["backing_model"], api_key=SecretStr("unused")),
+            include_secrets=True,
+        )
+
+    async def start_conversation_with_test_llm(conversation_service, llm: TestLLM):
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4o-mini", api_key=SecretStr("unused")),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            autotitle=False,
+        )
+        info, _ = await conversation_service.start_conversation(request)
+        event_service = await conversation_service.get_event_service(info.id)
+        assert event_service is not None
+        event_service.get_conversation().switch_llm(llm)
+        return info.id
+
+    with patch(
+        "openhands.agent_server.openai_service.LLMProfileStore",
+        lambda: LLMProfileStore(base_dir=profiles_dir),
+    ):
+        with live_server_env(tmp_path, monkeypatch) as env:
+            for fixture in fixtures:
+                expected_content = fixture["response"]["choices"][0]["message"][
+                    "content"
+                ]
+                llm = TestLLM.from_messages(
+                    [
+                        Message(
+                            role="assistant",
+                            content=[TextContent(text=expected_content)],
+                        )
+                    ],
+                    model=fixture["backing_model"],
+                    usage_id=f"frozen-{fixture['profile_name']}",
+                )
+                conversation_id = asyncio.run(
+                    start_conversation_with_test_llm(env["conversation_service"], llm)
+                )
+                client = OpenAI(
+                    api_key="unused",
+                    base_url=f"{env['host']}/v1",
+                    default_headers={
+                        "X-OpenHands-ServerConversation-ID": str(conversation_id)
+                    },
+                    timeout=10,
+                )
+                completion = client.chat.completions.create(
+                    model=fixture["gateway_model"],
+                    messages=fixture["messages"],
+                )
+
+                assert completion.model == fixture["gateway_model"]
+                assert completion.choices[0].message.content == expected_content
+                assert llm.call_count == 1
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="The live bash endpoint depends on the Unix terminal backend.",

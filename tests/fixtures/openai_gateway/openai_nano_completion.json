@@ -1,0 +1,46 @@
+{
+  "backing_model": "gpt-5-nano",
+  "gateway_model": "openhands_openai_nano",
+  "messages": [
+    {
+      "content": "Answer directly and do not use tools.",
+      "role": "system"
+    },
+    {
+      "content": "In one sentence, explain what an OpenAI-compatible agent-server gateway does.",
+      "role": "user"
+    }
+  ],
+  "profile_name": "openai_nano",
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "It is a compatibility layer that accepts OpenAI-style chat and function-calling requests, forwards them to an internal agent server to perform reasoning and tool usage, and returns the results in OpenAI-compatible response formats.",
+          "function_call": null,
+          "refusal": null,
+          "role": "assistant",
+          "tool_calls": null
+        }
+      }
+    ],
+    "created": 1780740369,
+    "id": "chatcmpl-9710b521187744eea48b837e52bf2dc5",
+    "model": "openhands_openai_nano",
+    "object": "chat.completion",
+    "service_tier": null,
+    "system_fingerprint": null,
+    "usage": {
+      "completion_tokens": 0,
+      "completion_tokens_details": null,
+      "prompt_tokens": 0,
+      "prompt_tokens_details": null,
+      "total_tokens": 0
+    }
+  }
+}
