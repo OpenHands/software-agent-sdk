@@ -40,6 +40,7 @@ class NonNativeToolCallingMixin:
         messages: list[dict],
         tools: list[ChatCompletionToolParam],
         kwargs: dict,
+        include_security_params: bool = False,
     ) -> tuple[list[dict], dict]:
         """Convert to non-fncall prompting when native tool-calling is off."""
         # Skip in-context learning examples for models that understand the format
@@ -48,7 +49,10 @@ class NonNativeToolCallingMixin:
             s in self.model for s in ("openhands-lm", "devstral", "nemotron")
         )
         messages = convert_fncall_messages_to_non_fncall_messages(
-            messages, tools, add_in_context_learning_example=add_iclex
+            messages,
+            tools,
+            add_in_context_learning_example=add_iclex,
+            include_security_params=include_security_params,
         )
         if get_features(self.model).supports_stop_words and not self.disable_stop_word:
             kwargs = dict(kwargs)
@@ -63,6 +67,7 @@ class NonNativeToolCallingMixin:
         resp: ModelResponse,
         nonfncall_msgs: list[dict],
         tools: list[ChatCompletionToolParam],
+        include_security_params: bool = False,
     ) -> ModelResponse:
         if len(resp.choices) < 1:
             raise LLMNoResponseError(
@@ -84,7 +89,9 @@ class NonNativeToolCallingMixin:
         orig_msg = resp.choices[0].message
         non_fn_message: dict = orig_msg.model_dump()
         fn_msgs: list[dict] = convert_non_fncall_messages_to_fncall_messages(
-            nonfncall_msgs + [non_fn_message], tools
+            nonfncall_msgs + [non_fn_message],
+            tools,
+            include_security_params=include_security_params,
         )
         last: dict = fn_msgs[-1]
 

@@ -12,6 +12,60 @@ permissions:
     pull-requests: write
 
 jobs:
+    test-directory-guard:
+        name: Test directory allowlist
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Verify test directories
+              run: |
+                  # Allowed top-level directories under tests/
+                  # Each must have a corresponding CI job or workflow that runs them.
+                  #   tests.yml:             sdk, tools, workspace, agent_server, cross
+                  #   run-examples.yml:      examples
+                  #   integration-runner.yml: integration
+                  #   (data-only):           fixtures
+                  ALLOWED="sdk tools workspace agent_server cross examples integration fixtures"
+
+                  violations=""
+                  for entry in tests/*/; do
+                    dir_name="$(basename "$entry")"
+                    # skip __pycache__ and hidden dirs
+                    [[ "$dir_name" == __* || "$dir_name" == .* ]] && continue
+                    if ! echo "$ALLOWED" | grep -qw "$dir_name"; then
+                      violations="$violations  tests/$dir_name/\n"
+                    fi
+                  done
+
+                  # Also reject top-level test files (they won't be picked up by any job)
+                  for f in tests/test_*.py; do
+                    [ -f "$f" ] && violations="$violations  $f\n"
+                  done
+
+                  # Detect test files hiding inside source packages instead of tests/
+                  # Excludes */testing/* dirs (testing utilities, not runnable tests)
+                  stray=$(find openhands-sdk openhands-tools openhands-workspace openhands-agent-server \
+                    \( -name 'test_*.py' -o -name '*_test.py' \) \
+                    -not -path '*/testing/*' \
+                    2>/dev/null || true)
+                  for f in $stray; do
+                    violations="$violations  $f (stray test outside tests/)\n"
+                  done
+
+                  if [ -n "$violations" ]; then
+                    echo "ERROR: Found test paths outside the allowed directories."
+                    echo "The following will NOT be run by any CI job:"
+                    echo ""
+                    printf "$violations"
+                    echo ""
+                    echo "Allowed directories: $ALLOWED"
+                    echo "Move tests into one of the allowed directories so CI can run them."
+                    exit 1
+                  fi
+                  echo "✓ All test directories are in the allowlist"
+
     sdk-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
@@ -21,7 +75,7 @@ jobs:
 
             - name: Detect sdk changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-sdk/**
@@ -32,7 +86,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -91,7 +145,7 @@ jobs:
 
             - name: Detect tools changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-tools/**
@@ -102,7 +156,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -139,6 +193,81 @@ jobs:
                   path: coverage-tools.dat
                   if-no-files-found: warn
 
+    windows-tests:
+        runs-on: windows-latest
+        timeout-minutes: 30
+        env:
+            PYTHONUTF8: '1'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with: {fetch-depth: 0}
+
+            - name: Detect Windows-relevant changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-tools/**
+                      tests/tools/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Install Chromium
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uvx playwright install chromium
+
+            - name: Run Windows test suite
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  if (Test-Path .coverage) {
+                    Remove-Item .coverage -Force
+                  }
+                  $env:CI = 'true'
+                  # Keep the initial Windows pass non-blocking on coverage while
+                  # OS-specific gaps tracked in #2989 are still open.
+                  # Browser/file-editor e2e and terminal shell assumptions remain
+                  # tracked in #2986 and #2988.
+                  uv run python -m pytest -vvs `
+                    --cov=openhands-tools `
+                    --cov-report=term-missing `
+                    --cov-fail-under=0 `
+                    --cov-config=pyproject.toml `
+                    tests/tools `
+                    --ignore=tests/tools/browser_use/test_browser_executor_e2e.py `
+                    --ignore=tests/tools/file_editor/test_memory_usage.py `
+                    --ignore=tests/tools/terminal/test_conversation_cleanup.py `
+                    --ignore=tests/tools/terminal/test_session_factory.py `
+                    --ignore=tests/tools/terminal/test_shell_path_configuration.py `
+                    --ignore=tests/tools/terminal/test_shutdown_handling.py `
+                    --ignore=tests/tools/terminal/test_terminal_session.py `
+                    --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py
+                  if (Test-Path .coverage) {
+                    Move-Item .coverage coverage-windows.dat
+                    Write-Host 'Windows coverage file prepared for upload'
+                  }
+
+            - name: Upload Windows coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-windows
+                  path: coverage-windows.dat
+                  if-no-files-found: warn
+
+
     agent-server-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
@@ -148,7 +277,7 @@ jobs:
 
             - name: Detect Agent Server changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       openhands-agent-server/**
@@ -159,7 +288,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -196,6 +325,103 @@ jobs:
                   path: coverage-agent-server.dat
                   if-no-files-found: warn
 
+    agent-server-stress-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 10
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/stress/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Agent Server stress tests
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Stress suite is opt-in (excluded by `-m 'not stress'` in
+                  # addopts); pass `-m stress` to select it. No xdist: tests
+                  # assert on resource budgets (RSS, FDs, wall-clock latency)
+                  # and parallel execution would invalidate the probes.
+                  CI=true uv run python -m pytest -vvs \
+                    -m stress \
+                    --durations=10 \
+                    tests/agent_server/stress
+
+    workspace-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+              with: {fetch-depth: 0}
+
+            - name: Detect workspace changes
+              id: changed
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+              with:
+                  files: |
+                      openhands-workspace/**
+                      tests/workspace/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+              with:
+                  enable-cache: true
+                  python-version: '3.13'
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run workspace tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    -n auto \
+                    --cov=openhands-workspace \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/workspace
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-workspace.dat
+                    echo "Workspace coverage file prepared for upload"
+                  fi
+
+            - name: Upload workspace coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: coverage-workspace
+                  path: coverage-workspace.dat
+                  if-no-files-found: warn
+
     cross-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
@@ -205,7 +431,7 @@ jobs:
 
             - name: Detect cross changes
               id: changed
-              uses: tj-actions/changed-files@v47
+              uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
               with:
                   files: |
                       tests/**
@@ -216,7 +442,7 @@ jobs:
 
             - name: Install uv
               if: steps.changed.outputs.any_changed == 'true'
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -255,14 +481,14 @@ jobs:
 
     coverage-report:
         runs-on: blacksmith-2vcpu-ubuntu-2404
-        needs: [sdk-tests, tools-tests, agent-server-tests, cross-tests]
+        needs: [sdk-tests, tools-tests, agent-server-tests, workspace-tests, cross-tests]
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
               uses: actions/checkout@v6
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   enable-cache: true
                   python-version: '3.13'
@@ -289,6 +515,8 @@ jobs:
                       cp "$dat_file" .coverage.tools  
                     elif [[ "$dat_file" == *coverage-agent-server.dat ]]; then
                       cp "$dat_file" .coverage.agent-server
+                    elif [[ "$dat_file" == *coverage-workspace.dat ]]; then
+                      cp "$dat_file" .coverage.workspace
                     elif [[ "$dat_file" == *coverage-cross.dat ]]; then
                       cp "$dat_file" .coverage.cross
                     fi
@@ -309,7 +537,7 @@ jobs:
             - name: Pytest coverage PR comment
               if: always()
               continue-on-error: true
-              uses: MishaKav/pytest-coverage-comment@v1
+              uses: MishaKav/pytest-coverage-comment@dd5b80bde6d16941f336518e92929e89069d8451 # v1
               with:
                   github-token: ${{ secrets.GITHUB_TOKEN }}
                   pytest-xml-coverage-path: coverage.xml

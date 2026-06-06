@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 import contextlib
 import json
 import logging
+import os
 import re
 import shlex
+import shutil
+import subprocess
+import textwrap
 import types
 from collections.abc import Collection, Sequence
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -21,6 +28,10 @@ from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.streaming import AnyTokenCallbackType
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -175,51 +186,40 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
 }
 
 # Regex to detect malformed tool names (e.g., "str_replace </parameter"
 # or "str_replace</function>"). These occur when LLMs emit XML/HTML
-# tag fragments in tool names
+# tag fragments in tool names. The leading identifier is extracted and
+# used as the lookup key.
 _MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
 
 
-def _try_fix_malformed_tool_name(
-    tool_name: str, available_tools: Collection[str]
-) -> str:
-    """Try to fix a malformed tool name by extracting the first valid identifier.
+def _extract_tool_name_base(tool_name: str) -> str:
+    """Return the leading identifier of ``tool_name``.
 
-    When LLMs emit malformed tool names like "str_replace </parameter" or
-    "str_replace</function", extract the first valid identifier and check
-    if it matches a known alias or is a registered tool.
-
-    If the extracted identifier doesn't match any alias or tool, return the
-    original tool name so the caller can fall back to other resolution paths
-    (e.g., terminal fallback).
+    This is used to recover from malformed tool names like
+    ``"str_replace </parameter"`` or ``"str_replace</function>"`` that LLMs
+    sometimes emit by appending XML/HTML tag fragments. If ``tool_name``
+    has no valid leading identifier, return it unchanged.
     """
     match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
-    if not match:
-        return tool_name
+    return match.group(1) if match else tool_name
 
-    base_name = match.group(1)
 
-    # If the base name is a registered tool, use it
-    if base_name in available_tools:
-        return base_name
-
-    # If the base name is an alias, return the alias target
-    alias_target = TOOL_NAME_ALIASES.get(base_name)
-    if alias_target and alias_target in available_tools:
-        return alias_target
-
-    # No fix possible (base name doesn't match any known tool/alias), return original
-    return tool_name
-
+# Terminal aliases that prepend the tool name to the command argument.
+# Unlike 'bash' which passes through the command directly, these tools
+# (e.g., 'git', 'reset') are themselves commands that should be combined
+# with their arguments (e.g., 'git status', 'reset clear').
+_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
 
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
-_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "git", "ls", "pwd"})
 
 # Typo normalization for common mistakes in security_risk field
 _SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
@@ -281,8 +281,99 @@ def _has_file_editor_hint(arguments: dict[str, Any]) -> bool:
     return bool(arguments and any(k in arguments for k in file_editor_hints))
 
 
+_GREP_FALLBACK_SCRIPT = textwrap.dedent(
+    """
+    import fnmatch
+    import pathlib
+    import re
+    import sys
+
+    pattern = sys.argv[1]
+    root = pathlib.Path(sys.argv[2])
+    include = sys.argv[3] if len(sys.argv) > 3 else None
+    regex = re.compile(pattern, re.IGNORECASE)
+
+    if root.is_file():
+        candidates = [root]
+    else:
+        candidates = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                relative_parts = path.relative_to(root).parts
+            except ValueError:
+                relative_parts = (path.name,)
+            if any(part.startswith(".") for part in relative_parts[:-1]):
+                continue
+            if include:
+                if not fnmatch.fnmatch(path.name, include):
+                    continue
+            elif path.name.startswith("."):
+                continue
+            candidates.append(path)
+        candidates.sort(key=lambda candidate: candidate.stat().st_mtime, reverse=True)
+
+    for path in candidates:
+        if root.is_file():
+            if include and not fnmatch.fnmatch(path.name, include):
+                continue
+            if not include and path.name.startswith("."):
+                continue
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if regex.search(line):
+                        sys.stdout.write(f"{path}:{line_number}:{line}")
+        except OSError:
+            continue
+    """
+).strip()
+
+
+def _join_shell_command(parts: list[str]) -> str:
+    """Join a command list using the current platform's shell quoting rules."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
+def _build_ripgrep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["rg", "-n", "-i", pattern, search_path, "--sortr=modified"]
+    if include:
+        command_parts.extend(["-g", include])
+    return _join_shell_command(command_parts)
+
+
+def _build_system_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["grep", "-R", "-I", "-n", "-i", pattern, search_path]
+    if include:
+        command_parts.append(f"--include={include}")
+    return _join_shell_command(command_parts)
+
+
+def _build_python_grep_terminal_command(
+    pattern: str,
+    search_path: str,
+    include: str | None,
+) -> str:
+    command_parts = ["python", "-c", f"exec({_GREP_FALLBACK_SCRIPT!r})", pattern]
+    command_parts.append(search_path)
+    if include:
+        command_parts.append(include)
+    return _join_shell_command(command_parts)
+
+
 def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
-    """Return a safe terminal command for structured grep fallbacks.
+    """Return a portable terminal command for structured grep fallbacks.
 
     Returning ``None`` keeps malformed grep payloads on the normal "tool not
     found" path instead of broadening terminal execution.
@@ -291,16 +382,19 @@ def _build_grep_terminal_command(arguments: dict[str, Any]) -> str | None:
     if not isinstance(pattern, str) or not pattern.strip():
         return None
 
-    command_parts = ["grep", "-RIn"]
-    include = arguments.get("include")
-    if isinstance(include, str) and include.strip():
-        command_parts.extend(["--include", include])
-
-    command_parts.extend(["--", pattern])
-
     path = arguments.get("path")
-    command_parts.append(path if isinstance(path, str) and path.strip() else ".")
-    return shlex.join(command_parts)
+    search_path = path if isinstance(path, str) and path.strip() else "."
+
+    include = arguments.get("include")
+    include_pattern = include if isinstance(include, str) and include.strip() else None
+
+    if shutil.which("rg") is not None:
+        return _build_ripgrep_terminal_command(pattern, search_path, include_pattern)
+    if shutil.which("grep") is not None:
+        return _build_system_grep_terminal_command(
+            pattern, search_path, include_pattern
+        )
+    return _build_python_grep_terminal_command(pattern, search_path, include_pattern)
 
 
 def _maybe_rewrite_as_terminal_command(
@@ -341,34 +435,45 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        # First, try to fix malformed tool names (e.g., "str_replace </parameter")
-        fixed_name = _try_fix_malformed_tool_name(tool_name, available_tools)
-        if fixed_name != tool_name:
-            # The base identifier matched a tool or alias - use the resolved name.
-            normalized_tool_name = fixed_name
-        else:
-            # Defensive fallback: handle the rare case where the original name
-            # doesn't start with a valid identifier character (so the malformed
-            # name fixer couldn't extract a base) but still happens to be a
-            # registered alias key.
-            alias_target = TOOL_NAME_ALIASES.get(tool_name)
-            if alias_target and alias_target in available_tools:
-                normalized_tool_name = alias_target
-            elif "terminal" in available_tools:
-                terminal_command = _maybe_rewrite_as_terminal_command(
-                    tool_name,
-                    normalized_arguments,
-                )
-                if terminal_command is not None:
-                    normalized_tool_name = "terminal"
-                    # Preserve only terminal-relevant arguments (security_risk, summary)
-                    # along with the generated command
-                    normalized_arguments = {
-                        key: value
-                        for key, value in normalized_arguments.items()
-                        if key in {"security_risk", "summary"}
-                    }
-                    normalized_arguments["command"] = terminal_command
+        # Extract the leading identifier so we can recover from malformed names
+        # like "str_replace </parameter" (the LLM appended an XML fragment).
+        # For clean names like "git" this is a no-op.
+        base_name = _extract_tool_name_base(tool_name)
+        alias_target = TOOL_NAME_ALIASES.get(base_name)
+        if base_name != tool_name and base_name in available_tools:
+            normalized_tool_name = base_name
+        elif alias_target and alias_target in available_tools:
+            normalized_tool_name = alias_target
+            # For terminal alias with prefix, combine tool name with command
+            if (
+                alias_target == "terminal"
+                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+            ):
+                original_command = arguments.get("command")
+                normalized_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                if original_command:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
+                else:
+                    normalized_arguments["command"] = base_name
+        elif "terminal" in available_tools:
+            terminal_command = _maybe_rewrite_as_terminal_command(
+                tool_name,
+                normalized_arguments,
+            )
+            if terminal_command is not None:
+                normalized_tool_name = "terminal"
+                # Preserve only terminal-relevant arguments (security_risk, summary)
+                # along with the generated command
+                normalized_arguments = {
+                    key: value
+                    for key, value in normalized_arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                normalized_arguments["command"] = terminal_command
 
     if normalized_tool_name == "file_editor":
         inferred_command = _infer_file_editor_command(normalized_arguments)
@@ -504,6 +609,67 @@ def make_llm_completion(
         )
     else:
         return llm.completion(
+            messages=messages,
+            tools=tools or [],
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Async variants
+# ---------------------------------------------------------------------------
+
+
+async def aprepare_llm_messages(
+    events: Sequence[Event],
+    condenser: CondenserBase | None = None,
+    additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
+) -> list[Message] | Condensation:
+    """Async variant of :func:`prepare_llm_messages`.
+
+    Calls ``condenser.acondense()`` so that condensers backed by an LLM can
+    use async completions without blocking the event loop.
+    """
+    view = View.from_events(events)
+    llm_convertible_events: list[LLMConvertibleEvent] = view.events
+
+    if condenser is not None:
+        condensation_result = await condenser.acondense(view, agent_llm=llm)
+
+        match condensation_result:
+            case View():
+                llm_convertible_events = condensation_result.events
+            case Condensation():
+                return condensation_result
+
+    messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
+
+    if additional_messages:
+        messages.extend(additional_messages)
+
+    return messages
+
+
+async def amake_llm_completion(
+    llm: LLM,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None = None,
+    on_token: AnyTokenCallbackType | None = None,
+) -> LLMResponse:
+    """Async variant of :func:`make_llm_completion`."""
+    if llm.uses_responses_api():
+        return await llm.aresponses(
+            messages=messages,
+            tools=tools or [],
+            include=None,
+            store=False,
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+    else:
+        return await llm.acompletion(
             messages=messages,
             tools=tools or [],
             add_security_risk_prediction=True,

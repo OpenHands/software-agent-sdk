@@ -50,11 +50,14 @@ def get_closest_git_repo(path: Path) -> Path | None:
         current_path = parent
 
 
-def get_git_diff(relative_file_path: str | Path) -> GitDiff:
+def get_git_diff(relative_file_path: str | Path, ref: str | None = None) -> GitDiff:
     """Get git diff for a single file.
 
     Args:
         relative_file_path: Path to the file relative to current working directory
+        ref: Optional explicit ref to compare against (e.g. ``"HEAD"`` or a
+            commit hash). When ``None``, compares against the auto-detected
+            upstream/default branch as before.
 
     Returns:
         GitDiff object containing diff information
@@ -62,7 +65,8 @@ def get_git_diff(relative_file_path: str | Path) -> GitDiff:
     Raises:
         GitPathError: If file is too large or doesn't exist
         GitRepositoryError: If not in a git repository
-        GitCommandError: If git commands fail
+        GitCommandError: If git commands fail (including when ``ref`` is
+            provided but does not resolve in the repository).
     """
     path = Path(os.getcwd(), relative_file_path).resolve()
 
@@ -89,7 +93,7 @@ def get_git_diff(relative_file_path: str | Path) -> GitDiff:
     # Validate the git repository
     validated_repo = validate_git_repository(closest_git_repo)
 
-    current_rev = get_valid_ref(validated_repo)
+    current_rev = get_valid_ref(validated_repo, override=ref)
     if not current_rev:
         logger.warning(f"No valid git reference found for {validated_repo}")
         return GitDiff(modified="", original="")

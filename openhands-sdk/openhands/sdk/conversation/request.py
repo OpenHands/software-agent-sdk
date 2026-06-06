@@ -8,13 +8,14 @@ agent-server.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
 
-from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.agent import Agent
+from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
+from openhands.sdk.agent.agent import Agent as Agent
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import ConversationTags
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.message import ImageContent, Message, TextContent
@@ -60,12 +61,27 @@ class SendMessageRequest(BaseModel):
         return Message(role=self.role, content=self.content)
 
 
-class _StartConversationRequestBase(BaseModel):
-    """Common conversation creation fields shared by conversation contracts."""
+class StartConversationRequest(BaseModel):
+    """Payload to create a new conversation.
+
+    Supports any concrete :class:`AgentBase` implementation, including regular
+    OpenHands agents and ACP agents. Clients may provide either a concrete
+    ``agent`` payload or an ``agent_settings`` payload; when ``agent_settings``
+    is provided without ``agent``, the settings are validated with the
+    ``agent_kind`` discriminator and converted to the appropriate agent type.
+    """
 
     workspace: LocalWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description="Working directory for agent operations and tool execution.",
+    )
+    worktree: bool = Field(
+        default=False,
+        description=(
+            "If true and the workspace is already inside a git repository, create "
+            "a dedicated git worktree for this conversation under "
+            "`/tmp/conversation-worktrees/<conversation_id>/<project_name>`."
+        ),
     )
     conversation_id: UUID | None = Field(
         default=None,
@@ -101,6 +117,19 @@ class _StartConversationRequestBase(BaseModel):
         default_factory=dict,
         description="Secrets available in the conversation",
     )
+    secrets_encrypted: bool = Field(
+        default=False,
+        description=(
+            "If true, indicates that secret values in the agent configuration "
+            "are cipher-encrypted and should be decrypted by the server before "
+            "use. This enables secure round-tripping of settings through "
+            "untrusted clients (e.g., frontend) that received encrypted values "
+            "via the X-Expose-Secrets header. "
+            "Flow: client calls GET /api/settings with X-Expose-Secrets: encrypted "
+            "to receive cipher-encrypted secrets, then passes them in the agent "
+            "config with secrets_encrypted=True so the server can decrypt them."
+        ),
+    )
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,
         description=(
@@ -113,7 +142,7 @@ class _StartConversationRequestBase(BaseModel):
         default_factory=list,
         description=(
             "Agent definitions from the client's registry. These are "
-            "registered on the server so that DelegateTool and TaskSetTool "
+            "registered on the server so that task tools "
             "can see user-registered subagents."
         ),
     )
@@ -142,25 +171,77 @@ class _StartConversationRequestBase(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional user ID to associate with observability traces. "
+            "When set, this is passed to Laminar.set_trace_user_id() so "
+            "traces can be queried by user."
+        ),
+    )
     autotitle: bool = Field(
         default=True,
         description=(
             "If true, automatically generate a title for the conversation from "
-            "the first user message using the conversation's LLM."
+            "the first user message. Precedence: title_llm_profile (if set and "
+            "loads) → agent.llm → message truncation."
+        ),
+    )
+    title_llm_profile: str | None = Field(
+        default=None,
+        description=(
+            "Optional LLM profile name for title generation. If set, the LLM "
+            "is loaded from LLMProfileStore (~/.openhands/profiles/) and used "
+            "for LLM-based title generation. This enables using a fast/cheap "
+            "model for titles regardless of the agent's main model. If not "
+            "set (or profile loading fails), title generation falls back to "
+            "the agent's LLM."
         ),
     )
 
+    agent_settings: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Optional agent settings payload. If `agent` is omitted, this is "
+            "validated with the AgentSettingsBase `agent_kind` discriminator and "
+            "used to construct the concrete agent."
+        ),
+    )
+    agent: AgentBase = Field(default=cast(AgentBase, None))
 
-class StartConversationRequest(_StartConversationRequestBase):
-    """Payload to create a new conversation.
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_agent_from_settings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("agent") is None and payload.get("agent_settings") is not None:
+            from openhands.sdk.settings.model import validate_agent_settings
 
-    Contains an Agent configuration along with conversation-specific options.
+            try:
+                payload["agent"] = validate_agent_settings(
+                    payload["agent_settings"]
+                ).create_agent()
+            except (TypeError, ValueError) as exc:
+                raise ValueError(str(exc)) from exc
+        elif isinstance(payload.get("agent"), dict):
+            agent_payload = dict(payload["agent"])
+            if "kind" not in agent_payload and "llm" in agent_payload:
+                agent_payload["kind"] = "Agent"
+            payload["agent"] = agent_payload
+        return payload
+
+    @model_validator(mode="after")
+    def _require_agent(self) -> StartConversationRequest:
+        if self.agent is None:
+            raise ValueError("Either `agent` or `agent_settings` must be provided")
+        return self
+
+
+class StartACPConversationRequest(StartConversationRequest):
+    """Deprecated compatibility alias for ACP-capable start requests.
+
+    Use :class:`StartConversationRequest` instead. It now supports both regular
+    OpenHands agents and ACP agents through the same request contract.
     """
-
-    agent: Agent
-
-
-class StartACPConversationRequest(_StartConversationRequestBase):
-    """Payload to create a conversation with ACP-capable agent support."""
-
-    agent: ACPEnabledAgent

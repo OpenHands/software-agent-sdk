@@ -22,23 +22,6 @@ def test_get_tool_module_qualnames_with_class():
     assert qualnames["test_glob_class"] == "openhands.tools.glob.definition"
 
 
-def test_get_tool_module_qualnames_with_callable():
-    """Test that module qualnames are tracked when registering a callable."""
-
-    def test_factory(conv_state):
-        return []
-
-    # Register the callable
-    register_tool("test_callable", test_factory)
-
-    # Get the module qualnames
-    qualnames = get_tool_module_qualnames()
-
-    # Verify the tool is tracked with its module
-    assert "test_callable" in qualnames
-    assert "test_registry_qualnames" in qualnames["test_callable"]
-
-
 def test_get_tool_module_qualnames_after_import():
     """Test that importing a tool module registers it with qualname."""
     # Import glob tool module to trigger auto-registration

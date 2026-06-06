@@ -144,6 +144,36 @@ def test_end_to_end_caching_flow(tmp_path, dynamic_context, expect_dynamic):
     assert messages[1].content[-1].cache_prompt is True
 
 
+def test_gemini_prompt_caching_marks_formatted_messages():
+    """Gemini models should emit cache_control markers when caching is enabled."""
+    llm = LLM(
+        model="litellm_proxy/gemini-3.1-pro-preview",
+        usage_id="test",
+        caching_prompt=True,
+    )
+    messages = [
+        Message(
+            role="system",
+            content=[
+                TextContent(text="Static system prompt"),
+                TextContent(text="Dynamic context"),
+            ],
+        ),
+        Message(
+            role="user",
+            content=[TextContent(text="Hello")],
+        ),
+    ]
+
+    formatted_messages = llm.format_messages_for_llm(messages)
+
+    system_content = formatted_messages[0]["content"]
+    user_content = formatted_messages[1]["content"]
+    assert system_content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in system_content[1]
+    assert user_content[-1]["cache_control"] == {"type": "ephemeral"}
+
+
 @pytest.mark.parametrize(
     ("first_suffix", "second_suffix"),
     [

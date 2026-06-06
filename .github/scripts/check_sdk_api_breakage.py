@@ -31,15 +31,18 @@ Complementary to the deprecation mechanism:
 from __future__ import annotations
 
 import ast
+import io
 import json
 import os
-import re
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
 import urllib.request
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from packaging import version as pkg_version
@@ -75,7 +78,16 @@ class DeprecatedSymbols:
     metadata: dict[str, DeprecationMetadata] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class FieldDefaultChange:
+    package: str
+    object_path: str
+    old_default: str
+    new_default: str
+
+
 DEPRECATION_RUNWAY_MINOR_RELEASES = 5
+FIELD_DEFAULT_CHANGE_REPORT_ENV = "SDK_API_BREAKAGE_REPORT_PATH"
 
 
 PACKAGES: tuple[PackageConfig, ...] = (
@@ -100,6 +112,14 @@ ACP_DEPENDENCY = "agent-client-protocol"
 ACP_SKIP_ENV = "ACP_VERSION_CHECK_SKIP"
 ACP_SKIP_TOKEN = "skip-acp-check"
 ACP_BASE_REF_ENV = "ACP_VERSION_CHECK_BASE_REF"
+
+
+def _get_base_ref() -> str | None:
+    base_ref = os.environ.get(ACP_BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF")
+    if not base_ref:
+        return None
+    base_ref = base_ref.strip()
+    return base_ref or None
 
 
 def read_version_from_pyproject(path: str) -> str:
@@ -158,8 +178,12 @@ def _min_version_from_requirement(req_str: str) -> pkg_version.Version | None:
     return max(lower_bounds)
 
 
+def _git_ref_candidates(ref: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((f"origin/{ref}", ref)))
+
+
 def _git_show_file(ref: str, rel_path: str) -> str | None:
-    for candidate in (f"origin/{ref}", ref):
+    for candidate in _git_ref_candidates(ref):
         result = subprocess.run(
             ["git", "show", f"{candidate}:{rel_path}"],
             check=False,
@@ -169,6 +193,29 @@ def _git_show_file(ref: str, rel_path: str) -> str | None:
         if result.returncode == 0:
             return result.stdout
     return None
+
+
+def _git_archive_directory(
+    repo_root: str,
+    ref: str,
+    rel_path: str,
+    dest_root: str,
+) -> bool:
+    for candidate in _git_ref_candidates(ref):
+        result = subprocess.run(
+            ["git", "archive", "--format=tar", candidate, rel_path],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            continue
+
+        with tarfile.open(fileobj=io.BytesIO(result.stdout)) as archive:
+            archive.extractall(dest_root, filter="data")
+        return True
+
+    return False
 
 
 def _load_base_pyproject(base_ref: str) -> dict | None:
@@ -198,7 +245,7 @@ def _check_acp_version_bump(repo_root: str) -> int:
         )
         return 0
 
-    base_ref = os.environ.get(ACP_BASE_REF_ENV) or os.environ.get("GITHUB_BASE_REF")
+    base_ref = _get_base_ref()
     if not base_ref:
         print(
             "::warning title=ACP version::No base ref found; skipping ACP version check"
@@ -376,71 +423,155 @@ def ensure_griffe() -> None:
         raise SystemExit(1)
 
 
-def _strip_balanced_param(text: str, param: str) -> str:
-    """Remove a keyword parameter whose value may contain nested delimiters.
+FIELD_METADATA_KWARGS = frozenset(
+    {
+        "deprecated",
+        "description",
+        "examples",
+        "json_schema_extra",
+        "title",
+    }
+)
 
-    Handles values like ``json_schema_extra={'key': {'nested': True}}`` where a
-    simple regex cannot reliably match the balanced braces/parens/brackets.
 
-    Returns *text* with the ``param=<value>`` fragment (and any surrounding
-    comma) removed.
-    """
-    pattern = re.compile(rf",?\s*{re.escape(param)}\s*=\s*")
-    match = pattern.search(text)
-    if not match:
-        return text
-
-    start = match.start()
-    pos = match.end()
-    if pos >= len(text):
-        return text
-
-    # Track balanced delimiters to find where the value ends.
-    openers = {"(": ")", "[": "]", "{": "}"}
-    closers = {")", "]", "}"}
-    stack: list[str] = []
+def _escape_newlines_in_string_literals(text: str) -> str:
+    """Escape literal newlines that appear inside quoted string literals."""
+    chars: list[str] = []
     in_string: str | None = None
+    escaped = False
 
-    while pos < len(text):
-        ch = text[pos]
-
-        # Handle string literals (skip their contents).
-        if in_string:
-            if ch == "\\" and pos + 1 < len(text):
-                pos += 2
-                continue
-            if ch == in_string:
-                in_string = None
-            pos += 1
+    for ch in text:
+        if in_string is None:
+            chars.append(ch)
+            if ch in {"'", '"'}:
+                in_string = ch
             continue
 
-        if ch in ("'", '"'):
-            in_string = ch
-            pos += 1
+        if escaped:
+            chars.append(ch)
+            escaped = False
             continue
 
-        if ch in openers:
-            stack.append(openers[ch])
-            pos += 1
+        if ch == "\\":
+            chars.append(ch)
+            escaped = True
             continue
 
-        if ch in closers:
-            if stack:
-                stack.pop()
-                pos += 1
-                if not stack:
-                    break
-                continue
-            # Unmatched closer — end of value.
-            break
+        if ch == in_string:
+            chars.append(ch)
+            in_string = None
+            continue
 
-        # At depth 0, a comma or closing paren ends the value.
-        if not stack and ch in (",", ")"):
-            break
+        if ch == "\n":
+            chars.append("\\n")
+            continue
 
-        pos += 1
+        chars.append(ch)
 
-    return text[:start] + text[pos:]
+    return "".join(chars)
+
+
+def _parse_field_call(value: object) -> ast.Call | None:
+    """Parse a stringified Pydantic ``Field(...)`` value into an AST call."""
+    try:
+        expr = ast.parse(
+            _escape_newlines_in_string_literals(str(value)),
+            mode="eval",
+        ).body
+    except SyntaxError:
+        return None
+
+    if not isinstance(expr, ast.Call):
+        return None
+
+    func = expr.func
+    if isinstance(func, ast.Name):
+        func_name = func.id
+    elif isinstance(func, ast.Attribute):
+        func_name = func.attr
+    else:
+        return None
+
+    if func_name != "Field":
+        return None
+
+    return expr
+
+
+def _filter_field_metadata_kwargs(call: ast.Call) -> ast.Call:
+    """Return a copy of a ``Field(...)`` call without metadata-only kwargs."""
+    return ast.Call(
+        func=call.func,
+        args=call.args,
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_METADATA_KWARGS],
+    )
+
+
+FIELD_DEFAULT_KWARGS = ("default", "default_factory")
+
+
+def _field_default_node(call: ast.Call) -> ast.AST | None:
+    """Return the AST node representing a ``Field`` default value/factory."""
+    for kw in call.keywords:
+        if kw.arg in FIELD_DEFAULT_KWARGS:
+            return kw.value
+    if call.args:
+        return call.args[0]
+    return None
+
+
+def _remove_field_default(call: ast.Call) -> ast.Call:
+    """Return a copy of a ``Field(...)`` call without its default value/factory."""
+    args = list(call.args)
+    if args:
+        args = args[1:]
+    return ast.Call(
+        func=call.func,
+        args=args,
+        keywords=[kw for kw in call.keywords if kw.arg not in FIELD_DEFAULT_KWARGS],
+    )
+
+
+def _field_default_repr(value: object) -> str | None:
+    """Return the string form of a ``Field`` default value/factory, if present."""
+    call = _parse_field_call(value)
+    if call is None:
+        return None
+    default_node = _field_default_node(call)
+    if default_node is None:
+        return None
+    return ast.unparse(default_node)
+
+
+def _is_field_default_only_change(old_val: object, new_val: object) -> bool:
+    """Check whether only the ``Field`` default value changed.
+
+    Metadata-only kwargs are ignored, but any other semantic ``Field`` argument
+    changes still count as real API breakage.
+    """
+    old_call = _parse_field_call(old_val)
+    new_call = _parse_field_call(new_val)
+    if old_call is None or new_call is None:
+        return False
+
+    old_default = _field_default_node(old_call)
+    new_default = _field_default_node(new_call)
+    if old_default is None or new_default is None:
+        return False
+
+    if ast.dump(old_default, include_attributes=False) == ast.dump(
+        new_default,
+        include_attributes=False,
+    ):
+        return False
+
+    return ast.dump(
+        _remove_field_default(_filter_field_metadata_kwargs(old_call)),
+        include_attributes=False,
+    ) == ast.dump(
+        _remove_field_default(_filter_field_metadata_kwargs(new_call)),
+        include_attributes=False,
+    )
 
 
 def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
@@ -453,43 +584,49 @@ def _is_field_metadata_only_change(old_val: object, new_val: object) -> bool:
     Returns:
         True if both values are Field() calls and only metadata parameters differ.
     """
-    old_str = str(old_val)
-    new_str = str(new_val)
-
-    if not (old_str.startswith("Field(") and new_str.startswith("Field(")):
+    old_call = _parse_field_call(old_val)
+    new_call = _parse_field_call(new_val)
+    if old_call is None or new_call is None:
         return False
 
-    # Simple metadata parameters whose values are always plain quoted strings
-    # or simple literals.
-    # See https://docs.pydantic.dev/latest/api/fields/#pydantic.fields.Field
-    simple_metadata_patterns = {
-        "description": r'([\'"])([^\'"]*?)\1',
-        "title": r'([\'"])([^\'"]*?)\1',
-        "examples": r'([\'"])([^\'"]*?)\1',
-        "deprecated": r"(?:True|False|None|'[^']*'|\"[^\"]*\")",
-    }
+    return ast.dump(
+        _filter_field_metadata_kwargs(old_call),
+        include_attributes=False,
+    ) == ast.dump(
+        _filter_field_metadata_kwargs(new_call),
+        include_attributes=False,
+    )
 
-    # Parameters whose values can be complex nested structures (dicts, function
-    # calls, etc.) and need balanced-delimiter parsing instead of a regex.
-    balanced_params = ("json_schema_extra",)
 
-    def _normalize(value: str) -> str:
-        normalized = value
+def _object_path(obj: object | None) -> str:
+    """Return the most specific path available for a griffe object."""
+    if obj is None:
+        return "<unknown>"
+    return str(
+        getattr(obj, "path", None)
+        or getattr(obj, "canonical_path", None)
+        or getattr(obj, "name", None)
+        or "<unknown>"
+    )
 
-        for param, value_pattern in simple_metadata_patterns.items():
-            pattern = rf",?\s*{param}\s*=\s*{value_pattern}"
-            normalized = re.sub(pattern, "", normalized)
 
-        for param in balanced_params:
-            normalized = _strip_balanced_param(normalized, param)
+def _write_field_default_change_report(
+    changes: list[FieldDefaultChange],
+    *,
+    field_default_changes_since_base: list[FieldDefaultChange] | None = None,
+) -> None:
+    """Write detected public Field default changes to a JSON report file."""
+    report_path = os.environ.get(FIELD_DEFAULT_CHANGE_REPORT_ENV, "").strip()
+    if not report_path:
+        return
 
-        normalized = re.sub(r"\(\s*,", "(", normalized)
-        normalized = re.sub(r",\s*\)", ")", normalized)
-        normalized = re.sub(r",\s*,", ", ", normalized)
-        normalized = re.sub(r"\s+", " ", normalized)
-        return normalized.strip()
+    report = {"field_default_changes": [asdict(change) for change in changes]}
+    if field_default_changes_since_base is not None:
+        report["field_default_changes_since_base"] = [
+            asdict(change) for change in field_default_changes_since_base
+        ]
 
-    return _normalize(old_str) == _normalize(new_str)
+    Path(report_path).write_text(json.dumps(report, indent=2) + "\n")
 
 
 def _member_deprecation_metadata(
@@ -535,6 +672,10 @@ def _collect_breakages_pairs(
     deprecated: DeprecatedSymbols,
     current_version: str,
     title: str,
+    package: str,
+    field_default_changes: list[FieldDefaultChange] | None = None,
+    field_defaults_only: bool = False,
+    emit_diagnostics: bool = True,
 ) -> tuple[list[object], int]:
     """Find breaking changes between pairs of old/new API objects.
 
@@ -557,17 +698,40 @@ def _collect_breakages_pairs(
                 if not getattr(obj, "is_public", True):
                     continue
 
-                # Skip ATTRIBUTE_CHANGED_VALUE when it's just Field metadata changes
-                # (description, title, examples, etc.) - these don't affect runtime
                 if br.kind == BreakageKind.ATTRIBUTE_CHANGED_VALUE:
                     old_value = getattr(br, "old_value", None)
                     new_value = getattr(br, "new_value", None)
                     if _is_field_metadata_only_change(old_value, new_value):
-                        print(
-                            f"::notice title={title}::Ignoring Field metadata-only "
-                            f"change (non-breaking): {obj.name if obj else 'unknown'}"
-                        )
+                        if emit_diagnostics:
+                            print(
+                                f"::notice title={title}::Ignoring Field "
+                                "metadata-only change (non-breaking): "
+                                f"{obj.name if obj else 'unknown'}"
+                            )
                         continue
+                    if _is_field_default_only_change(old_value, new_value):
+                        object_path = _object_path(obj)
+                        old_default = _field_default_repr(old_value) or "<unknown>"
+                        new_default = _field_default_repr(new_value) or "<unknown>"
+                        if emit_diagnostics:
+                            print(
+                                f"::warning title={title}::Public Field default "
+                                "changed (release-note-required): "
+                                f"{object_path} {old_default} -> {new_default}"
+                            )
+                        if field_default_changes is not None:
+                            field_default_changes.append(
+                                FieldDefaultChange(
+                                    package=package,
+                                    object_path=object_path,
+                                    old_default=old_default,
+                                    new_default=new_default,
+                                )
+                            )
+                        continue
+
+                if field_defaults_only:
+                    continue
 
                 print(br.explain(style=ExplanationStyle.GITHUB))
                 breakages.append(br)
@@ -592,6 +756,8 @@ def _collect_breakages_pairs(
                     print(f"::error title={title}::{error}")
                 removal_policy_errors += len(errors)
         except AliasResolutionError as e:
+            if field_defaults_only:
+                continue
             if isinstance(old, Alias) or isinstance(new, Alias):
                 old_target = old.target_path if isinstance(old, Alias) else None
                 new_target = new.target_path if isinstance(new, Alias) else None
@@ -617,6 +783,8 @@ def _collect_breakages_pairs(
                     f"unresolved alias: {e}"
                 )
         except Exception as e:
+            if field_defaults_only:
+                raise RuntimeError("Failed to collect Field default changes") from e
             print(f"::warning title={title}::Failed to compute breakages: {e}")
 
     return breakages, removal_policy_errors
@@ -747,6 +915,36 @@ def _load_current(
         return None
 
 
+@contextmanager
+def _load_from_git_ref(
+    griffe_module: object,
+    repo_root: str,
+    ref: str,
+    cfg: PackageConfig,
+):
+    title = f"{cfg.distribution} API"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        if not _git_archive_directory(repo_root, ref, cfg.source_dir, tmpdir):
+            print(
+                f"::warning title={title}::Failed to load {cfg.distribution} from "
+                f"git ref {ref}: unable to archive {cfg.source_dir}"
+            )
+            yield None
+            return
+
+        try:
+            yield griffe_module.load(
+                cfg.package,
+                search_paths=[os.path.join(tmpdir, cfg.source_dir)],
+            )
+        except Exception as e:
+            print(
+                f"::warning title={title}::Failed to load {cfg.distribution} from "
+                f"git ref {ref}: {e}"
+            )
+            yield None
+
+
 def _load_prev_from_pypi(
     griffe_module: object,
     prev: str,
@@ -769,12 +967,59 @@ def _load_prev_from_pypi(
         return None
 
 
+def _collect_field_default_changes_since_ref(
+    griffe_module: object,
+    repo_root: str,
+    ref: str,
+    cfg: PackageConfig,
+) -> list[FieldDefaultChange] | None:
+    new_root = _load_current(griffe_module, repo_root, cfg)
+    if not new_root:
+        return None
+
+    with _load_from_git_ref(griffe_module, repo_root, ref, cfg) as old_root:
+        if not old_root:
+            return None
+
+        changes: list[FieldDefaultChange] = []
+        try:
+            _compute_breakages(
+                old_root,
+                new_root,
+                cfg,
+                field_default_changes=changes,
+                field_defaults_only=True,
+                emit_diagnostics=False,
+            )
+        except Exception as e:
+            print(
+                f"::warning title={cfg.distribution} API::Failed to compare "
+                f"Field defaults against base ref {ref}: {e}"
+            )
+            return None
+
+    return changes
+
+
+# Names of module-level data registries that declare deprecated public
+# re-exports as ``{name: {"deprecated_in": ..., "removed_in": ...}}`` and are
+# consumed by a module-level ``__getattr__``. The SDK uses this form for renamed
+# export aliases (e.g. ``LLMAgentSettings``) that deliberately are NOT
+# ``@deprecated``-decorated on the class itself (the class stays a live internal
+# union member) and whose ``warn_deprecated`` feature name is a dynamic f-string.
+# Such deprecations are invisible to the decorator/call scans below, so we read
+# the registry as a third deprecation source.
+_DEPRECATED_EXPORT_REGISTRY_NAMES = frozenset({"_DEPRECATED_SDK_EXPORTS"})
+
+
 def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
     """Scan source files for symbols marked with the SDK deprecation helpers.
 
-    Detects two forms:
+    Detects three forms:
     - ``@deprecated(...)`` decorator on a class/function/method
     - ``warn_deprecated('SomeFeature', ...)`` call
+    - entries in a ``_DEPRECATED_SDK_EXPORTS``-style registry dict mapping an
+      export name to ``{"deprecated_in": ..., "removed_in": ...}``
 
     Returns:
         DeprecatedSymbols(top_level=..., qualified=..., metadata=...)
@@ -865,6 +1110,40 @@ def _find_deprecated_symbols(source_root: Path) -> DeprecatedSymbols:
 
             self.generic_visit(node)
 
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:  # noqa: N802
+            self._record_export_registry(node.target, node.value)
+            self.generic_visit(node)
+
+        def visit_Assign(self, node: ast.Assign) -> None:  # noqa: N802
+            for target in node.targets:
+                self._record_export_registry(target, node.value)
+            self.generic_visit(node)
+
+        def _record_export_registry(
+            self, target: ast.expr, value: ast.expr | None
+        ) -> None:
+            """Record exports declared deprecated via a registry dict literal."""
+            if not (
+                isinstance(target, ast.Name)
+                and target.id in _DEPRECATED_EXPORT_REGISTRY_NAMES
+            ):
+                return
+            if not isinstance(value, ast.Dict):
+                return
+            for key_node, val_node in zip(value.keys, value.values):
+                if key_node is None:
+                    continue
+                export = _extract_string_literal(key_node)
+                if export is None or not isinstance(val_node, ast.Dict):
+                    continue
+                metadata = DeprecationMetadata(
+                    deprecated_in=_extract_dict_string_value(val_node, "deprecated_in"),
+                    removed_in=_extract_dict_string_value(val_node, "removed_in"),
+                )
+                self.top_level.add(export)
+                self.qualified.add(export)
+                self.metadata[export] = metadata
+
     top_level: set[str] = set()
     qualified: set[str] = set()
     metadata: dict[str, DeprecationMetadata] = {}
@@ -897,6 +1176,19 @@ def _extract_string_literal(node: ast.AST) -> str | None:
     return None
 
 
+def _extract_dict_string_value(node: ast.Dict, key: str) -> str | None:
+    """Return the string value for *key* in an ``ast.Dict`` literal, if present."""
+    for k, v in zip(node.keys, node.values):
+        if (
+            isinstance(k, ast.Constant)
+            and k.value == key
+            and isinstance(v, ast.Constant)
+            and isinstance(v.value, str)
+        ):
+            return v.value
+    return None
+
+
 def _get_source_root(griffe_root: object) -> Path | None:
     """Derive the package source directory from a griffe module's filepath."""
     filepath = getattr(griffe_root, "filepath", None)
@@ -911,6 +1203,9 @@ def _compute_breakages(
     cfg: PackageConfig,
     *,
     current_version: str = "9999.0.0",
+    field_default_changes: list[FieldDefaultChange] | None = None,
+    field_defaults_only: bool = False,
+    emit_diagnostics: bool = True,
 ) -> tuple[int, int]:
     """Detect breaking changes between old and new package versions.
 
@@ -945,36 +1240,38 @@ def _compute_breakages(
         # evaluate) __all__, we can't compute meaningful breakages.
         #
         # In this situation, skip rather than failing the entire workflow.
-        print(
-            f"::notice title={title}::Skipping breakage check; baseline release "
-            f"has no statically-evaluable {pkg}.__all__: {e}"
-        )
+        if emit_diagnostics:
+            print(
+                f"::notice title={title}::Skipping breakage check; baseline release "
+                f"has no statically-evaluable {pkg}.__all__: {e}"
+            )
         return 0, 0
 
-    removed = sorted(old_exports - new_exports)
+    if not field_defaults_only:
+        removed = sorted(old_exports - new_exports)
 
-    # Check deprecation runway policy (exports)
-    for name in removed:
-        total_breaks += 1  # every removal is a structural break
-        errors = _deprecation_schedule_errors(
-            feature=name,
-            metadata=(
-                deprecated.metadata.get(name, DeprecationMetadata())
-                if name in deprecated.top_level
-                else None
-            ),
-            current_version=current_version,
-        )
-        if not errors:
-            print(
-                f"::notice title={title}::Removed previously-deprecated symbol "
-                f"'{name}' from {pkg}.__all__ after its scheduled removal version"
+        # Check deprecation runway policy (exports)
+        for name in removed:
+            total_breaks += 1  # every removal is a structural break
+            errors = _deprecation_schedule_errors(
+                feature=name,
+                metadata=(
+                    deprecated.metadata.get(name, DeprecationMetadata())
+                    if name in deprecated.top_level
+                    else None
+                ),
+                current_version=current_version,
             )
-            continue
+            if not errors:
+                print(
+                    f"::notice title={title}::Removed previously-deprecated symbol "
+                    f"'{name}' from {pkg}.__all__ after its scheduled removal version"
+                )
+                continue
 
-        for error in errors:
-            print(f"::error title={title}::{error}")
-        removal_policy_errors += len(errors)
+            for error in errors:
+                print(f"::error title={title}::{error}")
+            removal_policy_errors += len(errors)
 
     common = sorted(old_exports & new_exports)
     pairs: list[tuple[object, object]] = []
@@ -982,13 +1279,18 @@ def _compute_breakages(
         try:
             pairs.append((old_mod[name], new_mod[name]))
         except Exception as e:
-            print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
+            if emit_diagnostics:
+                print(f"::warning title={title}::Unable to resolve symbol {name}: {e}")
 
     breakages, member_policy_errors = _collect_breakages_pairs(
         pairs,
         deprecated=deprecated,
         current_version=current_version,
         title=title,
+        package=cfg.package,
+        field_default_changes=field_default_changes,
+        field_defaults_only=field_defaults_only,
+        emit_diagnostics=emit_diagnostics,
     )
     total_breaks += len(breakages)
     removal_policy_errors += member_policy_errors
@@ -996,7 +1298,13 @@ def _compute_breakages(
     return total_breaks, removal_policy_errors
 
 
-def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
+def _check_package(
+    griffe_module,
+    repo_root: str,
+    cfg: PackageConfig,
+    *,
+    field_default_changes: list[FieldDefaultChange] | None = None,
+) -> int:
     """Run breakage checks for a single package. Returns 0 on success."""
     pyproj = os.path.join(repo_root, cfg.source_dir, "pyproject.toml")
     new_version = read_version_from_pyproject(pyproj)
@@ -1026,6 +1334,7 @@ def _check_package(griffe_module, repo_root: str, cfg: PackageConfig) -> int:
             new_root,
             cfg,
             current_version=new_version,
+            field_default_changes=field_default_changes,
         )
     except Exception as e:
         print(f"::error title={title}::Failed to compute breakages: {e}")
@@ -1050,12 +1359,37 @@ def main() -> int:
     ensure_griffe()
     import griffe
 
+    field_default_changes: list[FieldDefaultChange] = []
+    field_default_changes_since_base: list[FieldDefaultChange] | None = []
+    base_ref = _get_base_ref()
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")
         print(f"{'=' * 60}")
-        rc |= _check_package(griffe, repo_root, cfg)
+        rc |= _check_package(
+            griffe,
+            repo_root,
+            cfg,
+            field_default_changes=field_default_changes,
+        )
+        if base_ref and field_default_changes_since_base is not None:
+            changes_since_base = _collect_field_default_changes_since_ref(
+                griffe,
+                repo_root,
+                base_ref,
+                cfg,
+            )
+            if changes_since_base is None:
+                field_default_changes_since_base = None
+            else:
+                field_default_changes_since_base.extend(changes_since_base)
 
+    _write_field_default_change_report(
+        field_default_changes,
+        field_default_changes_since_base=(
+            field_default_changes_since_base if base_ref else None
+        ),
+    )
     return rc
 
 

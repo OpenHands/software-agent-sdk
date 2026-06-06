@@ -1,6 +1,7 @@
 """Comprehensive tests for BashEventService bash command execution."""
 
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,12 @@ import pytest
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.models import BashCommand, BashOutput, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
+
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="BashEventService tests require the Unix terminal backend.",
+)
 
 
 @pytest.fixture

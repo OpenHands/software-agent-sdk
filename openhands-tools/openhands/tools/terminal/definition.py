@@ -1,6 +1,7 @@
-"""Execute bash tool implementation."""
+"""Execute shell commands in a persistent terminal session."""
 
 import os
+import platform
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -26,18 +27,32 @@ from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
 )
+from openhands.tools.terminal.descriptions import (
+    UNIX_TOOL_DESCRIPTION,
+    WINDOWS_TOOL_DESCRIPTION,
+)
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
 class TerminalAction(Action):
-    """Schema for bash command execution."""
+    """Schema for terminal command execution."""
 
     command: str = Field(
-        description="The bash command to execute. Can be empty string to view additional logs when previous exit code is `-1`. Can be `C-c` (Ctrl+C) to interrupt the currently running process. Note: You can only execute one bash command at a time. If you need to run multiple commands sequentially, you can use `&&` or `;` to chain them together."  # noqa
+        description=(
+            "The shell command to execute. Can be empty string to view"
+            " additional logs when the previous exit code is `-1`. Can be a"
+            " special key name when `is_input` is True: `C-c` (Ctrl+C),"
+            " `C-d` (Ctrl+D/EOF), `C-z` (Ctrl+Z), or any `C-<letter>`"
+            " for Ctrl sequences; navigation keys `UP`, `DOWN`, `LEFT`,"
+            " `RIGHT`, `HOME`, `END`, `PGUP`, `PGDN`; and `TAB`, `ESC`,"
+            " `BS` (Backspace), `ENTER`. You can only execute one command"
+            " at a time. Use the platform-appropriate shell syntax described"
+            " in the tool description when chaining commands."
+        )
     )
     is_input: bool = Field(
         default=False,
-        description="If True, the command is an input to the running process. If False, the command is a bash command to be executed in the terminal. Default is False.",  # noqa
+        description="If True, the command is an input to the running process. If False, the command is executed in the terminal session. Default is False.",  # noqa
     )
     timeout: float | None = Field(
         default=None,
@@ -51,7 +66,7 @@ class TerminalAction(Action):
 
     @property
     def visualize(self) -> Text:
-        """Return Rich Text representation with PS1-style bash prompt."""
+        """Return Rich Text representation with a shell-style prompt."""
         content = Text()
 
         # Create PS1-style prompt
@@ -83,7 +98,7 @@ class TerminalObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: str | None = Field(
-        description="The bash command that was executed. Can be empty string if the observation is from a previous command that hit soft timeout and is not yet finished.",  # noqa
+        description="The shell command that was executed. Can be empty string if the observation is from a previous command that hit soft timeout and is not yet finished.",  # noqa
     )
     exit_code: int | None = Field(
         default=None,
@@ -130,7 +145,7 @@ class TerminalObservation(Observation):
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
             save_dir=self.full_output_save_dir,
-            tool_prefix="bash",
+            tool_prefix="terminal",
         )
         llm_content.append(TextContent(text=truncated_text))
 
@@ -201,37 +216,6 @@ class TerminalObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.
-
-
-### Command Execution
-* One command at a time: You can only execute one bash command at a time. If you need to run multiple commands sequentially, use `&&` or `;` to chain them together.
-* Persistent session: Commands execute in a persistent shell session where environment variables, virtual environments, and working directory persist between commands.
-* Soft timeout: Commands have a soft timeout of 10 seconds, once that's reached, you have the option to continue or interrupt the command (see section below for details)
-* Shell options: Do NOT use `set -e`, `set -eu`, or `set -euo pipefail` in shell scripts or commands in this environment. The runtime may not support them and can cause unusable shell sessions. If you want to run multi-line bash commands, write the commands to a file and then run it, instead.
-
-### Long-running Commands
-* For commands that may run indefinitely, run them in the background and redirect output to a file, e.g. `python3 app.py > server.log 2>&1 &`.
-* For commands that may run for a long time (e.g. installation or testing commands), or commands that run for a fixed amount of time (e.g. sleep), you should set the "timeout" parameter of your function call to an appropriate value.
-* If a bash command returns exit code `-1`, this means the process hit the soft timeout and is not yet finished. By setting `is_input` to `true`, you can:
-  - Send empty `command` to retrieve additional logs
-  - Send text (set `command` to the text) to STDIN of the running process
-  - Send control commands like `C-c` (Ctrl+C), `C-d` (Ctrl+D), or `C-z` (Ctrl+Z) to interrupt the process
-  - If you do C-c, you can re-start the process with a longer "timeout" parameter to let it run to completion
-
-### Best Practices
-* Directory verification: Before creating new directories or files, first verify the parent directory exists and is the correct location.
-* Directory management: Try to maintain working directory by using absolute paths and avoiding excessive use of `cd`.
-
-### Output Handling
-* Output truncation: If the output exceeds a maximum length, it will be truncated before being returned.
-
-### Terminal Reset
-* Terminal reset: If the terminal becomes unresponsive, you can set the "reset" parameter to `true` to create a new terminal session. This will terminate the current session and start fresh.
-* Warning: Resetting the terminal will lose all previously set environment variables, working directory changes, and any running processes. Use this only when the terminal stops responding to commands.
-"""  # noqa
-
-
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
     """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
@@ -252,7 +236,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         conv_state: "ConversationState",
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
-        terminal_type: Literal["tmux", "subprocess"] | None = None,
+        terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
         executor: ToolExecutor | None = None,
     ) -> Sequence["TerminalTool"]:
@@ -262,15 +246,16 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
             conv_state: Conversation state to get working directory from.
                          If provided, working_dir will be taken from
                          conv_state.workspace
-            username: Optional username for the bash session
+            username: Optional username for the shell session
             no_change_timeout_seconds: Timeout for no output change
             terminal_type: Force a specific session type:
-                         ('tmux', 'subprocess').
+                         ('tmux', 'subprocess', or 'powershell').
                          If None, auto-detect based on system capabilities:
-                         - On Windows: PowerShell if available, otherwise subprocess
-                         - On Unix-like: tmux if available, otherwise subprocess
-            shell_path: Path to the shell binary (for subprocess terminal type only).
-                       If None, will auto-detect bash from PATH.
+                         - On Windows: PowerShell-backed backend
+                         - On Unix-like systems: tmux if available, otherwise subprocess
+            shell_path: Path to the shell binary. On Unix this applies to the
+                       subprocess backend; on Windows it can point to a
+                       PowerShell executable.
         """
         # Import here to avoid circular imports
         from openhands.tools.terminal.impl import TerminalExecutor
@@ -290,12 +275,18 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
             )
 
+        tool_description = (
+            WINDOWS_TOOL_DESCRIPTION
+            if platform.system() == "Windows"
+            else UNIX_TOOL_DESCRIPTION
+        )
+
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
                 action_type=TerminalAction,
                 observation_type=TerminalObservation,
-                description=TOOL_DESCRIPTION,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="terminal",
                     readOnlyHint=False,

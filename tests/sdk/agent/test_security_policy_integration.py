@@ -65,6 +65,25 @@ def test_security_policy_in_system_message():
     assert "AI assistant (OpenHands)" not in system_message
 
 
+def test_none_security_policy_filename_disables_policy_without_null_public_value():
+    """Test that None input disables the policy without exposing a null contract."""
+    agent = Agent.model_validate(
+        {
+            "llm": LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            "security_policy_filename": None,
+        }
+    )
+
+    assert agent.security_policy_filename == ""
+    assert agent.model_dump()["security_policy_filename"] == ""
+    assert "🔐 Security Policy" not in agent.static_system_message
+
+
 def test_custom_security_policy_in_system_message():
     """Test that custom security policy filename is used in system message."""
     # Create a temporary directory for test files
@@ -76,7 +95,7 @@ def test_custom_security_policy_in_system_message():
             "This is a custom security policy for testing.\n"
             "- **CUSTOM_RULE**: Always test custom policies."
         )
-        custom_policy_path.write_text(custom_policy_content)
+        custom_policy_path.write_text(custom_policy_content, encoding="utf-8")
 
         # Copy required template files to temp directory
         original_prompt_dir = (

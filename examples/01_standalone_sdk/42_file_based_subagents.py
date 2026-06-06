@@ -1,8 +1,7 @@
 """Example: Defining a sub-agent inline with AgentDefinition.
 
 Defines a grammar-checker sub-agent using AgentDefinition, registers it,
-and delegates work to it from an orchestrator agent. The orchestrator then
-asks the builtin default agent to judge the results.
+and delegates work to it from an orchestrator agent.
 """
 
 import os
@@ -17,8 +16,8 @@ from openhands.sdk import (
     register_agent,
 )
 from openhands.sdk.subagent import AgentDefinition
-from openhands.sdk.tool import register_tool
-from openhands.tools.delegate import DelegateTool, DelegationVisualizer
+from openhands.tools.delegate import DelegationVisualizer
+from openhands.tools.task import TaskToolSet
 
 
 # 1. Define a sub-agent using AgentDefinition
@@ -36,18 +35,17 @@ register_agent(
     description=grammar_checker,
 )
 
-# 3. Set up the orchestrator agent with the DelegateTool
+# 3. Set up the orchestrator agent with the task tool
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "gpt-5.5"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL"),
     usage_id="file-agents-demo",
 )
 
-register_tool("DelegateTool", DelegateTool)
 main_agent = Agent(
     llm=llm,
-    tools=[Tool(name="DelegateTool")],
+    tools=[Tool(name=TaskToolSet.name)],
 )
 conversation = Conversation(
     agent=main_agent,
@@ -58,8 +56,7 @@ conversation = Conversation(
 # 4. Ask the orchestrator to delegate to our agent
 task = (
     "Please delegate to the grammar-checker agent and ask it to review "
-    "the README.md file in search of grammatical errors.\n"
-    "Then ask the default agent to judge the errors."
+    "the README.md file in search of grammatical errors."
 )
 conversation.send_message(task)
 conversation.run()

@@ -1,9 +1,26 @@
 """Tests for CriticClient api_key handling."""
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr
 
-from openhands.sdk.critic.impl.api.client import CriticClient
+from openhands.sdk import LLM, Agent
+from openhands.sdk.critic.impl.api import APIBasedCritic
+from openhands.sdk.critic.impl.api.client import (
+    DEFAULT_CRITIC_MODEL_NAME,
+    DEFAULT_CRITIC_SERVER_URL,
+    CriticClient,
+)
+from openhands.sdk.utils.cipher import Cipher
+
+
+def test_critic_client_uses_current_default_route():
+    """Default critic route should target the hosted proxy pass-through."""
+    client = CriticClient(api_key="test_api_key_123")
+
+    assert DEFAULT_CRITIC_SERVER_URL == "https://llm-proxy.app.all-hands.dev/vllm"
+    assert DEFAULT_CRITIC_MODEL_NAME == "critic"
+    assert client.server_url == DEFAULT_CRITIC_SERVER_URL
+    assert client.model_name == DEFAULT_CRITIC_MODEL_NAME
 
 
 def test_critic_client_with_str_api_key():
@@ -24,27 +41,46 @@ def test_critic_client_with_secret_str_api_key():
 
 
 def test_critic_client_empty_string_api_key():
-    """Test that CriticClient rejects an empty string api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key="")
+    """Test that CriticClient normalizes an empty string api_key to None."""
+    client = CriticClient(api_key="")
+
+    assert client.api_key is None
 
 
 def test_critic_client_whitespace_only_api_key():
-    """Test that CriticClient rejects a whitespace-only api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key="   \t\n  ")
+    """Test that CriticClient normalizes a whitespace-only api_key to None."""
+    client = CriticClient(api_key="   \t\n  ")
+
+    assert client.api_key is None
 
 
 def test_critic_client_empty_secret_str_api_key():
-    """Test that CriticClient rejects an empty SecretStr api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key=SecretStr(""))
+    """Test that CriticClient normalizes an empty SecretStr api_key to None."""
+    client = CriticClient(api_key=SecretStr(""))
+
+    assert client.api_key is None
+
+
+def test_critic_client_normalizes_redacted_api_key_placeholder():
+    """Test that redacted critic api_key placeholders become None."""
+    client = CriticClient(api_key="**********")
+
+    assert client.api_key is None
+
+
+def test_critic_client_rejects_none_api_key_for_inference():
+    """Test that missing api_key cannot be used as a runtime credential."""
+    client = CriticClient(api_key="**********")
+
+    with pytest.raises(ValueError, match="api_key must be non-empty"):
+        client._get_api_key_value()
 
 
 def test_critic_client_whitespace_secret_str_api_key():
-    """Test that CriticClient rejects a whitespace-only SecretStr api_key."""
-    with pytest.raises(ValidationError, match="api_key must be non-empty"):
-        CriticClient(api_key=SecretStr("   \t\n  "))
+    """Test that CriticClient normalizes a whitespace-only SecretStr api_key."""
+    client = CriticClient(api_key=SecretStr("   \t\n  "))
+
+    assert client.api_key is None
 
 
 def test_critic_client_api_key_not_exposed_in_repr():
@@ -73,3 +109,67 @@ def test_critic_client_api_key_preserved_after_validation():
     client2 = CriticClient(api_key=secret_key)
     assert isinstance(client2.api_key, SecretStr)
     assert client2.api_key.get_secret_value() == "another_key_101112"
+
+
+def test_critic_client_api_key_exposed_with_context():
+    """Test that expose_secrets reveals the api_key for transport payloads."""
+    client = CriticClient(api_key="critic-secret")
+
+    dumped = client.model_dump(mode="json", context={"expose_secrets": True})
+
+    assert dumped["api_key"] == "critic-secret"
+
+
+def test_critic_client_api_key_encrypted_with_cipher():
+    """Test that cipher context encrypts and restores the api_key."""
+    cipher = Cipher(secret_key="test-secret-key")
+    client = CriticClient(api_key="critic-secret")
+
+    dumped = client.model_dump(mode="json", context={"cipher": cipher})
+
+    assert dumped["api_key"] != "critic-secret"
+    assert dumped["api_key"] != "**********"
+    restored = CriticClient.model_validate(dumped, context={"cipher": cipher})
+    assert isinstance(restored.api_key, SecretStr)
+    assert restored.api_key.get_secret_value() == "critic-secret"
+
+
+def test_agent_dump_exposes_nested_critic_api_key_with_context():
+    """Test that Agent serialization preserves critic api_key with context."""
+    agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("llm-secret")),
+        critic=APIBasedCritic(
+            api_key=SecretStr("critic-secret"),
+            server_url="https://critic.example.com",
+            model_name="critic",
+        ),
+    )
+
+    dumped = agent.model_dump(mode="json", context={"expose_secrets": True})
+
+    assert dumped["llm"]["api_key"] == "llm-secret"
+    assert dumped["critic"]["api_key"] == "critic-secret"
+
+
+def test_agent_dump_encrypts_nested_critic_api_key_with_cipher():
+    """Test that Agent serialization encrypts nested critic api_key with cipher."""
+    cipher = Cipher(secret_key="test-secret-key")
+    agent = Agent(
+        llm=LLM(model="test-model", api_key=SecretStr("llm-secret")),
+        critic=APIBasedCritic(
+            api_key=SecretStr("critic-secret"),
+            server_url="https://critic.example.com",
+            model_name="critic",
+        ),
+    )
+
+    dumped = agent.model_dump(mode="json", context={"cipher": cipher})
+
+    assert dumped["llm"]["api_key"] != "llm-secret"
+    assert dumped["critic"]["api_key"] != "critic-secret"
+    assert dumped["critic"]["api_key"] != "**********"
+
+    restored = Agent.model_validate(dumped, context={"cipher": cipher})
+    assert isinstance(restored.critic, APIBasedCritic)
+    assert isinstance(restored.critic.api_key, SecretStr)
+    assert restored.critic.api_key.get_secret_value() == "critic-secret"

@@ -599,7 +599,7 @@ class OpenHandsWebChat {
         return JSON.stringify({
             agent: {
                 llm: {
-                    model: "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                    model: "litellm_proxy/openai/gpt-5.5",
                     base_url: "https://llm-proxy.app.all-hands.dev",
                     api_key: "secret"
                 },

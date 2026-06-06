@@ -9,9 +9,11 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
+import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 
 
 if TYPE_CHECKING:
@@ -90,7 +92,121 @@ else:
 
 logger = get_logger(__name__)
 
-DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS = 300.0
+DEFAULT_BROWSER_ACTION_TIMEOUT_SECONDS: Final[float] = 300.0
+# After this many consecutive failures, reset the browser session
+# (assumes the browser has crashed or become unrecoverable).
+MAX_CONSECUTIVE_FAILURES: Final[int] = 3
+# Shorter timeout used after a failure to avoid long cascading waits
+# against a dead browser.
+DEGRADED_TIMEOUT_SECONDS: Final[float] = 30.0
+
+
+def _current_platform(platform: str | None = None) -> str:
+    return sys.platform if platform is None else platform
+
+
+def _windows_browser_install_paths() -> list[Path]:
+    roots = [
+        os.environ.get("PROGRAMFILES", "C:\\Program Files"),
+        os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA"),
+    ]
+    browsers = [
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+        ("Chromium", "Application", "chrome.exe"),
+    ]
+
+    paths: list[Path] = []
+    for root in roots:
+        if root is None:
+            continue
+        for parts in browsers:
+            paths.append(Path(root).joinpath(*parts))
+    return paths
+
+
+def _standard_chromium_paths(platform: str | None = None) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [
+                Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+                Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+            ]
+        case "win32":
+            return _windows_browser_install_paths()
+        case _:
+            return [
+                Path("/usr/bin/google-chrome"),
+                Path("/usr/bin/google-chrome-stable"),
+                Path("/usr/bin/chromium"),
+                Path("/usr/bin/chromium-browser"),
+                Path("/usr/bin/microsoft-edge"),
+                Path("/usr/bin/microsoft-edge-stable"),
+            ]
+
+
+def _playwright_cache_dirs(platform: str | None = None) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [Path.home() / "Library" / "Caches" / "ms-playwright"]
+        case "win32":
+            if local_app_data := os.environ.get("LOCALAPPDATA"):
+                return [Path(local_app_data) / "ms-playwright"]
+            return [Path.home() / "AppData" / "Local" / "ms-playwright"]
+        case _:
+            return [Path.home() / ".cache" / "ms-playwright"]
+
+
+def _playwright_chromium_paths(
+    chromium_dir: Path,
+    platform: str | None = None,
+) -> list[Path]:
+    match _current_platform(platform):
+        case "darwin":
+            return [
+                chromium_dir
+                / "chrome-mac-arm64"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
+                chromium_dir
+                / "chrome-mac"
+                / "Google Chrome for Testing.app"
+                / "Contents"
+                / "MacOS"
+                / "Google Chrome for Testing",
+                chromium_dir
+                / "chrome-mac"
+                / "Chromium.app"
+                / "Contents"
+                / "MacOS"
+                / "Chromium",
+            ]
+        case "win32":
+            return [
+                chromium_dir / "chrome-win64" / "chrome.exe",
+                chromium_dir / "chrome-win" / "chrome.exe",
+            ]
+        case _:
+            return [
+                chromium_dir / "chrome-linux64" / "chrome",
+                chromium_dir / "chrome-linux" / "chrome",
+            ]
+
+
+def _path_binary_candidates(platform: str | None = None) -> tuple[str, ...]:
+    if _current_platform(platform) == "win32":
+        return ("chrome", "msedge", "chromium")
+    return (
+        "google-chrome",
+        "chrome",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+    )
 
 
 def _format_browser_operation_error(
@@ -161,73 +277,34 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+    _close_lock: threading.Lock
     _action_timeout_seconds: float
 
-    def check_chromium_available(self) -> str | None:
+    @staticmethod
+    @functools.cache
+    def check_chromium_available() -> str | None:
         """Check if a Chromium/Chrome binary is available.
-
-        This method can be overridden by subclasses to provide
-        platform-specific detection logic.
 
         Returns:
             Path to Chromium binary if found, None otherwise
         """
         # Check standard installation paths (prefer full Chrome installs)
-        standard_paths = [
-            # Linux
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            # macOS
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-        ]
-        for install_path in standard_paths:
-            p = Path(install_path)
-            if p.exists():
-                return str(p)
+        for path in _standard_chromium_paths():
+            if path.exists():
+                return str(path)
 
         # Check Playwright-installed Chromium (preferred over PATH lookups
         # because PATH binaries like homebrew chromium may lack CDP support)
-        playwright_cache_candidates = [
-            Path.home() / ".cache" / "ms-playwright",  # Linux
-            Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
-        ]
-
-        for playwright_cache in playwright_cache_candidates:
+        for playwright_cache in _playwright_cache_dirs():
             if playwright_cache.exists():
                 chromium_dirs = list(playwright_cache.glob("chromium-*"))
                 for chromium_dir in chromium_dirs:
-                    # Check platform-specific paths
-                    possible_paths = [
-                        chromium_dir / "chrome-linux" / "chrome",  # Linux (old)
-                        chromium_dir / "chrome-linux64" / "chrome",  # Linux (new)
-                        chromium_dir
-                        / "chrome-mac"
-                        / "Chromium.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Chromium",  # macOS (old)
-                        chromium_dir
-                        / "chrome-mac-arm64"
-                        / "Google Chrome for Testing.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Google Chrome for Testing",  # macOS arm64
-                        chromium_dir
-                        / "chrome-mac"
-                        / "Google Chrome for Testing.app"
-                        / "Contents"
-                        / "MacOS"
-                        / "Google Chrome for Testing",  # macOS x64
-                    ]
-                    for p in possible_paths:
-                        if p.exists():
-                            return str(p)
+                    for path in _playwright_chromium_paths(chromium_dir):
+                        if path.exists():
+                            return str(path)
 
         # Fallback: check PATH for any chromium-based binary
-        for binary in ("google-chrome", "chrome", "chromium", "chromium-browser"):
+        for binary in _path_binary_candidates():
             if path := shutil.which(binary):
                 return path
 
@@ -274,6 +351,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             **config: Additional configuration options
         """
 
+        self._close_lock = threading.Lock()
+
         def init_logic():
             nonlocal headless
             executable_path = self._ensure_chromium_available()
@@ -294,7 +373,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             # SECURITY: Running Chrome as root without a sandbox is risky
             # - a compromised browser has full root access. Use only in
             # controlled environments.
-            running_as_root = os.getuid() == 0
+            getuid = getattr(os, "getuid", None)
+            running_as_root = getuid is not None and getuid() == 0
             if running_as_root:
                 logger.warning(
                     "Running as root - disabling Chromium sandbox "
@@ -324,6 +404,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
         self._action_timeout_seconds = action_timeout_seconds
+        self._consecutive_failures = 0
 
     def __call__(
         self,
@@ -331,20 +412,74 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         conversation: LocalConversation | None = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
+        # Use a shorter timeout on the last retry before a reset would trigger,
+        # to avoid long cascading waits against a dead browser.
+        effective_timeout = (
+            DEGRADED_TIMEOUT_SECONDS
+            if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES - 1
+            else self._action_timeout_seconds
+        )
+
         try:
-            return self._async_executor.run_async(
+            result = self._async_executor.run_async(
                 self._execute_action,
                 action,
-                timeout=self._action_timeout_seconds,
+                timeout=effective_timeout,
             )
         except builtins.TimeoutError as error:
-            return BrowserObservation.from_text(
-                text=_format_browser_operation_error(
-                    error, timeout_seconds=self._action_timeout_seconds
-                ),
-                is_error=True,
-                full_output_save_dir=self.full_output_save_dir,
+            # Timeouts indicate the browser may be dead/hung — track them
+            # for crash detection. Regular action errors (invalid selector,
+            # missing element) are NOT counted since those are normal agent
+            # mistakes, not browser crashes.
+            return self._handle_timeout_failure(
+                _format_browser_operation_error(
+                    error, timeout_seconds=effective_timeout
+                )
             )
+
+        self._consecutive_failures = 0
+        return result
+
+    def _handle_timeout_failure(self, error_text: str) -> BrowserObservation:
+        """Track consecutive timeout failures and reset session if needed."""
+        self._consecutive_failures += 1
+        logger.debug(
+            "Browser timeout failure %d/%d",
+            self._consecutive_failures,
+            MAX_CONSECUTIVE_FAILURES,
+        )
+
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                "Browser appears crashed (%d consecutive failures). "
+                "Resetting session for automatic recovery.",
+                self._consecutive_failures,
+            )
+            # Best-effort cleanup of the old browser process/session.
+            # If the browser truly crashed this will fail fast; if it's
+            # wedged this avoids leaking the process.
+            try:
+                self._async_executor.run_async(self.cleanup, timeout=5.0)
+            except Exception as e:
+                logger.debug(
+                    "Cleanup during session reset failed "
+                    "(expected if browser crashed): %s",
+                    e,
+                )
+            self._initialized = False
+            self._consecutive_failures = 0
+            error_text = (
+                f"{error_text}\n\n"
+                "The browser session has been reset after multiple consecutive "
+                "failures (possible crash). The browser will be restarted on "
+                "the next action. Please retry your action."
+            )
+
+        return BrowserObservation.from_text(
+            text=error_text,
+            is_error=True,
+            full_output_save_dir=self.full_output_save_dir,
+        )
 
     async def _execute_action(self, action):
         """Execute browser action asynchronously."""
@@ -574,17 +709,61 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
-        if self._cleanup_initiated:
+        with self._close_lock:
+            shared_close_lock_acquired = self._detach_shared_executor_for_close()
+            if self._cleanup_initiated:
+                if shared_close_lock_acquired:
+                    self._release_shared_executor_creation_lock()
+                return
+            self._cleanup_initiated = True
+            try:
+                # Run cleanup in the async executor with a shorter timeout
+                self._async_executor.run_async(self.cleanup, timeout=30.0)
+            except Exception as e:
+                logger.warning(f"Error during browser cleanup: {e}")
+            finally:
+                try:
+                    # Always close the async executor
+                    self._async_executor.close()
+                finally:
+                    if shared_close_lock_acquired:
+                        self._release_shared_executor_creation_lock()
+                    else:
+                        self._release_shared_executor_reference()
+
+    def _detach_shared_executor_for_close(self) -> bool:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
+            return False
+
+        BrowserToolSet._shared_executor_creation_lock.acquire()
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
+                return True
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+        return False
+
+    @staticmethod
+    def _release_shared_executor_creation_lock() -> None:
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        BrowserToolSet._shared_executor_creation_lock.release()
+
+    def _release_shared_executor_reference(self):
+        # Avoid taking the shared executor lock for ordinary/stale executors.
+        # __del__ can run while BrowserToolSet.create() is creating a new shared
+        # executor; a stale executor finalizer trying to acquire the same lock can
+        # deadlock that create path, especially on Windows.
+        from openhands.tools.browser_use.definition import BrowserToolSet
+
+        if BrowserToolSet._shared_executor is not self:
             return
-        self._cleanup_initiated = True
-        try:
-            # Run cleanup in the async executor with a shorter timeout
-            self._async_executor.run_async(self.cleanup, timeout=30.0)
-        except Exception as e:
-            logger.warning(f"Error during browser cleanup: {e}")
-        finally:
-            # Always close the async executor
-            self._async_executor.close()
+        with BrowserToolSet._shared_executor_lock:
+            if BrowserToolSet._shared_executor is self:
+                BrowserToolSet._shared_executor = None
 
     def __del__(self):
         """Cleanup on deletion."""

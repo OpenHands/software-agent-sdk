@@ -1,14 +1,23 @@
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyCookie, APIKeyHeader
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 
 
+# Cookie name used to authenticate the workspace static-file routes.
+# Intentionally distinct from the header name: the cookie is ONLY honored
+# by the workspace router (so iframes / <img> can load workspace files),
+# and is rejected by every other API endpoint.
+WORKSPACE_SESSION_COOKIE_NAME = "oh_workspace_session_key"
+
 _SESSION_API_KEY_HEADER = APIKeyHeader(name="X-Session-API-Key", auto_error=False)
+_WORKSPACE_SESSION_COOKIE = APIKeyCookie(
+    name=WORKSPACE_SESSION_COOKIE_NAME, auto_error=False
+)
 
 
 def create_session_api_key_dependency(config: Config):
@@ -24,6 +33,32 @@ def create_session_api_key_dependency(config: Config):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
     return check_session_api_key
+
+
+def create_workspace_session_dependency(config: Config):
+    """Auth dependency for the workspace static-file routes.
+
+    Accepts EITHER the standard ``X-Session-API-Key`` header OR the
+    ``oh_workspace_session_key`` cookie (minted by
+    ``POST /api/auth/workspace-session``).
+    The cookie is required because browsers cannot attach custom headers to
+    ``<iframe src>`` or ``<img src>`` requests, which is how the canvas
+    frontend embeds workspace artifacts. The cookie is deliberately scoped
+    to this router only; no other endpoint honors it.
+    """
+
+    def check_workspace_session(
+        header_key: str | None = Depends(_SESSION_API_KEY_HEADER),
+        cookie_key: str | None = Depends(_WORKSPACE_SESSION_COOKIE),
+    ):
+        if not config.session_api_keys:
+            return
+        for candidate in (header_key, cookie_key):
+            if candidate and candidate in config.session_api_keys:
+                return
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
+
+    return check_workspace_session
 
 
 def get_conversation_service(request: Request):

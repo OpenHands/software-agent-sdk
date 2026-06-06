@@ -140,6 +140,8 @@ drops should block the release.
 
 > **🚨 STOP — Do NOT merge without explicit human approval.**
 > Present the CI status summary and ask the human to confirm before merging.
+> Merging is effectively irreversible — it automatically triggers the full
+> release pipeline (GitHub release → PyPI publish → downstream version bumps).
 
 Once the human approves:
 
@@ -147,44 +149,37 @@ Once the human approves:
 gh pr merge <PR_NUMBER> --repo OpenHands/software-agent-sdk --merge
 ```
 
-## Phase 6: Create and Publish the GitHub Release
+## Phase 6: Automated Release Pipeline (no action needed)
 
-> **🚨 STOP — Do NOT create or publish a release without explicit human
-> approval.** Publishing is irreversible — it triggers PyPI publication.
-> Present the release details and ask the human to confirm.
+When the release PR is merged, the following happens automatically:
 
-Navigate to <https://github.com/OpenHands/software-agent-sdk/releases/new>
-and:
-
-1. **Tag**: `v<version>` (create new tag)
-2. **Target branch**: `rel-<version>` (or `main` after merge)
-3. Click **Auto-generate release notes**
-4. Review the notes, then click **Publish release**
-
-Publishing the release automatically triggers the `pypi-release.yml`
-workflow, which builds and publishes all four packages to PyPI:
-- `openhands-sdk`
-- `openhands-tools`
-- `openhands-workspace`
-- `openhands-agent-server`
+1. **`create-release.yml`** detects the merged `rel-*` branch, creates a
+   GitHub release with tag `v<version>` and auto-generated release notes.
+2. **`pypi-release.yml`** triggers on the published release and publishes
+   all four packages to PyPI:
+   - `openhands-sdk`
+   - `openhands-tools`
+   - `openhands-workspace`
+   - `openhands-agent-server`
+3. **`version-bump-prs.yml`** triggers after successful PyPI publish and
+   creates downstream version bump PRs.
 
 ### ⏸ Checkpoint — Verify PyPI Publication
 
 ```bash
-# Check each package is available
+# Check each package is available (allow a few minutes for indexing)
 for pkg in openhands-sdk openhands-tools openhands-workspace openhands-agent-server; do
   curl -s -o /dev/null -w "$pkg: %{http_code}\n" \
     "https://pypi.org/pypi/$pkg/<version>/json"
 done
 ```
 
-All should return `200`. Allow a few minutes for PyPI indexing.
+All should return `200`.
 
-## Phase 7: Post-Release — Notify the Team
+## Phase 7: Post-Release Announcements
 
-After PyPI publication, the `version-bump-prs.yml` workflow automatically
-creates downstream version bump PRs. Compose a Slack message for the human
-to post, including links to those PRs:
+After the automated pipeline completes, compose a Slack message for the
+human to post, including links to the downstream version bump PRs:
 
 ```
 🚀 *SDK v<version> published to PyPI!*
@@ -209,7 +204,8 @@ downstream PRs and handling any issues.
 - [ ] Example tests pass
 - [ ] (Optional) Evaluation run shows no regressions
 - [ ] **🚨 Get human approval**, then merge the release PR
-- [ ] **🚨 Get human approval**, then create GitHub release with tag `v<version>`
-- [ ] Auto-generate release notes and publish
+- [ ] _(Automated)_ GitHub release created with auto-generated notes
+- [ ] _(Automated)_ Packages published to PyPI
+- [ ] _(Automated)_ Downstream version bump PRs created
 - [ ] Verify packages appear on PyPI
 - [ ] Send Slack message with downstream version bump PR links

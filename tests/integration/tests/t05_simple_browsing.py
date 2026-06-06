@@ -3,12 +3,12 @@
 import os
 import re
 import subprocess
+import sys
 import time
 
 from openhands.sdk import get_logger
 from openhands.sdk.conversation import get_agent_final_response
-from openhands.sdk.tool import Tool
-from tests.integration.base import BaseIntegrationTest, TestResult, get_tools_for_preset
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 INSTRUCTION = "Browse localhost:8000, and tell me the ultimate answer to life."
@@ -99,9 +99,9 @@ class SimpleBrowsingTest(BaseIntegrationTest):
         self.server_process: subprocess.Popen[bytes] | None = None
 
     @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent based on configured tool preset."""
-        return get_tools_for_preset(self.tool_preset, enable_browser=False)
+    def enable_browser(self) -> bool:
+        """Enable browser tools for this browsing test."""
+        return True
 
     def setup(self) -> None:
         """Set up a local web server with the HTML file."""
@@ -114,7 +114,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
 
             # Start the HTTP server in the background
             self.server_process: subprocess.Popen[bytes] | None = subprocess.Popen(
-                ["python3", "-m", "http.server", "8000"],
+                [sys.executable, "-m", "http.server", "8000", "--bind", "127.0.0.1"],
                 cwd=self.workspace,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -172,7 +172,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
             )
 
     def teardown(self):
-        """Turn down the web server"""
+        """Turn down the web server and close the conversation."""
         if self.server_process:
             try:
                 self.server_process.terminate()
@@ -183,3 +183,4 @@ class SimpleBrowsingTest(BaseIntegrationTest):
                 logger.warning(f"Error terminating server process: {e}")
 
         logger.info("Cleaned up web server")
+        super().teardown()

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.sdk.agent import (
@@ -23,6 +25,7 @@ from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
+    LLM_PROFILE_SCHEMA_VERSION,
     FallbackStrategy,
     ImageContent,
     LLMProfileStore,
@@ -45,15 +48,29 @@ from openhands.sdk.mcp import (
 )
 from openhands.sdk.plugin import Plugin
 from openhands.sdk.settings import (
-    AgentSettings,
+    ACP_PROVIDERS,
+    ACPAgentSettings,
+    ACPFileSecretSpec,
+    ACPModelOption,
+    ACPProviderInfo,
+    AgentSettingsBase,
+    AgentSettingsConfig,
     CondenserSettings,
     ConversationSettings,
+    OpenHandsAgentSettings,
     SettingsChoice,
     SettingsFieldSchema,
     SettingsSchema,
     SettingsSectionSchema,
     VerificationSettings,
+    apply_agent_settings_diff,
+    build_session_model_meta,
+    default_agent_settings,
+    detect_acp_provider_by_agent_name,
+    export_agent_settings_schema,
     export_settings_schema,
+    get_acp_provider,
+    validate_agent_settings,
 )
 from openhands.sdk.settings.metadata import (
     SettingProminence,
@@ -99,8 +116,10 @@ except PackageNotFoundError:
 # Print startup banner
 _print_banner(__version__)
 
+
 __all__ = [
     "LLM",
+    "LLM_PROFILE_SCHEMA_VERSION",
     "LLMRegistry",
     "LLMProfileStore",
     "LLMStreamChunk",
@@ -140,7 +159,21 @@ __all__ = [
     "CondenserSettings",
     "ConversationSettings",
     "VerificationSettings",
-    "AgentSettings",
+    "ACP_PROVIDERS",
+    "ACPAgentSettings",
+    "ACPFileSecretSpec",
+    "ACPModelOption",
+    "ACPProviderInfo",
+    "AgentSettingsBase",
+    "AgentSettingsConfig",
+    "OpenHandsAgentSettings",
+    "apply_agent_settings_diff",
+    "build_session_model_meta",
+    "default_agent_settings",
+    "detect_acp_provider_by_agent_name",
+    "export_agent_settings_schema",
+    "get_acp_provider",
+    "validate_agent_settings",
     "SettingsChoice",
     "SettingProminence",
     "SettingsFieldMetadata",

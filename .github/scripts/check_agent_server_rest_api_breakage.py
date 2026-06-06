@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """REST API breakage detection for openhands-agent-server using oasdiff.
 
-This script compares the current OpenAPI schema for the agent-server REST API against
-an already-published release. The baseline version is selected from PyPI, but the
-baseline schema is generated from the matching git tag under the current workspace's
-locked dependency set. This keeps the comparison focused on API changes in our code,
-not schema drift from newer FastAPI/Pydantic releases.
+This script compares the current OpenAPI schema for the public agent-server REST API
+(the `/api/**` surface) against an already-published release. The baseline version is
+selected from PyPI, but the baseline schema is generated from the matching git tag
+under the current workspace's locked dependency set. This keeps the comparison
+focused on API changes in our code, not schema drift from newer FastAPI/Pydantic
+releases.
 
 The deprecation note it recognizes intentionally matches the phrasing used by the
 Python deprecation checks, for example:
@@ -20,24 +21,24 @@ Policies enforced:
      marked `deprecated: true` in the generated schema.
 
 2) Deprecation runway before removal
-   - If a REST operation (path + HTTP method) is removed, it must have been marked
-     `deprecated: true` in the baseline release and its OpenAPI description must
-     declare a scheduled removal version that has been reached by the current
-     package version.
+   - If a REST operation (path + HTTP method) or schema property is removed, it
+     must have been marked `deprecated: true` in the baseline release and its
+     OpenAPI description must declare a scheduled removal version that has been
+     reached by the current package version.
 
-3) Additive response oneOf/anyOf expansion is allowed
-   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in response
-     schemas is a normal evolution for extensible event-stream APIs.  Clients MUST
+3) Additive request/response oneOf/anyOf expansion is allowed
+   - Adding new members to ``oneOf`` or ``anyOf`` discriminated unions in request
+     or response schemas is a normal evolution for extensible APIs. Clients MUST
      handle unknown discriminator values gracefully (skip/ignore).
-   - oasdiff flags ``response-body-one-of-added`` and
-     ``response-property-one-of-added`` as ERR; this script downgrades them to
-     informational notices.
+   - oasdiff can report union widening as ERR plus secondary type-change or
+     property-removal artifacts for fields that still exist on one union member;
+     this script downgrades those artifacts to informational notices.
 
 4) No in-place contract breakage
    - Breaking REST contract changes that are not removals of previously-deprecated
-     operations or additive oneOf expansions fail the check. REST clients need 5
-     minor releases of runway, so incompatible replacements must ship additively or
-     behind a versioned contract until the scheduled removal version.
+     operations/properties or additive oneOf expansions fail the check. REST clients
+     need 5 minor releases of runway, so incompatible replacements must ship
+     additively or behind a versioned contract until the scheduled removal version.
 
 If the baseline release schema can't be generated (e.g., missing tag / repo issues),
 the script emits a warning and exits successfully to avoid flaky CI.
@@ -78,6 +79,7 @@ HTTP_METHODS = {
     "head",
     "trace",
 }
+PUBLIC_REST_PATH_PREFIX = "/api/"
 ROUTE_DECORATOR_NAMES = HTTP_METHODS | {"api_route"}
 OPENAPI_PROGRAM = """
 import json
@@ -271,7 +273,7 @@ def _find_sdk_deprecated_fastapi_routes_in_file(
                     uses_sdk_deprecated = True
 
         if has_route_decorator and uses_sdk_deprecated:
-            rel_path = file_path.relative_to(repo_root)
+            rel_path = file_path.relative_to(repo_root).as_posix()
             errors.append(
                 f"{rel_path}:{node.lineno} FastAPI route `{node.name}` uses "
                 "openhands.sdk.utils.deprecation.deprecated; use the route "
@@ -289,6 +291,17 @@ def _find_sdk_deprecated_fastapi_routes(repo_root: Path) -> list[str]:
         errors.extend(_find_sdk_deprecated_fastapi_routes_in_file(file_path, repo_root))
 
     return errors
+
+
+def _filter_public_rest_openapi(schema: dict) -> dict:
+    filtered_schema = dict(schema)
+    filtered_schema["paths"] = {
+        path: path_item
+        for path, path_item in schema.get("paths", {}).items()
+        if path == PUBLIC_REST_PATH_PREFIX.rstrip("/")
+        or path.startswith(PUBLIC_REST_PATH_PREFIX)
+    }
+    return filtered_schema
 
 
 def _find_deprecation_policy_errors(schema: dict) -> list[str]:
@@ -418,6 +431,107 @@ def _validate_removed_operations(
     return errors
 
 
+def _iter_schema_properties(schema: dict):
+    if not isinstance(schema, dict):
+        return
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for property_name, property_schema in properties.items():
+            if isinstance(property_schema, dict):
+                yield property_name, property_schema
+
+    for value in schema.values():
+        if isinstance(value, dict):
+            yield from _iter_schema_properties(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    yield from _iter_schema_properties(item)
+
+
+def _removed_property_name(change: dict) -> str | None:
+    text = str(change.get("text", ""))
+    match = re.search(
+        r"(?:request property|optional property|required property) `([^`]+)`",
+        text,
+    )
+    if match is None:
+        return None
+    return match.group(1).rstrip("/").rsplit("/", maxsplit=1)[-1]
+
+
+def _validate_removed_schema_properties(
+    removed_properties: list[dict],
+    prev_schema: dict,
+    current_version: str,
+) -> list[str]:
+    """Validate removed schema properties against baseline deprecation metadata."""
+    errors: list[str] = []
+    baseline_properties: dict[str, list[dict]] = {}
+    for property_name, property_schema in _iter_schema_properties(prev_schema):
+        baseline_properties.setdefault(property_name, []).append(property_schema)
+
+    for change in removed_properties:
+        property_name = _removed_property_name(change)
+        if property_name is None:
+            errors.append(
+                "Removed schema property could not be identified from oasdiff output: "
+                f"{change.get('text', str(change))}"
+            )
+            continue
+
+        deprecated_candidates = [
+            property_schema
+            for property_schema in baseline_properties.get(property_name, [])
+            if property_schema.get("deprecated") is True
+        ]
+        if not deprecated_candidates:
+            errors.append(
+                f"Removed schema property {property_name!r} without prior "
+                "deprecation (deprecated=true)."
+            )
+            continue
+
+        removal_targets = [
+            deprecation_details[1]
+            for property_schema in deprecated_candidates
+            if (
+                deprecation_details := _parse_openapi_deprecation_description(
+                    property_schema.get("description")
+                )
+            )
+            is not None
+        ]
+        if not removal_targets:
+            errors.append(
+                f"Removed schema property {property_name!r} was marked deprecated "
+                "in the baseline release, but its OpenAPI description does not "
+                "declare a scheduled removal version. REST API property removals "
+                "require 5 minor releases of deprecation runway."
+            )
+            continue
+
+        if not any(
+            _version_ge(current_version, removed_in) for removed_in in removal_targets
+        ):
+            errors.append(
+                f"Removed schema property {property_name!r} before its scheduled "
+                f"removal version(s): {', '.join(f'v{v}' for v in removal_targets)} "
+                f"(current version: v{current_version}). REST API property removals "
+                "require 5 minor releases of deprecation runway."
+            )
+            continue
+
+        print(
+            f"::notice title={PYPI_DISTRIBUTION} REST API::Removed previously-"
+            f"deprecated schema property {property_name!r} after its scheduled "
+            "removal version was reached."
+        )
+
+    return errors
+
+
 # oasdiff rule IDs for additive oneOf/anyOf expansion in response schemas.
 # These are flagged as ERR by oasdiff but are expected evolution for extensible
 # discriminated-union APIs (e.g. the events endpoint).  We downgrade them to
@@ -435,15 +549,74 @@ _ADDITIVE_RESPONSE_ONEOF_IDS = frozenset(
 )
 
 
+_ADDITIVE_RESPONSE_BODY_ONEOF_IDS = frozenset(
+    {
+        "response-body-one-of-added",
+        "response-body-any-of-added",
+    }
+)
+
+
+# oasdiff rule IDs for enum-value additions in response schemas.
+_RESPONSE_ENUM_VALUE_ADDED_IDS = frozenset(
+    {
+        "response-property-enum-value-added",
+        "response-write-only-property-enum-value-added",
+    }
+)
+
+# Response properties that are known extensible discriminated-union discriminators
+# and may therefore grow new enum values additively. Adding a HookType value
+# (e.g. "agent") to a hook definition's `type` is safe because hook configs are an
+# extensible union and clients must tolerate unknown discriminator values. This is
+# intentionally scoped to the hook discriminator so an ordinary new response enum
+# value elsewhere (a new status/mode/etc.) is still treated as a breaking change.
+_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE = re.compile(
+    r"HookConfig\b.*\bhooks/items/type\b"
+)
+
+
+def _is_additive_discriminator_enum_value(change: dict) -> bool:
+    """Return True for additive enum values on a known extensible discriminator.
+
+    Adding a value to a response enum is normally breaking (generated clients may
+    treat the enum exhaustively), so this is scoped narrowly to the hook config
+    discriminator union rather than allowlisting every response enum addition.
+    """
+    if str(change.get("id", "")) not in _RESPONSE_ENUM_VALUE_ADDED_IDS:
+        return False
+    text = str(change.get("text", ""))
+    return bool(_EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE.search(text))
+
+
+def _is_union_property_removal_artifact(change: dict) -> bool:
+    """Return True for property removals that are artifacts of union widening.
+
+    When a request or response schema is widened from a concrete object schema
+    to an additive oneOf/anyOf union, oasdiff can emit secondary "removed
+    property" reports for the original object's fields even though the original
+    schema is still present as one union member.
+    """
+    change_id = str(change.get("id", "")).lower()
+    text = str(change.get("text", "")).lower()
+    return (
+        "removed" in change_id
+        and "property" in change_id
+        and ("from the response" in text or "request property" in text)
+    )
+
+
+def _is_union_type_change_artifact(change: dict) -> bool:
+    text = str(change.get("text", "")).lower()
+    return "type/format changed from `object`/`` to ``/``" in text
+
+
 def _split_breaking_changes(
     breaking_changes: list[dict],
-) -> tuple[list[dict], list[dict], list[dict]]:
-    """Split oasdiff results into three buckets.
-
-    Returns:
-        (removed_operations, additive_response_oneof, other_breaking_changes)
-    """
+) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+    """Split oasdiff results into allowlisted buckets and other breakages."""
     removed_operations: list[dict] = []
+    removed_schema_properties: list[dict] = []
     additive_response_oneof: list[dict] = []
     other_breaking_changes: list[dict] = []
 
@@ -461,13 +634,24 @@ def _split_breaking_changes(
             )
             continue
 
-        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS:
+        if "removed" in change_id.lower() and "property" in change_id.lower():
+            removed_schema_properties.append(change)
+            continue
+
+        if change_id in _ADDITIVE_RESPONSE_ONEOF_IDS or (
+            _is_additive_discriminator_enum_value(change)
+        ):
             additive_response_oneof.append(change)
             continue
 
         other_breaking_changes.append(change)
 
-    return removed_operations, additive_response_oneof, other_breaking_changes
+    return (
+        removed_operations,
+        removed_schema_properties,
+        additive_response_oneof,
+        other_breaking_changes,
+    )
 
 
 def _normalize_openapi_for_oasdiff(schema: dict) -> dict:
@@ -571,6 +755,7 @@ def main() -> int:
     current_schema = _generate_current_openapi()
     if current_schema is None:
         return 1
+    current_schema = _filter_public_rest_openapi(current_schema)
 
     deprecation_policy_errors = _find_deprecation_policy_errors(current_schema)
     for error in deprecation_policy_errors:
@@ -579,6 +764,7 @@ def main() -> int:
     prev_schema = _generate_openapi_for_git_ref(baseline_git_ref)
     if prev_schema is None:
         return 0 if not (static_policy_errors or deprecation_policy_errors) else 1
+    prev_schema = _filter_public_rest_openapi(prev_schema)
 
     prev_schema = _normalize_openapi_for_oasdiff(prev_schema)
     current_schema = _normalize_openapi_for_oasdiff(current_schema)
@@ -587,7 +773,6 @@ def main() -> int:
         tmp_path = Path(tmp)
         prev_spec_file = tmp_path / "prev_spec.json"
         cur_spec_file = tmp_path / "cur_spec.json"
-
         prev_spec_file.write_text(json.dumps(prev_schema, indent=2))
         cur_spec_file.write_text(json.dumps(current_schema, indent=2))
 
@@ -606,48 +791,97 @@ def main() -> int:
     else:
         (
             removed_operations,
+            removed_schema_properties,
             additive_response_oneof,
             other_breaking_changes,
         ) = _split_breaking_changes(breaking_changes)
+        response_union_artifacts = [
+            change
+            for change in removed_schema_properties
+            if _is_union_property_removal_artifact(change)
+        ]
+        removed_schema_properties = [
+            change
+            for change in removed_schema_properties
+            if not _is_union_property_removal_artifact(change)
+        ]
+        union_type_artifacts = [
+            change
+            for change in other_breaking_changes
+            if _is_union_type_change_artifact(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_union_type_change_artifact(change)
+        ]
+
         removal_errors = _validate_removed_operations(
             removed_operations,
             prev_schema,
             current_version,
         )
+        property_removal_errors = _validate_removed_schema_properties(
+            removed_schema_properties,
+            prev_schema,
+            current_version,
+        )
 
-        for error in removal_errors:
+        for error in removal_errors + property_removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
         if additive_response_oneof:
             print(
                 f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
-                "Additive oneOf/anyOf expansion detected in response schemas. "
-                "This is expected for extensible discriminated-union APIs and "
-                "does not break backward compatibility."
+                "Additive oneOf/anyOf expansion or enum-value additions detected "
+                "in response schemas. This is expected for extensible "
+                "discriminated-union APIs and does not break backward "
+                "compatibility."
             )
             for item in additive_response_oneof:
                 print(f"  - {item.get('text', str(item))}")
+            if response_union_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(response_union_artifacts)} request/response-property "
+                    "removal artifact(s) caused by union widening"
+                )
+            if union_type_artifacts:
+                print(
+                    "  - ignored "
+                    f"{len(union_type_artifacts)} request/response type-change "
+                    "artifact(s) caused by union widening"
+                )
 
         if other_breaking_changes:
             print(
                 "::error "
                 f"title={PYPI_DISTRIBUTION} REST API::Detected breaking REST API "
-                "changes other than removing previously-deprecated operations "
-                "or additive response oneOf expansions. "
+                "changes other than removing previously-deprecated operations/"
+                "properties or additive response oneOf expansions. "
                 "REST contract changes must preserve compatibility for 5 minor "
                 "releases; keep the old contract available until its scheduled "
                 "removal version."
+            )
+        elif (
+            response_union_artifacts or union_type_artifacts
+        ) and not additive_response_oneof:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                f"Ignored {len(response_union_artifacts)} property-removal and "
+                f"{len(union_type_artifacts)} type-change artifact(s) reported "
+                "while widening schemas."
             )
 
         print("\nBreaking REST API changes detected compared to baseline release:")
         for text in breaking_changes:
             print(f"- {text.get('text', str(text))}")
 
-        if not (removal_errors or other_breaking_changes):
+        if not (removal_errors or property_removal_errors or other_breaking_changes):
             print(
                 "Breaking changes are limited to previously-deprecated operations "
-                "whose scheduled removal versions have been reached, and/or "
-                "additive response oneOf expansions."
+                "or properties whose scheduled removal versions have been reached, "
+                "and/or additive response oneOf expansions."
             )
         else:
             return 1

@@ -1,12 +1,17 @@
+import asyncio
 import atexit
+import contextlib
+import copy
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.cancellation import CancellationToken
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -28,7 +33,10 @@ from openhands.sdk.conversation.visualizer import (
 )
 from openhands.sdk.event import (
     ActionEvent,
+    AgentErrorEvent,
     CondensationRequest,
+    Event,
+    InterruptEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -37,7 +45,7 @@ from openhands.sdk.event import (
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -48,10 +56,13 @@ from openhands.sdk.plugin import (
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.skills import load_available_skills, merge_skills_by_name
+from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -63,6 +74,29 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
+
+ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
+ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
+ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
+ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
+    if not isinstance(event, MessageEvent):
+        return False
+    if event.source == "user":
+        return True
+    if event.source != "environment" or event.llm_message.role != "user":
+        return False
+    return any(
+        part.startswith(ACP_STOP_HOOK_FEEDBACK_PREFIX)
+        for part in content_to_str(event.llm_message.content)
+    )
+
+
+def _copy_event_for_fork(event: Event) -> Event:
+    # Mirrors persisted event loading and skips runtime-only fields like executors.
+    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
 class LocalConversation(BaseConversation):
@@ -78,6 +112,13 @@ class LocalConversation(BaseConversation):
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
     delete_on_close: bool = True
+    _arun_task: asyncio.Task[None] | None
+    _cancel_token: CancellationToken | None
+    # True while run()/arun() executes an agent step while holding the state
+    # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
+    # it must skip re-acquiring the lock the run loop holds while blocked
+    # awaiting that tool (#3485).
+    _step_holds_state_lock: bool
     # Plugin lazy loading state
     _plugin_specs: list[PluginSource] | None
     _resolved_plugins: list[ResolvedPluginSource] | None
@@ -106,6 +147,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -152,6 +194,9 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+        self._arun_task = None
+        self._cancel_token = None
+        self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
         # Plugins will be loaded on first run() or send_message() call
@@ -187,6 +232,8 @@ class LocalConversation(BaseConversation):
             cipher=cipher,
             tags=tags,
         )
+
+        self._pin_prompt_cache_key()
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -261,15 +308,40 @@ class LocalConversation(BaseConversation):
         # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
         self._profile_store = LLMProfileStore()
+        self._cipher = cipher
 
-        # Initialize secrets if provided
+        # Seed agent_context.secrets into the registry for every agent (regular
+        # and ACP), covering callers that skip create_request() — canvas /
+        # TypeScript, or the server-side agent_settings -> create_agent fold.
+        # Idempotent with the create_request() lift; lower priority than
+        # request.secrets (below). On resume, fill-if-absent so a persisted
+        # value is never downgraded (or lost to redacted/no-cipher serialization).
+        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
+            ctx_secrets = getattr(ctx, "secrets", None)
+            if ctx_secrets:
+                existing_sources = self._state.secret_registry.secret_sources
+                fill_secrets: dict[str, SecretValue] = {}
+                for name, secret in ctx_secrets.items():
+                    existing = existing_sources.get(name)
+                    # Refill only when absent, or when a StaticSecret lost its
+                    # value to redacted/no-cipher serialization (value is None).
+                    # Other SecretSource types (e.g. LookupSecret) are left as-is
+                    # even with a None value — that is their resolved state, not
+                    # a stale placeholder to overwrite.
+                    if existing is None or (
+                        isinstance(existing, StaticSecret) and existing.value is None
+                    ):
+                        fill_secrets[name] = secret
+                if fill_secrets:
+                    self.update_secrets(fill_secrets)
+
+        # Higher priority: request.secrets overwrites duplicate keys from above.
         if secrets:
-            # Convert dict[str, str] to dict[str, SecretValue]
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
         atexit.register(self.close)
-        self._start_observability_span(str(desired_id))
+        self._start_observability_span(str(desired_id), user_id=user_id)
         self.delete_on_close = delete_on_close
 
     @property
@@ -298,6 +370,19 @@ class LocalConversation(BaseConversation):
         return self._stuck_detector
 
     @property
+    def cancel_token(self) -> CancellationToken | None:
+        """Active cancellation token for the current run, or ``None``.
+
+        Tools that want cooperative cancellation can check this during
+        execution::
+
+            if conversation and conversation.cancel_token:
+                if conversation.cancel_token.is_cancelled:
+                    return Observation(output="Cancelled")
+        """
+        return self._cancel_token
+
+    @property
     def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
         """Get the resolved plugin sources after plugins are loaded.
 
@@ -306,6 +391,110 @@ class LocalConversation(BaseConversation):
         resume uses the exact same plugin versions.
         """
         return self._resolved_plugins
+
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: AgentBase | None = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "LocalConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new ``LocalConversation`` that shares the same event history
+            but has its own identity and independent state going forward.
+        """
+        fork_id = conversation_id or uuid.uuid4()
+        # Always deep-copy the agent (supplied or source) so the fork owns
+        # its own object graph. Required because __init__ mutates
+        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
+        # agent would clobber the source conversation's cache key.
+        # Round-trip via JSON avoids thread-lock pickling issues with
+        # model_copy(deep=True).
+        source_agent = agent if agent is not None else self.agent
+        agent_cls = type(source_agent)
+        fork_agent = agent_cls.model_validate(
+            source_agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Hold the state lock while reading mutable state from the source
+        # conversation to avoid torn reads if run() is executing concurrently.
+        with self._state:
+            # Determine persistence_dir for the fork.
+            # Pass the *base* directory only — __init__ calls
+            # get_persistence_dir() which appends the conversation ID hex,
+            # so we must not do that here.
+            source_persistence = self._state.persistence_dir
+            fork_persistence: str | None = None
+            if source_persistence is not None:
+                source_path = Path(source_persistence)
+                fork_persistence = str(source_path.parent)
+
+            # Build the fork conversation (empty – no events yet)
+            fork_conv = LocalConversation(
+                agent=fork_agent,
+                workspace=self.workspace,
+                plugins=self._plugin_specs,
+                persistence_dir=fork_persistence,
+                conversation_id=fork_id,
+                max_iteration_per_run=self.max_iteration_per_run,
+                stuck_detection=self._stuck_detector is not None,
+                visualizer=type(self._visualizer) if self._visualizer else None,
+                delete_on_close=self.delete_on_close,
+                tags=tags,
+            )
+
+            for event in self._state.events:
+                fork_conv._state.events.append(_copy_event_for_fork(event))
+            # Full rebuild: the copied events may need property enforcement
+            # (same posture as cold load).
+            fork_conv._state.rebuild_view()
+
+            # Copy runtime state that accumulated during the source
+            # conversation. activated_knowledge_skills is list[str] – strings
+            # are immutable so a shallow list copy is sufficient.
+            # agent_state can hold arbitrary mutable values, so deep-copy it.
+            fork_conv._state.activated_knowledge_skills = list(
+                self._state.activated_knowledge_skills
+            )
+            fork_conv._state.agent_state = copy.deepcopy(self._state.agent_state)
+
+            # Copy title via tags if provided
+            if title is not None:
+                fork_conv._state.tags = {
+                    **fork_conv._state.tags,
+                    "title": title,
+                }
+
+            # Reset or copy metrics
+            if not reset_metrics:
+                fork_conv._state.stats = self._state.stats.model_copy(deep=True)
+
+            event_count = len(self._state.events)
+
+        logger.info(
+            f"Forked conversation {self.id} → {fork_id} "
+            f"({event_count} events copied, "
+            f"reset_metrics={reset_metrics})"
+        )
+        return fork_conv
 
     def _ensure_plugins_loaded(self) -> None:
         """Lazy load plugins and set up hooks on first use.
@@ -328,14 +517,16 @@ class LocalConversation(BaseConversation):
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
 
+        merged_context = self.agent.agent_context
+        merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+        # Track whether we have plugins or MCP config to process
+        has_mcp_config = bool(merged_mcp)
+
         # Load plugins if specified
         if self._plugin_specs:
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
-
-            # Start with agent's existing context and MCP config
-            merged_context = self.agent.agent_context
-            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
 
             for spec in self._plugin_specs:
                 # Fetch plugin and get resolved commit SHA
@@ -359,6 +550,7 @@ class LocalConversation(BaseConversation):
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
                 merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+                has_mcp_config = has_mcp_config or bool(merged_mcp)
 
                 # Collect hooks
                 if plugin.hooks and not plugin.hooks.is_empty():
@@ -368,7 +560,60 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            # Update agent with merged content
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Resolve project skills from the workspace. AgentContext can't do this
+        # itself (the workspace path is unknown at validation time), so it is done
+        # here, where the path is known. Project skills take precedence over
+        # same-named skills already on the context.
+        project_skills_loaded = False
+        if merged_context is not None and merged_context.load_project_skills:
+            # Best-effort: a failure to load project skills must not prevent the
+            # conversation from starting. (load_available_skills already guards
+            # the project source internally; this is belt-and-suspenders.)
+            try:
+                project_skills = load_available_skills(
+                    work_dir=self.workspace.working_dir,
+                    include_user=False,
+                    include_project=True,
+                    include_public=False,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to load project skills; continuing without them",
+                    exc_info=True,
+                )
+                project_skills = {}
+            if project_skills:
+                # Project skills are authoritative over same-named context skills.
+                merged_skills = merge_skills_by_name(
+                    project_skills.values(), merged_context.skills
+                )
+                merged_context = merged_context.model_copy(
+                    update={"skills": merged_skills}
+                )
+                project_skills_loaded = True
+
+        # Expand MCP config variables with per-conversation secrets
+        # This handles ${VAR} and ${VAR:-default} placeholders:
+        # - Variables referencing secrets injected via API are expanded to secret values
+        # - Variables with defaults that don't have secrets fall back to their defaults
+        # - This is the ONLY place where defaults are applied (plugin loading preserves
+        #   placeholders with expand_defaults=False to avoid double-expansion)
+        if merged_mcp:
+            # Pass the registry's lookup method as a callback - secrets are retrieved
+            # lazily, one at a time, only when actually referenced in the config
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
+            )
+            logger.debug("Expanded MCP config variables")
+
+        # Update agent with merged content only if something changed.
+        # Skip update otherwise to avoid unnecessary agent state mutations.
+        if self._plugin_specs or has_mcp_config or project_skills_loaded:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -379,8 +624,6 @@ class LocalConversation(BaseConversation):
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
-
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Register file-based agents defined in plugins
         if all_plugin_agents:
@@ -406,12 +649,23 @@ class LocalConversation(BaseConversation):
         if final_hook_config is not None:
             # Store final hook_config in state for observability
             self._state.hook_config = final_hook_config
+            hook_persistence_dir = (
+                str(Path(self._state.persistence_dir).parent)
+                if self._state.persistence_dir is not None
+                else None
+            )
 
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
+                # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
+                # so agent hooks must read the current LLM at execution time.
+                llm_getter=lambda: self.agent.llm,
+                persistence_dir=hook_persistence_dir,
+                visualizer=self._visualizer,
+                conversation_stats=self._state.stats,
             )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
@@ -476,12 +730,18 @@ class LocalConversation(BaseConversation):
             # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
 
-            # Register LLMs in the registry (still holding lock)
+            # Register LLMs in the registry (still holding lock).
+            # `registered` is updated after each add so that duplicate usage_ids
+            # within the same batch are silently skipped (first-write-wins),
+            # preventing a ValueError when e.g. agent and condenser LLMs were
+            # both serialised with usage_id="default".
             self.llm_registry.subscribe(self._state.stats.register_llm)
             registered = set(self.llm_registry.list_usage_ids())
             for llm in list(self.agent.get_all_llms()):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
+                    registered.add(llm.usage_id)
+                self._pin_session_affinity_header(llm)
 
             self._agent_ready = True
 
@@ -495,11 +755,66 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
-    def switch_profile(self, profile_name: str) -> None:
-        """Switch the agent's LLM to a named profile.
+    def _pin_prompt_cache_key(self) -> None:
+        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
+        # Skip if a key is already set: sub-agent LLMs inherit the parent's
+        # via model_copy, and overwriting would put each sub-agent on its own
+        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
+        if self.agent.llm._prompt_cache_key is None:
+            self.agent.llm._prompt_cache_key = str(self._state.id)
 
-        Loads the profile from the LLMProfileStore (cached in the registry
-        after the first load) and updates the agent and conversation state.
+    def _pin_session_affinity_header(self, llm: LLM) -> None:
+        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
+
+        Note: if a caller passes ``extra_headers`` as a kwarg directly to
+        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
+        entirely — the same limitation that affects OpenRouter headers.
+        """
+        existing = llm.extra_headers or {}
+        if "x-litellm-session-id" not in existing:
+            llm.extra_headers = {
+                "x-litellm-session-id": str(self._state.id),
+                **existing,
+            }
+
+    def switch_llm(self, llm: LLM) -> None:
+        """Swap the agent's LLM to the given object.
+
+        The caller owns ``llm.usage_id``; it is the registry key. If an
+        entry with that key already exists, the cached LLM is reused and
+        the passed ``llm`` is dropped — matching the rest of the
+        registry's "first-write-wins" contract.
+
+        Args:
+            llm: LLM to install on the agent.
+        """
+        try:
+            new_llm = self.llm_registry.get(llm.usage_id)
+        except KeyError:
+            new_llm = llm
+            self.llm_registry.add(new_llm)
+        # A switch_llm tool runs on a worker thread while run()/arun() holds the
+        # state lock across the agent step on another thread, blocked awaiting
+        # this very tool. Re-acquiring _state here would deadlock, so skip it:
+        # the run loop is parked and no other mutator can run, so the swap is
+        # safe without the lock (#3485). Only skip when the lock is held by a
+        # different thread (the run loop); when the caller already owns it (a
+        # sync step, or the switch endpoint reentering on the event-loop thread)
+        # acquire normally — FIFOLock is reentrant for the owning thread.
+        skip_lock = self._step_holds_state_lock and not self._state.owned()
+        lock = contextlib.nullcontext() if skip_lock else self._state
+        with lock:
+            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            self._state.agent = self.agent
+            self._pin_prompt_cache_key()
+            self._pin_session_affinity_header(new_llm)
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Switch the agent's LLM to a profile loaded from disk.
+
+        Loads the profile from :class:`LLMProfileStore` (cached in the
+        registry under ``profile:{profile_name}`` after first load) and
+        delegates the swap to :meth:`switch_llm`.
 
         Args:
             profile_name: Name of a profile previously saved via LLMProfileStore.
@@ -510,14 +825,76 @@ class LocalConversation(BaseConversation):
         """
         usage_id = f"profile:{profile_name}"
         try:
-            new_llm = self.llm_registry.get(usage_id)
+            cached = self.llm_registry.get(usage_id)
         except KeyError:
-            new_llm = self._profile_store.load(profile_name)
-            new_llm = new_llm.model_copy(update={"usage_id": usage_id})
-            self.llm_registry.add(new_llm)
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            cached = loaded.model_copy(update={"usage_id": usage_id})
+        self.switch_llm(cached)
+
+    def switch_acp_model(self, model: str) -> None:
+        """Switch the model on a running ACP conversation (mid-conversation).
+
+        Unlike :meth:`switch_llm`, which swaps OpenHands' own LLM object, this
+        issues a protocol-level ``session/set_model`` call to the ACP
+        subprocess so the new model applies to subsequent turns of the *same*
+        session, preserving conversation context. ``switch_llm`` would not
+        affect an ACP conversation, since the subprocess owns its own model.
+
+        Args:
+            model: Provider-specific model id to switch to.
+
+        Raises:
+            ValueError: If the conversation's agent is not an :class:`ACPAgent`,
+                or the provider does not support runtime model switching, or
+                the ACP server rejects the switch.
+            RuntimeError: If the ACP session is not yet initialized.
+            TimeoutError: If the ACP server does not respond within
+                ``acp_prompt_timeout`` seconds.
+        """
+        if not isinstance(self.agent, ACPAgent):
+            raise ValueError(
+                "switch_acp_model is only supported for ACP conversations."
+            )
         with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
-            self._state.agent = self.agent
+            # Perform the live protocol switch first; if it fails we leave the
+            # persisted state untouched.
+            self.agent.set_acp_model(model)
+            # Persist the switched model as the authoritative value. ``acp_model``
+            # is frozen, so we replace the agent with a copy carrying the new
+            # value. This matters on two counts the in-place mutation missed:
+            #   1. A fresh object identity makes the autosave path actually
+            #      write base_state.json (re-assigning the same object is a
+            #      no-op because old == new).
+            #   2. model_post_init / _start_acp_server derive the sentinel model
+            #      and the resumed session model from ``acp_model`` on reload, so
+            #      it must hold the switched value, not the construction-time one.
+            #
+            # model_copy is shallow, so the copy shares the live ACP runtime
+            # (_conn/_executor/_process) with the old agent. Disarm the old
+            # agent's finalizer before dropping it: otherwise ACPAgent.__del__
+            # -> close() on the discarded agent would tear down the session the
+            # copy now owns, leaving the next turn pointing at a dead connection.
+            old_agent = self.agent
+            new_agent = old_agent.model_copy(update={"acp_model": model})
+            old_agent.release_runtime()
+            # ``self.agent`` is the live reference used by subsequent ``step()``
+            # calls; ``self._state.agent`` is what the autosave path serializes
+            # to base_state.json. Update both so the running conversation and the
+            # persisted state agree on the switched model.
+            self.agent = new_agent
+            self._state.agent = new_agent
+            # Keep the persisted model hint in sync with the switch. The live
+            # agent's ``current_model_id`` (a PrivateAttr) already reflects the
+            # new model and wins on warm reads, but cold list reads after a
+            # process restart fall back to ``agent_state`` — which would
+            # otherwise still name the pre-switch model until the next resume.
+            # Write unconditionally: a successful switch is authoritative even
+            # for an older/custom server that reported no ``models`` at init
+            # (so the key may not exist yet).
+            self._state.agent_state = {
+                **self._state.agent_state,
+                "acp_current_model_id": model,
+            }
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
@@ -585,6 +962,11 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    def _on_event_with_state_lock(self, event: Event) -> None:
+        """Emit an event while holding the conversation state lock."""
+        with self._state:
+            self._on_event(event)
+
     @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
@@ -600,6 +982,7 @@ class LocalConversation(BaseConversation):
         """
         # Ensure agent is fully initialized (loads plugins and initializes agent)
         self._ensure_agent_ready()
+        self._cancel_token = CancellationToken()
 
         with self._state:
             if self._state.execution_status in [
@@ -636,7 +1019,9 @@ class LocalConversation(BaseConversation):
                             if not should_stop:
                                 logger.info("Stop hook denied agent stopping")
                                 if feedback:
-                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
                                     feedback_msg = MessageEvent(
                                         source="environment",
                                         llm_message=Message(
@@ -672,9 +1057,16 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    self.agent.step(
-                        self, on_event=self._on_event, on_token=self._on_token
-                    )
+                    # Mark the step as holding the state lock so state-mutating
+                    # tools (e.g. switch_llm) running on worker threads skip
+                    # re-acquiring it instead of deadlocking (#3485).
+                    self._step_holds_state_lock = True
+                    try:
+                        self.agent.step(
+                            self, on_event=self._on_event, on_token=self._on_token
+                        )
+                    finally:
+                        self._step_holds_state_lock = False
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -715,21 +1107,467 @@ class LocalConversation(BaseConversation):
                         )
                         break
         except Exception as e:
-            self._state.execution_status = ConversationExecutionStatus.ERROR
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
 
-            # Add an error event
-            self._on_event(
-                ConversationErrorEvent(
-                    source="environment",
-                    code=e.__class__.__name__,
-                    detail=str(e),
+                # Add an error event
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
+                    )
                 )
-            )
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e
+        finally:
+            self._cancel_token = None
+
+    @observe(name="conversation.arun")
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Uses ``agent.astep()`` for non-blocking LLM I/O while keeping the
+        same control-flow semantics (confirmation mode, stuck detection,
+        stop hooks, iteration cap).
+
+        The running task is tracked in ``_arun_task`` so that
+        :meth:`interrupt` can cancel it mid-LLM-call.  On
+        ``CancelledError`` the conversation transitions to ``PAUSED``
+        and emits an :class:`InterruptEvent`.
+
+        A fresh :class:`CancellationToken` is created per run so that
+        ``interrupt()`` can signal in-flight tool calls to abort.  After
+        ``CancelledError`` any ``ActionEvent`` without a matching
+        observation is patched with a synthetic ``AgentErrorEvent`` so
+        the LLM conversation history stays consistent.
+        """
+        self._arun_task = asyncio.current_task()
+        self._cancel_token = CancellationToken()
+        # Off-load lazy init to a worker thread: init_state may block the loop
+        # (an ACP agent resolves credentials via a synchronous LookupSecret
+        # httpx.get). When the agent-server runs arun() on its event loop and
+        # that lookup points back at the same single-process server, doing it
+        # inline freezes the loop so the lookup can never be served — a
+        # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
+        # _ensure_agent_ready is thread-safe and already runs off-loop in run().
+        await asyncio.to_thread(self._ensure_agent_ready)
+
+        with self._state:
+            if isinstance(self.agent, ACPAgent) and self._state.execution_status in (
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.IDLE,
+            ):
+                updated_agent_state = dict(self._state.agent_state)
+                inflight_prompt_user_message_id = updated_agent_state.get(
+                    ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID
+                )
+                if inflight_prompt_user_message_id is not None:
+                    updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                        inflight_prompt_user_message_id
+                    )
+                    updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
+                    self._state.agent_state = updated_agent_state
+
+            if self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
+                ConversationExecutionStatus.STUCK,
+            ]:
+                self._state.execution_status = ConversationExecutionStatus.RUNNING
+            last_acp_prompt_user_message_id = self._state.agent_state.get(
+                ACP_LAST_PROMPT_USER_MESSAGE_ID
+            )
+
+        iteration = 0
+        try:
+            while True:
+                logger.debug(f"Conversation arun iteration {iteration}")
+                acp_step_user_message_id: str | None = None
+                acp_step_user_message: MessageEvent | None = None
+                with self._state:
+                    if self._state.execution_status in [
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
+                    ]:
+                        break
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = (
+                                        f"{ACP_STOP_HOOK_FEEDBACK_PREFIX} {feedback}"
+                                    )
+                                    feedback_msg = MessageEvent(
+                                        source="environment",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        break
+
+                    if self._stuck_detector:
+                        is_stuck = self._stuck_detector.is_stuck()
+                        if is_stuck:
+                            logger.warning("Stuck pattern detected.")
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.STUCK
+                            )
+                            continue
+
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
+
+                    if isinstance(self.agent, ACPAgent):
+                        # Re-scan prompt messages under the lock each time we need
+                        # the latest tail; the list is usually tiny, and correctness
+                        # is more important than caching stale prompt snapshots.
+
+                        acp_prompt_messages = [
+                            event
+                            for event in self._state.events
+                            if _is_acp_prompt_message(event)
+                        ]
+                        if last_acp_prompt_user_message_id is None:
+                            acp_step_user_message = (
+                                acp_prompt_messages[0] if acp_prompt_messages else None
+                            )
+                        else:
+                            last_prompt_index = next(
+                                (
+                                    index
+                                    for index, event in enumerate(acp_prompt_messages)
+                                    if event.id == last_acp_prompt_user_message_id
+                                ),
+                                None,
+                            )
+                            if last_prompt_index is None:
+                                logger.info(
+                                    "ACP prompt cursor %s no longer exists; "
+                                    "restarting from first available prompt",
+                                    last_acp_prompt_user_message_id,
+                                )
+                                acp_step_user_message = (
+                                    acp_prompt_messages[0]
+                                    if acp_prompt_messages
+                                    else None
+                                )
+                            else:
+                                acp_step_user_message = (
+                                    acp_prompt_messages[last_prompt_index + 1]
+                                    if last_prompt_index + 1 < len(acp_prompt_messages)
+                                    else None
+                                )
+                        acp_step_user_message_id = (
+                            acp_step_user_message.id
+                            if acp_step_user_message is not None
+                            else None
+                        )
+                    else:
+                        # The state lock is held across this await. Mutations
+                        # performed inside astep() (including native async
+                        # Agent.astep / ACPAgent.astep that mutate on the
+                        # event-loop thread) are intentional and part of this
+                        # critical section. The invariant is only that no
+                        # *unrelated* state mutator may run concurrently while
+                        # the lock is held: because FIFOLock is thread- (not
+                        # task-) reentrant, any unrelated state-mutating
+                        # coroutine awaited on this event-loop thread would
+                        # silently re-enter the lock and corrupt history. Such
+                        # unrelated mutators must be dispatched via
+                        # run_in_executor onto a worker thread.
+                        # Mark the step as holding the state lock so
+                        # state-mutating tools (e.g. switch_llm) running on
+                        # worker threads skip re-acquiring it instead of
+                        # deadlocking while this await holds it (#3485).
+                        self._step_holds_state_lock = True
+                        try:
+                            await self.agent.astep(
+                                self,
+                                on_event=self._on_event,
+                                on_token=self._on_token,
+                            )
+                        finally:
+                            self._step_holds_state_lock = False
+                        iteration += 1
+
+                        if (
+                            self.state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        ):
+                            break
+
+                        if iteration >= self.max_iteration_per_run:
+                            if (
+                                self._state.execution_status
+                                == ConversationExecutionStatus.FINISHED
+                            ):
+                                break
+                            error_msg = (
+                                f"Agent reached maximum iterations limit "
+                                f"({self.max_iteration_per_run})."
+                            )
+                            logger.error(error_msg)
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.ERROR
+                            )
+                            self._on_event(
+                                ConversationErrorEvent(
+                                    source="environment",
+                                    code="MaxIterationsReached",
+                                    detail=error_msg,
+                                )
+                            )
+                            break
+
+                        continue
+
+                # ACP prompt round-trips can run for minutes. Keep the state
+                # lock free while awaiting them so incoming user messages can
+                # be persisted immediately; event callbacks take the lock only
+                # for each individual mutation.
+                if acp_step_user_message is None:
+                    with self._state:
+                        acp_prompt_messages = [
+                            event
+                            for event in self._state.events
+                            if _is_acp_prompt_message(event)
+                        ]
+                        latest_acp_prompt_message_id = (
+                            acp_prompt_messages[-1].id if acp_prompt_messages else None
+                        )
+                        acp_prompt_message_changed = (
+                            latest_acp_prompt_message_id is not None
+                            and latest_acp_prompt_message_id
+                            != last_acp_prompt_user_message_id
+                        )
+                        if acp_prompt_message_changed:
+                            if iteration >= self.max_iteration_per_run:
+                                logger.info(
+                                    "User message arrived before ACP finish; "
+                                    "leaving conversation idle for a follow-up run"
+                                )
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.IDLE
+                                )
+                                break
+                            logger.info(
+                                "User message arrived before ACP finish; continuing run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+                            continue
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.FINISHED
+                        )
+                    break
+
+                acp_step_start_event_count = 0
+                with self._state:
+                    if self._state.execution_status in (
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
+                    ):
+                        break
+                    acp_step_start_event_count = len(self._state.events)
+                    if acp_step_user_message_id is not None:
+                        self._state.agent_state = {
+                            **self._state.agent_state,
+                            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID: (
+                                acp_step_user_message_id
+                            ),
+                        }
+
+                await self.agent.astep(
+                    self,
+                    on_event=self._on_event_with_state_lock,
+                    on_token=self._on_token,
+                    prompt_message=acp_step_user_message,
+                )
+                with self._state:
+                    iteration += 1
+                    pause_requested_during_acp_step = any(
+                        isinstance(event, PauseEvent)
+                        for event in self._state.events[acp_step_start_event_count:]
+                    )
+                    updated_agent_state = dict(self._state.agent_state)
+                    if (
+                        updated_agent_state.get(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID)
+                        == acp_step_user_message_id
+                    ):
+                        updated_agent_state.pop(
+                            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None
+                        )
+                    updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
+                    if (
+                        acp_step_user_message_id is not None
+                        and self._state.execution_status
+                        not in (
+                            ConversationExecutionStatus.ERROR,
+                            ConversationExecutionStatus.STUCK,
+                            ConversationExecutionStatus.PAUSED,
+                        )
+                    ):
+                        last_acp_prompt_user_message_id = acp_step_user_message_id
+                        updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                            acp_step_user_message_id
+                        )
+                    self._state.agent_state = updated_agent_state
+
+                    if self._state.execution_status in (
+                        ConversationExecutionStatus.ERROR,
+                        ConversationExecutionStatus.STUCK,
+                    ):
+                        break
+                    if pause_requested_during_acp_step:
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.PAUSED
+                        )
+                        break
+
+                    acp_prompt_messages = [
+                        event
+                        for event in self._state.events
+                        if _is_acp_prompt_message(event)
+                    ]
+                    latest_acp_prompt_message_id = (
+                        acp_prompt_messages[-1].id if acp_prompt_messages else None
+                    )
+                    acp_prompt_message_changed = (
+                        latest_acp_prompt_message_id is not None
+                        and latest_acp_prompt_message_id
+                        != last_acp_prompt_user_message_id
+                    )
+                    if acp_prompt_message_changed and self._state.execution_status in (
+                        ConversationExecutionStatus.FINISHED,
+                        ConversationExecutionStatus.IDLE,
+                    ):
+                        if iteration >= self.max_iteration_per_run:
+                            logger.info(
+                                "User message arrived during final ACP iteration; "
+                                "leaving conversation idle for a follow-up run"
+                            )
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.IDLE
+                            )
+                            break
+                        logger.info(
+                            "User message arrived during ACP step; continuing run"
+                        )
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
+
+                    if (
+                        self.state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                    ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.FINISHED
+                        ):
+                            break
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
+                        break
+        except asyncio.CancelledError:
+            # CancelledError is intentionally NOT re-raised.  ``interrupt()``
+            # uses ``asyncio.Task.cancel()`` to break out of ``arun()`` and
+            # expects the task to terminate cleanly.  Re-raising would
+            # propagate the cancellation to EventService/caller which would
+            # surface it as an unexpected error.  Instead we transition to
+            # PAUSED so the conversation can be resumed later.
+            logger.info("arun() interrupted via task cancellation")
+            with self._state:
+                updated_agent_state = dict(self._state.agent_state)
+                inflight_prompt_user_message_id = updated_agent_state.pop(
+                    ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None
+                )
+                superseded_by_new_message = bool(
+                    updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, False)
+                )
+                completed_cancelled_prompt = (
+                    self._state.execution_status == ConversationExecutionStatus.FINISHED
+                )
+                if (
+                    superseded_by_new_message or completed_cancelled_prompt
+                ) and inflight_prompt_user_message_id is not None:
+                    updated_agent_state[ACP_LAST_PROMPT_USER_MESSAGE_ID] = (
+                        inflight_prompt_user_message_id
+                    )
+                self._state.agent_state = updated_agent_state
+
+                # Emit synthetic error observations for any ActionEvents
+                # that were in-flight when the interrupt landed.  Without
+                # these the LLM history would contain tool-call requests
+                # with no tool-result, which causes provider errors on
+                # the next completion call.
+                self._emit_orphaned_action_errors()
+
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
+                self._on_event(InterruptEvent())
+        except Exception as e:
+            with self._state:
+                updated_agent_state = dict(self._state.agent_state)
+                updated_agent_state.pop(ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID, None)
+                updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
+                self._state.agent_state = updated_agent_state
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
+                    )
+                )
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
+        finally:
+            # A cancelled token must stay observable: interrupted tool calls run
+            # in worker threads that can outlive arun() and still poll it. A
+            # fresh token is created on the next run().
+            if self._cancel_token is not None and not self._cancel_token.is_cancelled:
+                self._cancel_token = None
+            self._arun_task = None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -768,6 +1606,35 @@ class LocalConversation(BaseConversation):
                 self._on_event(rejection_event)
                 logger.info(f"Rejected pending action: {action_event} - {reason}")
 
+    def _emit_orphaned_action_errors(self) -> None:
+        """Emit ``AgentErrorEvent`` for actions that have no observation.
+
+        After an interrupt, tool calls that were in-flight may have their
+        ``ActionEvent`` already in the history but no corresponding
+        ``ObservationEvent``.  LLM providers reject conversation
+        histories with orphaned tool-call requests, so we backfill
+        them with a synthetic error.
+
+        Must be called while holding ``self._state``.
+        """
+        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        for ae in orphans:
+            logger.info(
+                "Emitting synthetic error for orphaned action %s (%s)",
+                ae.id,
+                ae.tool_name,
+            )
+            self._on_event(
+                AgentErrorEvent(
+                    error=(
+                        "Tool call interrupted before completion. "
+                        "The conversation was paused."
+                    ),
+                    tool_name=ae.tool_name,
+                    tool_call_id=ae.tool_call_id,
+                )
+            )
+
     def pause(self) -> None:
         """Pause agent execution.
 
@@ -792,6 +1659,41 @@ class LocalConversation(BaseConversation):
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()``, including mid-LLM-call.
+
+        If an async run is in progress the underlying ``asyncio.Task`` is
+        cancelled; ``arun()`` catches the resulting ``CancelledError``, sets
+        execution status to ``PAUSED``, and emits an
+        :class:`~openhands.sdk.event.InterruptEvent`.
+
+        The cancellation token is set *before* cancelling the task so
+        that :class:`ParallelToolExecutor` can skip pending tool calls
+        and individual tools can check for early exit.
+
+        If no async task is tracked (e.g. the synchronous ``run()`` is active)
+        the call falls back to :meth:`pause`.
+
+        This method is safe to call from signal handlers and from other
+        threads (the cancellation is scheduled on the task's event loop).
+        """
+        # Set the cancellation token first so thread-pool workers see it
+        # before the asyncio task is cancelled.
+        token = self._cancel_token
+        if token is not None:
+            token.cancel()
+
+        task = self._arun_task
+        if task is not None and not task.done():
+            # Marshal cancellation onto the task's event loop so this is
+            # safe to call from any thread (e.g. signal handlers, the
+            # agent-server's HTTP thread).
+            loop = task.get_loop()
+            loop.call_soon_threadsafe(task.cancel)
+            logger.info("interrupt(): cancelled in-flight arun() task")
+        else:
+            self.pause()
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         """Add secrets to the conversation's secret registry.
@@ -819,6 +1721,9 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
+        # Remove the atexit reference so the conversation object can be GC'd
+        # after close. atexit.unregister is a no-op if not registered.
+        atexit.unregister(self.close)
         # Use getattr for safety - object may be partially constructed
         if getattr(self, "_cleanup_initiated", False):
             return
@@ -837,23 +1742,20 @@ class LocalConversation(BaseConversation):
             self.agent.close()
         except Exception as e:
             logger.warning(f"Error closing agent: {e}")
-        if self.delete_on_close:
-            try:
-                tools_map = self.agent.tools_map
-            except (AttributeError, RuntimeError):
-                # Agent not initialized or partially constructed
-                return
-            for tool in tools_map.values():
-                try:
-                    executable_tool = tool.as_executable()
-                    executable_tool.executor.close()
-                except NotImplementedError:
-                    # Tool has no executor, skip it without erroring
-                    continue
-                except Exception as e:
-                    logger.warning(
-                        f"Error closing executor for tool '{tool.name}': {e}"
-                    )
+        # Always close tool executors — they hold runtime resources
+        # (subprocesses, connections, etc.) that must be released regardless
+        # of whether the conversation data is preserved (delete_on_close).
+        with contextlib.suppress(AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed → skip
+            for tool in self.agent.tools_map.values():
+                with contextlib.suppress(NotImplementedError):
+                    try:
+                        executable_tool = tool.as_executable()
+                        executable_tool.executor.close()
+                    except Exception as e:
+                        logger.warning(
+                            f"Error closing executor for tool '{tool.name}': {e}"
+                        )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
@@ -931,9 +1833,13 @@ class LocalConversation(BaseConversation):
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
+        If an explicit LLM is provided, it takes precedence. Otherwise the
+        agent's LLM is used. If neither is available, the title falls back to
+        simple message truncation.
+
         Args:
-            llm: Optional LLM to use for title generation. If not provided,
-                 uses self.agent.llm.
+            llm: Optional LLM to use for title generation. Takes precedence
+                 over the agent's LLM when provided.
             max_length: Maximum length of the generated title.
 
         Returns:
@@ -942,16 +1848,9 @@ class LocalConversation(BaseConversation):
         Raises:
             ValueError: If no user messages are found in the conversation.
         """
-        # Use provided LLM or fall back to agent's LLM
-        llm_to_use = llm or self.agent.llm
-
-        # Skip LLM-based title generation for ACP agents with sentinel LLM
-        # The sentinel model "acp-managed" cannot make LLM calls directly
-        if llm_to_use.model == "acp-managed":
-            llm_to_use = None
-
+        effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=llm_to_use, max_length=max_length
+            events=self._state.events, llm=effective_llm, max_length=max_length
         )
 
     def condense(self) -> None:

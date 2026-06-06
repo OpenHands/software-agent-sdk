@@ -1,6 +1,8 @@
 # state.py
 import json
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
@@ -8,6 +10,7 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -128,6 +131,15 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    invoked_skills: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Names of progressive-disclosure skills explicitly invoked via the "
+            "`invoke_skill` tool. Parallel to `activated_knowledge_skills`, "
+            "which tracks trigger-based activations."
+        ),
+    )
+
     # Hook-blocked actions: action_id -> blocking reason
     blocked_actions: dict[str, str] = Field(
         default_factory=dict,
@@ -195,6 +207,12 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    # Cached projection of `_events`, lazily updated on read via a
+    # watermark.  Derived state — never persisted, never serialized.
+    # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+    _view: View = PrivateAttr(default_factory=View)
+    _view_watermark: int = PrivateAttr(default=0)
+    _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -202,13 +220,78 @@ class ConversationState(OpenHandsModel):
     _on_state_change: ConversationCallbackType | None = PrivateAttr(
         default=None
     )  # callback for state changes
+    _write_guard: Callable[[], AbstractContextManager[None]] | None = PrivateAttr(
+        default=None
+    )
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
+    _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
 
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def view(self) -> View:
+        """Lazily-updated, incrementally-maintained ``View`` of the events.
+
+        The view is brought up to date by replaying only the events
+        appended since the last read (tracked by an internal watermark).
+        This is O(k) where k is the number of new events — typically 2–4
+        per agent step — rather than O(n) over the entire history.
+
+        ``enforce_properties`` is *not* run on the incremental path.
+        Full enforcement happens only via ``rebuild_view()``, which is
+        called on cold load, fork, and error recovery.
+
+        Callers must treat the returned view as read-only.  This
+        reference is also invalidated by any call to ``rebuild_view()``;
+        re-read ``state.view`` after any rebuild if you need a fresh
+        snapshot.
+        """
+        with self._view_lock:
+            n = len(self._events)
+            for i in range(self._view_watermark, n):
+                try:
+                    self._view.append_event(self._events[i])
+                    self._view_watermark = i + 1
+                except Exception:
+                    logger.warning(
+                        "Incremental view append failed at index %d; "
+                        "rebuilding from scratch.",
+                        i,
+                        exc_info=True,
+                    )
+                    self._view = View.from_events(self._events)
+                    self._view_watermark = len(self._events)
+                    break
+            return self._view
+
+    def rebuild_view(self) -> None:
+        """Re-derive the cached view from the full event log.
+
+        Runs ``View.from_events`` which applies all view-property
+        enforcement.  This is the recovery / cold-load path described
+        in ``ViewPropertyBase`` and should be called only on:
+
+        - Cold load (resuming a persisted ``ConversationState``).
+        - Fork creation, after deep-copying events from the source.
+        - Explicit error recovery (e.g. malformed-history retry).
+
+        Any ``View`` reference previously returned by ``state.view``
+        is invalidated after this call and must not be used — it
+        will never reflect new events or the rebuilt state.
+
+        If ``View.from_events`` raises (e.g. due to corrupted events),
+        the cache is left unchanged and the exception propagates to
+        the caller.  ``state.view`` continues to serve the pre-rebuild
+        state until a successful ``rebuild_view()`` call.
+        """
+        with self._view_lock:
+            self._view = View.from_events(self._events)
+            self._view_watermark = len(self._events)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -225,6 +308,13 @@ class ConversationState(OpenHandsModel):
                      or None to remove the callback
         """
         self._on_state_change = callback
+
+    def set_write_guard(
+        self,
+        write_guard: Callable[[], AbstractContextManager[None]] | None,
+    ) -> None:
+        self._write_guard = write_guard
+        self._events.set_write_guard(write_guard)
 
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
@@ -244,7 +334,11 @@ class ConversationState(OpenHandsModel):
                 "preserve secrets."
             )
         payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        if self._write_guard is None:
+            fs.write(BASE_STATE, payload)
+        else:
+            with self._write_guard():
+                fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -295,11 +389,16 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        file_store = (
-            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
-            if persistence_dir
-            else InMemoryFileStore()
-        )
+        if persistence_dir:
+            file_store = LocalFileStore(
+                persistence_dir, cache_limit_size=max_iterations
+            )
+        else:
+            logger.warning(
+                "No persistence_dir provided; falling back to InMemoryFileStore. "
+                "EventLog data will not persist across requests."
+            )
+            file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)
@@ -324,6 +423,11 @@ class ConversationState(OpenHandsModel):
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
 
+            # Cold-load: rebuild the cached view with full property
+            # enforcement — persisted events may come from an older code
+            # version or be corrupted.
+            state.rebuild_view()
+
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
 
@@ -336,11 +440,7 @@ class ConversationState(OpenHandsModel):
             # Note: stats are already deserialized from base_state.json above.
             # Do NOT reset stats here - this would lose accumulated metrics.
 
-            logger.info(
-                f"Resumed conversation {state.id} from persistent storage.\n"
-                f"State: {state.model_dump(exclude={'agent'})}\n"
-                f"Agent: {state.agent.model_dump_succint()}"
-            )
+            logger.info("Resumed conversation %s from persistent storage", state.id)
             return state
 
         # ---- Fresh path ----
@@ -365,11 +465,7 @@ class ConversationState(OpenHandsModel):
 
         state._save_base_state(file_store)  # initial snapshot
         state._autosave_enabled = True
-        logger.info(
-            f"Created new conversation {state.id}\n"
-            f"State: {state.model_dump(exclude={'agent'})}\n"
-            f"Agent: {state.agent.model_dump_succint()}"
-        )
+        logger.info("Created new conversation %s", state.id)
         return state
 
     # ===== Auto-persist base on public field changes =====
@@ -390,11 +486,16 @@ class ConversationState(OpenHandsModel):
             return
 
         if old is _sentinel or old != value:
-            try:
-                self._save_base_state(fs)
-            except Exception as e:
-                logger.exception("Auto-persist base_state failed", exc_info=True)
-                raise e
+            # Inside a context-manager block, defer the save until __exit__
+            # so that multiple field mutations produce a single I/O write.
+            if getattr(self, "_save_depth", 0) > 0:
+                self._dirty = True
+            else:
+                try:
+                    self._save_base_state(fs)
+                except Exception as e:
+                    logger.exception("Auto-persist base_state failed", exc_info=True)
+                    raise e
 
             # Call state change callback if set
             callback = getattr(self, "_on_state_change", None)
@@ -509,13 +610,27 @@ class ConversationState(OpenHandsModel):
         self._lock.release()
 
     def __enter__(self: Self) -> Self:
-        """Context manager entry."""
+        """Context manager entry.
+
+        Field mutations inside the ``with`` block are batched: the state
+        is persisted at most once, on exit, instead of on every assignment.
+        """
         self._lock.acquire()
+        self._save_depth += 1
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self._lock.release()
+        """Context manager exit — flushes any deferred save."""
+        try:
+            self._save_depth -= 1
+            if self._save_depth == 0 and self._dirty:
+                fs = getattr(self, "_fs", None)
+                autosave_enabled = getattr(self, "_autosave_enabled", False)
+                if autosave_enabled and fs is not None:
+                    self._save_base_state(fs)
+                self._dirty = False
+        finally:
+            self._lock.release()
 
     def locked(self) -> bool:
         """

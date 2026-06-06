@@ -38,7 +38,7 @@ on:
             llm_model:
                 description: LLM model to use
                 required: false
-                default: anthropic/claude-sonnet-4-5-20250929
+                default: gpt-5.5
 
 permissions:
     contents: read

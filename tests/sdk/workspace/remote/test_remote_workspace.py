@@ -402,3 +402,802 @@ def test_alive_with_normalized_host(mock_urlopen):
 def test_alive_is_property():
     """Test that alive is a property, not a method."""
     assert isinstance(RemoteWorkspace.alive, property)
+
+
+# ── Settings Methods Tests ────────────────────────────────────────────────
+
+
+def test_get_llm_returns_configured_llm(monkeypatch):
+    """Test get_llm returns an LLM with persisted settings."""
+    from pydantic import SecretStr
+
+    # Allow short context windows for testing
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "gpt-4",
+                "api_key": "sk-test-key",
+                "base_url": "https://api.openai.com/v1",
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm()
+
+    # Verify the LLM was created with correct settings
+    assert llm.model == "gpt-4"
+    # api_key can be str | SecretStr | None
+    assert llm.api_key is not None
+    if isinstance(llm.api_key, SecretStr):
+        assert llm.api_key.get_secret_value() == "sk-test-key"
+    else:
+        assert llm.api_key == "sk-test-key"
+    assert llm.base_url == "https://api.openai.com/v1"
+
+    # Verify API was called with correct headers
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert call_args[0][0] == "/api/settings"
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+
+def test_get_llm_with_kwargs_override(monkeypatch):
+    """Test get_llm allows kwargs to override persisted settings."""
+    from pydantic import SecretStr
+
+    # Allow short context windows for testing
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "llm": {
+                "model": "gpt-3.5-turbo",
+                "api_key": "sk-persisted-key",
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    # Override model but use persisted API key
+    llm = workspace.get_llm(model="gpt-4o")
+
+    assert llm.model == "gpt-4o"  # Overridden
+    # api_key can be str | SecretStr | None
+    assert llm.api_key is not None
+    if isinstance(llm.api_key, SecretStr):
+        assert llm.api_key.get_secret_value() == "sk-persisted-key"
+    else:
+        assert llm.api_key == "sk-persisted-key"
+
+
+def test_get_llm_with_profile_name(monkeypatch):
+    """Test get_llm can load a named LLM profile."""
+    from pydantic import SecretStr
+
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "name": "fast-model",
+        "config": {
+            "model": "openai/gpt-4o",
+            "api_key": "sk-profile-key",
+            "base_url": "https://litellm.example.com",
+            "usage_id": "default",
+        },
+        "api_key_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    llm = workspace.get_llm(profile_name="fast-model", temperature=0.3)
+
+    assert llm.model == "openai/gpt-4o"
+    assert llm.temperature == 0.3
+    assert isinstance(llm.api_key, SecretStr)
+    assert llm.api_key.get_secret_value() == "sk-profile-key"
+    assert llm.base_url == "https://litellm.example.com"
+    assert llm.usage_id == "profile:fast-model"
+
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert call_args[0][0] == "/api/profiles/fast-model"
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+    assert call_args[1]["headers"]["X-Session-API-Key"] == "test-key"
+
+    llm_with_override = workspace.get_llm(
+        profile_name="fast-model", usage_id="custom-usage"
+    )
+
+    assert llm_with_override.usage_id == "custom-usage"
+
+
+def test_get_llm_with_missing_profile_raises(monkeypatch):
+    """Test get_llm raises FileNotFoundError for a missing profile."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    with pytest.raises(FileNotFoundError, match="missing"):
+        workspace.get_llm(profile_name="missing")
+
+
+def test_get_llm_raises_on_undefined_host():
+    """Test get_llm raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_llm()
+
+
+def test_get_secrets_returns_lookup_secrets():
+    """Test get_secrets returns LookupSecret references."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub personal access token"},
+            {"name": "OPENAI_API_KEY", "description": None},
+        ]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets()
+
+    assert len(secrets) == 2
+    assert "GITHUB_TOKEN" in secrets
+    assert "OPENAI_API_KEY" in secrets
+
+    # Check LookupSecret structure
+    gh_secret = secrets["GITHUB_TOKEN"]
+    assert gh_secret.url == "http://localhost:8000/api/settings/secrets/GITHUB_TOKEN"
+    assert gh_secret.headers == {"X-Session-API-Key": "test-key"}
+    assert gh_secret.description == "GitHub personal access token"
+
+    openai_secret = secrets["OPENAI_API_KEY"]
+    assert openai_secret.description is None
+
+
+def test_get_secrets_filters_by_names():
+    """Test get_secrets filters secrets by names when provided."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "secrets": [
+            {"name": "GITHUB_TOKEN", "description": "GitHub token"},
+            {"name": "OPENAI_API_KEY", "description": "OpenAI key"},
+            {"name": "AWS_ACCESS_KEY", "description": "AWS key"},
+        ]
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    # Request only specific secrets
+    secrets = workspace.get_secrets(names=["GITHUB_TOKEN", "AWS_ACCESS_KEY"])
+
+    assert len(secrets) == 2
+    assert "GITHUB_TOKEN" in secrets
+    assert "AWS_ACCESS_KEY" in secrets
+    assert "OPENAI_API_KEY" not in secrets
+
+
+def test_get_secrets_returns_empty_dict_when_no_secrets():
+    """Test get_secrets returns empty dict when no secrets exist."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {"secrets": []}
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    secrets = workspace.get_secrets()
+
+    assert secrets == {}
+
+
+def test_get_secrets_raises_on_undefined_host():
+    """Test get_secrets raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_secrets()
+
+
+def test_get_mcp_config_returns_config():
+    """Test get_mcp_config returns MCP configuration."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {
+            "mcp_config": {
+                "mcpServers": {
+                    "shttp_0": {
+                        "url": "https://mcp.example.com/api",
+                        "transport": "streamable-http",
+                    }
+                }
+            }
+        },
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert "mcpServers" in config
+    assert "shttp_0" in config["mcpServers"]
+    assert config["mcpServers"]["shttp_0"]["url"] == "https://mcp.example.com/api"
+
+    # Verify API was called with correct headers
+    call_args = mock_client.get.call_args
+    assert call_args[1]["headers"]["X-Expose-Secrets"] == "plaintext"
+
+
+def test_get_mcp_config_returns_empty_dict_when_no_config(monkeypatch):
+    """Test get_mcp_config returns empty dict when no MCP config exists."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {"llm": {"model": "gpt-4"}},
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert config == {}
+
+
+def test_get_mcp_config_returns_empty_dict_when_mcp_config_is_none(monkeypatch):
+    """Test get_mcp_config returns empty dict when mcp_config is None."""
+    monkeypatch.setenv("ALLOW_SHORT_CONTEXT_WINDOWS", "true")
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "agent_settings": {"llm": {"model": "gpt-4"}, "mcp_config": None},
+        "conversation_settings": {},
+        "llm_api_key_is_set": True,
+    }
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    config = workspace.get_mcp_config()
+
+    assert config == {}
+
+
+def test_get_mcp_config_raises_on_undefined_host():
+    """Test get_mcp_config raises RuntimeError when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    with pytest.raises(RuntimeError, match="Workspace host is not set"):
+        workspace.get_mcp_config()
+
+
+# ── Tests for Repository Cloning Methods ─────────────────────────────
+
+
+def test_get_secret_value_returns_secret():
+    """Test _get_secret_value fetches secret from agent server."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.text = "secret-token-value"
+    mock_response.raise_for_status = Mock()
+    mock_client.get.return_value = mock_response
+    workspace._client = mock_client
+
+    result = workspace._get_secret_value("github_token")
+
+    assert result == "secret-token-value"
+    mock_client.get.assert_called_once_with(
+        "/api/settings/secrets/github_token",
+        headers={"X-Session-API-Key": "test-key"},
+    )
+
+
+def test_get_secret_value_returns_none_on_404():
+    """Test _get_secret_value returns None when secret not found."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_client.get.side_effect = httpx.HTTPStatusError(
+        "Not Found", request=Mock(), response=mock_response
+    )
+    workspace._client = mock_client
+
+    result = workspace._get_secret_value("nonexistent_secret")
+
+    assert result is None
+
+
+def test_get_secret_value_returns_none_when_host_undefined():
+    """Test _get_secret_value returns None when host is undefined."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/tmp")
+
+    result = workspace._get_secret_value("github_token")
+
+    assert result is None
+
+
+def test_get_secret_value_validates_secret_name():
+    """Test _get_secret_value validates secret name to prevent path traversal."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/tmp", api_key="test-key"
+    )
+
+    # Names with slashes should be rejected
+    assert workspace._get_secret_value("../etc/passwd") is None
+    assert workspace._get_secret_value("secrets/github") is None
+
+    # Empty name should be rejected
+    assert workspace._get_secret_value("") is None
+
+
+def test_clone_repos_calls_helper():
+    """Test clone_repos delegates to helper function."""
+    from openhands.sdk.workspace.repo import CloneResult, RepoMapping
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        expected_result = CloneResult(
+            success_count=1,
+            failed_repos=[],
+            repo_mappings={
+                "https://github.com/owner/repo": RepoMapping(
+                    url="https://github.com/owner/repo",
+                    dir_name="repo",
+                    local_path="/workspace/repo",
+                )
+            },
+        )
+        mock_clone.return_value = expected_result
+
+        result = workspace.clone_repos(["https://github.com/owner/repo"])
+
+        assert result == expected_result
+        mock_clone.assert_called_once()
+
+        # Verify token_fetcher is workspace's _get_secret_value
+        call_kwargs = mock_clone.call_args[1]
+        assert call_kwargs["token_fetcher"] == workspace._get_secret_value
+
+
+def test_clone_repos_normalizes_input_formats():
+    """Test clone_repos accepts strings, dicts, and RepoSource objects."""
+    from openhands.sdk.workspace.repo import CloneResult, RepoSource
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        mock_clone.return_value = CloneResult(0, [], {})
+
+        # Mix of input formats
+        workspace.clone_repos(
+            [
+                "https://github.com/owner/repo1",  # string
+                {"url": "https://gitlab.com/owner/repo2", "ref": "main"},  # dict
+                RepoSource(url="https://bitbucket.org/owner/repo3"),  # RepoSource
+            ]
+        )
+
+        # Verify all inputs were normalized to RepoSource
+        call_kwargs = mock_clone.call_args[1]
+        repos = call_kwargs["repos"]
+        assert len(repos) == 3
+        assert all(isinstance(r, RepoSource) for r in repos)
+
+
+def test_clone_repos_uses_custom_target_dir():
+    """Test clone_repos respects custom target directory."""
+    from openhands.sdk.workspace.repo import CloneResult
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    with patch("openhands.sdk.workspace.remote.base._clone_repos_helper") as mock_clone:
+        mock_clone.return_value = CloneResult(0, [], {})
+
+        workspace.clone_repos(
+            ["https://github.com/owner/repo"],
+            target_dir="/custom/path",
+        )
+
+        call_kwargs = mock_clone.call_args[1]
+        assert call_kwargs["target_dir"] == Path("/custom/path")
+
+
+def test_get_repos_context_delegates_to_helper():
+    """Test get_repos_context delegates to helper function."""
+    from openhands.sdk.workspace.repo import RepoMapping
+
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mappings = {
+        "https://github.com/owner/repo": RepoMapping(
+            url="https://github.com/owner/repo",
+            dir_name="repo",
+            local_path="/workspace/repo",
+            ref="main",
+        )
+    }
+
+    context = workspace.get_repos_context(mappings)
+
+    assert "## Cloned Repositories" in context
+    assert "https://github.com/owner/repo" in context
+    assert "/workspace/repo" in context
+
+
+def test_get_repos_context_empty_mappings():
+    """Test get_repos_context returns empty string for empty mappings."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    context = workspace.get_repos_context({})
+
+    assert context == ""
+
+
+# ── Tests for Skill Loading Methods ──────────────────────────────────
+
+
+def test_load_skills_from_agent_server_raises_when_not_initialized():
+    """Test load_skills_from_agent_server raises when host is not set."""
+    workspace = RemoteWorkspace(host="undefined", working_dir="/workspace")
+
+    with pytest.raises(RuntimeError, match="Workspace not initialized"):
+        workspace.load_skills_from_agent_server()
+
+
+def test_load_skills_from_agent_server_calls_api():
+    """Test load_skills_from_agent_server calls the agent server API."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mock_response = Mock()
+    mock_response.json.return_value = {
+        "skills": [
+            {
+                "name": "test-skill",
+                "content": "Test content",
+                "description": "A test skill",
+                "triggers": ["test"],
+                "is_agentskills_format": True,
+                "disable_model_invocation": True,
+            }
+        ],
+        "sources": {"public": 1},
+    }
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+
+        assert len(skills) == 1
+        assert skills[0].name == "test-skill"
+        assert skills[0].content == "Test content"
+        assert skills[0].is_agentskills_format is True
+        assert skills[0].disable_model_invocation is True
+        assert context.load_public_skills is False  # Skills were loaded
+
+
+def test_load_skills_from_agent_server_falls_back_when_no_skills():
+    """Test load_skills falls back to public skills when none loaded."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    mock_response = Mock()
+    mock_response.json.return_value = {"skills": [], "sources": {}}
+    mock_response.raise_for_status = Mock()
+
+    with patch.object(workspace.client, "post", return_value=mock_response):
+        skills, context = workspace.load_skills_from_agent_server()
+
+        assert len(skills) == 0
+        assert context.load_public_skills is True  # Fall back to public
+
+
+def test_load_skills_from_agent_server_with_project_dirs():
+    """Test load_skills_from_agent_server loads skills from multiple directories."""
+    workspace = RemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace", api_key="test-key"
+    )
+
+    # Return different skills for different calls
+    call_count = 0
+
+    def side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        response = Mock()
+        if call_count == 1:
+            # Global skills call
+            response.json.return_value = {
+                "skills": [{"name": "global-skill", "content": "Global"}],
+                "sources": {},
+            }
+        else:
+            # Project-specific call
+            response.json.return_value = {
+                "skills": [
+                    {"name": f"project-skill-{call_count}", "content": "Project"}
+                ],
+                "sources": {},
+            }
+        response.raise_for_status = Mock()
+        return response
+
+    with patch.object(workspace.client, "post", side_effect=side_effect) as mock_post:
+        skills, context = workspace.load_skills_from_agent_server(
+            project_dirs=["/workspace/repo1", "/workspace/repo2"]
+        )
+
+        # Should have loaded global skills + 2 project dirs = 3 calls
+        assert mock_post.call_count == 3
+        assert len(skills) >= 1  # At least the global skill
+
+
+# --- Completion callback tests ---
+
+
+def test_register_conversation_stores_id():
+    """Test register_conversation stores the conversation ID."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    workspace.register_conversation("conv-123")
+
+    assert workspace._conversation_id == "conv-123"
+    assert workspace.conversation_id == "conv-123"
+
+
+def test_conversation_id_property_returns_none_initially():
+    """Test conversation_id property returns None when not registered."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    assert workspace.conversation_id is None
+
+
+def test_send_completion_callback_on_success(monkeypatch):
+    """Test _send_completion_callback POSTs COMPLETED status."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_CALLBACK_API_KEY", "test-api-key")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        mock_client.post.assert_called_once()
+        (url,) = mock_client.post.call_args.args
+        payload = mock_client.post.call_args.kwargs["json"]
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert url == "https://svc.test/complete"
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert "error" not in payload
+        assert headers["Authorization"] == "Bearer test-api-key"
+
+
+def test_send_completion_callback_on_failure(monkeypatch):
+    """Test _send_completion_callback POSTs FAILED status with error."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-99")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        exc = RuntimeError("script crashed")
+        workspace._send_completion_callback(RuntimeError, exc)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "FAILED"
+        assert payload["run_id"] == "run-99"
+        assert "script crashed" in payload["error"]
+
+
+def test_send_completion_callback_no_op_without_url(monkeypatch):
+    """Test _send_completion_callback does nothing when URL not set."""
+    monkeypatch.delenv("AUTOMATION_CALLBACK_URL", raising=False)
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    with patch("httpx.Client") as MockClient:
+        workspace._send_completion_callback(None, None)
+        MockClient.assert_not_called()
+
+
+def test_send_completion_callback_swallows_errors(monkeypatch):
+    """Test _send_completion_callback doesn't raise on HTTP errors."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        # Should not raise
+        workspace._send_completion_callback(None, None)
+
+
+def test_send_completion_callback_without_api_key(monkeypatch):
+    """Test _send_completion_callback sends without Authorization when no key."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.delenv("AUTOMATION_CALLBACK_API_KEY", raising=False)
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        headers = mock_client.post.call_args.kwargs["headers"]
+        assert "Authorization" not in headers
+
+
+def test_send_completion_callback_includes_conversation_id(monkeypatch):
+    """Test _send_completion_callback includes conversation_id when registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+    monkeypatch.setenv("AUTOMATION_RUN_ID", "run-42")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+    workspace.register_conversation("conv-xyz")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert payload["status"] == "COMPLETED"
+        assert payload["run_id"] == "run-42"
+        assert payload["conversation_id"] == "conv-xyz"
+
+
+def test_send_completion_callback_omits_conversation_id_when_not_registered(
+    monkeypatch,
+):
+    """Test _send_completion_callback omits conversation_id when not registered."""
+    monkeypatch.setenv("AUTOMATION_CALLBACK_URL", "https://svc.test/complete")
+
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/workspace")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+
+    with patch("httpx.Client") as MockClient:
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        workspace._send_completion_callback(None, None)
+
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "conversation_id" not in payload

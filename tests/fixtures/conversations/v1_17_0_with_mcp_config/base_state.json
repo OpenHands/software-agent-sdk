@@ -1,0 +1,78 @@
+{
+  "id": "22222222-3333-4444-5555-666666666666",
+  "agent": {
+    "llm": {
+      "model": "gpt-4o-mini",
+      "api_key": "**********",
+      "openrouter_site_url": "https://docs.all-hands.dev/",
+      "openrouter_app_name": "OpenHands",
+      "num_retries": 5,
+      "retry_multiplier": 8.0,
+      "retry_min_wait": 8,
+      "retry_max_wait": 64,
+      "timeout": 300,
+      "max_message_chars": 30000,
+      "max_input_tokens": 128000,
+      "max_output_tokens": 16384,
+      "stream": false,
+      "drop_params": true,
+      "modify_params": true,
+      "disable_stop_word": false,
+      "caching_prompt": true,
+      "log_completions": false,
+      "log_completions_folder": "logs/completions",
+      "native_tool_calling": true,
+      "reasoning_effort": "high",
+      "enable_encrypted_reasoning": true,
+      "prompt_cache_retention": "24h",
+      "extended_thinking_budget": 200000,
+      "usage_id": "test-llm",
+      "litellm_extra_body": {}
+    },
+    "tools": [],
+    "mcp_config": {
+      "mcpServers": {
+        "legacy-server": {
+          "command": "uvx",
+          "args": [
+            "mcp-server-fetch"
+          ]
+        }
+      }
+    },
+    "include_default_tools": [
+      "FinishTool",
+      "ThinkTool"
+    ],
+    "system_prompt_filename": "system_prompt.j2",
+    "security_policy_filename": "security_policy.j2",
+    "system_prompt_kwargs": {
+      "llm_security_analyzer": true
+    },
+    "tool_concurrency_limit": 1,
+    "kind": "Agent"
+  },
+  "workspace": {
+    "working_dir": "/tmp/legacy-workspace",
+    "kind": "LocalWorkspace"
+  },
+  "persistence_dir": "/tmp/legacy-persist",
+  "max_iterations": 500,
+  "stuck_detection": true,
+  "execution_status": "idle",
+  "confirmation_policy": {
+    "kind": "NeverConfirm"
+  },
+  "activated_knowledge_skills": [],
+  "invoked_skills": [],
+  "blocked_actions": {},
+  "blocked_messages": {},
+  "stats": {
+    "usage_to_metrics": {}
+  },
+  "secret_registry": {
+    "secret_sources": {}
+  },
+  "tags": {},
+  "agent_state": {}
+}

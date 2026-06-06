@@ -1,3 +1,6 @@
+import asyncio
+import os
+import zipfile
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -6,27 +9,43 @@ from fastapi import (
     APIRouter,
     File,
     HTTPException,
-    Path as FastApiPath,
     Query,
     UploadFile,
     status,
 )
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.config import get_default_config
-from openhands.agent_server.conversation_service import get_default_conversation_service
-from openhands.agent_server.models import ExecuteBashRequest, Success
+from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.logger import get_logger
 
 
+class SubdirectoryEntry(BaseModel):
+    name: str
+    path: str
+
+
+class SubdirectoryPage(BaseModel):
+    items: list[SubdirectoryEntry]
+    next_page_id: str | None = None
+
+
+class FileBrowserEntry(BaseModel):
+    label: str
+    path: str
+
+
+class HomeResponse(BaseModel):
+    home: str
+    favorites: list[FileBrowserEntry] = []
+    locations: list[FileBrowserEntry] = []
+
+
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
-config = get_default_config()
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
 
 
 async def _upload_file(path: str, file: UploadFile) -> Success:
@@ -44,10 +63,13 @@ async def _upload_file(path: str, file: UploadFile) -> Success:
         # Ensure target directory exists
         target_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Stream the file to disk to avoid memory issues with large files
+        # Stream the file to disk to avoid memory issues with large files.
+        # Offload writes to a worker thread so slow storage (NFS, FUSE,
+        # encrypted FS) cannot starve the event loop for the upload's
+        # duration.
         with open(target_path, "wb") as f:
             while chunk := await file.read(8192):  # Read in 8KB chunks
-                f.write(chunk)
+                await asyncio.to_thread(f.write, chunk)
 
         logger.info(f"Uploaded file to {target_path}")
         return Success()
@@ -100,27 +122,24 @@ async def _download_file(path: str) -> FileResponse:
         )
 
 
+def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
+    """Create a zip archive for source_dir using only Python stdlib APIs."""
+    try:
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(source_dir, source_dir.name)
+            for path in sorted(source_dir.rglob("*")):
+                archive.write(path, path.relative_to(source_dir.parent))
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
 @file_router.post("/upload")
 async def upload_file_query(
     path: Annotated[str, Query(description="Absolute file path")],
     file: Annotated[UploadFile, File()],
 ) -> Success:
     """Upload a file to the workspace using query parameter (preferred method)."""
-    return await _upload_file(path, file)
-
-
-@file_router.post("/upload/{path:path}", deprecated=True)
-async def upload_file_path(
-    path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
-    file: Annotated[UploadFile, File(...)],
-) -> Success:
-    """Upload a file using path parameter (legacy, for backwards compatibility).
-
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/upload?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
-    """
     return await _upload_file(path, file)
 
 
@@ -132,32 +151,166 @@ async def download_file_query(
     return await _download_file(path)
 
 
-@file_router.get("/download/{path:path}", deprecated=True)
-async def download_file_path(
-    path: Annotated[str, FastApiPath(description="Absolute file path.")],
-) -> FileResponse:
-    """Download a file using path parameter (legacy, for backwards compatibility).
+def _list_home_favorites(home: Path, limit: int = 50) -> list[FileBrowserEntry]:
+    """Top-level visible directories inside the user's home, alphabetised.
 
-    Deprecated since v1.15.0 and scheduled for removal in v1.20.0.
-
-    Prefer `/file/download?path=...` to avoid path-encoding issues and align with
-    other file endpoints.
+    Hidden entries (names starting with '.') and symlinks are skipped so the
+    list matches what ``search_subdirs`` returns for the same path.
     """
-    return await _download_file(path)
+    entries: list[FileBrowserEntry] = []
+    try:
+        with os.scandir(home) as scanner:
+            for entry in scanner:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                entries.append(
+                    FileBrowserEntry(label=entry.name, path=str(home / entry.name))
+                )
+    except (PermissionError, FileNotFoundError):
+        return []
+    entries.sort(key=lambda e: e.label.lower())
+    return entries[:limit]
+
+
+def _list_root_locations() -> list[FileBrowserEntry]:
+    """Filesystem roots: present drives on Windows, '/' on POSIX."""
+    if os.name == "nt":
+        from string import ascii_uppercase
+
+        roots: list[FileBrowserEntry] = []
+        for letter in ascii_uppercase:
+            candidate = Path(f"{letter}:\\")
+            try:
+                if candidate.exists():
+                    roots.append(
+                        FileBrowserEntry(label=f"{letter}:", path=str(candidate))
+                    )
+            except OSError:
+                continue
+        return roots
+    return [FileBrowserEntry(label="/", path="/")]
+
+
+@file_router.get("/home")
+async def get_home_directory() -> HomeResponse:
+    """Return the agent-server user's home directory and dynamic sidebar lists.
+
+    ``favorites`` is the set of visible top-level directories actually present
+    in the user's home (so it reflects the real environment instead of a
+    hardcoded list of names that may not exist). ``locations`` is the set of
+    filesystem roots — '/' on POSIX or available drive letters on Windows.
+    """
+    home = Path.home()
+    return HomeResponse(
+        home=str(home),
+        favorites=_list_home_favorites(home),
+        locations=_list_root_locations(),
+    )
+
+
+@file_router.get("/search_subdirs")
+async def search_subdirs(
+    path: Annotated[
+        str,
+        Query(description="Absolute directory path to list subdirectories of"),
+    ],
+    page_id: Annotated[
+        str | None,
+        Query(title="Optional next_page_id from the previously returned page"),
+    ] = None,
+    limit: Annotated[
+        int,
+        Query(title="The max number of results in the page", gt=0, lte=100),
+    ] = 100,
+) -> SubdirectoryPage:
+    """Search / List immediate subdirectories of `path`.
+
+    Used by the GUI's workspace picker. Hidden entries (names starting with '.')
+    and symlinks are skipped. Files are skipped. Returns absolute paths so the
+    GUI can use a result directly as ``workspace.working_dir``.
+
+    Results are sorted case-insensitively by name and paginated. ``page_id`` is
+    the ``next_page_id`` returned by the previous page (the lowercase name of
+    the first item to include on the next page).
+    """
+    assert limit > 0
+    assert limit <= 100
+
+    target = Path(path)
+    if not target.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+    if not target.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Directory not found",
+        )
+    if not target.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is not a directory",
+        )
+
+    entries: list[SubdirectoryEntry] = []
+    try:
+        with os.scandir(target) as scanner:
+            for entry in scanner:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                entries.append(
+                    SubdirectoryEntry(name=entry.name, path=str(target / entry.name))
+                )
+    except PermissionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {e}",
+        )
+
+    entries.sort(key=lambda e: e.name.lower())
+
+    start_index = 0
+    if page_id:
+        for i, entry in enumerate(entries):
+            if entry.name.lower() == page_id:
+                start_index = i
+                break
+
+    page_items = entries[start_index : start_index + limit]
+    next_page_id: str | None = None
+    if start_index + limit < len(entries):
+        next_page_id = entries[start_index + limit].name.lower()
+
+    return SubdirectoryPage(items=page_items, next_page_id=next_page_id)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")
 async def download_trajectory(
     conversation_id: UUID,
 ) -> FileResponse:
-    """Download a file from the workspace."""
+    """Download a zip archive of a conversation trajectory."""
     config = get_default_config()
     temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
-    _, task = await bash_event_service.start_bash_command(
-        ExecuteBashRequest(command=f"zip -r {temp_file} {conversation_dir}")
-    )
-    await task
+
+    if not conversation_dir.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
+
+    await asyncio.to_thread(_create_zip_from_directory, conversation_dir, temp_file)
     return FileResponse(
         path=temp_file,
         filename=temp_file.name,

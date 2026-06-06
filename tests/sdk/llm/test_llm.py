@@ -15,6 +15,7 @@ from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.tool.builtins.finish import FinishTool
 
 # Import common test utilities
 from tests.conftest import create_mock_litellm_response
@@ -319,6 +320,58 @@ def test_llm_token_counting(default_llm):
     assert token_count >= 0
 
 
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_includes_tools(mock_token_counter, default_llm):
+    """Test LLM token counting forwards tool schemas to LiteLLM."""
+    mock_token_counter.return_value = 123
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    tools = list(FinishTool.create())
+
+    token_count = default_llm.get_token_count(
+        messages,
+        tools=tools,
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 123
+    _, kwargs = mock_token_counter.call_args
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0]["function"]["name"] == "finish"
+    assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_mocks_tools_for_non_native_models(mock_token_counter):
+    """Test token counting prompt-mocks tools when native tool calling is disabled."""
+    mock_token_counter.return_value = 456
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="non-native-token-count-llm",
+        native_tool_calling=False,
+        caching_prompt=False,
+    )
+    messages = [
+        Message(role="system", content=[TextContent(text="System prompt")]),
+        Message(role="user", content=[TextContent(text="Hello")]),
+    ]
+
+    token_count = llm.get_token_count(
+        messages,
+        tools=list(FinishTool.create()),
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 456
+    _, kwargs = mock_token_counter.call_args
+    assert kwargs["tools"] is None
+    formatted_messages = kwargs["messages"]
+    system_text = formatted_messages[0]["content"][0]["text"]
+    assert "You have access to the following functions" in system_text
+    assert "---- BEGIN FUNCTION #1: finish ----" in system_text
+    assert "<parameter=security_risk>LOW</parameter>" in system_text
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_forwards_extra_headers_to_litellm(mock_completion):
     mock_response = create_mock_litellm_response("ok")
@@ -338,8 +391,11 @@ def test_llm_forwards_extra_headers_to_litellm(mock_completion):
 
     assert mock_completion.call_count == 1
     _, kwargs = mock_completion.call_args
-    # extra_headers forwarded either directly or inside **kwargs
-    assert kwargs.get("extra_headers") == headers
+    # User-supplied extra_headers must reach litellm. The LLM may also inject
+    # OpenRouter HTTP-Referer / X-Title defaults (issue #3138), so only assert
+    # the user's headers are a subset of the forwarded dict.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
@@ -386,7 +442,9 @@ def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
 
     assert mock_responses.call_count == 1
     _, kwargs = mock_responses.call_args
-    assert kwargs.get("extra_headers") == headers
+    # See test_llm_forwards_extra_headers_to_litellm for the same rationale.
+    forwarded = kwargs.get("extra_headers") or {}
+    assert headers.items() <= forwarded.items()
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -1017,7 +1075,8 @@ def test_llm_respects_allow_short_context_windows_env_var(mock_get_model_info):
             api_key=SecretStr("test-key"),
             usage_id="test-llm",
         )
-        assert llm.max_input_tokens == 2048
+        assert llm.max_input_tokens is None
+        assert llm.effective_max_input_tokens == 2048
 
 
 # LLM model_copy Tests
@@ -1174,6 +1233,33 @@ def test_conversation_stats_restore_then_track():
         assert stats.get_combined_metrics().accumulated_cost == 10.25
 
 
+def test_telemetry_callback_preserved_across_revalidation():
+    """Telemetry callbacks must survive validators re-running on the LLM.
+
+    Wrapping an LLM in another Pydantic model (e.g. RegistryEvent) re-runs the
+    LLM's `mode="after"` validators. Before this fix, _set_env_side_effects
+    rebuilt _telemetry unconditionally, silently dropping any callback wired
+    via telemetry.set_*_callback() — which broke real-time stats streaming
+    from the agent server (no `key="stats"` events were ever emitted after
+    the first agent step).
+    """
+    llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="agent",
+    )
+    fired: list[bool] = []
+    llm.telemetry.set_stats_update_callback(lambda: fired.append(True))
+    telemetry_before = llm._telemetry
+
+    RegistryEvent(llm=llm)
+
+    assert llm._telemetry is telemetry_before
+    assert llm.telemetry._stats_update_callback is not None
+    llm.telemetry._stats_update_callback()
+    assert fired == [True]
+
+
 # max_output_tokens Capping Tests
 
 
@@ -1203,10 +1289,12 @@ def test_max_output_tokens_capped_when_using_max_tokens_fallback(mock_get_model_
         usage_id="test-llm",
     )
 
-    # max_output_tokens should be capped, not set to 200000
-    assert llm.max_output_tokens is not None
-    assert llm.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
-    assert llm.max_output_tokens < 200000
+    # Config remains unset; the effective runtime value is capped.
+    assert llm.max_output_tokens is None
+    effective_max_output_tokens = llm.effective_max_output_tokens
+    assert effective_max_output_tokens is not None
+    assert effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    assert effective_max_output_tokens < 200000
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1225,8 +1313,9 @@ def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info)
         usage_id="test-llm",
     )
 
-    # Should use the actual max_output_tokens, not capped
-    assert llm.max_output_tokens == 8192
+    # Should use the actual effective max_output_tokens, not capped
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1247,9 +1336,10 @@ def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
         usage_id="test-llm",
     )
 
-    # Should use the actual value since it's below the cap
-    assert llm.max_output_tokens == 4096
-    assert llm.max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
+    # Should use the actual effective value since it's below the cap
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 4096
+    assert llm.effective_max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
 
 def test_explicit_max_output_tokens_not_overridden():
@@ -1263,6 +1353,7 @@ def test_explicit_max_output_tokens_not_overridden():
 
     # Should respect the explicit value
     assert llm.max_output_tokens == 32768
+    assert llm.effective_max_output_tokens == 32768
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1285,8 +1376,10 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 262144 // 2
-    assert llm.max_input_tokens == 262144
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 262144 // 2
+    assert llm.max_input_tokens is None
+    assert llm.effective_max_input_tokens == 262144
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1310,7 +1403,8 @@ def test_max_output_tokens_capped_when_equal_to_max_tokens(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 131072 // 2
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 131072 // 2
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
@@ -1329,7 +1423,8 @@ def test_max_output_tokens_not_capped_when_below_context_window(
         usage_id="test-llm",
     )
 
-    assert llm.max_output_tokens == 8192
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == 8192
 
 
 # LLM Registry Tests

@@ -94,9 +94,10 @@ class TestAgentContext:
         assert "<name>image-resize</name>" in result
         assert "Extract text from PDF files." in result
         assert "Resize and convert images." in result
-        # Verify source is included as location
-        assert "<location>pdf-tools.md</location>" in result
-        assert "<location>image-resize.md</location>" in result
+        # Source paths must NOT be exposed: invoke_skill is the only entry point.
+        assert "<location>" not in result
+        assert "pdf-tools.md" not in result
+        assert "image-resize.md" not in result
 
     def test_agentskills_format_progressive_disclosure(self):
         """Test that AgentSkills-format skills use progressive disclosure.
@@ -152,6 +153,61 @@ class TestAgentContext:
         # Legacy skill should be in REPO_CONTEXT with full content
         assert "<REPO_CONTEXT>" in result
         assert "Legacy repo rules content" in result
+
+    def test_disable_model_invocation_hides_skill_but_preserves_triggers(self):
+        """Disabled skills should not be advertised for invoke_skill, but their
+        trigger-based activation still works."""
+        visible = Skill(
+            name="visible",
+            content="Visible full content",
+            description="Visible skill",
+            source="/path/to/visible/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+        )
+        hidden_triggered = Skill(
+            name="hidden-triggered",
+            content="Hidden triggered content",
+            description="Hidden triggered skill",
+            source="/path/to/hidden-triggered/SKILL.md",
+            trigger=KeywordTrigger(keywords=["hidden-keyword"]),
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        hidden_without_trigger = Skill(
+            name="hidden-without-trigger",
+            content="Hidden no-trigger content",
+            description="Hidden no-trigger skill",
+            source="/path/to/hidden-without-trigger/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        context = AgentContext(
+            skills=[visible, hidden_triggered, hidden_without_trigger]
+        )
+
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<name>visible</name>" in result
+        assert "<name>hidden-triggered</name>" not in result
+        assert "<name>hidden-without-trigger</name>" not in result
+        assert "Hidden triggered skill" not in result
+        assert "Hidden no-trigger content" not in result
+
+        trigger_result = context.get_user_message_suffix(
+            Message(
+                role="user",
+                content=[TextContent(text="please use hidden-keyword")],
+            ),
+            skip_skill_names=[],
+        )
+
+        assert trigger_result is not None
+        content, activated_skill_names = trigger_result
+        assert "Hidden triggered content" in content.text
+        assert activated_skill_names == ["hidden-triggered"]
 
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
@@ -918,16 +974,27 @@ templates.",
         assert result is None
 
     def test_agent_context_default_datetime(self):
-        """Test that AgentContext defaults to current datetime."""
+        """Test that AgentContext defaults to the current timezone-aware datetime."""
         from datetime import datetime, timedelta
 
-        before = datetime.now()
+        before = datetime.now().astimezone()
         context = AgentContext()
-        after = datetime.now()
+        after = datetime.now().astimezone()
 
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
+        # Regression for #3438: the default must be timezone-aware (not naive
+        # local time) so the datetime injected into the system prompt is
+        # unambiguous.
+        assert context.current_datetime.tzinfo is not None
+        # The bug surfaced in the rendered value injected into the prompt, not
+        # just the field: get_formatted_datetime() must carry a UTC offset.
+        formatted = context.get_formatted_datetime()
+        assert formatted is not None
+        assert "+" in formatted or "-" in formatted.split("T", 1)[1], (
+            f"formatted datetime should carry a UTC offset, got {formatted!r}"
+        )
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
 
@@ -1030,3 +1097,29 @@ templates.",
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
         assert "The current date and time is: 2024-03-15T14:30:00" in result
+
+
+def test_agent_context_secrets_raw_strings_redacted_by_default():
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_real_secret"})
+
+    # In-memory shape is preserved — runtime consumers read raw strings directly.
+    assert context.secrets is not None
+    assert context.secrets["GITHUB_TOKEN"] == "ghp_real_secret"
+
+    assert "ghp_real_secret" not in context.model_dump_json()
+    assert context.model_dump(mode="json")["secrets"] == {"GITHUB_TOKEN": "**********"}
+
+    exposed = context.model_dump(mode="json", context={"expose_secrets": True})
+    assert exposed["secrets"] == {"GITHUB_TOKEN": "ghp_real_secret"}
+
+
+def test_agent_context_secrets_static_secret_still_masked():
+    from openhands.sdk.secret import StaticSecret
+
+    context = AgentContext(
+        secrets={"TOKEN": StaticSecret(value=SecretStr("static-secret"))},
+    )
+
+    assert "static-secret" not in context.model_dump_json()
+    exposed = context.model_dump(context={"expose_secrets": True})
+    assert exposed["secrets"]["TOKEN"]["value"] == "static-secret"
