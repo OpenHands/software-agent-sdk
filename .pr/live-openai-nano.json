@@ -1,6 +1,6 @@
 {
   "conversation_id_header_present": true,
-  "elapsed_seconds": 4.041,
+  "elapsed_seconds": 8.044,
   "response": {
     "choices": [
       {
@@ -10,7 +10,7 @@
         "message": {
           "annotations": null,
           "audio": null,
-          "content": "OPENAI_GATEWAY_OK",
+          "content": "It is a compatibility layer that accepts OpenAI-style chat and function-calling requests, forwards them to an internal agent server to perform reasoning and tool usage, and returns the results in OpenAI-compatible response formats.",
           "function_call": null,
           "refusal": null,
           "role": "assistant",
@@ -18,8 +18,8 @@
         }
       }
     ],
-    "created": 1780738224,
-    "id": "chatcmpl-9d6851374999421791288c24cb056a27",
+    "created": 1780740369,
+    "id": "chatcmpl-9710b521187744eea48b837e52bf2dc5",
     "model": "openhands_openai_nano",
     "object": "chat.completion",
     "service_tier": null,

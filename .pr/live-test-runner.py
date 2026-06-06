@@ -103,7 +103,7 @@ def _run_completion(
     client: OpenAI,
     *,
     model: str,
-    expected_text: str,
+    prompt: str,
 ) -> dict[str, Any]:
     started = time.time()
     raw_response = client.chat.completions.with_raw_response.create(
@@ -111,9 +111,9 @@ def _run_completion(
         messages=[
             {
                 "role": "system",
-                "content": "You are a smoke-test assistant. Do not use tools.",
+                "content": "Answer directly and do not use tools.",
             },
-            {"role": "user", "content": f"Reply with exactly: {expected_text}"},
+            {"role": "user", "content": prompt},
         ],
     )
     parsed = raw_response.parse()
@@ -196,7 +196,10 @@ def main() -> None:
                     _run_completion(
                         openai_client,
                         model="openhands_openai_nano",
-                        expected_text="OPENAI_GATEWAY_OK",
+                        prompt=(
+                            "In one sentence, explain what an OpenAI-compatible "
+                            "agent-server gateway does."
+                        ),
                     ),
                 )
                 _write_json(
@@ -204,7 +207,10 @@ def main() -> None:
                     _run_completion(
                         openai_client,
                         model="openhands_haiku_eval_proxy",
-                        expected_text="LITELLM_HAIKU_GATEWAY_OK",
+                        prompt=(
+                            "Write a haiku about a software agent opening an "
+                            "OpenAI-compatible gateway."
+                        ),
                     ),
                 )
             finally:

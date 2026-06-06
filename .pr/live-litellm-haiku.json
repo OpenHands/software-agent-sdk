@@ -1,6 +1,6 @@
 {
   "conversation_id_header_present": true,
-  "elapsed_seconds": 2.044,
+  "elapsed_seconds": 6.052,
   "response": {
     "choices": [
       {
@@ -10,7 +10,7 @@
         "message": {
           "annotations": null,
           "audio": null,
-          "content": "LITELLM_HAIKU_GATEWAY_OK",
+          "content": "Agent awakens\nGateway opens to the mind\nTokens flow like streams",
           "function_call": null,
           "refusal": null,
           "role": "assistant",
@@ -18,8 +18,8 @@
         }
       }
     ],
-    "created": 1780738226,
-    "id": "chatcmpl-d3959c56e7bb416bb2667f9cdbef3bb6",
+    "created": 1780740375,
+    "id": "chatcmpl-d99e0fdea5314ceeb5f7e048a405f3d7",
     "model": "openhands_haiku_eval_proxy",
     "object": "chat.completion",
     "service_tier": null,

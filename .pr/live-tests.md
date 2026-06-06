@@ -24,8 +24,8 @@ These artifacts were generated against this branch's OpenAI-compatible agent-ser
 | Artifact | Request | Result |
 | --- | --- | --- |
 | `live-models.json` | `GET /v1/models` | Returned both profile-backed OpenAI model IDs. |
-| `live-openai-nano.json` | `POST /v1/chat/completions` with `model=openhands_openai_nano` | HTTP 200, OpenAI-shaped `chat.completion`, assistant content `OPENAI_GATEWAY_OK`, conversation ID response header present. |
-| `live-litellm-haiku.json` | `POST /v1/chat/completions` with `model=openhands_haiku_eval_proxy` | HTTP 200, OpenAI-shaped `chat.completion`, assistant content `LITELLM_HAIKU_GATEWAY_OK`, conversation ID response header present. |
+| `live-openai-nano.json` | OpenAI SDK `client.chat.completions.with_raw_response.create(...)` with `model=openhands_openai_nano` | HTTP 200, OpenAI-shaped `chat.completion`, natural-language answer from `gpt-5-nano`, conversation ID response header present. |
+| `live-litellm-haiku.json` | OpenAI SDK `client.chat.completions.with_raw_response.create(...)` with `model=openhands_haiku_eval_proxy` | HTTP 200, OpenAI-shaped `chat.completion`, haiku generated through the eval LiteLLM proxy Haiku profile, conversation ID response header present. |
 | `live-server.log` | Server stdout/stderr | Shows server startup, profile creation, `/v1/models`, both `/v1/chat/completions` calls, and background cleanup of ephemeral conversations. |
 
 No API keys or bearer tokens are written into these artifacts.
