@@ -9,6 +9,11 @@ exactly what command you ran and include logs, screenshots, or reproduction note
 
 HUMAN:
 
+<!--
+Human author: please replace this comment with a short note (at least 20 visible
+characters) before marking ready for review.
+AI agents must not edit this section.
+-->
 
 - [ ] A human has tested these changes.
 
