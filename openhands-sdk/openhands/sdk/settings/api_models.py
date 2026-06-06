@@ -78,8 +78,8 @@ class SettingsResponse(BaseModel):
     """Response model for GET /api/settings.
 
     Contains the full settings payload including agent configuration,
-    conversation settings, app-level user preferences, and a flag indicating
-    if an LLM API key is set.
+    conversation settings, active LLM profile, app-level user preferences,
+    and a flag indicating if an LLM API key is set.
 
     The ``agent_settings`` and ``conversation_settings`` fields are raw dicts
     because the server controls secret serialization via context. Use the
@@ -96,6 +96,10 @@ class SettingsResponse(BaseModel):
     agent_settings: dict[str, Any]
     conversation_settings: dict[str, Any]
     llm_api_key_is_set: bool
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active LLM profile, if one is selected.",
+    )
     app_preferences: AppPreferences = Field(default_factory=AppPreferences)
 
     def get_agent_settings(self) -> AgentSettingsConfig:
@@ -137,6 +141,10 @@ class SettingsUpdateRequest(BaseModel):
     agent_settings_diff: dict[str, Any] | None = None
     conversation_settings_diff: dict[str, Any] | None = None
     app_preferences_diff: dict[str, Any] | None = None
+    active_profile: str | None = Field(
+        default=None,
+        description="Name of the active LLM profile to persist; null clears it.",
+    )
 
 
 # ── Secrets API Models ────────────────────────────────────────────────────
