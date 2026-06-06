@@ -4257,14 +4257,34 @@ class TestMaybeSetSessionModel:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_does_not_apply_override_at_init(self):
-        # An unknown/custom server gets neither _meta nor the protocol call on a
-        # fresh session, so the override never reaches the server.
+    async def test_unknown_provider_uses_set_config_option_fallback(self):
+        # An unknown/custom server now tries set_config_option as a fallback
+        # for model selection, which is a standard ACP method.
         conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "devin-cli", "session-1", "kimi-k2-6"
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="session-1",
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_set_config_option_failure_is_tolerated(self):
+        # If set_config_option fails for an unknown provider, we log a warning
+        # but don't break session creation.
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
         applied = await _maybe_set_session_model(
             conn, "some-custom-acp", "session-1", "whatever"
         )
         conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once()
         assert applied is False
 
 
@@ -4308,17 +4328,18 @@ class TestReapplySessionModelOnResume:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_attempts_reapply(self):
-        # provider=None (custom server) is allowed to attempt the switch by
-        # set_acp_model, and such switches are persisted as authoritative — so
-        # resume must mirror that and attempt the reapply too (otherwise the
-        # resumed session would silently revert to the server default).
+    async def test_unknown_provider_attempts_reapply_via_set_config_option(self):
+        # provider=None (custom server) now attempts reapply via set_config_option
+        # as a fallback, which is a standard ACP method.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever"
+            conn, "devin-cli", "sess-1", "kimi-k2-6"
         )
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="whatever", session_id="sess-1"
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="sess-1",
         )
         assert applied is True
 
@@ -4355,13 +4376,13 @@ class TestReapplySessionModelOnResume:
         # the call, or invalid model id) must not break resume — mirrors the
         # load_session fallback. The error is logged, not raised.
         conn = AsyncMock()
-        conn.set_session_model.side_effect = ACPRequestError(
+        conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         applied = await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
-        conn.set_session_model.assert_awaited_once()
+        conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
         assert applied is False

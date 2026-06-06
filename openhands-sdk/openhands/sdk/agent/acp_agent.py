@@ -503,15 +503,19 @@ async def _maybe_set_session_model(
     use the protocol call for initial selection (codex-acp, gemini-cli) get a
     one-shot ``set_session_model`` call here.
 
+    For unknown/custom providers (e.g. Devin CLI), we fall back to the generic
+    ``set_config_option`` method with configId="model", which is a standard ACP
+    method that many custom ACP servers support.
+
     Runtime, mid-conversation switches go through
     :meth:`ACPAgent.set_acp_model` instead, which always uses
     ``set_session_model`` and is gated on the separate
     ``supports_runtime_model_switch`` capability flag.
 
-    Returns ``True`` only when this issued a ``set_session_model`` call — i.e.
+    Returns ``True`` only when this issued a model-setting call that succeeded — i.e.
     the override was actually pushed to the server via *this* path. ``False``
     when there is nothing to apply (no ``acp_model``) or the provider selects
-    its model another way (``_meta``) or not at all (unknown/custom server), so
+    its model another way (``_meta``) or the server rejected the call, so
     the caller can tell whether the live session is really running ``acp_model``.
     """
     if not acp_model:
@@ -520,6 +524,29 @@ async def _maybe_set_session_model(
     if provider is not None and provider.supports_set_session_model:
         await conn.set_session_model(model_id=acp_model, session_id=session_id)
         return True
+    # For unknown/custom providers, try the generic set_config_option method
+    # which is a standard ACP protocol method for setting configuration options
+    if provider is None:
+        try:
+            await conn.set_config_option(
+                config_id="model",
+                value=acp_model,
+                session_id=session_id,
+            )
+            logger.info(
+                "Set model %r on unknown/custom ACP server %s via set_config_option",
+                acp_model,
+                agent_name,
+            )
+            return True
+        except ACPRequestError as e:
+            logger.warning(
+                "Could not set model %r on unknown/custom ACP server %s via "
+                "set_config_option (%s); the session will use the server default",
+                acp_model,
+                agent_name,
+                e,
+            )
     return False
 
 
@@ -536,6 +563,10 @@ async def _reapply_session_model_on_resume(
     the ACP server's default. This issues ``set_session_model`` so the resumed
     live session matches the serialized ``acp_model``.
 
+    For unknown/custom providers (e.g. Devin CLI), we fall back to the generic
+    ``set_config_option`` method with configId="model", which is a standard ACP
+    method that many custom ACP servers support.
+
     The gating mirrors :meth:`ACPAgent.set_acp_model` (attempt for custom/unknown
     servers and known providers that support runtime switching; skip only known
     providers that don't), deliberately differing from the initial-selection
@@ -544,7 +575,7 @@ async def _reapply_session_model_on_resume(
     tolerated (logged) — like the ``load_session`` fallback above — so resume
     can't break; the session keeps the server default until the next switch.
 
-    Returns ``True`` only when ``set_session_model`` was issued and accepted, so
+    Returns ``True`` only when a model-setting call was issued and accepted, so
     the caller knows the resumed live session is actually running ``acp_model``.
     ``False`` when there is nothing to reapply, the provider doesn't support the
     switch, or the server rejected the call (swallowed) — in those cases the
@@ -557,7 +588,21 @@ async def _reapply_session_model_on_resume(
     if provider is not None and not provider.supports_runtime_model_switch:
         return False
     try:
-        await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        if provider is not None:
+            # Known provider: use set_session_model
+            await conn.set_session_model(model_id=acp_model, session_id=session_id)
+        else:
+            # Unknown/custom provider: try set_config_option as fallback
+            await conn.set_config_option(
+                config_id="model",
+                value=acp_model,
+                session_id=session_id,
+            )
+            logger.info(
+                "Reapplied model %r on unknown/custom ACP server %s via set_config_option",
+                acp_model,
+                agent_name,
+            )
         return True
     except ACPRequestError as e:
         logger.warning(
