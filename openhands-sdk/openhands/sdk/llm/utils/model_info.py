@@ -29,7 +29,7 @@ def _get_model_info_from_litellm_proxy(
         response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
         data = response.json().get("data", [])
         # Match against either the public alias (`model_name`) or the
-        # underlying provider id (`litellm_params.model`). The proxy itself
+        # underlying provider/model_name form (`litellm_params.model`). The proxy itself
         # accepts requests by either form, and our proxy configs often
         # advertise a short alias (e.g. `claude-opus-4-8`) for a provider
         # id (`anthropic/claude-opus-4-8`). Without the second match,
