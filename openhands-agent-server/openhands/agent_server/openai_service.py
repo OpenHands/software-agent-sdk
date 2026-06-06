@@ -33,12 +33,9 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.logger import get_logger
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.workspace import LocalWorkspace
 
-
-logger = get_logger(__name__)
 
 _MODEL_PREFIX = "openhands_"
 _DEFAULT_WORKSPACE = "workspace/project"
@@ -217,6 +214,7 @@ async def _wait_for_completion(
     event_service: EventService,
     *,
     allow_existing_response: bool,
+    min_event_count: int | None = None,
     timeout_seconds: float = _GATEWAY_TIMEOUT_SECONDS,
 ) -> ConversationExecutionStatus:
     deadline = time.monotonic() + timeout_seconds
@@ -226,13 +224,22 @@ async def _wait_for_completion(
     while True:
         state = await event_service.get_state()
         last_status = state.execution_status
+        enough_new_events = (
+            min_event_count is None or len(state.events) > min_event_count
+        )
         if last_status == ConversationExecutionStatus.RUNNING:
             observed_run = True
-        elif last_status.is_terminal():
+        elif last_status.is_terminal() and (
+            allow_existing_response or observed_run or enough_new_events
+        ):
             return last_status
-        elif observed_run:
+        elif observed_run and enough_new_events:
             return last_status
-        elif allow_existing_response and await event_service.get_agent_final_response():
+        elif (
+            allow_existing_response
+            and enough_new_events
+            and await event_service.get_agent_final_response()
+        ):
             return last_status
 
         if time.monotonic() >= deadline:
@@ -259,19 +266,6 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Agent run ended with status: {status_value.value}",
-        )
-
-
-async def _delete_conversation_safely(
-    conversation_service: ConversationService, conversation_id: UUID
-) -> None:
-    try:
-        await conversation_service.delete_conversation(conversation_id)
-    except Exception:
-        logger.warning(
-            "Failed to delete ephemeral OpenAI gateway conversation %s",
-            conversation_id,
-            exc_info=True,
         )
 
 
@@ -326,13 +320,14 @@ async def run_chat_completion(
     )
     event_service = None
     conversation_id = reusable_conversation_id
-    should_delete = reusable_conversation_id is None
+    min_event_count: int | None = None
 
     if reusable_conversation_id is not None:
         event_service = await conversation_service.get_event_service(
             reusable_conversation_id
         )
         if event_service is not None:
+            min_event_count = len((await event_service.get_state()).events) + 1
             user_message = _latest_user_message(request.messages)
             await event_service.send_message(
                 Message(role="user", content=_content_to_sdk_parts(user_message)),
@@ -340,45 +335,41 @@ async def run_chat_completion(
             )
     allow_existing_response = event_service is None
 
-    try:
+    if event_service is None:
+        conversation_info, _ = await conversation_service.start_conversation(
+            start_request
+        )
+        conversation_id = conversation_info.id
+        event_service = await conversation_service.get_event_service(
+            conversation_info.id
+        )
         if event_service is None:
-            conversation_info, _ = await conversation_service.start_conversation(
-                start_request
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Conversation did not start",
             )
-            conversation_id = conversation_info.id
-            event_service = await conversation_service.get_event_service(
-                conversation_info.id
-            )
-            if event_service is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Conversation did not start",
-                )
 
-        status_value = await _wait_for_completion(
-            event_service, allow_existing_response=allow_existing_response
-        )
-        _raise_for_terminal_error(status_value)
-        state = await event_service.get_state()
-        final_response = await event_service.get_agent_final_response()
-        response = OpenAIChatCompletionResponse(
-            id=f"chatcmpl-{uuid4().hex}",
-            created=int(time.time()),
-            model=request.model,
-            choices=[
-                OpenAIChatCompletionChoice(
-                    index=0,
-                    message=OpenAIResponseMessage(content=final_response),
-                )
-            ],
-            usage=_openai_usage_from_state(state),
-        )
-        assert conversation_id is not None
-        return OpenAIChatCompletionResult(
-            response=response, conversation_id=conversation_id
-        )
-    finally:
-        if should_delete and conversation_id is not None:
-            asyncio.create_task(
-                _delete_conversation_safely(conversation_service, conversation_id)
+    status_value = await _wait_for_completion(
+        event_service,
+        allow_existing_response=allow_existing_response,
+        min_event_count=min_event_count,
+    )
+    _raise_for_terminal_error(status_value)
+    state = await event_service.get_state()
+    final_response = await event_service.get_agent_final_response()
+    response = OpenAIChatCompletionResponse(
+        id=f"chatcmpl-{uuid4().hex}",
+        created=int(time.time()),
+        model=request.model,
+        choices=[
+            OpenAIChatCompletionChoice(
+                index=0,
+                message=OpenAIResponseMessage(content=final_response),
             )
+        ],
+        usage=_openai_usage_from_state(state),
+    )
+    assert conversation_id is not None
+    return OpenAIChatCompletionResult(
+        response=response, conversation_id=conversation_id
+    )

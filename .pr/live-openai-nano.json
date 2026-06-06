@@ -1,6 +1,6 @@
 {
   "conversation_id_header_present": true,
-  "elapsed_seconds": 8.044,
+  "elapsed_seconds": 6.039,
   "response": {
     "choices": [
       {
@@ -10,7 +10,7 @@
         "message": {
           "annotations": null,
           "audio": null,
-          "content": "It is a compatibility layer that accepts OpenAI-style chat and function-calling requests, forwards them to an internal agent server to perform reasoning and tool usage, and returns the results in OpenAI-compatible response formats.",
+          "content": "An OpenAI-compatible agent-server gateway is a bridge that exposes an OpenAI-style API to clients, translating prompts into the agent\u2019s actions and returning the results in the familiar OpenAI chat/completion format.",
           "function_call": null,
           "refusal": null,
           "role": "assistant",
@@ -18,18 +18,18 @@
         }
       }
     ],
-    "created": 1780740369,
-    "id": "chatcmpl-9710b521187744eea48b837e52bf2dc5",
+    "created": 1780752878,
+    "id": "chatcmpl-a948351964a24d2191092e150033b594",
     "model": "openhands_openai_nano",
     "object": "chat.completion",
     "service_tier": null,
     "system_fingerprint": null,
     "usage": {
-      "completion_tokens": 0,
+      "completion_tokens": 818,
       "completion_tokens_details": null,
-      "prompt_tokens": 0,
+      "prompt_tokens": 3914,
       "prompt_tokens_details": null,
-      "total_tokens": 0
+      "total_tokens": 4732
     }
   },
   "status_code": 200

@@ -649,6 +649,31 @@ def test_openai_chat_completions_gateway_over_real_server(
                 }
                 conversation_id = response.headers["X-OpenHands-ServerConversation-ID"]
                 UUID(conversation_id)
+                persisted_response = client.get(
+                    f"{env['host']}/api/conversations/{conversation_id}", timeout=2.0
+                )
+                assert persisted_response.status_code == 200
+
+                reused_response = client.post(
+                    f"{env['host']}/v1/chat/completions",
+                    headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                    json={
+                        "model": "openhands_smoke",
+                        "messages": [
+                            {"role": "user", "content": "Say hello again."},
+                        ],
+                    },
+                    timeout=10.0,
+                )
+                assert reused_response.status_code == 200
+                assert (
+                    reused_response.headers["X-OpenHands-ServerConversation-ID"]
+                    == conversation_id
+                )
+                assert reused_response.json()["choices"][0]["message"] == {
+                    "role": "assistant",
+                    "content": "Hello from patched LLM",
+                }
 
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
