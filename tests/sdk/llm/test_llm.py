@@ -767,11 +767,19 @@ def test_llm_local_detection_based_on_model_name(default_llm):
     assert llm.temperature is None  # Uses provider default
 
     # Test with localhost base_url
-    local_llm = default_llm.model_copy(update={"base_url": "http://localhost:8000"})
+    local_llm = LLM(
+        model="gpt-4o",
+        base_url="http://localhost:8000",
+        usage_id="test-llm",
+    )
     assert local_llm.base_url == "http://localhost:8000"
 
     # Test with ollama model
-    ollama_llm = default_llm.model_copy(update={"model": "ollama/llama2"})
+    ollama_llm = LLM(
+        model="ollama/llama2",
+        usage_id="test-llm",
+        max_input_tokens=16384,
+    )
     assert ollama_llm.model == "ollama/llama2"
 
 
