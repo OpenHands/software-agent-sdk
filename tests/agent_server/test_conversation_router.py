@@ -28,6 +28,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -726,7 +727,7 @@ def test_start_conversation_accepts_acp_agent_settings(
             "/api/conversations",
             json={
                 "agent_settings": {
-                    "schema_version": 3,
+                    "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
                     "agent_kind": "acp",
                     "acp_server": "custom",
                     "acp_command": ["echo", "settings"],

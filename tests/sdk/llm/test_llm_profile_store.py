@@ -136,10 +136,80 @@ def test_load_rejects_newer_profile_schema_version(
     profile_store: LLMProfileStore,
 ) -> None:
     profile_path = profile_store.base_dir / "future.json"
-    profile_path.write_text(json.dumps({"schema_version": 2, "model": "test-model"}))
+    profile_path.write_text(
+        json.dumps(
+            {"schema_version": LLM_PROFILE_SCHEMA_VERSION + 1, "model": "test-model"}
+        )
+    )
 
     with pytest.raises(ValueError, match="newer than supported"):
         profile_store.load("future")
+
+
+def test_load_migrates_legacy_openhands_proxy_profile(
+    profile_store: LLMProfileStore,
+) -> None:
+    profile_path = profile_store.base_dir / "legacy.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model": "litellm_proxy/claude-opus-4-8",
+                "base_url": "https://llm-proxy.app.all-hands.dev/",
+            }
+        )
+    )
+
+    loaded = profile_store.load("legacy")
+
+    assert loaded.model == "openhands/claude-opus-4-8"
+    assert loaded.base_url is None
+
+
+def test_list_summaries_migrates_legacy_openhands_proxy_profile(
+    profile_store: LLMProfileStore,
+) -> None:
+    profile_path = profile_store.base_dir / "legacy.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model": "litellm_proxy/claude-opus-4-8",
+                "base_url": "https://llm-proxy.app.all-hands.dev/",
+            }
+        )
+    )
+
+    summaries = profile_store.list_summaries()
+
+    assert summaries == [
+        {
+            "name": "legacy",
+            "model": "openhands/claude-opus-4-8",
+            "base_url": None,
+            "api_key_set": False,
+        }
+    ]
+
+
+def test_load_preserves_third_party_litellm_proxy_profile(
+    profile_store: LLMProfileStore,
+) -> None:
+    profile_path = profile_store.base_dir / "custom.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model": "litellm_proxy/custom-alias",
+                "base_url": "https://proxy.example.com/",
+            }
+        )
+    )
+
+    loaded = profile_store.load("custom")
+
+    assert loaded.model == "litellm_proxy/custom-alias"
+    assert loaded.base_url == "https://proxy.example.com/"
 
 
 @pytest.mark.parametrize(

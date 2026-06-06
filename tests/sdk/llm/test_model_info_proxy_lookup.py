@@ -109,3 +109,14 @@ def test_get_litellm_model_info_uses_proxy_match_for_provider_prefixed_id():
         )
     assert info is not None
     assert info.get("supports_vision") is True
+
+
+def test_get_litellm_model_info_uses_proxy_for_openhands_provider_model():
+    with patch("openhands.sdk.llm.utils.model_info.httpx.get", _patched_httpx_get):
+        info = get_litellm_model_info(
+            secret_api_key="k",
+            base_url=None,
+            model="openhands/claude-opus-4-8",
+        )
+    assert info is not None
+    assert info.get("supports_vision") is True

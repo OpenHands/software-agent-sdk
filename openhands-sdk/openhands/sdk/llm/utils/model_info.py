@@ -7,6 +7,8 @@ from litellm.types.utils import ModelInfo
 from litellm.utils import get_model_info
 from pydantic import SecretStr
 
+from openhands.sdk.llm.utils.openhands_provider import litellm_call_kwargs
+
 
 logger = getLogger(__name__)
 
@@ -60,6 +62,10 @@ def _get_model_info_from_litellm_proxy(
 def get_litellm_model_info(
     secret_api_key: SecretStr | str | None, base_url: str | None, model: str
 ) -> ModelInfo | None:
+    call_kwargs = litellm_call_kwargs(model, base_url)
+    model = call_kwargs["model"] or model
+    base_url = call_kwargs["api_base"]
+
     # Try to get model info via openrouter or litellm proxy first
     try:
         if model.startswith("openrouter"):
