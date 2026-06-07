@@ -386,6 +386,11 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_execution_status_sync)
 
+    def _peek_execution_status(self) -> ConversationExecutionStatus:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        return self._conversation._state.execution_status
+
     def _mark_error_status_sync(self) -> None:
         """Force the conversation into ERROR status (idempotent backstop).
 
@@ -1021,7 +1026,7 @@ class EventService:
             # change execution state. LocalConversation.pause() transitions
             # only on RUNNING/IDLE and never cancels a task, so status
             # alone is the correct gate here (see #14698).
-            status = await self._get_execution_status()
+            status = self._peek_execution_status()
             if status in (
                 ConversationExecutionStatus.RUNNING,
                 ConversationExecutionStatus.IDLE,
@@ -1044,27 +1049,21 @@ class EventService:
                 self._rerun_requested = False
                 self._acp_internal_rerun_requested = False
                 # Only bump the stop-intent counter when interrupt will
-                # actually change execution state. Status alone is not
-                # sufficient: during the wait_for_pending drain tail at
-                # the end of _run_and_publish, status can read FINISHED
-                # while _run_task is still alive draining callbacks, and
-                # an interrupt landing then DOES cancel the live task -
-                # a real effect. The disjunct covers that window. The
-                # gate fails safe in the other direction: a missed bump
-                # lets a racing send_message proceed to run() (the
-                # opposite of #14698) rather than strand it.
-                status = await self._get_execution_status()
-                live_run_task = (
-                    self._run_task is not None and not self._run_task.done()
-                )
-                if (
-                    status
-                    in (
+                # actually change execution state. Prefer in-memory task
+                # state first so the hot /interrupt path does not need to
+                # enter ConversationState's persistence-aware context while
+                # a run is active.
+                live_run_task = self._run_task is not None and not self._run_task.done()
+                arun_task = getattr(self._conversation, "_arun_task", None)
+                live_arun_task = arun_task is not None and not arun_task.done()
+                should_bump = live_run_task or live_arun_task
+                if not should_bump:
+                    status = self._peek_execution_status()
+                    should_bump = status in (
                         ConversationExecutionStatus.RUNNING,
                         ConversationExecutionStatus.IDLE,
                     )
-                    or live_run_task
-                ):
+                if should_bump:
                     self._explicit_interrupt_generation += 1
             self._conversation.interrupt()
             # Wait for the run task to finish so we can publish the final
