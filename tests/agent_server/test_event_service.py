@@ -23,7 +23,13 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
+from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.fifo_lock import FIFOLock
+from openhands.sdk.conversation.impl.local_conversation import (
+    ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
+    ACP_SUPERSEDE_INFLIGHT_PROMPT,
+    LocalConversation,
+)
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -826,6 +832,287 @@ class TestEventServiceSendMessage:
         conversation.run.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_send_message_with_run_true_interrupts_running_acp_turn(
+        self, event_service, tmp_path
+    ):
+        """A new user message should interrupt an in-flight ACP prompt."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        first_step_started = asyncio.Event()
+        first_step_cancelled = asyncio.Event()
+        second_step_seen = asyncio.Event()
+        prompts_seen: list[str] = []
+
+        def user_text(event: MessageEvent | None) -> str:
+            assert event is not None
+            content = event.llm_message.content[0]
+            assert isinstance(content, TextContent)
+            return content.text
+
+        async def blocking_astep(
+            self,  # noqa: ARG001
+            conv: LocalConversation,  # noqa: ARG001
+            on_event,  # noqa: ARG001
+            on_token=None,  # noqa: ARG001
+            prompt_message: MessageEvent | None = None,
+        ) -> None:
+            prompts_seen.append(user_text(prompt_message))
+            if len(prompts_seen) == 1:
+                first_step_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    first_step_cancelled.set()
+                    raise
+
+            second_step_seen.set()
+            conv.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with (
+            patch.object(ACPAgent, "init_state", autospec=True),
+            patch.object(ACPAgent, "astep", new=blocking_astep),
+        ):
+            try:
+                await event_service.run()
+                await asyncio.wait_for(first_step_started.wait(), timeout=1.0)
+
+                await event_service.send_message(
+                    Message(role="user", content=[TextContent(text="intervening")]),
+                    run=True,
+                )
+
+                await asyncio.wait_for(first_step_cancelled.wait(), timeout=1.0)
+                await asyncio.wait_for(second_step_seen.wait(), timeout=1.0)
+            finally:
+                if (
+                    event_service._run_task is not None
+                    and not event_service._run_task.done()
+                ):
+                    conversation.interrupt()
+                    with suppress(asyncio.CancelledError, TimeoutError):
+                        await asyncio.wait_for(event_service._run_task, timeout=1.0)
+
+        assert prompts_seen == ["initial request", "intervening"]
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_run_true_does_not_interrupt_current_acp_prompt(
+        self, event_service, tmp_path
+    ):
+        """Do not cancel the ACP prompt if it already advanced to the new message."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        release_run = asyncio.Event()
+        event_service._run_task = asyncio.create_task(release_run.wait())
+        original_send_message = conversation.send_message
+
+        def send_and_mark_active_prompt(message):
+            original_send_message(message)
+            conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+            conversation.state.agent_state = {
+                **conversation.state.agent_state,
+                ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID: (
+                    conversation.state.last_user_message_id
+                ),
+            }
+
+        conversation.send_message = send_and_mark_active_prompt  # type: ignore[method-assign]
+        conversation.interrupt = MagicMock()  # type: ignore[method-assign]
+
+        try:
+            await event_service.send_message(
+                Message(role="user", content=[TextContent(text="intervening")]),
+                run=True,
+            )
+        finally:
+            release_run.set()
+            await event_service._run_task
+            event_service._run_task = None
+
+        conversation.interrupt.assert_not_called()
+        assert event_service._rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_acp_supersede_mark_rechecks_current_prompt(
+        self, event_service, tmp_path
+    ):
+        """Do not attach the supersede marker to a replacement ACP prompt."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=4,
+            stuck_detection=False,
+        )
+        conversation.send_message("initial request")
+        conversation.send_message("replacement request")
+        latest_user_message_id = conversation.state.last_user_message_id
+        assert latest_user_message_id is not None
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+        conversation.state.agent_state = {
+            **conversation.state.agent_state,
+            ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID: latest_user_message_id,
+        }
+        event_service._conversation = conversation
+        release_run = asyncio.Event()
+        event_service._run_task = asyncio.create_task(release_run.wait())
+
+        try:
+            (
+                marked,
+                active_prompt_has_latest,
+            ) = await event_service._mark_running_acp_prompt_superseded()
+        finally:
+            release_run.set()
+            await event_service._run_task
+            event_service._run_task = None
+
+        assert marked is False
+        assert active_prompt_has_latest is True
+        assert ACP_SUPERSEDE_INFLIGHT_PROMPT not in conversation.state.agent_state
+
+    @pytest.mark.asyncio
+    async def test_explicit_interrupt_clears_internal_acp_rerun_request(
+        self, event_service
+    ):
+        """A later explicit stop should win over an earlier internal ACP rerun."""
+        conversation = MagicMock()
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._rerun_requested = True
+        event_service._acp_internal_rerun_requested = True
+
+        await event_service.interrupt()
+
+        conversation.interrupt.assert_called_once()
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_internal_acp_rerun_does_not_override_explicit_interrupt(
+        self, event_service
+    ):
+        """Explicit Stop/Pause should win while an internal ACP interrupt drains."""
+        conversation = MagicMock()
+        conversation.send_message = MagicMock()
+        event_service._conversation = conversation
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.run = AsyncMock()
+
+        async def interrupt_and_simulate_user_stop(internal_acp_rerun=False):
+            assert internal_acp_rerun is True
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+
+        event_service.interrupt = interrupt_and_simulate_user_stop
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+
+        event_service.run.assert_not_awaited()
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_internal_acp_send_message_restart_rechecks_generation_in_run(
+        self, event_service, tmp_path
+    ):
+        """A late explicit Stop/Pause should prevent direct ACP restart."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=3,
+            stuck_detection=False,
+        )
+        mock_arun = AsyncMock()
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._mark_running_acp_prompt_superseded = AsyncMock(
+            return_value=(True, False)
+        )
+        event_service.interrupt = AsyncMock()
+
+        async def status_with_late_explicit_interrupt():
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+            return ConversationExecutionStatus.PAUSED
+
+        event_service._get_execution_status = status_with_late_explicit_interrupt
+
+        with patch.object(conversation, "arun", mock_arun):
+            await event_service.send_message(Message(role="user", content=[]), run=True)
+
+        event_service.interrupt.assert_awaited_once_with(internal_acp_rerun=True)
+        mock_arun.assert_not_awaited()
+        assert event_service._run_task is None
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
+    async def test_internal_acp_rerun_rechecks_explicit_interrupt_before_restart(
+        self, event_service, tmp_path
+    ):
+        """Explicit Stop/Pause should win during final restart status checks."""
+        agent = ACPAgent(acp_command=["echo", "test"])
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            max_iteration_per_run=3,
+            stuck_detection=False,
+        )
+        mock_arun = AsyncMock()
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+        event_service._rerun_requested = True
+        event_service._acp_internal_rerun_requested = True
+
+        status_calls = 0
+
+        async def status_with_late_explicit_interrupt():
+            nonlocal status_calls
+            status_calls += 1
+            if status_calls == 1:
+                return ConversationExecutionStatus.IDLE
+            event_service._explicit_interrupt_generation += 1
+            event_service._rerun_requested = False
+            event_service._acp_internal_rerun_requested = False
+            return ConversationExecutionStatus.PAUSED
+
+        event_service._get_execution_status = status_with_late_explicit_interrupt
+
+        with patch.object(conversation, "arun", mock_arun):
+            await event_service.run()
+            assert event_service._run_task is not None
+            await asyncio.wait_for(event_service._run_task, timeout=1.0)
+
+        mock_arun.assert_awaited_once()
+        assert status_calls == 2
+        assert event_service._rerun_requested is False
+        assert event_service._acp_internal_rerun_requested is False
+
+    @pytest.mark.asyncio
     async def test_send_message_with_run_true_logs_exception(self, event_service):
         """Test that exceptions from conversation.run() are caught and logged."""
         # Mock conversation and its methods
@@ -863,6 +1150,59 @@ class TestEventServiceSendMessage:
 
         # Verify run was called (and raised the exception)
         conversation.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_exception_forces_error_status(self, event_service):
+        """A run that raises before setting its own ERROR status (e.g. an ACP
+        cold-start failure in init_state, which runs outside run()/arun()'s
+        try-block) must be flipped to ERROR so the finally's state publish
+        surfaces the failure instead of a stale IDLE/RUNNING status (issue
+        #1024)."""
+        conversation = MagicMock()
+        state = MagicMock()
+        # Status never advanced past IDLE because the failure happened in
+        # _ensure_agent_ready() before the run loop set RUNNING.
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("init failed"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+        # The final state update is still published after the flip.
+        event_service._publish_state_update.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_run_exception_preserves_existing_error_status(self, event_service):
+        """When the run already set ERROR (the regular Agent path), the backstop
+        is a no-op — it must not clobber a status the run already owns."""
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.ERROR
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation._state = state
+        conversation.send_message = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("boom"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.send_message(Message(role="user", content=[]), run=True)
+        assert event_service._run_task is not None
+        await event_service._run_task
+
+        assert state.execution_status == ConversationExecutionStatus.ERROR
 
     @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):

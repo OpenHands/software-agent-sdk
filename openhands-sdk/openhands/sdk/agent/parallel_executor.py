@@ -110,11 +110,15 @@ class ParallelToolExecutor:
     ) -> list[list[Event]]:
         """Async variant of :meth:`execute_batch`.
 
-        Each tool call is dispatched to a thread pool worker via
-        :func:`asyncio.loop.run_in_executor` and scheduled
-        concurrently with :func:`asyncio.gather`.  A
-        :class:`asyncio.Semaphore` enforces the same concurrency
-        limit as the sync path's :class:`ThreadPoolExecutor`.
+        Each tool call is dispatched to a dedicated
+        :class:`~concurrent.futures.ThreadPoolExecutor` (sized to
+        ``max_workers``) via :func:`asyncio.loop.run_in_executor` and
+        scheduled concurrently with :func:`asyncio.gather`. The pool
+        itself bounds concurrency, matching the sync path's per-batch
+        :class:`ThreadPoolExecutor`; using a dedicated pool avoids
+        serializing on asyncio's shared default executor (small and
+        process-wide), which could throttle previously-parallel tool
+        calls when other ``run_in_executor`` users contend for it.
 
         The *tool_runner* is the same **synchronous** callable used by
         :meth:`execute_batch` (i.e. ``_execute_action_event``).
@@ -136,15 +140,24 @@ class ParallelToolExecutor:
                 for action in action_events
             ]
 
-        sem = asyncio.Semaphore(self._max_workers)
-
-        async def _limited(action: ActionEvent) -> list[Event]:
-            async with sem:
-                return await self._arun_safe(
-                    action, tool_runner, _resolve(action), cancel_token
+        with ThreadPoolExecutor(
+            max_workers=self._max_workers,
+            thread_name_prefix="aexecute_batch",
+        ) as pool:
+            return list(
+                await asyncio.gather(
+                    *[
+                        self._arun_safe(
+                            action,
+                            tool_runner,
+                            _resolve(action),
+                            cancel_token,
+                            pool,
+                        )
+                        for action in action_events
+                    ]
                 )
-
-        return list(await asyncio.gather(*[_limited(a) for a in action_events]))
+            )
 
     async def _arun_safe(
         self,
@@ -152,6 +165,7 @@ class ParallelToolExecutor:
         tool_runner: Callable[[ActionEvent], list[Event]],
         tool: ToolDefinition | None = None,
         cancel_token: CancellationToken | None = None,
+        executor: ThreadPoolExecutor | None = None,
     ) -> list[Event]:
         """Run :meth:`_run_safe` in a thread via ``run_in_executor``.
 
@@ -159,6 +173,12 @@ class ParallelToolExecutor:
         executes and ensures that ``ResourceLockManager``'s threading
         locks are acquired on the worker thread, not the event-loop
         thread.
+
+        When *executor* is ``None`` the asyncio default pool is used
+        (suitable for one-off / single-action calls); batch callers
+        should pass a dedicated pool so concurrent tool calls don't
+        contend with other ``run_in_executor`` users on the shared
+        default pool.
 
         If the asyncio task is cancelled while the thread is running
         (e.g. via ``conversation.interrupt()``), we call
@@ -170,7 +190,7 @@ class ParallelToolExecutor:
         """
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(
-            None, self._run_safe, action, tool_runner, tool, cancel_token
+            executor, self._run_safe, action, tool_runner, tool, cancel_token
         )
         try:
             return await fut
