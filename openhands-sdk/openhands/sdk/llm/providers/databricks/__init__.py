@@ -65,7 +65,14 @@ from openhands.sdk.llm.providers.databricks.models import (
     detect_family,
     pick_family_from_api_types,
 )
+from openhands.sdk.llm.providers.databricks.pkce import (
+    async_exchange_code_for_tokens,
+    build_authorize_url,
+    exchange_code_for_tokens,
+    generate_pkce,
+)
 from openhands.sdk.llm.providers.databricks.settings_bridge import kwargs_from_settings
+
 
 __all__ = [
     # LLM
@@ -79,6 +86,11 @@ __all__ = [
     "AuthStrategy",
     "DatabricksCredentials",
     "StoredU2MTokens",
+    # U2M browser-login PKCE primitives (shared by web + CLI)
+    "generate_pkce",
+    "build_authorize_url",
+    "exchange_code_for_tokens",
+    "async_exchange_code_for_tokens",
     # Discovery
     "DiscoveredEndpoint",
     "list_chat_endpoints",
