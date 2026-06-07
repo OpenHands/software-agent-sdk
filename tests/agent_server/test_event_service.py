@@ -3203,6 +3203,41 @@ class TestEventServiceNoOpPauseInterruptDoesNotStrandSendMessage:
         assert event_service._explicit_interrupt_generation == before + 1
 
     @pytest.mark.asyncio
+    async def test_interrupt_on_finished_with_live_run_task_still_bumps(
+        self, event_service
+    ):
+        """Covers the wait_for_pending drain tail at the end of
+        ``_run_and_publish``: ``arun()`` has set ``FINISHED`` and returned,
+        but ``_run_task`` is still alive draining the callback queue. An
+        interrupt landing then DOES cancel the live task, so the bump must
+        fire even though status reads FINISHED. Status alone is not a
+        complete predicate for "interrupt will do something"; the live
+        task disjunct closes that gap.
+        """
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+
+        loop = asyncio.get_running_loop()
+        # Task is "live" at the moment the gate decision is taken, then
+        # completes cleanly so the post-decision wait_for inside
+        # interrupt() returns without raising.
+        live_task = loop.create_task(asyncio.sleep(0.05))
+        event_service._run_task = live_task
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_get_execution_status",
+            AsyncMock(return_value=ConversationExecutionStatus.FINISHED),
+        ):
+            await event_service.interrupt()
+
+        assert event_service._explicit_interrupt_generation == before + 1, (
+            "interrupt() on FINISHED with a live _run_task must bump "
+            "(wait_for_pending drain tail) - the live-task disjunct."
+        )
+
+    @pytest.mark.asyncio
     async def test_interrupt_with_internal_acp_rerun_still_skips_bump(
         self, event_service
     ):
