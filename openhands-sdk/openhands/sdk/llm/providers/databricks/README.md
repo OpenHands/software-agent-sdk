@@ -69,6 +69,15 @@ auth details (token caching, refresh policies, CLI profile selection).
 
 Use `llm.auth_method` to see which strategy resolved.
 
+The interactive **U2M browser login** (Authorization Code + PKCE) is built from
+the dependency-light helpers in `pkce.py` — `generate_pkce()`,
+`build_authorize_url()`, and `exchange_code_for_tokens()` /
+`async_exchange_code_for_tokens()` — all re-exported from this package's
+`__init__`. These are the single source of truth consumed by both the web
+backend and the OpenHands-CLI, so the three front-ends can't drift apart. Each
+caller supplies its own local redirect/callback handling and passes the
+resulting tokens back in via `stored_u2m_tokens`.
+
 ## Discovery (picker UIs)
 
 Listing AI-Gateway-shaped chat endpoints:
@@ -103,12 +112,14 @@ with a 5-minute TTL cache.
 
 | Module          | Role                                                                 |
 |---|---|
-| `__init__.py`   | Public API (`DatabricksLLM`, `ProviderFamily`, discovery, auth types) |
+| `__init__.py`   | Public API (`DatabricksLLM`, `ProviderFamily`, discovery, auth types, PKCE helpers) |
 | `llm.py`        | `DatabricksLLM` — Pydantic subclass of `LLM`; transport override     |
 | `client.py`     | `DatabricksFMAPIClient` — `httpx` transport, family dispatch, retry  |
 | `native.py`     | Per-family `to_native` / `from_native` adapters (request/response shaping) |
 | `models.py`     | `ProviderFamily`, `AIGatewayPaths`, routing functions, token containers |
 | `auth.py`       | Five credential strategies, `resolve_credentials()`, token providers  |
+| `pkce.py`       | Shared U2M browser-login helpers (`generate_pkce`, `build_authorize_url`, sync/async `exchange_code_for_tokens`) — single source of truth for web + CLI |
+| `settings_bridge.py` | `kwargs_from_settings()` — the one path that turns user settings (env / DB / TUI) into `create_llm(...)` kwargs, shared by backend and CLI |
 | `discovery.py`  | `list_chat_endpoints` / `list_foundation_models` + TTL cache          |
 | `utils.py`      | `USER_AGENT`, `DatabricksTimeouts`, retry/backoff, error mapping      |
 
