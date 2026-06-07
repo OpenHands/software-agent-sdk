@@ -109,6 +109,11 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     )
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
+    assert condenser_fields["condenser.max_tokens"].default is None
+    assert condenser_fields["condenser.max_tokens"].depends_on == ["condenser.enabled"]
+    assert (
+        condenser_fields["condenser.max_tokens"].prominence is SettingProminence.MINOR
+    )
 
     # -- verification section (critic settings only) --
     v_fields = {f.key: f for f in sections["verification"].fields}
@@ -519,17 +524,37 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     agent_metrics = llm.metrics
     settings = OpenHandsAgentSettings(
         llm=llm,
-        condenser=CondenserSettings(enabled=True, max_size=100),
+        condenser=CondenserSettings(
+            enabled=True,
+            max_size=100,
+            max_tokens=5000,
+            keep_first=3,
+            minimum_progress=0.2,
+            hard_context_reset_max_retries=7,
+            hard_context_reset_context_scaling=0.6,
+        ),
     )
     agent = settings.create_agent()
 
     assert agent.llm is llm
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.max_size == 100
+    assert agent.condenser.max_tokens == 5000
+    assert agent.condenser.keep_first == 3
+    assert agent.condenser.minimum_progress == 0.2
+    assert agent.condenser.hard_context_reset_max_retries == 7
+    assert agent.condenser.hard_context_reset_context_scaling == 0.6
     assert agent.condenser.llm is not llm
     assert agent.condenser.llm.model == llm.model
     assert agent.condenser.llm.usage_id == "condenser"
     assert agent.condenser.llm.metrics is not agent_metrics
+
+
+def test_condenser_settings_match_llm_summarizing_condenser_fields() -> None:
+    condenser_fields = set(LLMSummarizingCondenser.model_fields) - {"llm"}
+    settings_fields = set(CondenserSettings.model_fields) - {"enabled"}
+
+    assert settings_fields == condenser_fields
 
 
 def test_llm_create_agent_no_condenser_when_disabled() -> None:

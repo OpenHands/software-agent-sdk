@@ -237,6 +237,8 @@ SecurityAnalyzerType = Literal["llm", "none"]
 
 
 class CondenserSettings(BaseModel):
+    """Settings for the default LLM summarizing condenser."""
+
     enabled: bool = Field(
         default=True,
         description="Enable the LLM summarizing condenser.",
@@ -259,6 +261,92 @@ class CondenserSettings(BaseModel):
             ).model_dump()
         },
     )
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum number of tokens allowed before the condenser runs. "
+            "When unset, condensation is only based on event count."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Max tokens",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    keep_first: int = Field(
+        default=2,
+        ge=0,
+        description="Minimum number of initial events to preserve before condensation.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Keep first",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    minimum_progress: float = Field(
+        default=0.1,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Minimum fraction of events that must be condensed for condensation "
+            "to be considered successful."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Minimum progress",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_max_retries: int = Field(
+        default=5,
+        gt=0,
+        description="Number of hard context reset attempts before raising an error.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset retries",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_context_scaling: float = Field(
+        default=0.8,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Factor used to reduce event string size after a hard context reset "
+            "summarization failure."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset scaling",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+
+    def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+        condenser_llm.reset_metrics()
+        condenser_kwargs = self.model_dump(
+            exclude={"enabled"},
+            exclude_none=True,
+        )
+        return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
 
 
 class VerificationSettings(BaseModel):
@@ -928,16 +1016,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
     def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
-        if not self.condenser.enabled:
-            return None
-
-        from openhands.sdk.context.condenser import LLMSummarizingCondenser
-
-        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
-        return LLMSummarizingCondenser(
-            llm=condenser_llm, max_size=self.condenser.max_size
-        )
+        return self.condenser.build_condenser(llm)
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
