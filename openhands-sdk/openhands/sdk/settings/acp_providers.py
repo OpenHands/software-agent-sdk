@@ -264,6 +264,28 @@ class ACPProviderInfo:
     servers); defaulted so positional construction keeps working.
     """
 
+    session_subtrees: tuple[str, ...] = field(default=(), compare=False)
+    """Top-level subdirectories of the data root that hold session transcripts.
+
+    The allowlist for session-blob export/import (see
+    :mod:`openhands.sdk.settings.acp_session_blob`): only files under these
+    subtrees of the per-conversation data root (``<persistence_dir>/acp/<key>``)
+    are ever packed into — or restored from — a session snapshot. Everything
+    else at the data root (``auth.json``, ``.credentials.json``,
+    ``history.jsonl``, config, caches) is excluded by construction, so live
+    credentials never ride along with a snapshot; auth is re-established on
+    every launch by file-secret materialisation / env-var secrets.
+
+    - ``("sessions",)`` — codex-acp (``$CODEX_HOME/sessions/**`` rollout JSONLs;
+      what ``session/load`` reads)
+    - ``("projects",)`` — claude-agent-acp (``$CLAUDE_CONFIG_DIR/projects/
+      <cwd-slug>/<session-id>.jsonl``; the filename is the ``session/load`` id)
+    - ``()``            — gemini-cli (no reliable ``session/load``; its only
+      data-dir lever is ``HOME``, far too broad to snapshot)
+
+    Empty means the provider does not support session snapshots.
+    """
+
     data_dir_env_var: str | None = None
     """Env var that relocates this CLI's per-user data/config root.
 
@@ -404,6 +426,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             default_model="claude-opus-4-7",
             binary_name="claude-agent-acp",
             data_dir_env_var="CLAUDE_CONFIG_DIR",
+            session_subtrees=("projects",),
         ),
         "codex": ACPProviderInfo(
             key="codex",
@@ -421,6 +444,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             file_secrets=_CODEX_FILE_SECRETS,
             binary_name="codex-acp",
             data_dir_env_var="CODEX_HOME",
+            session_subtrees=("sessions",),
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",

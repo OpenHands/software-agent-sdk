@@ -80,6 +80,10 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
 )
+from openhands.sdk.settings.acp_session_blob import (
+    export_acp_session_blob,
+    import_acp_session_blob,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
@@ -1810,6 +1814,41 @@ class ACPAgent(AgentBase):
         if not configured:
             return set()
         return set(state.secret_registry.secret_sources) & configured
+
+    def export_cli_session_blob(self, state: ConversationState) -> bytes | None:
+        """Allowlisted tar.gz of this conversation's CLI session transcripts.
+
+        Packs the provider's ``session_subtrees`` (Codex ``sessions/**``,
+        Claude Code ``projects/**``) from the per-conversation data root —
+        never credentials or global CLI state (see
+        :mod:`openhands.sdk.settings.acp_session_blob`). The blob, restored
+        onto a fresh sandbox via :meth:`import_cli_session_blob` together with
+        :attr:`acp_resume_session_id`, is what makes native ``session/load``
+        resume survive a pod recycle (#1126).
+
+        Returns ``None`` for unrecognised/custom commands, providers without
+        session snapshots (gemini-cli), or when no session files exist.
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return None
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return export_acp_session_blob(data_root, provider)
+
+    def import_cli_session_blob(self, state: ConversationState, blob: bytes) -> int:
+        """Restore a session blob into the per-conversation data root.
+
+        Seed-if-absent, allowlist-filtered, path-safe (see
+        :func:`~openhands.sdk.settings.acp_session_blob.import_acp_session_blob`).
+        Call before the conversation initialises so ``session/load`` finds the
+        restored transcripts. Returns the number of files written (0 for
+        unrecognised commands or snapshot-less providers).
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return 0
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return import_acp_session_blob(data_root, provider, blob)
 
     def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
         """Durable per-conversation directory for a credential file.
