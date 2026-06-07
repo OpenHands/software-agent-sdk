@@ -96,6 +96,57 @@ def test_export_skips_symlinks(tmp_path):
     assert _tar_names(blob) == ["sessions/2026/06/07/rollout-abc.jsonl"]
 
 
+def test_export_rejects_symlinked_subtree_root(tmp_path):
+    """Credential-leak gate: a symlinked subtree root must not smuggle the data
+    root's credentials into the blob (agent does `ln -sf $CODEX_HOME sessions`).
+    """
+    root = tmp_path
+    (root / "auth.json").write_text('{"refresh_token": "SECRET"}')
+    (root / ".credentials.json").write_text('{"token": "SECRET"}')
+    (root / "history.jsonl").write_text("global history\n")
+    # The whole data root masquerading as the sessions subtree.
+    (root / "sessions").symlink_to(root, target_is_directory=True)
+    assert export_acp_session_blob(root, CODEX) is None
+
+
+def test_export_realpath_guard_excludes_redirected_files(tmp_path):
+    """A real sessions dir whose only entry is a symlink to auth.json yields
+    nothing (per-file symlink + realpath guards both reject it)."""
+    root = tmp_path
+    (root / "auth.json").write_text('{"refresh_token": "SECRET"}')
+    sessions = root / "sessions"
+    sessions.mkdir()
+    (sessions / "leak.jsonl").symlink_to(root / "auth.json")
+    assert export_acp_session_blob(root, CODEX) is None
+
+
+def test_import_rejects_symlinked_subtree_escape(tmp_path):
+    """A pre-positioned symlinked subtree dir must not redirect writes outside
+    the data root."""
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    (data_root / "sessions").symlink_to(escape, target_is_directory=True)
+    blob = _make_blob({"sessions/x.jsonl": b"payload"})
+    with pytest.raises(ValueError, match="escapes data root"):
+        import_acp_session_blob(data_root, CODEX, blob)
+    assert not (escape / "x.jsonl").exists()
+
+
+def test_import_refuses_to_write_through_symlinked_target(tmp_path):
+    """A target that is itself an existing symlink is refused (no clobber-via-link)."""
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("original")
+    data_root = tmp_path / "data"
+    (data_root / "sessions").mkdir(parents=True)
+    (data_root / "sessions" / "x.jsonl").symlink_to(outside)
+    blob = _make_blob({"sessions/x.jsonl": b"payload"})
+    with pytest.raises(ValueError, match="symlink"):
+        import_acp_session_blob(data_root, CODEX, blob)
+    assert outside.read_text() == "original"
+
+
 def test_export_import_round_trip(tmp_path):
     source = _make_codex_root(tmp_path / "source")
     blob = export_acp_session_blob(source, CODEX)

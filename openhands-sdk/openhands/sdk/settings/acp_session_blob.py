@@ -65,11 +65,21 @@ def export_acp_session_blob(data_root: Path, provider: ACPProviderInfo) -> bytes
     """
     if not provider.session_subtrees:
         return None
+    data_root_real = data_root.resolve()
     files: list[tuple[Path, str]] = []
     for subtree in provider.session_subtrees:
         base = data_root / subtree
-        if not base.is_dir():
+        # The data root is the CLI's own writable HOME (it also holds auth.json
+        # / .credentials.json / history.jsonl), so a malicious/prompt-injected
+        # agent could `ln -sf $CODEX_HOME sessions` to smuggle credentials under
+        # the allowlisted prefix. ``os.walk(followlinks=False)`` only refuses to
+        # *descend* into symlinked sub-dirs — it still lists the contents of a
+        # symlinked BASE — and the per-file ``is_symlink`` check misses real
+        # files reached *through* a symlinked dir. So reject a symlinked base
+        # outright and realpath-verify every emitted file stays under it.
+        if base.is_symlink() or not base.is_dir():
             continue
+        base_real = base.resolve()
         for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
             # Don't descend into symlinked directories either.
             dirnames[:] = [
@@ -78,6 +88,14 @@ def export_acp_session_blob(data_root: Path, provider: ACPProviderInfo) -> bytes
             for filename in filenames:
                 path = Path(dirpath) / filename
                 if path.is_symlink() or not path.is_file():
+                    continue
+                # Defense in depth: the file's real location must be inside the
+                # allowlisted subtree (and thus the data root) — never a path a
+                # symlink redirected out of it.
+                file_real = path.resolve()
+                if not file_real.is_relative_to(base_real):
+                    continue
+                if not file_real.is_relative_to(data_root_real):
                     continue
                 arcname = path.relative_to(data_root).as_posix()
                 files.append((path, arcname))
@@ -119,6 +137,7 @@ def import_acp_session_blob(
     """
     if not provider.session_subtrees:
         return 0
+    data_root_real = data_root.resolve()
     written = 0
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
         for member in tar:
@@ -137,6 +156,21 @@ def import_acp_session_blob(
                     f"unsupported member type in session blob: {member.name!r}"
                 )
             target = data_root.joinpath(*relpath.parts)
+            # The member name is allowlist-safe, but the on-disk write still
+            # follows pre-existing symlinks. A symlinked subtree dir planted in
+            # the sandbox before restore (e.g. ``sessions`` -> ``/workspace``)
+            # would redirect the write outside the data root. Resolve the parent
+            # (resolve() walks existing symlinks; the not-yet-created tail stays
+            # literal) and refuse anything that escapes, and never write through
+            # a target that is itself an existing symlink.
+            if not target.parent.resolve().is_relative_to(data_root_real):
+                raise ValueError(
+                    f"session blob target escapes data root: {member.name!r}"
+                )
+            if target.is_symlink():
+                raise ValueError(
+                    f"refusing to write through symlink: {member.name!r}"
+                )
             if target.is_file() and target.stat().st_size > 0:
                 continue  # seed-if-absent: never clobber live state
             extracted = tar.extractfile(member)
