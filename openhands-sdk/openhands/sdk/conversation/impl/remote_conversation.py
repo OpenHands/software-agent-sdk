@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
@@ -195,7 +195,7 @@ class WebSocketCallbackClient:
 
         # Add API key as query parameter if provided
         if self.api_key:
-            ws_url += f"?session_api_key={self.api_key}"
+            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
         while not self._stop.is_set():
