@@ -56,6 +56,7 @@ from openhands.sdk.plugin import (
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
 )
+from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -91,6 +92,11 @@ def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
         part.startswith(ACP_STOP_HOOK_FEEDBACK_PREFIX)
         for part in content_to_str(event.llm_message.content)
     )
+
+
+def _copy_event_for_fork(event: Event) -> Event:
+    # Mirrors persisted event loading and skips runtime-only fields like executors.
+    return Event.model_validate_json(event.model_dump_json(exclude_none=True))
 
 
 class LocalConversation(BaseConversation):
@@ -304,9 +310,33 @@ class LocalConversation(BaseConversation):
         self._profile_store = LLMProfileStore()
         self._cipher = cipher
 
-        # Initialize secrets if provided
+        # Seed agent_context.secrets into the registry for every agent (regular
+        # and ACP), covering callers that skip create_request() — canvas /
+        # TypeScript, or the server-side agent_settings -> create_agent fold.
+        # Idempotent with the create_request() lift; lower priority than
+        # request.secrets (below). On resume, fill-if-absent so a persisted
+        # value is never downgraded (or lost to redacted/no-cipher serialization).
+        if (ctx := getattr(self.agent, "agent_context", None)) is not None:
+            ctx_secrets = getattr(ctx, "secrets", None)
+            if ctx_secrets:
+                existing_sources = self._state.secret_registry.secret_sources
+                fill_secrets: dict[str, SecretValue] = {}
+                for name, secret in ctx_secrets.items():
+                    existing = existing_sources.get(name)
+                    # Refill only when absent, or when a StaticSecret lost its
+                    # value to redacted/no-cipher serialization (value is None).
+                    # Other SecretSource types (e.g. LookupSecret) are left as-is
+                    # even with a None value — that is their resolved state, not
+                    # a stale placeholder to overwrite.
+                    if existing is None or (
+                        isinstance(existing, StaticSecret) and existing.value is None
+                    ):
+                        fill_secrets[name] = secret
+                if fill_secrets:
+                    self.update_secrets(fill_secrets)
+
+        # Higher priority: request.secrets overwrites duplicate keys from above.
         if secrets:
-            # Convert dict[str, str] to dict[str, SecretValue]
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
@@ -431,10 +461,8 @@ class LocalConversation(BaseConversation):
                 tags=tags,
             )
 
-            # Deep-copy events from source → fork so the source stays
-            # immutable.
             for event in self._state.events:
-                fork_conv._state.events.append(event.model_copy(deep=True))
+                fork_conv._state.events.append(_copy_event_for_fork(event))
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -1119,7 +1147,14 @@ class LocalConversation(BaseConversation):
         """
         self._arun_task = asyncio.current_task()
         self._cancel_token = CancellationToken()
-        self._ensure_agent_ready()
+        # Off-load lazy init to a worker thread: init_state may block the loop
+        # (an ACP agent resolves credentials via a synchronous LookupSecret
+        # httpx.get). When the agent-server runs arun() on its event loop and
+        # that lookup points back at the same single-process server, doing it
+        # inline freezes the loop so the lookup can never be served — a
+        # self-deadlock that ReadTimeouts after 30s (agent-canvas#1072).
+        # _ensure_agent_ready is thread-safe and already runs off-loop in run().
+        await asyncio.to_thread(self._ensure_agent_ready)
 
         with self._state:
             if isinstance(self.agent, ACPAgent) and self._state.execution_status in (

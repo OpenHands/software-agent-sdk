@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 import traceback
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server.acp_session_blob_router import acp_session_blob_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -301,6 +303,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
     api_router.include_router(conversation_router_acp)
+    api_router.include_router(acp_session_blob_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
@@ -431,18 +434,24 @@ def _add_exception_handlers(api: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         """Handle unhandled exceptions."""
+        # Correlation id that ties the 500 a caller receives to the server-side
+        # log line (with full traceback) for this failure, so an otherwise
+        # opaque 500 can be matched to its traceback in the server logs.
+        error_id = uuid.uuid4().hex
         # Always log that we're in the exception handler for debugging
         logger.debug(
-            "Exception handler called for %s %s with %s: %s",
+            "Exception handler called for %s %s with %s: %s [error_id=%s]",
             request.method,
             request.url.path,
             type(exc).__name__,
             str(exc),
+            error_id,
         )
 
         content = {
             "detail": "Internal Server Error",
             "exception": str(exc),
+            "error_id": error_id,
         }
         # In DEBUG mode, include stack trace in response
         if DEBUG:
@@ -458,9 +467,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 return await _http_exception_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
-                "Unhandled ExceptionGroup on %s %s",
+                "Unhandled ExceptionGroup on %s %s [error_id=%s]",
                 request.method,
                 request.url.path,
+                error_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             return JSONResponse(status_code=500, content=content)
@@ -468,9 +478,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Logs full stack trace for any unhandled error that FastAPI would
         # turn into a 500
         logger.error(
-            "Unhandled exception on %s %s",
+            "Unhandled exception on %s %s [error_id=%s]",
             request.method,
             request.url.path,
+            error_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         return JSONResponse(status_code=500, content=content)

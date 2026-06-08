@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
+import itertools
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
+    ClassVar,
     Literal,
     TypeVar,
     cast,
@@ -46,6 +49,7 @@ from openhands.sdk.utils.pydantic_secrets import (
     decrypt_str_with_cipher_or_keep,
     resolve_expose_mode,
     serialize_secret,
+    validate_secret,
     validate_secret_dict,
 )
 from openhands.sdk.utils.redact import sanitize_dict
@@ -69,7 +73,7 @@ from .metadata import (
 if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.context.condenser import LLMSummarizingCondenser
+    from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
 
@@ -107,6 +111,67 @@ def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
     :func:`decrypt_str_with_cipher_or_keep` and is shared with every
     other dict-of-string secret-bearing field."""
     return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP env/headers")
+
+
+# ---------------------------------------------------------------------------
+# Shared ``mcp_config`` field (de)serialization, used verbatim by every
+# settings variant that exposes an ``mcp_config: MCPConfig | None`` field
+# (``OpenHandsAgentSettings`` and ``ACPAgentSettings``). Kept here as plain
+# functions so the per-class ``@field_validator`` / ``@field_serializer``
+# stubs — which pydantic requires to live on each model — stay one-liners and
+# the encrypt/decrypt logic has a single source of truth.
+# ---------------------------------------------------------------------------
+
+
+def normalize_empty_mcp_config(value: Any) -> Any:
+    """Coerce an empty/absent ``mcp_config`` to ``None`` (else pass through)."""
+    return None if value in (None, {}) else value
+
+
+def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
+    """Decrypt MCP ``env`` / ``headers`` values when a cipher is in context.
+
+    The on-disk load path. Values that aren't valid Fernet tokens pass through
+    as plaintext (e.g. migrating from a build that wrote them unencrypted).
+    Mirrors :func:`serialize_mcp_config`'s per-value encryption.
+    """
+    if not isinstance(value, dict):
+        return value
+    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+    if cipher is None:
+        return value
+    return _walk_mcp_secret_values(
+        value, lambda v: _decrypt_mcp_value_or_keep(cipher, v)
+    )
+
+
+def serialize_mcp_config(
+    value: MCPConfig | None, info: SerializationInfo
+) -> dict[str, Any]:
+    """Serialize an ``mcp_config`` field, masking/encrypting env+headers per
+    the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
+    if value is None:
+        return {}
+    dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
+    ctx = info.context or {}
+    mode = resolve_expose_mode(ctx)
+
+    if mode == "plaintext":
+        return dumped
+
+    if mode == "encrypted":
+        cipher: Cipher | None = ctx.get("cipher")
+        if cipher is None:
+            raise MissingCipherError(
+                "Cannot encrypt MCP env/headers: no cipher configured. "
+                "Set OH_SECRET_KEY environment variable."
+            )
+        # cipher.encrypt returns None only for None input; SecretStr(v) never is.
+        return _walk_mcp_secret_values(
+            dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
+        )
+
+    return sanitize_dict(dumped)
 
 
 SettingsValueType = Literal[
@@ -173,9 +238,15 @@ SecurityAnalyzerType = Literal["llm", "none"]
 
 
 class CondenserSettings(BaseModel):
+    """Shared base for condenser-settings variants.
+
+    Use :data:`CondenserSettingsConfig` for fields that may hold any supported
+    condenser-settings variant.
+    """
+
     enabled: bool = Field(
         default=True,
-        description="Enable the LLM summarizing condenser.",
+        description="Enable conversation memory condensation.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable memory condensation",
@@ -186,7 +257,11 @@ class CondenserSettings(BaseModel):
     max_size: int = Field(
         default=240,
         ge=20,
-        description="Maximum number of events kept before the condenser runs.",
+        description=(
+            "Maximum number of events kept before the condenser runs. "
+            "Kept on the base settings class for compatibility; concrete "
+            "condenser-settings variants may opt out when this does not apply."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Max size",
@@ -195,6 +270,154 @@ class CondenserSettings(BaseModel):
             ).model_dump()
         },
     )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement build_condenser()"
+        )
+
+
+class LLMSummarizingCondenserSettings(CondenserSettings):
+    """Settings for the default LLM summarizing condenser."""
+
+    condenser_kind: Literal["llm_summarizing"] = Field(
+        default="llm_summarizing",
+        description=(
+            "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
+            "selects the default LLM summarizing condenser."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum number of tokens allowed before the condenser runs. "
+            "When unset, condensation is only based on event count."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Max tokens",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    keep_first: int = Field(
+        default=2,
+        ge=0,
+        description="Minimum number of initial events to preserve before condensation.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Keep first",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    minimum_progress: float = Field(
+        default=0.1,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Minimum fraction of events that must be condensed for condensation "
+            "to be considered successful."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Minimum progress",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_max_retries: int = Field(
+        default=5,
+        gt=0,
+        description="Number of hard context reset attempts before raising an error.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset retries",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_context_scaling: float = Field(
+        default=0.8,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Factor used to reduce event string size after a hard context reset "
+            "summarization failure."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset scaling",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+
+    def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+        condenser_llm.reset_metrics()
+        condenser_kwargs = self.model_dump(
+            exclude={"enabled", "condenser_kind"},
+            exclude_none=True,
+        )
+        return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
+
+
+class NoOpCondenserSettings(CondenserSettings):
+    """Settings for a condenser that leaves conversation views unchanged."""
+
+    max_size: ClassVar[int] = 240  # type: ignore[reportIncompatibleVariableOverride]
+    condenser_kind: Literal["no_op"] = Field(
+        default="no_op",
+        description=(
+            "Discriminator for the condenser settings union. ``'no_op'`` selects "
+            "a condenser that leaves conversation views unchanged."
+        ),
+    )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import NoOpCondenser
+
+        return NoOpCondenser()
+
+
+def _condenser_settings_discriminator(value: Any) -> str:
+    """Discriminator for :data:`CondenserSettingsConfig`.
+
+    Existing payloads predate ``condenser_kind`` and carried only the default
+    LLM summarizing condenser fields. Treat missing discriminators as
+    ``'llm_summarizing'`` so those payloads continue to validate.
+    """
+    if isinstance(value, BaseModel):
+        return getattr(value, "condenser_kind", "llm_summarizing")
+    if isinstance(value, dict):
+        return value.get("condenser_kind", "llm_summarizing")
+    return "llm_summarizing"
+
+
+CondenserSettingsConfig = Annotated[
+    Annotated[LLMSummarizingCondenserSettings, Tag("llm_summarizing")]
+    | Annotated[NoOpCondenserSettings, Tag("no_op")],
+    Discriminator(_condenser_settings_discriminator),
+]
+"""Discriminated union over the condenser-settings variants."""
 
 
 class VerificationSettings(BaseModel):
@@ -290,6 +513,34 @@ class VerificationSettings(BaseModel):
             ).model_dump()
         },
     )
+    critic_api_key: str | SecretStr | None = Field(
+        default=None,
+        description=(
+            "API key used to authenticate with the critic service. "
+            "When None, the LLM's ``api_key`` is reused, which preserves "
+            "the auto-configuration path for the All-Hands LLM proxy."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Critic API Key",
+                prominence=SettingProminence.CRITICAL,
+                depends_on=("critic_enabled",),
+            ).model_dump()
+        },
+    )
+
+    @field_validator("critic_api_key")
+    @classmethod
+    def _validate_critic_api_key(
+        cls, v: str | SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        return validate_secret(v, info)
+
+    @field_serializer("critic_api_key", when_used="always")
+    def _serialize_critic_api_key(
+        self, v: SecretStr | None, info: SerializationInfo
+    ) -> Any:
+        return serialize_secret(v, info)
 
 
 def _default_llm_settings() -> LLM:
@@ -759,8 +1010,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
     )
-    condenser: CondenserSettings = Field(
-        default_factory=CondenserSettings,
+    condenser: CondenserSettingsConfig = Field(
+        default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
         json_schema_extra={
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
@@ -782,59 +1033,30 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    @field_validator("mcp_config", mode="before")
+    # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
+    # module-level helpers — these stubs just bind them to the field.
+    @field_validator("condenser", mode="before")
     @classmethod
-    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        if value in (None, {}):
-            return None
+    def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
+        if type(value) is CondenserSettings:
+            return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
     @field_validator("mcp_config", mode="before")
     @classmethod
-    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
-        """Decrypt MCP ``env`` / ``headers`` values when a cipher is in
-        context (the on-disk load path). Mirrors ``_serialize_mcp_config``'s
-        per-value encryption.
+    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
+        return normalize_empty_mcp_config(value)
 
-        Values that aren't valid Fernet tokens are passed through as
-        plaintext (e.g. when migrating from a build that wrote env/headers
-        unencrypted to disk).
-        """
-        if not isinstance(value, dict):
-            return value
-        cipher: Cipher | None = info.context.get("cipher") if info.context else None
-        if cipher is None:
-            return value
-        return _walk_mcp_secret_values(
-            value, lambda v: _decrypt_mcp_value_or_keep(cipher, v)
-        )
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
+        return decrypt_mcp_config_secrets(value, info)
 
     @field_serializer("mcp_config")
     def _serialize_mcp_config(
         self, value: MCPConfig | None, info: SerializationInfo
     ) -> dict[str, Any]:
-        if value is None:
-            return {}
-        dumped = value.model_dump(exclude_none=True, exclude_defaults=True)
-        ctx = info.context or {}
-        mode = resolve_expose_mode(ctx)
-
-        if mode == "plaintext":
-            return dumped
-
-        if mode == "encrypted":
-            cipher: Cipher | None = ctx.get("cipher")
-            if cipher is None:
-                raise MissingCipherError(
-                    "Cannot encrypt MCP env/headers: no cipher configured. "
-                    "Set OH_SECRET_KEY environment variable."
-                )
-            # cipher.encrypt returns None only for None input; SecretStr(v) never is.
-            return _walk_mcp_secret_values(
-                dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
-            )
-
-        return sanitize_dict(dumped)
+        return serialize_mcp_config(value, info)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -870,24 +1092,22 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             critic=self.build_critic(),
         )
 
-    def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
-        if not self.condenser.enabled:
-            return None
-
-        from openhands.sdk.context.condenser import LLMSummarizingCondenser
-
-        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
-        return LLMSummarizingCondenser(
-            llm=condenser_llm, max_size=self.condenser.max_size
-        )
+        return self.condenser.build_condenser(llm)
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
 
-        Returns ``None`` when the critic is disabled or when the LLM
-        has no ``api_key`` (the critic service requires authentication).
+        Returns ``None`` when the critic is disabled or when no API key
+        is available (the critic service requires authentication).
+
+        If ``verification.critic_api_key`` is set it is used to
+        authenticate with the critic service; otherwise the LLM's
+        ``api_key`` is reused. This preserves the existing
+        auto-configuration path for the All-Hands LLM proxy while
+        letting deployments route the critic through a different
+        provider (e.g. an LLM proxy with its own credential).
 
         If ``verification.critic_server_url`` or
         ``verification.critic_model_name`` are set they override the
@@ -897,7 +1117,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if not self.verification.critic_enabled:
             return None
 
-        api_key = self.llm.api_key
+        api_key = self.verification.critic_api_key or self.llm.api_key
         if api_key is None:
             return None
 
@@ -1084,10 +1304,15 @@ class ACPAgentSettings(AgentSettingsBase):
     acp_prompt_timeout: float = Field(
         default=1800.0,
         gt=0,
-        description="Timeout (seconds) for a single ACP prompt() round-trip.",
+        description=(
+            "Inactivity timeout (seconds) for a single ACP prompt() round-trip. "
+            "The deadline resets on every update from the ACP server, so a "
+            "steadily-progressing agent keeps running; the prompt is only "
+            "aborted after this many seconds with no activity at all."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="ACP prompt timeout (seconds)",
+                label="ACP prompt inactivity timeout (seconds)",
                 prominence=SettingProminence.MINOR,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
@@ -1096,6 +1321,56 @@ class ACPAgentSettings(AgentSettingsBase):
                 variant="acp",
             ).model_dump(),
         },
+    )
+    mcp_config: MCPConfig | None = Field(
+        default=None,
+        description=(
+            "MCP servers to make available to the ACP subprocess. Unlike the "
+            "OpenHands agent — where these become in-process MCP tools — the "
+            "servers are forwarded to the ACP server at session creation and it "
+            "owns the connection. Remote (http/sse) servers are only forwarded "
+            "when the ACP server advertises support for that transport; stdio "
+            "servers (which run inside the runtime) are always forwarded."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="MCP configuration",
+                prominence=SettingProminence.MINOR,
+                variant="acp",
+            ).model_dump(),
+        },
+    )
+
+    # Same shared ``mcp_config`` (de)serialization as OpenHandsAgentSettings.
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
+        return normalize_empty_mcp_config(value)
+
+    @field_validator("mcp_config", mode="before")
+    @classmethod
+    def _decrypt_mcp_secret_values(cls, value: Any, info: ValidationInfo) -> Any:
+        return decrypt_mcp_config_secrets(value, info)
+
+    @field_serializer("mcp_config")
+    def _serialize_mcp_config(
+        self, value: MCPConfig | None, info: SerializationInfo
+    ) -> dict[str, Any]:
+        return serialize_mcp_config(value, info)
+
+    # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
+    # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
+    # it (e.g. when conversations share a sandbox under grouping), not the end
+    # user. See ``ACPAgent.acp_isolate_data_dir`` for the full rationale.
+    acp_isolate_data_dir: bool = Field(
+        default=False,
+        description=(
+            "Give the ACP subprocess a per-conversation CLI data/config root "
+            "instead of the shared user HOME. Forwarded to "
+            ":attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`; off by "
+            "default. Enable from the deploying application when several "
+            "conversations share one sandbox (see #1019)."
+        ),
     )
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): it's a list of structured
@@ -1130,13 +1405,13 @@ class ACPAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Prompt-only context for the ACP server. ``secrets`` here are "
-            "advertised to the agent (names/descriptions) and injected into the "
-            "subprocess env through two channels: ``state.secret_registry`` (on "
-            "the Python path, ``create_request`` lifts ``agent_context.secrets`` "
-            "into the registry) and a direct drain in "
-            "``ACPAgent._start_acp_server`` for callers that build the request "
-            "outside Python (e.g. canvas-local). ``create_agent`` also folds "
-            "provider credentials into these secrets."
+            "advertised to the agent (names/descriptions) and reach the "
+            "subprocess env through ``state.secret_registry``: "
+            "``LocalConversation`` seeds ``agent_context.secrets`` into the "
+            "registry at conversation init (below ``request.secrets``), so "
+            "callers that build the request outside Python (e.g. canvas-local) "
+            "are covered too, not just the ``create_request`` path. "
+            "``create_agent`` also folds provider credentials into these secrets."
         ),
     )
 
@@ -1232,20 +1507,93 @@ class ACPAgentSettings(AgentSettingsBase):
         up the default from :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`.
         Raises ``ValueError`` when :attr:`acp_server` is ``'custom'`` but
         no explicit command is set (there is no sensible default to fall back to).
+
+        The result is routed through :meth:`_prefer_pinned_binary`, which swaps
+        an ``npx`` command for the pinned binary when it is on ``PATH`` (a no-op
+        otherwise).
         """
         if self.acp_command:
-            return list(self.acp_command)
-        if self.acp_server == "custom":
+            command = list(self.acp_command)
+        elif self.acp_server == "custom":
             raise ValueError(
                 "ACPAgentSettings.acp_command must be set when "
                 "acp_server='custom' — there is no default to fall back to"
             )
+        else:
+            info = get_acp_provider(self.acp_server)
+            if info is None:
+                raise ValueError(
+                    f"No default ACP command for acp_server={self.acp_server!r}"
+                )
+            command = list(info.default_command)
+        return self._prefer_pinned_binary(command)
+
+    @staticmethod
+    def _parse_npx_invocation(command: Sequence[str]) -> tuple[str, list[str]] | None:
+        """Parse an ``npx``-style launch command into ``(package, extra_args)``.
+
+        ``["npx", "-y", "@scope/pkg", "--flag"]`` → ``("@scope/pkg", ["--flag"])``,
+        skipping any leading ``npx`` flags such as ``-y`` / ``--yes``. Returns
+        ``None`` when *command* is not an ``npx`` invocation (e.g. an
+        already-resolved binary path), so callers leave it untouched.
+        """
+        if not command or command[0] != "npx":
+            return None
+        # Drop leading npx flags (-y, --yes, ...) to find the package name.
+        rest = list(itertools.dropwhile(lambda arg: arg.startswith("-"), command[1:]))
+        if not rest:
+            return None
+        package, *extra_args = rest
+        return package, extra_args
+
+    @staticmethod
+    def _npm_package_name(package: str) -> str:
+        """Strip any ``@version`` specifier from an npm package spec.
+
+        ``@scope/pkg@1.2.3`` → ``@scope/pkg``; ``pkg@1.2.3`` → ``pkg``; an
+        unversioned spec is returned unchanged. The version separator is the
+        ``@`` *after* the name — for scoped specs that is the second ``@`` (the
+        first introduces the scope), so a leading ``@`` is skipped.
+        """
+        start = 1 if package.startswith("@") else 0
+        at = package.find("@", start)
+        return package[:at] if at != -1 else package
+
+    def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
+        """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
+
+        When *command* is an ``npx`` invocation of this provider's package and
+        the provider's ``binary_name`` resolves via :func:`shutil.which`, return
+        ``[binary_name, *extra]`` (preserving trailing args like gemini's
+        ``--acp``) — running the agent-server image's pinned wrapper instead of
+        downloading npm-latest. Returned unchanged otherwise: no pinned binary
+        (custom server), a non-matching/non-npx command, or the binary not on
+        ``PATH`` (local dev).
+
+        Package matching ignores any ``@version`` suffix: the registry default
+        is version-pinned (so the native fallback can't drift to npm ``latest``),
+        but a client may still send the bare or a differently-pinned package
+        name. In the image the pinned binary stands in for the provider's package
+        regardless of the requested version, so the rewrite compares names only.
+        """
         info = get_acp_provider(self.acp_server)
-        if info is None:
-            raise ValueError(
-                f"No default ACP command for acp_server={self.acp_server!r}"
-            )
-        return list(info.default_command)
+        if info is None or info.binary_name is None:
+            return command
+
+        default_parsed = self._parse_npx_invocation(info.default_command)
+        actual_parsed = self._parse_npx_invocation(command)
+        if default_parsed is None or actual_parsed is None:
+            return command
+
+        default_pkg, _ = default_parsed
+        actual_pkg, extra = actual_parsed
+        same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
+            default_pkg
+        )
+        if not same_package or shutil.which(info.binary_name) is None:
+            return command
+
+        return [info.binary_name, *extra]
 
     def create_agent(self) -> ACPAgent:
         """Build an :class:`ACPAgent` from these settings.
@@ -1292,6 +1640,14 @@ class ACPAgentSettings(AgentSettingsBase):
                 else AgentContext(current_datetime=None, secrets=merged_secrets)
             )
 
+        # Bypass ``_serialize_mcp_config``: the subprocess needs real
+        # env/headers, not the masked/encrypted on-disk form.
+        mcp_config = (
+            self.mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
+            if self.mcp_config is not None
+            else {}
+        )
+
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
@@ -1305,8 +1661,10 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=agent_context,
+            mcp_config=mcp_config,
         )
 
 
@@ -1399,7 +1757,70 @@ def validate_agent_settings(
         migrations=_AGENT_SETTINGS_MIGRATIONS,
         payload_name="AgentSettings",
     )
+    # The v1->v2 migration renames the deprecated ``agent_kind: 'llm'`` tag, but
+    # only while advancing ``schema_version``. A payload already at the current
+    # version keeps the ``llm`` tag and would dispatch to the deprecated
+    # ``LLMAgentSettings`` subclass; canonicalize unconditionally so the loader
+    # always returns a ``{openhands, acp}`` variant.
+    if payload.get("agent_kind") == "llm":
+        payload["agent_kind"] = "openhands"
     return _AGENT_SETTINGS_ADAPTER.validate_python(payload, context=context)
+
+
+def _merge_patch(base: dict[str, Any], diff: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply an RFC 7386 JSON Merge Patch.
+
+    Nested mappings merge recursively; ``None`` deletes a key; every other value
+    overwrites. Matches the merge semantics used by the settings stores so call
+    sites can delegate without a behavior change.
+    """
+    result = dict(base)
+    for key, value in diff.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+            result[key] = _merge_patch(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def apply_agent_settings_diff(
+    base: Any,
+    diff: Mapping[str, Any] | None,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> OpenHandsAgentSettings | ACPAgentSettings:
+    """Apply a sparse agent-settings diff to a base, narrowing on ``agent_kind``.
+
+    ``agent_kind`` is a one-way narrowing gate, never a conversion knob:
+
+    * When ``diff`` changes ``agent_kind``, start from a *fresh* base for the
+      target variant. Deep-merging across the union boundary would either fail
+      validation (ACP's nullable ``agent_context`` is invalid for OpenHands) or
+      silently drop the outgoing variant's fields (the variants ignore unknown
+      keys), producing a mongrel row.
+    * When ``agent_kind`` is unchanged or omitted, deep-merge the diff within
+      the variant (``None`` unsets a key, per :func:`_merge_patch`).
+
+    ``base`` may be a raw persisted mapping or a settings instance; it is
+    migrated and validated first. The merged result is re-validated against
+    :data:`AgentSettingsConfig`, so the return is always a canonical variant.
+    This is the single owner of agent-settings diff application; settings stores
+    should delegate here instead of hand-rolling the dump/merge/validate dance.
+    """
+    base_settings = validate_agent_settings(base, context=context)
+    if not diff:
+        return base_settings
+    new_kind = diff.get("agent_kind")
+    if new_kind and new_kind != base_settings.agent_kind:
+        merged = _merge_patch({"agent_kind": new_kind}, diff)
+    else:
+        merged = _merge_patch(
+            base_settings.model_dump(mode="json", context={"expose_secrets": True}),
+            diff,
+        )
+    return validate_agent_settings(merged, context=context)
 
 
 def default_agent_settings() -> OpenHandsAgentSettings:
@@ -1523,21 +1944,34 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     for field_name, field in model.model_fields.items():
         explicit_section_metadata = settings_section_metadata(field)
         section_metadata = explicit_section_metadata or _GENERAL_SECTION_METADATA
-        nested_model = _nested_model_type(field.annotation)
+        nested_models = _nested_model_types(field.annotation)
 
         # Nested section (e.g., llm, condenser, critic)
-        if explicit_section_metadata is not None and nested_model is not None:
+        if explicit_section_metadata is not None and nested_models:
             section_default = field.get_default(call_default_factory=True)
             section = ensure_section(explicit_section_metadata)
-            for nested_key, nested_field in nested_model.model_fields.items():
-                if nested_field.exclude:
-                    continue
-                metadata = settings_metadata(nested_field)
-                default_value = None
-                if isinstance(section_default, BaseModel):
-                    default_value = getattr(section_default, nested_key)
-                section.fields.append(
-                    SettingsFieldSchema(
+            seen_nested_fields: dict[str, SettingsFieldSchema] = {}
+            for nested_model in nested_models:
+                for nested_key, nested_field in nested_model.model_fields.items():
+                    if nested_field.exclude:
+                        continue
+                    existing_field = seen_nested_fields.get(nested_key)
+                    if existing_field is not None:
+                        existing_choice_values = {
+                            choice.value for choice in existing_field.choices
+                        }
+                        for choice in _extract_choices(nested_field.annotation):
+                            if choice.value not in existing_choice_values:
+                                existing_field.choices.append(choice)
+                                existing_choice_values.add(choice.value)
+                        continue
+                    metadata = settings_metadata(nested_field)
+                    default_value = None
+                    if isinstance(section_default, BaseModel) and hasattr(
+                        section_default, nested_key
+                    ):
+                        default_value = getattr(section_default, nested_key)
+                    field_schema = SettingsFieldSchema(
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
@@ -1570,7 +2004,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                             or section.variant
                         ),
                     )
-                )
+                    seen_nested_fields[nested_key] = field_schema
+                    section.fields.append(field_schema)
             continue
 
         metadata = settings_metadata(field)
@@ -1606,14 +2041,25 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
 
 
 def _nested_model_type(annotation: Any) -> type[BaseModel] | None:
-    candidates = _annotation_options(annotation)
+    candidates = _nested_model_types(annotation)
     if len(candidates) != 1:
         return None
 
-    candidate = candidates[0]
-    if isinstance(candidate, type) and issubclass(candidate, BaseModel):
-        return candidate
-    return None
+    return candidates[0]
+
+
+def _nested_model_types(annotation: Any) -> tuple[type[BaseModel], ...]:
+    seen: set[type[BaseModel]] = set()
+    models: list[type[BaseModel]] = []
+    for candidate in _annotation_options(annotation):
+        if (
+            isinstance(candidate, type)
+            and issubclass(candidate, BaseModel)
+            and candidate not in seen
+        ):
+            seen.add(candidate)
+            models.append(candidate)
+    return tuple(models)
 
 
 def _annotation_options(annotation: Any) -> tuple[Any, ...]:

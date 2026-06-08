@@ -23,10 +23,10 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -35,9 +35,14 @@ from acp.schema import (
     AgentMessageChunk,
     AgentThoughtChunk,
     AllowedOutcome,
+    EnvVariable,
+    HttpHeader,
+    HttpMcpServer,
     ImageContentBlock,
+    McpServerStdio,
     PromptResponse,
     RequestPermissionResponse,
+    SseMcpServer,
     TextContentBlock,
     ToolCallProgress,
     ToolCallStart,
@@ -68,7 +73,6 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
-from openhands.sdk.secret import SecretSource
 from openhands.sdk.settings.acp_providers import (
     ACPFileSecretSpec,
     build_session_model_meta,
@@ -76,12 +80,17 @@ from openhands.sdk.settings.acp_providers import (
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
 )
+from openhands.sdk.settings.acp_session_blob import (
+    export_acp_session_blob,
+    import_acp_session_blob,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 from openhands.sdk.utils import maybe_truncate
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
+    validate_secret,
     validate_secret_dict,
 )
 
@@ -147,6 +156,36 @@ MAX_ACP_CONTENT_CHARS: int = 30_000
 _ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
     "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
 }
+
+# Number of trailing characters of an ACP session id retained in log lines
+# for correlation.  ACP session ids are server-issued tokens whose possession
+# alone is enough to call ``session/load`` — they're effectively bearer
+# tokens.  ``model_dump`` / ``model_dump_json`` already redact the
+# ``acp_resume_session_id`` field; log aggregators (Datadog, CloudWatch, …)
+# are another serialization boundary that retains lines for weeks, so the
+# same redaction applies there.  Eight trailing characters give enough
+# entropy to correlate across log lines for one conversation but not enough
+# to brute-force the full id.
+_SESSION_ID_LOG_SUFFIX_LEN: Final[int] = 8
+
+
+def _fingerprint_session_id(session_id: str | None) -> str:
+    """Render an ACP session id as a short, non-reversible fingerprint.
+
+    ACP session ids are effectively bearer tokens (anyone holding one can
+    call ``session/load`` against the ACP server), so the full value must
+    not appear in logs — see :data:`_SESSION_ID_LOG_SUFFIX_LEN`.
+
+    Returns ``"<none>"`` for ``None``, ``"<short>"`` for ids shorter than
+    or equal to the suffix length (e.g. test fixtures), and ``"...<last-N>"``
+    otherwise.
+    """
+    if session_id is None:
+        return "<none>"
+    if len(session_id) <= _SESSION_ID_LOG_SUFFIX_LEN:
+        return "<short>"
+    return f"...{session_id[-_SESSION_ID_LOG_SUFFIX_LEN:]}"
+
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
@@ -355,6 +394,103 @@ def _extract_session_models(
     return current, available
 
 
+# The ACP MCP server union accepted by new_session() / load_session().
+_ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
+
+
+def _mcp_config_to_acp_servers(
+    mcp_config: dict[str, Any],
+    mcp_capabilities: Any,
+) -> list[_ACPMcpServer]:
+    """Translate an OpenHands ``mcp_config`` dict into ACP MCP server objects.
+
+    Reads the standard ``{"mcpServers": {name: {...}}}`` shape (the same shape
+    :attr:`AgentBase.mcp_config` carries for the built-in Agent) and returns the
+    list to pass to ``new_session()`` / ``load_session()`` so the ACP
+    subprocess connects to those servers itself.  Unlike the built-in Agent
+    these are *not* turned into in-process OpenHands MCP tools
+    (:attr:`ACPAgent.supports_openhands_mcp` stays ``False``) — the ACP server
+    owns the MCP connection and exposes the tools through its own turn.
+
+    Each entry maps by transport:
+
+    - ``command`` present → :class:`McpServerStdio` (always forwarded; the
+      protocol gates only the remote transports behind a capability flag).
+    - ``url`` present, transport ``sse`` → :class:`SseMcpServer`, forwarded only
+      when the server advertises ``mcp_capabilities.sse``.
+    - ``url`` present, any other / absent transport → :class:`HttpMcpServer`
+      (covers ``http`` and ``streamable-http``), forwarded only when the server
+      advertises ``mcp_capabilities.http``.
+
+    A remote server whose transport the ACP server does not advertise is dropped
+    with a warning rather than failing init — one misconfigured server should
+    not sink the whole conversation.  ``env`` / ``headers`` maps are converted
+    to the protocol's ``[{name, value}]`` list form; their values were already
+    decrypted by :class:`AgentBase`'s ``mcp_config`` validator.
+    """
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    http_ok = bool(getattr(mcp_capabilities, "http", False))
+    sse_ok = bool(getattr(mcp_capabilities, "sse", False))
+    result: list[_ACPMcpServer] = []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            logger.warning("Skipping malformed ACP MCP server %r", name)
+            continue
+        command = spec.get("command")
+        url = spec.get("url")
+        if command:
+            env = [
+                EnvVariable(name=str(k), value=str(v))
+                for k, v in (spec.get("env") or {}).items()
+            ]
+            result.append(
+                McpServerStdio(
+                    name=str(name),
+                    command=str(command),
+                    args=[str(a) for a in (spec.get("args") or [])],
+                    env=env,
+                )
+            )
+        elif url:
+            headers = [
+                HttpHeader(name=str(k), value=str(v))
+                for k, v in (spec.get("headers") or {}).items()
+            ]
+            is_sse = str(spec.get("transport") or "http").lower() == "sse"
+            if not (sse_ok if is_sse else http_ok):
+                logger.warning(
+                    "ACP server does not advertise %s MCP support; "
+                    "dropping MCP server %r (%s)",
+                    "SSE" if is_sse else "HTTP",
+                    name,
+                    url,
+                )
+                continue
+            # Construct each transport explicitly so the ``type`` literal stays
+            # narrow (the union's two arms require distinct ``Literal``s).
+            if is_sse:
+                result.append(
+                    SseMcpServer(
+                        type="sse", name=str(name), url=str(url), headers=headers
+                    )
+                )
+            else:
+                result.append(
+                    HttpMcpServer(
+                        type="http", name=str(name), url=str(url), headers=headers
+                    )
+                )
+        else:
+            logger.warning(
+                "Skipping ACP MCP server %r: needs a 'command' (stdio) or "
+                "'url' (http/sse)",
+                name,
+            )
+    return result
+
+
 async def _maybe_set_session_model(
     conn: ClientSideConnection,
     agent_name: str,
@@ -432,7 +568,7 @@ async def _reapply_session_model_on_resume(
             "Could not reapply model %r on resumed session %s (%s); the live "
             "session may run on the server default until the next switch",
             acp_model,
-            session_id,
+            _fingerprint_session_id(session_id),
             e,
         )
         return False
@@ -674,6 +810,11 @@ class _OpenHandsACPBridge:
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
         self._last_activity_signal: float = float("-inf")
+        # Monotonic timestamp of the most recent ``session_update``. Unlike the
+        # throttled ``_last_activity_signal``, updated on *every* update so the
+        # prompt idle-timeout watchdog sees real progress. Armed per turn via
+        # ``arm_activity_clock``.
+        self._last_activity_monotonic: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -699,6 +840,26 @@ class _OpenHandsACPBridge:
         self._usage_received.clear()
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
+
+    def arm_activity_clock(self) -> None:
+        """Mark "now" as the last activity for the idle-timeout watchdog.
+
+        Called at the start of each prompt (and each retry) so the idle
+        window is measured from the moment the prompt is sent rather than
+        from a stale value — a server that legitimately takes a while before
+        its first ``session_update`` must not be killed prematurely.
+        """
+        self._last_activity_monotonic = time.monotonic()
+
+    def seconds_since_last_activity(self) -> float:
+        """Seconds since the last ``session_update`` (or ``arm_activity_clock``).
+
+        Drives the prompt idle-timeout: any streamed token, thought, tool-call
+        start/progress, or usage update from the ACP server resets the clock,
+        so a steadily-progressing agent never trips the deadline while a
+        genuinely silent (hung) server still does.
+        """
+        return time.monotonic() - self._last_activity_monotonic
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -756,6 +917,12 @@ class _OpenHandsACPBridge:
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
         logger.debug("ACP session_update: type=%s", type(update).__name__)
+
+        # Any update — token, thought, tool-call start/progress, usage — is
+        # progress: reset the idle clock so the prompt's inactivity watchdog
+        # keeps a steadily-working agent alive (unthrottled, unlike the
+        # heartbeat in ``_maybe_signal_activity``).
+        self._last_activity_monotonic = time.monotonic()
 
         # Route fork session updates to the fork accumulator. ask_agent() joins
         # and returns this text to the caller (a UI/network sink), so mask it
@@ -1079,8 +1246,13 @@ class ACPAgent(AgentBase):
     acp_prompt_timeout: float = Field(
         default=1800.0,
         description=(
-            "Timeout in seconds for a single ACP prompt() call. "
-            "Prevents indefinite hangs when the ACP server fails to respond."
+            "Inactivity timeout in seconds for a single ACP prompt() call. "
+            "The deadline resets on every update from the ACP server (token, "
+            "thought, tool-call progress, usage), so a steadily-progressing "
+            "agent runs as long as it keeps making progress; the prompt is "
+            "only aborted after this many seconds with no activity at all. "
+            "Prevents indefinite hangs when the ACP server stops responding "
+            "without killing legitimately long-running work."
         ),
     )
     acp_model: str | None = Field(
@@ -1092,6 +1264,65 @@ class ACPAgent(AgentBase):
             "If None, the server picks its default."
         ),
     )
+    acp_resume_session_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional explicit ACP session id to resume. When set, takes "
+            "precedence over the id persisted in ``state.agent_state`` and "
+            "is used to call ``session/load`` on the ACP server. Designed "
+            "for environments where the per-conversation filesystem (and "
+            "therefore ``base_state.json``) does not survive across restarts "
+            "(e.g. cloud sandbox recycles), but the id has been mirrored "
+            "into durable storage elsewhere. Falls back to a fresh session "
+            "if the server cannot load the id. Treated as a secret on the "
+            "wire — possession of the id is enough to resume the underlying "
+            "ACP session, so default serialization redacts it; pass "
+            "``expose_secrets='plaintext'`` (trusted backend) or "
+            "``expose_secrets='encrypted'`` plus a cipher (frontend round-"
+            "trip) when the value must cross a serialization boundary."
+        ),
+    )
+
+    @field_serializer("acp_resume_session_id", when_used="always")
+    def _serialize_acp_resume_session_id(self, value: str | None, info):
+        """Mask ``acp_resume_session_id`` via :func:`serialize_secret`.
+
+        Default ``model_dump`` / ``model_dump_json`` redacts the id so it
+        cannot leak into logs, trace exports, or PR review attachments.
+        Trusted backend callers opt into plaintext via Pydantic's context
+        (``expose_secrets='plaintext'``); frontend round-trips use the
+        ``"encrypted"`` mode with a cipher in the context.
+        """
+        if value is None:
+            return None
+        return serialize_secret(SecretStr(value), info)
+
+    @field_validator("acp_resume_session_id", mode="before")
+    @classmethod
+    def _validate_acp_resume_session_id(
+        cls, value: Any, info: ValidationInfo
+    ) -> str | None:
+        """Reverse :meth:`_serialize_acp_resume_session_id` on load.
+
+        Without this validator, ``model_validate_json`` of a previously
+        serialized agent would put garbage in ``acp_resume_session_id``:
+
+        - Default-redacted dumps would reload as the literal ``"**********"``
+          sentinel — calling ``session/load`` with that fails server-side and
+          we fall back to a fresh session every time, defeating the whole
+          point of the durable mirror.
+        - Encrypted dumps (frontend round-trip) would reload as the raw
+          Fernet ciphertext — same failure mode, plus the ciphertext sits
+          in ``state.agent_state`` on disk.
+
+        :func:`validate_secret` returns ``None`` for empty/redacted values
+        and decrypts when a cipher is present in the validation context.
+        We unwrap the returned ``SecretStr`` so the field's runtime type
+        stays ``str | None`` (the rest of the SDK reads it directly).
+        """
+        secret = validate_secret(value, info)
+        return secret.get_secret_value() if secret is not None else None
+
     acp_file_secrets: list[ACPFileSecretSpec] = Field(
         default_factory=lambda: list(default_acp_file_secrets()),
         description=(
@@ -1280,7 +1511,14 @@ class ACPAgent(AgentBase):
 
     @property
     def supports_openhands_mcp(self) -> bool:
-        """``False`` — MCP configuration is owned by the ACP subprocess."""
+        """``False`` — OpenHands does not create in-process MCP *tools* here.
+
+        This stays ``False`` even though ``mcp_config`` is honored: any
+        configured MCP servers are forwarded to the ACP subprocess at session
+        creation (see :func:`_mcp_config_to_acp_servers`) rather than connected
+        in-process. The ACP server owns the MCP connection and surfaces the
+        tools through its own turn.
+        """
         return False
 
     @property
@@ -1376,17 +1614,14 @@ class ACPAgent(AgentBase):
         """Spawn the ACP server and initialize a session."""
         # Validate unsupported execution features. agent_context is allowed
         # because it contributes prompt-only extensions to user messages; ACP
-        # server tools, MCP configuration, and context-window management remain
-        # owned by the server.
+        # server tools and context-window management remain owned by the server.
+        # mcp_config IS supported: its servers are forwarded to the subprocess at
+        # session creation (see _mcp_config_to_acp_servers) rather than turned
+        # into in-process OpenHands MCP tools.
         if self.tools:
             raise NotImplementedError(
                 "ACPAgent does not support custom tools; "
                 "the ACP server manages its own tools"
-            )
-        if self.mcp_config:
-            raise NotImplementedError(
-                "ACPAgent does not support mcp_config; "
-                "configure MCP on the ACP server instead"
             )
         if self.condenser is not None:
             raise NotImplementedError(
@@ -1403,10 +1638,17 @@ class ACPAgent(AgentBase):
         # Render the suffix once, pulling secrets from the conversation's
         # secret_registry to match the regular Agent's get_dynamic_context().
         self._installed_suffix = self._render_suffix(state)
-        # A prior session id in agent_state means we may be resuming; used by
-        # ``truly_resumed`` below to decide whether the model state reported
-        # for this launch describes the resumed session or a fresh one.
-        prior_session_id = state.agent_state.get("acp_session_id")
+        # A prior session id means we may be resuming; used by ``truly_resumed``
+        # below to decide whether the model state reported for this launch
+        # describes the resumed session or a fresh one. An explicit
+        # ``acp_resume_session_id`` (e.g. a cloud session-id mirror feeding the
+        # id back after base_state.json was wiped) takes precedence over the
+        # FS-persisted id, matching the precedence in ``_start_acp_server`` — so
+        # ``truly_resumed`` (``self._session_id == prior_session_id``) stays
+        # correct whether the resumed id came from the FS or the explicit field.
+        prior_session_id = self.acp_resume_session_id or state.agent_state.get(
+            "acp_session_id"
+        )
         # ``acp_suffix_installed`` is persisted by
         # ``_commit_suffix_installation`` only after the first prompt has
         # actually returned successfully, so on resume we know whether the
@@ -1564,25 +1806,18 @@ class ACPAgent(AgentBase):
         advertisement: their values are written to disk, not injected as env
         vars, so advertising them as available env vars would mislead the agent.
         """
-        secret_infos = state.secret_registry.get_secret_infos()
-        agent_context = self.agent_context
+        # Advertise from state.secret_registry alone — it now holds
+        # agent_context.secrets too (seeded at conversation init, with their
+        # descriptions), so it is the single source for the <CUSTOM_SECRETS>
+        # block. Reserved file-content secrets are written to disk, not injected
+        # as env vars, so drop them from the advertisement.
         file_secret_names = self._present_file_secret_names(state)
-        if file_secret_names:
-            secret_infos = [
-                info
-                for info in secret_infos
-                if info.get("name") not in file_secret_names
-            ]
-            if agent_context is not None and agent_context.secrets:
-                agent_context = agent_context.model_copy(
-                    update={
-                        "secrets": {
-                            name: secret
-                            for name, secret in agent_context.secrets.items()
-                            if name not in file_secret_names
-                        }
-                    }
-                )
+        secret_infos = [
+            info
+            for info in state.secret_registry.get_secret_infos()
+            if info.get("name") not in file_secret_names
+        ]
+        agent_context = self.agent_context
         if agent_context is None:
             # No caller-supplied context. Only synthesize an empty one for the
             # renderer if we actually have a registry-secret advertisement to
@@ -1592,53 +1827,64 @@ class ACPAgent(AgentBase):
             # suppress.
             if not secret_infos:
                 return None
-            return AgentContext(current_datetime=None).to_acp_prompt_context(
-                additional_secret_infos=secret_infos
-            )
+            agent_context = AgentContext(current_datetime=None)
+        elif agent_context.secrets:
+            # The registry already carries these (and their descriptions), so
+            # clear the agent_context copy to advertise from the registry alone
+            # rather than re-merging a redundant second source.
+            agent_context = agent_context.model_copy(update={"secrets": {}})
         return agent_context.to_acp_prompt_context(additional_secret_infos=secret_infos)
-
-    def _read_conversation_secret(
-        self, state: ConversationState, name: str
-    ) -> str | None:
-        """Read a secret value from the canonical channel, then the drain.
-
-        Prefers ``state.secret_registry`` — the canonical channel, where
-        ``create_request`` lifts ``agent_context.secrets`` on the Python /
-        OpenHands-cloud path and where ``StartConversationRequest.secrets``
-        land — and falls back to ``agent_context.secrets`` for topologies that
-        do not call ``create_request`` (notably canvas-local). See #1022.
-        """
-        if name in state.secret_registry.secret_sources:
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                return value
-        if self.agent_context and self.agent_context.secrets:
-            secret = self.agent_context.secrets.get(name)
-            if secret is not None:
-                return (
-                    secret.get_value()
-                    if isinstance(secret, SecretSource)
-                    else str(secret)
-                )
-        return None
 
     def _present_file_secret_names(self, state: ConversationState) -> set[str]:
         """Reserved file-content secret names supplied for this conversation.
 
         A name counts as present if it is configured in
-        :attr:`acp_file_secrets` *and* appears in either credential channel
-        (``state.secret_registry`` or ``agent_context.secrets``). These names
-        are materialised to disk and therefore excluded from the plain env-var
-        injection and the ``<CUSTOM_SECRETS>`` advertisement (their values are
-        file blobs, not env vars the subprocess can reference by name).
+        :attr:`acp_file_secrets` *and* registered in ``state.secret_registry``
+        (which holds ``agent_context.secrets`` too, seeded at conversation
+        init). These names are materialised to disk and therefore excluded from
+        the plain env-var injection and the ``<CUSTOM_SECRETS>`` advertisement
+        (their values are file blobs, not env vars the subprocess can reference
+        by name).
         """
         configured = {spec.secret_name for spec in self.acp_file_secrets}
         if not configured:
             return set()
-        present = set(state.secret_registry.secret_sources)
-        if self.agent_context and self.agent_context.secrets:
-            present |= set(self.agent_context.secrets)
-        return present & configured
+        return set(state.secret_registry.secret_sources) & configured
+
+    def export_cli_session_blob(self, state: ConversationState) -> bytes | None:
+        """Allowlisted tar.gz of this conversation's CLI session transcripts.
+
+        Packs the provider's ``session_subtrees`` (Codex ``sessions/**``,
+        Claude Code ``projects/**``) from the per-conversation data root —
+        never credentials or global CLI state (see
+        :mod:`openhands.sdk.settings.acp_session_blob`). The blob, restored
+        onto a fresh sandbox via :meth:`import_cli_session_blob` together with
+        :attr:`acp_resume_session_id`, is what makes native ``session/load``
+        resume survive a pod recycle (#1126).
+
+        Returns ``None`` for unrecognised/custom commands, providers without
+        session snapshots (gemini-cli), or when no session files exist.
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return None
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return export_acp_session_blob(data_root, provider)
+
+    def import_cli_session_blob(self, state: ConversationState, blob: bytes) -> int:
+        """Restore a session blob into the per-conversation data root.
+
+        Seed-if-absent, allowlist-filtered, path-safe (see
+        :func:`~openhands.sdk.settings.acp_session_blob.import_acp_session_blob`).
+        Call before the conversation initialises so ``session/load`` finds the
+        restored transcripts. Returns the number of files written (0 for
+        unrecognised commands or snapshot-less providers).
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return 0
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return import_acp_session_blob(data_root, provider, blob)
 
     def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
         """Durable per-conversation directory for a credential file.
@@ -1697,8 +1943,8 @@ class ACPAgent(AgentBase):
         need a narrower scope can pin ``HOME`` via ``acp_env`` (honoured below)
         or leave isolation off for Gemini.
 
-        Ordering contract: this runs *after* the secret_registry / agent_context
-        drain and the ``acp_env`` update in :meth:`_start_acp_server`, so the
+        Ordering contract: this runs *after* the ``secret_registry`` injection
+        and the ``acp_env`` update in :meth:`_start_acp_server`, so the
         credential vars it inspects (``ANTHROPIC_API_KEY`` /
         ``CLAUDE_CODE_OAUTH_TOKEN``) are already hydrated into ``env``. Calling it
         earlier would misread the active credential and wrongly relocate Claude.
@@ -1726,12 +1972,11 @@ class ACPAgent(AgentBase):
     ) -> None:
         """Seed reserved file-content credentials onto disk and point the CLI at them.
 
-        For each spec in :attr:`acp_file_secrets` whose secret is present in
-        either credential channel (see :meth:`_read_conversation_secret`), write
-        its value to the spec's durable per-conversation directory
-        (:meth:`_acp_file_secret_dir`) and set the controlling env var
-        (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``) unless the caller
-        pinned it via ``acp_env``.
+        For each spec in :attr:`acp_file_secrets` whose secret is registered in
+        ``state.secret_registry``, write its value to the spec's durable
+        per-conversation directory (:meth:`_acp_file_secret_dir`) and set the
+        controlling env var (``CODEX_HOME`` / ``GOOGLE_APPLICATION_CREDENTIALS``)
+        unless the caller pinned it via ``acp_env``.
 
         Seed-if-absent: a non-empty existing file is preserved, never clobbered
         — so a token the CLI rewrites on refresh (Codex) survives a recycle, and
@@ -1747,7 +1992,7 @@ class ACPAgent(AgentBase):
         """
         for spec in self.acp_file_secrets:
             name = spec.secret_name
-            value = self._read_conversation_secret(state, name)
+            value = state.secret_registry.get_secret_value(name)
             if not value:
                 continue
             # Seed where the data-dir env var will actually point: an explicit
@@ -1833,28 +2078,17 @@ class ACPAgent(AgentBase):
         client.mask = state.secret_registry.mask_secrets_in_output
 
         # Build the subprocess environment. Precedence, highest first:
-        #   acp_env > state.secret_registry > agent_context.secrets
-        #     > os.environ > default_environment
+        #   acp_env > state.secret_registry > os.environ > default_environment
         #
-        # Conversation credentials (the registry and the agent_context drain)
-        # intentionally OVERRIDE ambient os.environ: an explicit per-conversation
-        # / provider secret must win over a same-named variable in the
-        # agent-server's own environment (os.environ is the wrong process for a
-        # remote server). acp_env (deprecated) stays highest.
+        # Conversation credentials intentionally OVERRIDE ambient os.environ: an
+        # explicit per-conversation / provider secret must win over a same-named
+        # variable in the agent-server's own environment. acp_env (deprecated)
+        # stays highest.
         #
-        # Two conversation channels, because an ACP subprocess is a black box we
-        # cannot name-scan per command (unlike the regular agent's bash tool), so
-        # credentials must be injected upfront:
-        #   - state.secret_registry: the canonical channel
-        #     (StartConversationRequest.secrets; also where create_request lifts
-        #     agent_context.secrets on the Python-caller path / OpenHands cloud).
-        #   - agent_context.secrets drain: the ONLY channel that delivers
-        #     agent_context.secrets on paths that do NOT call create_request —
-        #     notably canvas-local, which builds the request in TypeScript and
-        #     relies on the server's create_agent() to fold llm.api_key into
-        #     agent_context.secrets. There is no server-side agent_context.secrets
-        #     → registry lift, so keep this drain until one exists.
-        # On a key collision the registry wins over the drain.
+        # agent_context.secrets are seeded into secret_registry at
+        # LocalConversation.__init__ (lower priority than request.secrets), so
+        # the registry is now the single channel for all secrets including
+        # provider credentials folded in by ACPAgentSettings.create_agent().
         env = default_environment()
         env.update(os.environ)
         if self.acp_env:
@@ -1873,34 +2107,17 @@ class ACPAgent(AgentBase):
         # injected as env vars, so exclude their (large blob) names from the
         # plain env-injection below; materialisation sets only the path env var.
         file_secret_names = self._present_file_secret_names(state)
-        # agent_context.secrets drain (lower precedence than the registry).
-        # Skip keys a higher tier will set — acp_env (applied last) and the
-        # registry (applied next) — to avoid a wasted SecretSource.get_value()
-        # (LookupSecret can make an HTTP request).
-        registry_names = set(state.secret_registry.secret_sources)
-        if self.agent_context and self.agent_context.secrets:
-            for name, secret in self.agent_context.secrets.items():
-                if (
-                    name in self.acp_env
-                    or name in registry_names
-                    or name in file_secret_names
-                ):
-                    continue
-                value = (
-                    secret.get_value()
-                    if isinstance(secret, SecretSource)
-                    else str(secret)
-                )
-                if value:
-                    env[name] = value
-        # state.secret_registry overrides the drain and ambient os.environ. Skip
-        # keys acp_env will set (avoids a redundant LookupSecret.get_value()).
-        for name in state.secret_registry.secret_sources:
-            if name in self.acp_env or name in file_secret_names:
-                continue
-            value = state.secret_registry.get_secret_value(name)
-            if value:
-                env[name] = value
+        # Inject the whole registry: an ACP CLI is a black box we can't
+        # name-scan per command (unlike the regular agent's bash tool), so
+        # credentials must be delivered upfront. Registry values override
+        # ambient os.environ. Skip keys acp_env will set last (avoids a
+        # redundant LookupSecret.get_value()) and file secrets (materialised to
+        # disk below).
+        env.update(
+            state.secret_registry.get_all_secrets_as_env_vars(
+                exclude=set(self.acp_env) | file_secret_names
+            )
+        )
         # Materialise reserved file-content secrets to disk and point their
         # data-dir env vars (CODEX_HOME / GOOGLE_APPLICATION_CREDENTIALS) at the
         # written files. Done before acp_env so an explicit acp_env override of
@@ -1914,7 +2131,7 @@ class ACPAgent(AgentBase):
         # Relocate the CLI's data/config root to a per-conversation directory so
         # sandbox-sharing conversations don't race on a shared HOME (#1019).
         # Ordering is load-bearing — this must run AFTER the registry /
-        # agent_context drain and the acp_env update above (so the credential
+        # registry injection and the acp_env update above (so the credential
         # vars its Claude carve-out inspects — ANTHROPIC_API_KEY /
         # CLAUDE_CODE_OAUTH_TOKEN — are already in env, and an acp_env pin wins)
         # and BEFORE the conflict-strip below (so a CLAUDE_CONFIG_DIR it sets is
@@ -1941,14 +2158,44 @@ class ACPAgent(AgentBase):
 
         working_dir = str(state.workspace.working_dir)
 
-        # Prior ACP session id — survives agent-server restarts via
+        # Prior ACP session id — typically survives agent-server restarts via
         # ConversationState.agent_state (serialized into base_state.json).
         # Its presence is the signal to resume; its absence means fresh start.
         # ACP servers key persistence by ``cwd``; if the workspace moved we
         # drop the id so we don't accidentally resume (or silently load) a
         # session the server associates with a different directory.
-        prior_session_id: str | None = state.agent_state.get("acp_session_id")
-        prior_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        #
+        # ``acp_resume_session_id`` (set on the agent config) takes precedence
+        # over the FS-persisted id. This lets cloud deployments mirror the id
+        # into a durable store and pass it back on the first launch of a fresh
+        # sandbox, even when ``base_state.json`` was wiped along with the
+        # previous sandbox filesystem.
+        #
+        # Note the asymmetry on the cwd guard: for an FS-persisted id we have
+        # the cwd it was created under and can refuse to load when it differs,
+        # because resuming the wrong session silently would be catastrophic.
+        # For an explicit ``acp_resume_session_id`` we do *not* have that
+        # recorded cwd — the contract is "the caller knows what they're doing"
+        # (the app-server only mirrors ids for conversations whose sandbox
+        # always lands in the same ``working_dir``). We therefore assume
+        # cwd-compatibility and let the ACP server's own ``session/load``
+        # validation be the last line of defence: a server-side cwd mismatch
+        # returns an ``ACPRequestError``, already caught below and falling back
+        # to ``new_session`` — the same recovery path as a forgotten id.
+        fs_session_id: str | None = state.agent_state.get("acp_session_id")
+        fs_session_cwd: str | None = state.agent_state.get("acp_session_cwd")
+        if self.acp_resume_session_id and self.acp_resume_session_id != fs_session_id:
+            logger.info(
+                "Using explicit acp_resume_session_id (%s); "
+                "filesystem agent_state had id=%s",
+                _fingerprint_session_id(self.acp_resume_session_id),
+                _fingerprint_session_id(fs_session_id),
+            )
+            prior_session_id: str | None = self.acp_resume_session_id
+            prior_session_cwd: str | None = working_dir
+        else:
+            prior_session_id = fs_session_id
+            prior_session_cwd = fs_session_cwd
         if prior_session_id is not None and prior_session_cwd not in (
             None,
             working_dir,
@@ -1956,7 +2203,7 @@ class ACPAgent(AgentBase):
             logger.warning(
                 "ACP session %s was created with cwd=%s; current cwd=%s differs, "
                 "starting a fresh session instead of resuming",
-                prior_session_id,
+                _fingerprint_session_id(prior_session_id),
                 prior_session_cwd,
                 working_dir,
             )
@@ -2018,6 +2265,25 @@ class ACPAgent(AgentBase):
                 agent_version,
             )
 
+            # Translate any configured MCP servers into ACP protocol objects,
+            # gating remote (http/sse) transports on what this server advertised
+            # in its initialize response. The same list is passed to both
+            # new_session and load_session: load_session does not persist the
+            # prior MCP set server-side, so a resume must re-send it or the
+            # restored session would silently lose its MCP servers.
+            mcp_caps = (
+                init_response.agent_capabilities.mcp_capabilities
+                if init_response.agent_capabilities is not None
+                else None
+            )
+            acp_mcp_servers = _mcp_config_to_acp_servers(self.mcp_config, mcp_caps)
+            if acp_mcp_servers:
+                logger.info(
+                    "Forwarding %d MCP server(s) to ACP session: %s",
+                    len(acp_mcp_servers),
+                    [s.name for s in acp_mcp_servers],
+                )
+
             # Authenticate if the server requires it.  Some ACP servers
             # (e.g. codex-acp) require an explicit authenticate call
             # before session creation.  We auto-detect the method from
@@ -2065,21 +2331,21 @@ class ACPAgent(AgentBase):
                     load_response = await conn.load_session(
                         cwd=working_dir,
                         session_id=prior_session_id,
-                        mcp_servers=[],
+                        mcp_servers=acp_mcp_servers,
                     )
                     session_id = prior_session_id
                     reported_model_id, available_models = _extract_session_models(
                         load_response
                     )
                     logger.info(
-                        "Resumed ACP session: %s (cwd=%s)",
-                        session_id,
+                        "Resumed ACP session %s (cwd=%s)",
+                        _fingerprint_session_id(session_id),
                         working_dir,
                     )
                 except ACPRequestError as e:
                     logger.warning(
                         "ACP load_session(%s) failed (%s); starting a fresh session",
-                        prior_session_id,
+                        _fingerprint_session_id(prior_session_id),
                         e,
                     )
 
@@ -2095,7 +2361,11 @@ class ACPAgent(AgentBase):
                 # _meta dict in the JSON-RPC request — do NOT wrap in _meta=
                 # (that double-nests).
                 session_meta = build_session_model_meta(agent_name, self.acp_model)
-                response = await conn.new_session(cwd=working_dir, **session_meta)
+                response = await conn.new_session(
+                    cwd=working_dir,
+                    mcp_servers=acp_mcp_servers,
+                    **session_meta,
+                )
                 session_id = response.session_id
                 reported_model_id, available_models = _extract_session_models(response)
                 # Initial-selection protocol call for providers that use it
@@ -2182,6 +2452,9 @@ class ACPAgent(AgentBase):
         self._client.on_token = on_token
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
+        # Start the idle-timeout clock fresh for this attempt so the deadline
+        # is measured from the send (or retry), not from a stale value.
+        self._client.arm_activity_clock()
 
     def _cancel_inflight_tool_calls(self) -> None:
         """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
@@ -2435,31 +2708,75 @@ class ACPAgent(AgentBase):
                 logger.warning(
                     "UsageUpdate not received within %.1fs for session %s",
                     _USAGE_UPDATE_TIMEOUT,
-                    self._session_id,
+                    _fingerprint_session_id(self._session_id),
                 )
         return response
+
+    def _idle_timeout_message(self) -> str:
+        return (
+            f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s "
+            "with no activity from the ACP server"
+        )
+
+    async def _await_with_idle_deadline(
+        self,
+        awaitable: Awaitable[PromptResponse | None],
+        *,
+        cancel_on_exit: bool,
+    ) -> PromptResponse | None:
+        """Await *awaitable*, aborting only after a stretch of inactivity.
+
+        The deadline is an *idle* timeout, not a hard turn deadline: any
+        ``session_update`` from the ACP server (token, thought, tool-call
+        start/progress, usage) resets ``acp_prompt_timeout``, so a steadily-
+        progressing agent runs as long as it keeps making progress while a
+        genuinely silent (hung) server is still cut off after the idle window.
+        This is what keeps long-running ACP commands alive (issue
+        agent-canvas#1245).
+
+        ``asyncio.wait`` (not ``wait_for``) drives the polling so an idle-check
+        slice elapsing never cancels the underlying prompt — only a true idle
+        period raises ``TimeoutError``. ``cancel_on_exit`` controls cleanup:
+        the sync path passes ``True`` to cancel the prompt coroutine it owns;
+        the async path passes ``False`` because the portal task must survive
+        for ``astep``'s ``session/cancel`` + drain handler.
+        """
+        idle_limit = self.acp_prompt_timeout
+        fut = asyncio.ensure_future(awaitable)
+        try:
+            while True:
+                remaining = idle_limit - self._client.seconds_since_last_activity()
+                if remaining <= 0:
+                    raise TimeoutError(self._idle_timeout_message())
+                # wait() returns when the prompt finishes or the slice elapses,
+                # leaving fut untouched either way.
+                await asyncio.wait({fut}, timeout=remaining)
+                if fut.done():
+                    return fut.result()
+                # Slice elapsed: only give up if the server produced nothing in
+                # the meantime, otherwise the loop re-arms with a fresh window.
+                if self._client.seconds_since_last_activity() >= idle_limit:
+                    raise TimeoutError(self._idle_timeout_message())
+        finally:
+            if cancel_on_exit and not fut.done():
+                fut.cancel()
 
     async def _await_prompt_response_with_timeout(
         self,
         prompt_future: Future[PromptResponse | None],
     ) -> PromptResponse | None:
-        """Await an ACP prompt with a hard turn deadline.
+        """Await an ACP prompt with an idle (inactivity) turn deadline.
 
-        The terminal tool reports hard command timeouts back to the agent
-        instead of waiting forever for active commands. ACP prompts follow the
-        same rule: activity heartbeats keep the server alive, but they do not
-        extend this prompt deadline. The timeout handler sends ``session/cancel``
-        and closes any in-flight tool cards.
+        Wraps the portal-side prompt future in :meth:`_await_with_idle_deadline`
+        so the prompt is only abandoned after ``acp_prompt_timeout`` seconds
+        with no ACP activity. The timeout handler in ``astep`` sends
+        ``session/cancel`` and closes any in-flight tool cards.
         """
-        try:
-            return await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(prompt_future)),
-                timeout=self.acp_prompt_timeout,
-            )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s"
-            ) from exc
+        # cancel_on_exit=False: the portal task behind ``prompt_future`` must
+        # outlive an idle timeout / cancellation so astep's drain can observe it.
+        return await self._await_with_idle_deadline(
+            asyncio.wrap_future(prompt_future), cancel_on_exit=False
+        )
 
     @staticmethod
     def _prompt_response_was_cancelled(response: PromptResponse | None) -> bool:
@@ -2541,12 +2858,11 @@ class ACPAgent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
-        """Error path when ``conn.prompt`` exceeded ``acp_prompt_timeout``."""
+        """Error path when ``conn.prompt`` went idle past ``acp_prompt_timeout``."""
         logger.error(
-            "ACP prompt timed out after %.1fs (limit=%.0fs). "
-            "The ACP server may have completed its work but failed to "
-            "send the JSON-RPC response. Accumulated %d text chunks, "
-            "%d tool calls.",
+            "ACP prompt timed out after %.1fs with no activity for the last "
+            "%.0fs. The ACP server may have stalled or failed to send the "
+            "JSON-RPC response. Accumulated %d text chunks, %d tool calls.",
             elapsed,
             self.acp_prompt_timeout,
             len(self._client.accumulated_text),
@@ -2557,9 +2873,10 @@ class ACPAgent(AgentBase):
             content=[
                 TextContent(
                     text=(
-                        f"ACP prompt timed out after {elapsed:.0f}s. "
-                        "The agent may have completed its work but "
-                        "the response was not received."
+                        "ACP prompt timed out after "
+                        f"{self.acp_prompt_timeout:.0f}s with no activity from "
+                        "the agent. The agent may have stalled, or it may have "
+                        "completed its work but the response was not received."
                     )
                 )
             ],
@@ -2684,7 +3001,7 @@ class ACPAgent(AgentBase):
         t0 = time.monotonic()
         try:
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, blocks=%d)",
+                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d)",
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
@@ -2693,14 +3010,16 @@ class ACPAgent(AgentBase):
 
             async def _prompt() -> PromptResponse | None:
                 # Thin closure so existing mocks of ``_executor.run_async``
-                # that take a single positional callable keep working.
-                return await self._do_acp_prompt(prompt_blocks)
+                # that take a single positional callable keep working. The idle
+                # deadline is enforced inside (cancel_on_exit=True: this path
+                # owns the coroutine) rather than as a hard run_async timeout.
+                return await self._await_with_idle_deadline(
+                    self._do_acp_prompt(prompt_blocks), cancel_on_exit=True
+                )
 
             for attempt in range(max_retries + 1):
                 try:
-                    response = self._executor.run_async(
-                        _prompt, timeout=self.acp_prompt_timeout
-                    )
+                    response = self._executor.run_async(_prompt)
                     break
                 except TimeoutError:
                     raise
@@ -2825,7 +3144,7 @@ class ACPAgent(AgentBase):
         prompt_future: Future[PromptResponse | None] | None = None
         try:
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, blocks=%d, async)",
+                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d, async)",
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
@@ -3014,7 +3333,7 @@ class ACPAgent(AgentBase):
                         logger.warning(
                             "UsageUpdate not received within %.1fs for fork session %s",
                             _USAGE_UPDATE_TIMEOUT,
-                            fork_session_id,
+                            _fingerprint_session_id(fork_session_id),
                         )
                 fork_elapsed = time.monotonic() - fork_t0
 
@@ -3140,7 +3459,7 @@ class ACPAgent(AgentBase):
             "Switched ACP session model to %s (provider=%s, session=%s)",
             model,
             provider.key if provider else "unknown",
-            self._session_id,
+            _fingerprint_session_id(self._session_id),
         )
 
     def close(self) -> None:

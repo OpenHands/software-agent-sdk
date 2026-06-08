@@ -252,6 +252,18 @@ class ACPProviderInfo:
     callers constructing this dataclass positionally keep working.
     """
 
+    binary_name: str | None = field(default=None, compare=False)
+    """Pinned, pre-installed CLI binary for this provider (e.g. ``codex-acp``).
+
+    The agent-server image installs the ACP CLIs at a fixed version as ``PATH``
+    wrappers. When this binary resolves via :func:`shutil.which`,
+    :meth:`~openhands.sdk.settings.model.ACPAgentSettings.resolve_acp_command`
+    rewrites the ``npx -y <pkg>`` launch command to run it directly (preserving
+    trailing args like gemini's ``--acp``); otherwise the ``npx`` command is
+    used unchanged. ``None`` for providers with no pinned binary (and ``custom``
+    servers); defaulted so positional construction keeps working.
+    """
+
     data_dir_env_var: str | None = None
     """Env var that relocates this CLI's per-user data/config root.
 
@@ -269,6 +281,30 @@ class ACPProviderInfo:
     ``None`` for providers with no known relocation lever, which then skip
     isolation. Consumed by
     :attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`.
+    """
+
+    # Appended last to keep existing positional construction stable (the API
+    # breakage check flags moving an existing positional parameter).
+    session_subtrees: tuple[str, ...] = field(default=(), compare=False)
+    """Top-level subdirectories of the data root that hold session transcripts.
+
+    The allowlist for session-blob export/import (see
+    :mod:`openhands.sdk.settings.acp_session_blob`): only files under these
+    subtrees of the per-conversation data root (``<persistence_dir>/acp/<key>``)
+    are ever packed into — or restored from — a session snapshot. Everything
+    else at the data root (``auth.json``, ``.credentials.json``,
+    ``history.jsonl``, config, caches) is excluded by construction, so live
+    credentials never ride along with a snapshot; auth is re-established on
+    every launch by file-secret materialisation / env-var secrets.
+
+    - ``("sessions",)`` — codex-acp (``$CODEX_HOME/sessions/**`` rollout JSONLs;
+      what ``session/load`` reads)
+    - ``("projects",)`` — claude-agent-acp (``$CLAUDE_CONFIG_DIR/projects/
+      <cwd-slug>/<session-id>.jsonl``; the filename is the ``session/load`` id)
+    - ``()``            — gemini-cli (no reliable ``session/load``; its only
+      data-dir lever is ``HOME``, far too broad to snapshot)
+
+    Empty means the provider does not support session snapshots.
     """
 
 
@@ -371,12 +407,29 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 )
 
 
+# Pinned npm versions for the built-in ACP launchers. Keep in sync with the
+# `npm install -g` line in
+# openhands-agent-server/openhands/agent_server/docker/Dockerfile — a bump must
+# edit both. The pin constrains the native (no pre-installed binary) path, where
+# the bare `npx -y <pkg>` would otherwise resolve npm `latest` at launch under a
+# permission-disabling session mode. In the image the binary rewrite in
+# `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
+# so the `@version` suffix is a no-op there.
+CLAUDE_AGENT_ACP_VERSION = "0.30.0"
+CODEX_ACP_VERSION = "0.15.0"
+GEMINI_CLI_VERSION = "0.38.0"
+
+
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
     {
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=("npx", "-y", "@agentclientprotocol/claude-agent-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
+            ),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -390,12 +443,18 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            binary_name="claude-agent-acp",
             data_dir_env_var="CLAUDE_CONFIG_DIR",
+            session_subtrees=("projects",),
         ),
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=("npx", "-y", "@zed-industries/codex-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@zed-industries/codex-acp@{CODEX_ACP_VERSION}",
+            ),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="full-access",
@@ -406,12 +465,19 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
             file_secrets=_CODEX_FILE_SECRETS,
+            binary_name="codex-acp",
             data_dir_env_var="CODEX_HOME",
+            session_subtrees=("sessions",),
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+                "--acp",
+            ),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             default_session_mode="yolo",
@@ -427,6 +493,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # auto-routing.
             default_model="auto-gemini-2.5",
             file_secrets=_GEMINI_FILE_SECRETS,
+            binary_name="gemini",
             # Gemini CLI has no dedicated config-dir var; it hard-codes
             # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
             data_dir_env_var="HOME",

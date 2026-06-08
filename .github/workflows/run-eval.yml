@@ -26,7 +26,9 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.24.0
+                default: v1.26.0
+
+
 
 
 
@@ -170,6 +172,7 @@ jobs:
                   ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || 'true' }}
                   MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
                   TOOL_PRESET: ${{ github.event.inputs.tool_preset || 'default' }}
+                  AGENT_TYPE: ${{ github.event.inputs.agent_type || 'default' }}
                   PARTIAL_ARCHIVE_URL: ${{ github.event.inputs.partial_archive_url || 'N/A' }}
                   LABEL_NAME: ${{ github.event.label.name || 'N/A' }}
               run: |
@@ -194,6 +197,7 @@ jobs:
                   echo "enable_conversation_event_logging: $ENABLE_CONVERSATION_EVENT_LOGGING"
                   echo "max_retries: $MAX_RETRIES"
                   echo "tool_preset: $TOOL_PRESET"
+                  echo "agent_type: $AGENT_TYPE"
                   echo "partial_archive_url: $PARTIAL_ARCHIVE_URL"
                   echo ""
                   echo "=== Environment Variables ==="

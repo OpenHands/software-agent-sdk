@@ -128,13 +128,16 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        default_factory=datetime.now,
+        # Timezone-aware local "now" so the value injected into the system prompt
+        # carries a UTC offset instead of an ambiguous naive local time (#3438).
+        default_factory=lambda: datetime.now().astimezone(),
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
             "or a pre-formatted string. When provided, this information is "
             "included in the system prompt to give the agent awareness of "
-            "the current time context. Defaults to the current datetime."
+            "the current time context. Defaults to the current "
+            "(timezone-aware) datetime."
         ),
         json_schema_extra={"acp_compatible": True},
     )

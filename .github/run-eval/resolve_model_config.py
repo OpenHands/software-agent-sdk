@@ -41,7 +41,7 @@ if sigalrm := getattr(signal, "SIGALRM", None):
 # SDK-specific parameters that should not be passed to litellm.
 # These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
-SDK_ONLY_PARAMS = {"disable_vision"}
+SDK_ONLY_PARAMS = {"disable_vision", "inline_image_urls"}
 
 
 # Model configurations dictionary
@@ -79,6 +79,10 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/moonshot/kimi-k2.6",
             "temperature": 1.0,
+            # Moonshot's public Kimi API rejects http(s) image URLs and only
+            # accepts base64 ``data:`` URLs. This makes the SDK fetch each
+            # image URL and inline it as base64 before sending. See #3155.
+            "inline_image_urls": True,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
@@ -159,6 +163,22 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/gemini-3.1-pro-preview",
             "temperature": 0.0,
+        },
+    },
+    "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "display_name": "Gemini 3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.5-flash",
+            "temperature": 0.0,
+            # SWE-bench Multimodal runs against this model fail ~97% of
+            # image-bearing instances with an opaque Vertex 500
+            # "Internal error encountered" on the very first LLM call,
+            # while text-only instances complete normally. Fetching the
+            # image client-side and sending it as a base64 ``data:`` URL
+            # bypasses LiteLLM's server-side URL fetch path, which is the
+            # most plausible failure point. See run #26931958101 analysis.
+            "inline_image_urls": True,
         },
     },
     "gpt-5.2": {
@@ -378,6 +398,17 @@ MODELS = {
             "model": "litellm_proxy/trinity-large-thinking",
             "temperature": 1.0,
             "top_p": 0.95,
+        },
+    },
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/step-3.7-flash",
+            "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }
