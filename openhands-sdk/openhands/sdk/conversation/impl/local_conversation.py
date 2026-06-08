@@ -234,6 +234,7 @@ class LocalConversation(BaseConversation):
         )
 
         self._pin_prompt_cache_key()
+        self._warn_if_prompt_cache_inactive()
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -762,6 +763,38 @@ class LocalConversation(BaseConversation):
         # shard, defeating cross-sub-agent cache reuse on OpenAI models.
         if self.agent.llm._prompt_cache_key is None:
             self.agent.llm._prompt_cache_key = str(self._state.id)
+
+    def _warn_if_prompt_cache_inactive(self) -> None:
+        """Log a one-time WARN if the primary LLM has no prompt-cache support.
+
+        Long agent loops re-send a large, almost-identical prompt every turn.
+        On providers that support prompt caching, the bulk of those prompt
+        tokens are served as cheap cache reads. On providers that don't, the
+        agent pays full token cost on every step — for a 50-step run with a
+        200k-token prompt that's ~10M tokens of pure prompt overhead per
+        task.
+
+        Eval harnesses and humans alike often miss this until they look at
+        the bill. Surface it once, at conversation construction, instead.
+        """
+        try:
+            llm = self.agent.llm
+            if llm.is_caching_prompt_active():
+                return
+            model = getattr(llm, "model", "<unknown>")
+            logger.warning(
+                "Prompt caching is not active for model %r on this "
+                "conversation. Long agent loops will pay full prompt-token "
+                "cost on every step. Consider tightening `max_iteration_per_run` "
+                "or switching to a model with prompt-cache support for "
+                "long-running tasks.",
+                model,
+            )
+        except Exception:  # pragma: no cover - defensive: never fail init on a log
+            logger.debug(
+                "Prompt-cache support probe failed; skipping warning",
+                exc_info=True,
+            )
 
     def _pin_session_affinity_header(self, llm: LLM) -> None:
         """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.

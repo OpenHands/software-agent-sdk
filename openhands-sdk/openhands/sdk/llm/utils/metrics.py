@@ -72,6 +72,37 @@ class TokenUsage(BaseModel):
             response_id=self.response_id,
         )
 
+    @property
+    def cache_hit_rate(self) -> float | None:
+        """Fraction of prompt tokens served from a prompt cache, in ``[0, 1]``.
+
+        Computed as ``cache_read_tokens / prompt_tokens``. ``cache_read_tokens``
+        is treated as a *subset* of ``prompt_tokens`` (the OpenAI / Anthropic
+        convention), so a hit rate of ``1.0`` means every prompt token was
+        served from cache.
+
+        Returns ``None`` when no prompt tokens were recorded so callers can
+        distinguish "no data yet" from "0% hit rate".
+        """
+        if self.prompt_tokens <= 0:
+            return None
+        return min(1.0, self.cache_read_tokens / self.prompt_tokens)
+
+    @property
+    def cache_write_rate(self) -> float | None:
+        """Fraction of prompt tokens that produced a new cache write.
+
+        Computed as ``cache_write_tokens / prompt_tokens``. High write rate
+        with low :py:attr:`cache_hit_rate` typically means the cache is
+        being thrashed by frequently-changing prefixes (e.g. timestamps in
+        the system prompt) and is a strong knob to investigate.
+
+        Returns ``None`` when no prompt tokens were recorded.
+        """
+        if self.prompt_tokens <= 0:
+            return None
+        return min(1.0, self.cache_write_tokens / self.prompt_tokens)
+
 
 class MetricsSnapshot(BaseModel):
     """A snapshot of metrics at a point in time.
