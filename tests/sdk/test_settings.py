@@ -1,9 +1,10 @@
 import json
 import shutil
+from typing import Any
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
@@ -68,6 +69,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "tool_concurrency_limit",
         "mcp_config",
     }
     assert general_fields["agent"].default == "CodeActAgent"
@@ -82,6 +84,11 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert general_fields["enable_switch_llm_tool"].default is True
     assert (
         general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
+    )
+    assert general_fields["tool_concurrency_limit"].value_type == "integer"
+    assert general_fields["tool_concurrency_limit"].default == 1
+    assert (
+        general_fields["tool_concurrency_limit"].prominence is SettingProminence.MAJOR
     )
 
     # -- llm section --
@@ -318,6 +325,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "tool_concurrency_limit",
         "mcp_config",
     }
     # No agent_kind field — each variant has its own settings page and
@@ -493,6 +501,70 @@ def test_llm_create_agent_uses_settings_llm_and_tools() -> None:
     assert isinstance(agent, Agent)
     assert agent.llm is llm
     assert agent.tools == tools
+
+
+def test_llm_create_agent_defaults_tool_concurrency_limit_to_one() -> None:
+    agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
+    assert agent.tool_concurrency_limit == 1
+
+
+def test_tool_concurrency_limit_defaults_to_one_when_omitted_from_payload() -> None:
+    # Backward compatibility: payloads persisted before the field existed must
+    # still load and fall back to the sequential default.
+    settings = OpenHandsAgentSettings.model_validate({"agent_kind": "openhands"})
+    assert settings.tool_concurrency_limit == 1
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (1, 1),  # sequential default, explicit
+        (2, 2),
+        (8, 8),
+        (32, 32),
+        (1000, 1000),  # no upper cap — large values are accepted
+        ("4", 4),  # lax string -> int coercion
+        (4.0, 4),  # whole-number float coercion
+        (True, 1),  # bool is an int subclass; True -> 1 (>= 1, so valid)
+    ],
+)
+def test_tool_concurrency_limit_valid_values_round_trip(
+    raw: Any, expected: int
+) -> None:
+    settings = OpenHandsAgentSettings(
+        llm=LLM(model="test-model"), tool_concurrency_limit=raw
+    )
+    assert settings.tool_concurrency_limit == expected
+    assert type(settings.tool_concurrency_limit) is int
+
+    # The value must survive a JSON serialization round-trip...
+    reloaded = OpenHandsAgentSettings.model_validate(settings.model_dump(mode="json"))
+    assert reloaded.tool_concurrency_limit == expected
+
+    # ...and propagate to the constructed Agent.
+    agent = settings.create_agent()
+    assert agent.tool_concurrency_limit == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        0,  # below ge=1
+        -1,  # negative
+        -100,
+        False,  # bool False -> 0, below ge=1
+        4.5,  # non-integral float
+        "abc",  # unparseable string
+        None,  # not Optional
+        [1],  # wrong type entirely
+    ],
+)
+def test_tool_concurrency_limit_invalid_values_rejected(raw: Any) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OpenHandsAgentSettings(llm=LLM(model="test-model"), tool_concurrency_limit=raw)
+    assert any(
+        err["loc"] == ("tool_concurrency_limit",) for err in exc_info.value.errors()
+    )
 
 
 def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
