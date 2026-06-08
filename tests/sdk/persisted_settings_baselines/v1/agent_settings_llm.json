@@ -1,0 +1,38 @@
+{
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-legacy-llm",
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ],
+    "mcp_config.mcpServers.fetch.command": "uvx",
+    "verification.critic_enabled": true
+  },
+  "schema_version": 1,
+  "agent_kind": "llm",
+  "llm": {
+    "model": "fixture-legacy-llm"
+  },
+  "tools": [
+    {
+      "name": "TerminalTool",
+      "params": {}
+    }
+  ],
+  "mcp_config": {
+    "mcpServers": {
+      "fetch": {
+        "command": "uvx",
+        "args": [
+          "mcp-server-fetch"
+        ]
+      }
+    }
+  },
+  "verification": {
+    "critic_enabled": true
+  }
+}
