@@ -306,6 +306,33 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
         )
 
 
+def extract_client_tool_specs(tools: "Sequence[Tool]") -> list[ClientToolSpec]:
+    """Recover :class:`ClientToolSpec`s embedded in persisted ``Tool`` specs.
+
+    Client tools carry their full spec under ``Tool.params['spec']`` (see
+    :func:`register_client_tools`). When a conversation is resumed in a fresh
+    process, that spec is the only place the schema survives, so we use it to
+    re-register the dynamic tools. A persisted ``Tool`` is treated as a client
+    tool only when its ``params['spec']`` validates as a ``ClientToolSpec`` whose
+    ``name`` matches the tool name, which avoids misclassifying ordinary tools
+    that happen to use a ``spec`` param.
+    """
+    from pydantic import ValidationError
+
+    specs: list[ClientToolSpec] = []
+    for tool in tools:
+        raw = (tool.params or {}).get("spec")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            spec = ClientToolSpec.model_validate(raw)
+        except ValidationError:
+            continue
+        if spec.name == tool.name:
+            specs.append(spec)
+    return specs
+
+
 def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
     """Register client-defined tools and return per-conversation tool specs.
 
