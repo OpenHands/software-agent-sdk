@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.llm import LLM
 
 
@@ -12,7 +13,9 @@ def get_total_token_count(
 
     This function converts the events to LLM messages and uses the provided LLM
     to count the total number of tokens. This is useful for understanding how many
-    tokens a sequence of events will consume in the context window.
+    tokens a sequence of events will consume in the context window. A view is
+    expected to have one system prompt event; if multiple are present, only the
+    first system prompt's tools are included.
 
     Args:
         events: List of LLM convertible events to count tokens for
@@ -35,7 +38,16 @@ def get_total_token_count(
         >>> print(f"Total tokens: {token_count}")
     """
     messages = LLMConvertibleEvent.events_to_messages(list(events))
-    return llm.get_token_count(messages)
+    tools = next(
+        (event.tools for event in events if isinstance(event, SystemPromptEvent)),
+        None,
+    )
+    return llm.get_token_count(
+        messages,
+        tools=tools or None,
+        # Security-risk tokens are always included in real tool requests.
+        add_security_risk_prediction=bool(tools),
+    )
 
 
 def get_shortest_prefix_above_token_count(

@@ -109,13 +109,16 @@ When reviewing code, provide constructive feedback:
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
 - `AgentSettings.mcp_config` now uses FastMCP's typed `MCPConfig` at runtime. When serializing settings back to plain data (e.g. `model_dump()` or `create_agent()`), keep the output compact with `exclude_none=True, exclude_defaults=True` so callers still see the familiar `.mcp.json`-style dict shape.
 - Persisted SDK settings should use the direct `model_dump()` shape with a top-level `schema_version`; avoid adding wrapped payload formats or legacy migration shims in `openhands/sdk/settings/model.py`.
+- Persisted settings compatibility is enforced by `.github/scripts/check_persisted_settings_compat.py` plus `tests/sdk/persisted_settings_baselines/vN/` golden fixtures. When a versioned persisted settings shape changes incompatibly, bump the relevant schema version constant, add the migration step, and add a fixture for the old shape.
+- The persisted-settings compatibility check builds its historical PyPI baseline environment with `uv` and a PyPI release-date `exclude-newer` cutoff, and golden fixtures may include a top-level `__expected__` map of dotted paths whose post-migration values must be preserved.
+
 - Because persisted settings are not in production yet, prefer removing temporary compatibility fields and serializers outright instead of carrying legacy settings shims in the SDK.
 - Do not expose settings schema versions as public `CURRENT_PERSISTED_VERSION` class constants on `AgentSettings` or `ConversationSettings`; keep versioning internal to the `schema_version` field/defaults and private module constants.
 - `ConversationSettings` owns the conversation-scoped confirmation controls directly (`confirmation_mode`, `security_analyzer`); keep those fields top-level on the model and grouped into the exported `verification` section via schema metadata rather than nested helper models, and prefer the direct settings-model constructor `create_request(...)` over separate request-wrapper helpers.
 - Anthropic malformed tool-use/tool-result history errors (for example, missing or duplicated ``tool_result`` blocks) are intentionally mapped to a dedicated `LLMMalformedConversationHistoryError` and caught separately in `Agent.step()`, so recovery can still use condensation while logs preserve that this was malformed history rather than a true context-window overflow.
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
-- `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- PR code review is handled via OpenHands Cloud automation (not a GitHub Actions workflow). Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`. The automation triggers on `ready_for_review` (established contributors), when `all-hands-bot` is requested as a reviewer, and when the `review-this` label is added.
 - Release PR reviewer guidance now requires checking the latest PR-specific `Run tests`, `Run Examples Scripts`, and `Run Integration Tests` results/comments before approval; if any are missing, stale, ambiguous, skipped, or failing, the bot should leave a COMMENT and defer to human maintainer review.
 - Directory-based runnable examples under `examples/` should expose their entrypoint as `main.py`, and `tests/examples/test_examples.py` should explicitly list the example directory in `_TARGET_DIRECTORIES` so the non-recursive example workflow collects it without accidentally running helper modules.
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
@@ -167,6 +170,8 @@ consult each relevant package-level AGENTS.md.
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
 - Public SDK `Field(default=...)` changes are treated separately from removals/structural API breakages: the API breakage workflow should surface them as behavioral compatibility changes, auto-apply the green `release-note-required` label on PRs, and the release workflow should prepend those labeled PRs to generated GitHub release notes.
+- For public SDK `Field(default=...)` changes, keep two views in the API breakage workflow: compare against the latest released PyPI baseline for compatibility reporting, but compare against the PR base ref before syncing the `release-note-required` label or PR comment so unrelated follow-up PRs are not re-labeled for already-merged unreleased defaults.
+
 
 - The SDK API breakage checker compares stringified `Field(...)` values by
   parsing them as Python expressions after escaping literal newlines inside
@@ -235,6 +240,18 @@ mkdir -p .pr
 - Temporary script that are intended to show reviewers that the feature works
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
+
+<PR_DESCRIPTION_HUMAN_CHECK>
+# Human-only PR description fields
+
+The `HUMAN:` section and the `A human has tested these changes.` checkbox in
+PR descriptions are reserved for human contributors only. AI agents
+MUST NOT add to, edit, move, remove, or check these fields. If the PR description
+CI fails because these fields are missing, empty, or unchecked, stop and ask the
+human user to update them in their own words. If the fields were already updated
+by a human, report the exact validator error rather than editing them yourself.
+</PR_DESCRIPTION_HUMAN_CHECK>
+
 
 <REVIEW_HANDLING>
 - Critically evaluate each review comment before acting on it. Not all feedback is worth implementing:
@@ -315,6 +332,11 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+- Comments policy: write comments sparingly and strategically. Prefer making the code self-explanatory through clear naming and structure over adding prose.
+  - Do NOT add comments that restate what the code already says, summarize the surrounding diff/PR, or narrate the change history ("previously we did X, now we do Y"). That kind of context belongs in the PR description or commit message, not in the source — `git blame` and the PR are the source of truth for *why* a change was made.
+  - Do NOT describe non-local parts of the system (other modules, callers, downstream behavior) in a comment unless there is a mechanism to keep that description in sync. Such comments drift and become misleading.
+  - DO add a comment when the code expresses something genuinely unintuitive: a non-obvious invariant, a workaround for an external bug, a subtle ordering/locking requirement, or a deliberate trade-off the reader cannot infer from the code itself.
+  - When in doubt, prefer restructuring or renaming over commenting. A 3-line change should not produce 19 lines of comments — if it feels like it needs that much narration, the explanation belongs in the PR description.
 
 </CODE>
 
@@ -380,5 +402,10 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 - Repository guidance lives in the project root AGENTS.md (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
+
+<KNOWN_RACES_AND_GOTCHAS>
+- **`RemoteConversation._wait_for_run_completion` and stop hooks**: Per-field WebSocket `FINISHED` status events are *hints*, not authoritative termination. The server-side `LocalConversation.run` loop releases its state lock at the end of each iteration, so a `FINISHED` status set by `agent.step()` is visible to clients before the *next* loop iteration runs stop hooks (`hook_processor.run_stop`). If a stop hook returns rc=2 (denying the stop), status flips back to RUNNING and the agent gets another iteration. The client's `_wait_for_run_completion` therefore must **not** return on the first WS-delivered FINISHED. Instead, post-run full-state WebSocket snapshots are authoritative; if that snapshot is missing, the time-based hard-fallback path (`TERMINAL_HARD_FALLBACK_SECS = 30.0`) accepts REST-confirmed terminal status after 30 continuous seconds. ERROR/STUCK still raise immediately through `_handle_conversation_status`. Empirically this caused agents to consume just 0–1 iterations after a hook block on programbench retry-16; fix shipped in `feat/programbench`.
+- **Hook events vs `state.events`**: `HookExecutionEvent` is emitted via `hook_processor.original_callback` (the chained `_on_event`), so it *should* land in `state.events` when the run is allowed to complete. But because the WS-FINISHED race above used to make the client snapshot `list(conversation.state.events)` *before* the server-side hook eval ran, `output.jsonl` history could miss hook events while on-disk persisted events under `/workspace/conversations/.../events/` had them — useful as a forensic signal that the race fired.
+</KNOWN_RACES_AND_GOTCHAS>
 
 </REPO>

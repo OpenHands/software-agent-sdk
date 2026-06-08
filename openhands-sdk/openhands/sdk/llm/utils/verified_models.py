@@ -28,6 +28,7 @@ VERIFIED_ANTHROPIC_MODELS = [
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-sonnet-4-20250514",
@@ -73,6 +74,7 @@ VERIFIED_MINIMAX_MODELS = [
     "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
 ]
 
 VERIFIED_GLM_MODELS = [
@@ -94,10 +96,10 @@ VERIFIED_QWEN_MODELS = [
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "gpt-5.5",
@@ -107,6 +109,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3-flash",

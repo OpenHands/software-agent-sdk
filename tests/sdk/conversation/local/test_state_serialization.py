@@ -1012,6 +1012,66 @@ def test_conversation_state_secrets_with_cipher():
         assert db_env_vars == {"DATABASE_URL": "postgresql://localhost/test"}
 
 
+def test_agent_context_seed_preserves_persisted_registry_secret_on_resume():
+    """LocalConversation resume must not downgrade existing registry secrets.
+
+    ``agent_context.secrets`` is a lower-priority bootstrap source for callers
+    that do not build ``request.secrets``. If a prior request secret is already
+    persisted in the registry, reopening the conversation with no new request
+    secrets should keep the registry value.
+    """
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.secret import StaticSecret
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(
+            llm=llm,
+            tools=[],
+            agent_context=AgentContext(
+                secrets={
+                    "ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-ctx"))
+                }
+            ),
+        )
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ab")
+        cipher = Cipher(secret_key="test-secret-key")
+        conversation_kwargs = {
+            "workspace": str(Path(temp_dir) / "workspace"),
+            "persistence_dir": temp_dir,
+            "conversation_id": conv_id,
+            "cipher": cipher,
+        }
+
+        conv = LocalConversation(
+            agent,
+            **conversation_kwargs,
+            secrets={
+                "ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-from-request"))
+            },
+        )
+        try:
+            assert (
+                conv.state.secret_registry.get_secret_value("ANTHROPIC_API_KEY")
+                == "sk-from-request"
+            )
+            conv.state._save_base_state(conv.state._fs)
+        finally:
+            conv.close()
+
+        resumed = LocalConversation(agent, **conversation_kwargs)
+        try:
+            assert (
+                resumed.state.secret_registry.get_secret_value("ANTHROPIC_API_KEY")
+                == "sk-from-request"
+            )
+        finally:
+            resumed.close()
+
+
 def test_conversation_state_save_with_cipher_load_without():
     """Test loading state saved with cipher but without providing cipher.
 

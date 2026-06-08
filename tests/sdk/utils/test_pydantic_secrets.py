@@ -9,9 +9,11 @@ from pydantic import SecretStr
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
+    decrypt_str_with_cipher_or_keep,
     is_redacted_secret,
     serialize_secret,
     validate_secret,
+    validate_secret_dict,
 )
 
 
@@ -417,3 +419,74 @@ def test_real_pydantic_persisted_settings_roundtrip(cipher):
     assert restored_key is not None
     assert isinstance(restored_key, SecretStr)
     assert restored_key.get_secret_value() == "sk-test-key-12345"
+
+
+# ── decrypt_str_with_cipher_or_keep / validate_secret_dict tests ────────
+
+
+def test_decrypt_str_with_cipher_or_keep_decrypts_fernet_token(cipher):
+    encrypted = cipher.encrypt(SecretStr("plaintext-value"))
+    assert encrypted is not None
+    assert (
+        decrypt_str_with_cipher_or_keep(cipher, encrypted, description="x")
+        == "plaintext-value"
+    )
+
+
+def test_decrypt_str_with_cipher_or_keep_passes_through_non_string(cipher):
+    """Non-strings (e.g. nested SecretSource dicts) must pass through unchanged.
+
+    The dict-of-string helper is called against the raw dict at
+    mode='before' time, so values that haven't been deserialised yet
+    (e.g. SecretSource payloads represented as dicts) must not be
+    treated as encrypted blobs.
+    """
+    assert decrypt_str_with_cipher_or_keep(cipher, 42, description="x") == 42
+    assert decrypt_str_with_cipher_or_keep(cipher, None, description="x") is None
+    assert decrypt_str_with_cipher_or_keep(
+        cipher, {"nested": "dict"}, description="x"
+    ) == {"nested": "dict"}
+
+
+def test_decrypt_str_with_cipher_or_keep_passes_through_legacy_plaintext(cipher):
+    """Plaintext from clients that pre-date the encryption pipeline must
+    still round-trip cleanly so the next save can re-encrypt it."""
+    assert (
+        decrypt_str_with_cipher_or_keep(cipher, "sk-plaintext", description="x")
+        == "sk-plaintext"
+    )
+
+
+def test_decrypt_str_with_cipher_or_keep_warns_on_undecryptable(cipher, caplog):
+    """A garbled ciphertext with the right prefix shouldn't crash —
+    log a warning and return the original so an operator can repair."""
+    bogus = "gAAAAA" + ("x" * 80)
+    with caplog.at_level("WARNING"):
+        result = decrypt_str_with_cipher_or_keep(cipher, bogus, description="ACP env")
+    assert result == bogus
+    assert any("could not be decrypted" in r.message for r in caplog.records)
+    assert any("ACP env" in r.message for r in caplog.records)
+
+
+def test_validate_secret_dict_decrypts_each_value(cipher, mock_info):
+    encrypted_a = cipher.encrypt(SecretStr("alpha"))
+    encrypted_b = cipher.encrypt(SecretStr("beta"))
+    info = mock_info({"cipher": cipher})
+    result = validate_secret_dict(
+        {"A": encrypted_a, "B": encrypted_b}, info, description="x"
+    )
+    assert result == {"A": "alpha", "B": "beta"}
+
+
+def test_validate_secret_dict_without_cipher_is_a_noop(mock_info):
+    info = mock_info(None)
+    payload = {"A": "ciphertext-shaped-but-no-cipher-to-decrypt"}
+    assert validate_secret_dict(payload, info, description="x") == payload
+
+
+def test_validate_secret_dict_passes_through_non_dict(cipher, mock_info):
+    info = mock_info({"cipher": cipher})
+    # Lets downstream Pydantic raise the canonical "expected dict" error
+    # rather than turning it into a TypeError here.
+    assert validate_secret_dict("not-a-dict", info, description="x") == "not-a-dict"
+    assert validate_secret_dict(None, info, description="x") is None

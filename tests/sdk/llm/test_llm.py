@@ -15,6 +15,7 @@ from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.tool.builtins.finish import FinishTool
 
 # Import common test utilities
 from tests.conftest import create_mock_litellm_response
@@ -317,6 +318,58 @@ def test_llm_token_counting(default_llm):
     token_count = llm.get_token_count(messages)
     assert isinstance(token_count, int)
     assert token_count >= 0
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_includes_tools(mock_token_counter, default_llm):
+    """Test LLM token counting forwards tool schemas to LiteLLM."""
+    mock_token_counter.return_value = 123
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    tools = list(FinishTool.create())
+
+    token_count = default_llm.get_token_count(
+        messages,
+        tools=tools,
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 123
+    _, kwargs = mock_token_counter.call_args
+    assert len(kwargs["tools"]) == 1
+    assert kwargs["tools"][0]["function"]["name"] == "finish"
+    assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_mocks_tools_for_non_native_models(mock_token_counter):
+    """Test token counting prompt-mocks tools when native tool calling is disabled."""
+    mock_token_counter.return_value = 456
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="non-native-token-count-llm",
+        native_tool_calling=False,
+        caching_prompt=False,
+    )
+    messages = [
+        Message(role="system", content=[TextContent(text="System prompt")]),
+        Message(role="user", content=[TextContent(text="Hello")]),
+    ]
+
+    token_count = llm.get_token_count(
+        messages,
+        tools=list(FinishTool.create()),
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 456
+    _, kwargs = mock_token_counter.call_args
+    assert kwargs["tools"] is None
+    formatted_messages = kwargs["messages"]
+    system_text = formatted_messages[0]["content"][0]["text"]
+    assert "You have access to the following functions" in system_text
+    assert "---- BEGIN FUNCTION #1: finish ----" in system_text
+    assert "<parameter=security_risk>LOW</parameter>" in system_text
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
