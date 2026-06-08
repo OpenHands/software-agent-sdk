@@ -82,6 +82,7 @@ class Conversation:
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -208,4 +209,5 @@ class Conversation:
             delete_on_close=delete_on_close,
             tags=tags,
             user_id=user_id,
+            client_tools=client_tools,
         )

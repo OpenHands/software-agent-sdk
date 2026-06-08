@@ -7,7 +7,7 @@ an acknowledgment observation immediately and the event callback (or WebSocket
 client) can handle the actual execution.
 
 Usage:
-    LLM_API_KEY=... uv run python examples/01_standalone_sdk/51_client_defined_tools.py
+    LLM_API_KEY=... uv run python examples/01_standalone_sdk/53_client_defined_tools.py
 """
 
 import os
@@ -16,7 +16,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, Conversation, Event, Tool
 from openhands.sdk.event.llm_convertible.action import ActionEvent
-from openhands.sdk.tool import ClientTool, ClientToolSpec, register_tool
+from openhands.sdk.tool import ClientToolSpec
 from openhands.tools.terminal import TerminalTool
 
 
@@ -66,18 +66,10 @@ SPECS = [
     ),
 ]
 
-# ---------------------------------------------------------------------------
-# 2. Register each spec as a ClientTool instance in the global tool registry
-# ---------------------------------------------------------------------------
-
-CLIENT_TOOL_NAMES: set[str] = set()
-for spec in SPECS:
-    tool_instance = ClientTool.from_spec(spec)
-    register_tool(spec.name, tool_instance)
-    CLIENT_TOOL_NAMES.add(spec.name)
+CLIENT_TOOL_NAMES: set[str] = {spec.name for spec in SPECS}
 
 # ---------------------------------------------------------------------------
-# 3. Capture client tool invocations via event callback
+# 2. Capture client tool invocations via event callback
 #    In a real application this callback would forward the call to the frontend
 #    over WebSocket; here we just record the calls for verification.
 # ---------------------------------------------------------------------------
@@ -93,7 +85,9 @@ def on_event(event: Event) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. Build agent with standard tools + client tools, then run
+# 3. Build agent with standard tools, then pass the client tools straight to
+#    Conversation. The SDK registers them and injects them into the agent — no
+#    manual register_tool / Tool(name=...) wiring required.
 # ---------------------------------------------------------------------------
 
 api_key = os.getenv("LLM_API_KEY")
@@ -107,16 +101,14 @@ llm = LLM(
 
 agent = Agent(
     llm=llm,
-    tools=[
-        Tool(name=TerminalTool.name),
-        *(Tool(name=name) for name in CLIENT_TOOL_NAMES),
-    ],
+    tools=[Tool(name=TerminalTool.name)],
 )
 
 conversation = Conversation(
     agent=agent,
     workspace=os.getcwd(),
     callbacks=[on_event],
+    client_tools=SPECS,
 )
 
 conversation.send_message(
@@ -128,7 +120,7 @@ conversation.send_message(
 conversation.run()
 
 # ---------------------------------------------------------------------------
-# 5. Verify that the client tools were actually called
+# 4. Verify that the client tools were actually called
 # ---------------------------------------------------------------------------
 
 print(f"\n=== {len(intercepted)} client tool call(s) intercepted ===")

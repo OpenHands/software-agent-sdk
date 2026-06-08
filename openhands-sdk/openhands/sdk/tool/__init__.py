@@ -7,6 +7,7 @@ from openhands.sdk.tool.builtins import (
 from openhands.sdk.tool.client_tool import (
     ClientTool,
     ClientToolSpec,
+    register_client_tools,
 )
 from openhands.sdk.tool.registry import (
     list_registered_tools,
@@ -30,6 +31,7 @@ from openhands.sdk.tool.tool import (
 __all__ = [
     "ClientTool",
     "ClientToolSpec",
+    "register_client_tools",
     "DeclaredResources",
     "Tool",
     "ToolDefinition",

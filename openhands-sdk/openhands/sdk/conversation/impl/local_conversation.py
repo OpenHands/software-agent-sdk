@@ -68,6 +68,7 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -148,6 +149,7 @@ class LocalConversation(BaseConversation):
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -189,6 +191,11 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            client_tools: Optional list of client-defined tool specs. Each spec
+                  is registered and injected into the agent so it can call the
+                  tool; the executor returns an acknowledgment and the real
+                  execution is expected to be handled by a callback/consumer
+                  (e.g. a frontend) observing the emitted ActionEvent.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -205,6 +212,20 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
+
+        # Register any client-defined tools and inject them into the agent so
+        # the agent can call them. Execution is deferred to a consumer of the
+        # emitted ActionEvent (e.g. a frontend); the executor only acks.
+        if client_tools:
+            from openhands.sdk.tool.client_tool import register_client_tools
+
+            client_tool_specs = register_client_tools(client_tools)
+            existing_names = {t.name for t in agent.tools}
+            new_tools = [
+                ts for ts in client_tool_specs if ts.name not in existing_names
+            ]
+            if new_tools:
+                agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):

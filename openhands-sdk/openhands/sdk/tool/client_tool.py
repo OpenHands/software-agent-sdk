@@ -9,12 +9,15 @@ This eliminates the need for Python tool code in JavaScript repos and the comple
 ``tool_module_qualnames`` / ``--import-modules`` plumbing.
 """
 
+import copy
+import threading
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk.tool.schema import Action, Observation
+from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.schema import Action, Observation, Schema
 from openhands.sdk.tool.tool import (
     ToolAnnotations,
     ToolDefinition,
@@ -25,6 +28,54 @@ from openhands.sdk.tool.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.tool.spec import Tool
+
+
+logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cached dynamic action types
+#
+# ``Action.from_mcp_schema`` creates a *concrete* ``Action`` subclass whose
+# ``kind`` is derived from the class name (``ClientAction_<name>``). These
+# subclasses register process-globally in the discriminated-union hierarchy,
+# so creating two classes with the same name (e.g. when the same client tool
+# is registered twice, or re-created on conversation resume) makes
+# ``Action.resolve_kind`` raise a duplicate-class error and breaks event
+# deserialization. We therefore cache the generated type per tool name and
+# reject same-name/different-schema conflicts explicitly.
+# ---------------------------------------------------------------------------
+_client_action_types: dict[str, type[Action]] = {}
+_client_action_schemas: dict[str, dict[str, Any]] = {}
+_client_action_lock = threading.Lock()
+
+
+def _get_client_action_type(name: str, schema: dict[str, Any]) -> type[Action]:
+    """Return a cached ``Action`` subclass for ``name`` built from ``schema``.
+
+    Reuses the previously generated type when the same ``name`` + ``schema``
+    is requested again. Raises ``ValueError`` if ``name`` was already
+    registered with a *different* schema, since the generated action ``kind``
+    is process-global and cannot represent two schemas at once.
+    """
+    with _client_action_lock:
+        existing = _client_action_types.get(name)
+        if existing is not None:
+            if _client_action_schemas[name] != schema:
+                raise ValueError(
+                    f"Client tool '{name}' is already registered with a different "
+                    "parameters schema. Client tool names must map to a single, "
+                    "stable schema within a process."
+                )
+            return existing
+        action_type = Action.from_mcp_schema(
+            model_name=f"ClientAction_{name}",
+            schema=schema,
+        )
+        _client_action_types[name] = action_type
+        _client_action_schemas[name] = copy.deepcopy(schema)
+        return action_type
 
 
 class ClientToolSpec(BaseModel):
@@ -54,8 +105,30 @@ class ClientToolSpec(BaseModel):
     )
     annotations: ToolAnnotations | None = Field(
         default=None,
-        description="Optional MCP-style annotations for the tool.",
+        description=(
+            "Optional MCP-style annotations for the tool. When omitted, the "
+            "tool is treated conservatively (not read-only), so the agent is "
+            "asked to predict a security risk before calling it."
+        ),
     )
+
+    @field_validator("parameters")
+    @classmethod
+    def _validate_object_schema(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Ensure ``parameters`` is a JSON Schema *object* schema.
+
+        ``ClientTool`` builds a Pydantic action model from this schema via
+        ``Action.from_mcp_schema``, which only supports object schemas. Validate
+        here so callers get an immediate, clear error at the source instead of a
+        confusing failure later during tool creation.
+        """
+        if v.get("type") != "object":
+            raise ValueError(
+                "ClientToolSpec.parameters must be an object JSON Schema "
+                f"(got type={v.get('type')!r}). Example: "
+                '{"type": "object", "properties": {...}}'
+            )
+        return v
 
 
 class ClientToolObservation(Observation):
@@ -96,6 +169,14 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
     client_tool_name: str = Field(
         description="Per-instance tool name from the ClientToolSpec.",
     )
+    input_schema: dict[str, Any] = Field(
+        description=(
+            "The original JSON Schema for the tool's parameters, as provided by "
+            "the client. Used verbatim when exporting the tool to the LLM so "
+            "client-defined constraints (enum, nested objects, bounds, "
+            "additionalProperties, ...) are preserved."
+        ),
+    )
 
     @property
     def name(self) -> str:  # type: ignore[override]
@@ -112,23 +193,31 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
 
         Args:
             conv_state: Conversation state (not used).
-            **params: Must include ``spec`` (:class:`ClientToolSpec`).
+            **params: Must include ``spec`` — either a :class:`ClientToolSpec`
+                instance or a JSON-serializable dict of one. The dict form is
+                used when the spec flows through per-conversation
+                ``Tool.params`` on the server.
 
         Returns:
             A single-element sequence containing the ClientTool.
         """
-        spec: ClientToolSpec = params["spec"]
-        action_type = Action.from_mcp_schema(
-            model_name=f"ClientAction_{spec.name}",
-            schema=spec.parameters,
-        )
+        spec_param = params.get("spec")
+        if spec_param is None:
+            raise ValueError(
+                "ClientTool.create requires a 'spec' parameter "
+                "(a ClientToolSpec or a dict of one)."
+            )
+        if isinstance(spec_param, ClientToolSpec):
+            spec = spec_param
+        elif isinstance(spec_param, dict):
+            spec = ClientToolSpec.model_validate(spec_param)
+        else:
+            raise TypeError(
+                "ClientTool.create 'spec' must be a ClientToolSpec or dict, "
+                f"got {type(spec_param)}."
+            )
 
-        annotations = spec.annotations or ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            idempotentHint=True,
-            openWorldHint=False,
-        )
+        action_type = _get_client_action_type(spec.name, spec.parameters)
 
         return [
             cls(
@@ -137,7 +226,11 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
                 action_type=action_type,
                 observation_type=ClientToolObservation,
                 executor=_CLIENT_TOOL_EXECUTOR,
-                annotations=annotations,
+                # Leave annotations unset unless the client explicitly provides
+                # them: client tools can trigger arbitrary frontend side effects,
+                # so we must not optimistically assume read-only/idempotent.
+                annotations=spec.annotations,
+                input_schema=spec.parameters,
             )
         ]
 
@@ -149,3 +242,99 @@ class ClientTool(ToolDefinition[Action, ClientToolObservation]):
         """
         tools = cls.create(spec=spec)
         return tools[0]
+
+    def _get_tool_schema(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,
+    ) -> dict[str, Any]:
+        """Build the provider-facing schema from the original client schema.
+
+        The base implementation rebuilds the schema from the generated Pydantic
+        action model, which drops client-defined JSON Schema constraints
+        (``enum``, nested ``properties``, ``additionalProperties``, numeric
+        bounds, ...). Here we start from the original ``input_schema`` and only
+        overlay the SDK-added meta fields (``summary`` and, when applicable,
+        ``security_risk``) so client constraints are preserved exactly.
+        """
+        if action_type is not None:
+            raise ValueError(
+                "ClientTool._get_tool_schema does not support overriding action_type"
+            )
+
+        # Render the SDK meta fields (summary / security_risk) exactly as the
+        # base implementation would, then lift just those properties over.
+        sdk_schema = super()._get_tool_schema(
+            add_security_risk_prediction=add_security_risk_prediction,
+        )
+        sdk_props: dict[str, Any] = sdk_schema.get("properties", {})
+        sdk_required: list[str] = sdk_schema.get("required", []) or []
+
+        merged = copy.deepcopy(self.input_schema)
+        merged.setdefault("type", "object")
+        props = merged.setdefault("properties", {})
+        for meta in ("security_risk", "summary"):
+            if meta in sdk_props:
+                props[meta] = sdk_props[meta]
+                if meta in sdk_required:
+                    required = merged.setdefault("required", [])
+                    if meta not in required:
+                        required.append(meta)
+
+        from openhands.sdk.tool.tool import _prioritize_schema_fields
+
+        _prioritize_schema_fields(
+            schema=merged,
+            priority=("security_risk", "summary"),
+        )
+        return merged
+
+    def to_mcp_tool(
+        self,
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if input_schema is not None or output_schema is not None:
+            raise ValueError(
+                "ClientTool.to_mcp_tool does not support overriding schemas"
+            )
+        return super().to_mcp_tool(
+            input_schema=self.input_schema,
+            output_schema=self.observation_type.to_mcp_schema()
+            if self.observation_type
+            else None,
+        )
+
+
+def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
+    """Register client-defined tools and return per-conversation tool specs.
+
+    The :class:`ClientTool` *class* (a stateless resolver) is registered once
+    per tool name in the global tool registry, while each tool's schema travels
+    with the conversation through ``Tool.params`` rather than living in the
+    process-global registry. This keeps the resolver stateless so two
+    conversations that define the same tool name with the same schema don't
+    clobber each other.
+
+    Args:
+        specs: The client tool specs to register.
+
+    Returns:
+        A list of :class:`~openhands.sdk.tool.spec.Tool` specs (one per input
+        spec) to inject into an agent's ``tools`` so ``_initialize()`` can
+        resolve them.
+    """
+    from openhands.sdk.tool.registry import list_registered_tools, register_tool
+    from openhands.sdk.tool.spec import Tool
+
+    tool_specs: list[Tool] = []
+    already_registered = set(list_registered_tools())
+    for spec in specs:
+        # Validate the schema and surface same-name/different-schema conflicts
+        # early (also pre-populates the action-type cache).
+        _get_client_action_type(spec.name, spec.parameters)
+        if spec.name not in already_registered:
+            register_tool(spec.name, ClientTool)
+            already_registered.add(spec.name)
+        tool_specs.append(Tool(name=spec.name, params={"spec": spec.model_dump()}))
+    return tool_specs

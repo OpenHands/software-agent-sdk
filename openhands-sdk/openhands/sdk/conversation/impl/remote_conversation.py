@@ -719,6 +719,12 @@ class RemoteConversation(BaseConversation):
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
 
+        # Client tool specs the server already has persisted for this
+        # conversation (populated when re-attaching to an existing one). These
+        # must be registered locally before the initial event sync so that
+        # persisted ``ClientAction_*`` events can be deserialized.
+        attached_client_tools: list[ClientToolSpec] = []
+
         should_create = conversation_id is None
         if conversation_id is not None:
             # Try to attach to existing conversation
@@ -732,11 +738,18 @@ class RemoteConversation(BaseConversation):
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
-                agent_payload = resp.json().get("agent")
+                info = resp.json()
+                agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
                     if remote_agent.agent_kind != agent.agent_kind:
                         raise ValueError(_agent_kind_mismatch_message(conversation_id))
+                # Capture persisted client tool specs so we can register their
+                # dynamic action types before RemoteState syncs events.
+                for raw_spec in info.get("client_tools") or []:
+                    attached_client_tools.append(
+                        ClientToolSpec.model_validate(raw_spec)
+                    )
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
@@ -809,11 +822,17 @@ class RemoteConversation(BaseConversation):
 
             workspace.register_conversation(str(self._id))
 
-        # Register client tool action types locally so WebSocket events with
-        # ClientAction_* action_type can be deserialized by the event loop.
-        if client_tools:
-            for spec in client_tools:
-                ClientTool.from_spec(spec)
+        # Register client tool action types locally so WebSocket/persisted
+        # events with ClientAction_* action_type can be deserialized by the
+        # event loop. This must cover both the specs the caller passed in and
+        # the specs the server already had persisted (when re-attaching), so a
+        # plain reattach by conversation_id can still sync persisted events.
+        seen_client_tool_names: set[str] = set()
+        for spec in [*(client_tools or []), *attached_client_tools]:
+            if spec.name in seen_client_tool_names:
+                continue
+            seen_client_tool_names.add(spec.name)
+            ClientTool.from_spec(spec)
 
         # Initialize the remote state
         self._state = RemoteState(

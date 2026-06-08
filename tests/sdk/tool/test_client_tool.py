@@ -3,6 +3,7 @@
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from openhands.sdk.tool.client_tool import (
     ClientTool,
@@ -108,13 +109,16 @@ def test_from_spec_basic():
     assert tool.observation_type is ClientToolObservation
 
 
-def test_from_spec_default_annotations():
-    """Without explicit annotations, client tools default to read-only."""
+def test_from_spec_default_annotations_unset():
+    """Without explicit annotations, client tools are left annotation-less.
+
+    Client tools can trigger arbitrary frontend side effects, so we must not
+    optimistically assume read-only/idempotent. Leaving annotations unset keeps
+    the conservative behavior (e.g. security-risk prediction stays enabled).
+    """
     spec = ClientToolSpec(name="view_panel", description="View panel")
     tool = ClientTool.from_spec(spec)
-    assert tool.annotations is not None
-    assert tool.annotations.readOnlyHint is True
-    assert tool.annotations.destructiveHint is False
+    assert tool.annotations is None
 
 
 def test_from_spec_custom_annotations():
@@ -179,8 +183,17 @@ def test_create_classmethod():
 
 
 def test_create_missing_spec_raises():
-    with pytest.raises(KeyError):
+    """A missing ``spec`` raises a clear ValueError, not a leaked KeyError."""
+    with pytest.raises(ValueError, match="requires a 'spec'"):
         ClientTool.create()
+
+
+def test_create_accepts_dict_spec():
+    """create() accepts a serialized (dict) spec, used by per-conversation params."""
+    spec = ClientToolSpec(name="dict_tool", description="From dict")
+    tools = ClientTool.create(spec=spec.model_dump())
+    assert len(tools) == 1
+    assert tools[0].name == "dict_tool"
 
 
 def test_to_openai_tool():
@@ -206,3 +219,145 @@ def test_to_openai_tool():
     params = func.get("parameters")
     assert isinstance(params, dict)
     assert "message" in params["properties"]
+
+
+# ---------------------------------------------------------------------------
+# Schema validation and constraint preservation
+# ---------------------------------------------------------------------------
+
+
+def test_spec_rejects_non_object_parameters():
+    """parameters must be an object JSON Schema."""
+    with pytest.raises(ValidationError, match="object JSON Schema"):
+        ClientToolSpec(
+            name="bad",
+            description="bad params",
+            parameters={"type": "string"},
+        )
+
+
+def test_openai_schema_preserves_client_constraints():
+    """Client JSON Schema constraints (enum, nested) must reach the LLM schema."""
+    spec = ClientToolSpec(
+        name="set_level",
+        description="Set a level",
+        parameters={
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["info", "warning", "error"],
+                },
+                "config": {
+                    "type": "object",
+                    "properties": {"retries": {"type": "integer"}},
+                },
+            },
+            "required": ["level"],
+        },
+    )
+    tool = ClientTool.from_spec(spec)
+    params = tool.to_openai_tool()["function"].get("parameters")
+    assert isinstance(params, dict)
+    # enum preserved
+    assert params["properties"]["level"]["enum"] == ["info", "warning", "error"]
+    # nested object properties preserved
+    assert params["properties"]["config"]["properties"]["retries"]["type"] == "integer"
+    # SDK meta field still injected
+    assert "summary" in params["properties"]
+
+
+def test_security_risk_injected_when_annotations_unset():
+    """With no annotations, security-risk prediction is added (conservative)."""
+    spec = ClientToolSpec(
+        name="risky_default",
+        description="Side effects",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
+    tool = ClientTool.from_spec(spec)
+    params = tool.to_openai_tool(add_security_risk_prediction=True)["function"].get(
+        "parameters"
+    )
+    assert isinstance(params, dict)
+    assert "security_risk" in params["properties"]
+
+
+def test_mcp_tool_uses_original_schema():
+    spec = ClientToolSpec(
+        name="mcp_export",
+        description="Export",
+        parameters={
+            "type": "object",
+            "properties": {"mode": {"type": "string", "enum": ["a", "b"]}},
+        },
+    )
+    tool = ClientTool.from_spec(spec)
+    mcp_tool = tool.to_mcp_tool()
+    assert mcp_tool["inputSchema"]["properties"]["mode"]["enum"] == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Action-type caching / conflict handling
+# ---------------------------------------------------------------------------
+
+
+def test_same_spec_reuses_action_type():
+    """Re-creating a tool with the same name+schema reuses the action type.
+
+    This avoids creating duplicate concrete Action subclasses with the same
+    kind, which would break Action.resolve_kind / event deserialization.
+    """
+    spec = ClientToolSpec(
+        name="repeat_tool",
+        description="Repeats",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
+    tool_a = ClientTool.from_spec(spec)
+    tool_b = ClientTool.from_spec(spec)
+    assert tool_a.action_type is tool_b.action_type
+
+
+def test_same_name_different_schema_conflicts():
+    """Same name with a different schema is rejected explicitly."""
+    spec_a = ClientToolSpec(
+        name="conflict_tool",
+        description="A",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
+    spec_b = ClientToolSpec(
+        name="conflict_tool",
+        description="B",
+        parameters={"type": "object", "properties": {"x": {"type": "integer"}}},
+    )
+    ClientTool.from_spec(spec_a)
+    with pytest.raises(ValueError, match="different"):
+        ClientTool.from_spec(spec_b)
+
+
+# ---------------------------------------------------------------------------
+# register_client_tools
+# ---------------------------------------------------------------------------
+
+
+def test_register_client_tools_returns_tool_specs():
+    from openhands.sdk.tool.client_tool import register_client_tools
+    from openhands.sdk.tool.registry import list_registered_tools
+
+    spec = ClientToolSpec(
+        name="reg_tool",
+        description="Registered",
+        parameters={
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        },
+    )
+    tool_specs = register_client_tools([spec])
+    assert len(tool_specs) == 1
+    ts = tool_specs[0]
+    # Tool spec carries the serialized spec via params (per-conversation ownership)
+    assert ts.name == "reg_tool"
+    assert ts.params["spec"]["name"] == "reg_tool"
+    assert ts.params["spec"]["parameters"]["properties"]["q"]["type"] == "string"
+    # The ClientTool class is registered under the tool name
+    assert "reg_tool" in list_registered_tools()
