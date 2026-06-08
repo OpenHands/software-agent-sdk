@@ -147,8 +147,8 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
-        file_store: FileStore | None = None,
         user_id: str | None = None,
+        file_store: FileStore | None = None,
         **_: object,
     ):
         """Initialize the conversation.
