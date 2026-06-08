@@ -696,7 +696,7 @@ def test_nemotron_3_ultra_550b_a55b_config():
 
 
 def test_nemotron_3_ultra_550b_a55b_or_paid_config():
-    """Test that nemotron-3-ultra-550b-a55b-or-paid (paid OpenRouter route) has correct config."""
+    """Test nemotron-3-ultra-550b-a55b-or-paid (paid OpenRouter route) config."""
     model = MODELS["nemotron-3-ultra-550b-a55b-or-paid"]
 
     assert model["id"] == "nemotron-3-ultra-550b-a55b-or-paid"
