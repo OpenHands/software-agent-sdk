@@ -21,7 +21,7 @@ from openhands.sdk import (
     validate_agent_settings,
 )
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.context.condenser import LLMSummarizingCondenser
+from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
 from openhands.sdk.secret import StaticSecret
@@ -30,6 +30,8 @@ from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import (
     AGENT_SETTINGS_SCHEMA_VERSION,
     CondenserSettings,
+    LLMSummarizingCondenserSettings,
+    NoOpCondenserSettings,
     VerificationSettings,
 )
 from openhands.sdk.settings.model import ACPServerKind
@@ -107,8 +109,17 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert (
         condenser_fields["condenser.enabled"].prominence is SettingProminence.CRITICAL
     )
+    assert condenser_fields["condenser.condenser_kind"].default == "llm_summarizing"
+    assert [
+        choice.value for choice in condenser_fields["condenser.condenser_kind"].choices
+    ] == ["llm_summarizing", "no_op"]
     assert condenser_fields["condenser.max_size"].depends_on == ["condenser.enabled"]
     assert condenser_fields["condenser.max_size"].prominence is SettingProminence.MINOR
+    assert condenser_fields["condenser.max_tokens"].default is None
+    assert condenser_fields["condenser.max_tokens"].depends_on == ["condenser.enabled"]
+    assert (
+        condenser_fields["condenser.max_tokens"].prominence is SettingProminence.MINOR
+    )
 
     # -- verification section (critic settings only) --
     v_fields = {f.key: f for f in sections["verification"].fields}
@@ -519,25 +530,105 @@ def test_llm_create_agent_builds_condenser_when_enabled() -> None:
     agent_metrics = llm.metrics
     settings = OpenHandsAgentSettings(
         llm=llm,
-        condenser=CondenserSettings(enabled=True, max_size=100),
+        condenser=LLMSummarizingCondenserSettings(
+            enabled=True,
+            max_size=100,
+            max_tokens=5000,
+            keep_first=3,
+            minimum_progress=0.2,
+            hard_context_reset_max_retries=7,
+            hard_context_reset_context_scaling=0.6,
+        ),
     )
     agent = settings.create_agent()
 
     assert agent.llm is llm
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.max_size == 100
+    assert agent.condenser.max_tokens == 5000
+    assert agent.condenser.keep_first == 3
+    assert agent.condenser.minimum_progress == 0.2
+    assert agent.condenser.hard_context_reset_max_retries == 7
+    assert agent.condenser.hard_context_reset_context_scaling == 0.6
     assert agent.condenser.llm is not llm
     assert agent.condenser.llm.model == llm.model
     assert agent.condenser.llm.usage_id == "condenser"
     assert agent.condenser.llm.metrics is not agent_metrics
 
 
+def test_llm_summarizing_condenser_settings_match_condenser_fields() -> None:
+    condenser_fields = set(LLMSummarizingCondenser.model_fields) - {"llm"}
+    settings_fields = set(LLMSummarizingCondenserSettings.model_fields) - {
+        "enabled",
+        "condenser_kind",
+    }
+
+    assert settings_fields == condenser_fields
+
+
+def test_openhands_agent_settings_defaults_legacy_condenser_payload() -> None:
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "condenser": {
+                "enabled": True,
+                "max_size": 100,
+                "max_tokens": 5000,
+            }
+        }
+    )
+
+    assert isinstance(settings.condenser, LLMSummarizingCondenserSettings)
+    assert settings.condenser.condenser_kind == "llm_summarizing"
+    assert settings.condenser.max_size == 100
+    assert settings.condenser.max_tokens == 5000
+
+
+def test_openhands_agent_settings_dispatches_no_op_condenser_payload() -> None:
+    settings = OpenHandsAgentSettings.model_validate(
+        {
+            "condenser": {
+                "enabled": True,
+                "condenser_kind": "no_op",
+            }
+        }
+    )
+
+    assert isinstance(settings.condenser, NoOpCondenserSettings)
+    assert settings.condenser.condenser_kind == "no_op"
+    assert settings.condenser.model_dump() == {
+        "enabled": True,
+        "condenser_kind": "no_op",
+    }
+
+
+def test_openhands_agent_settings_upgrades_base_condenser_settings_instance() -> None:
+    settings = OpenHandsAgentSettings.model_validate(
+        {"condenser": CondenserSettings(enabled=True, max_size=100)}
+    )
+
+    assert isinstance(settings.condenser, LLMSummarizingCondenserSettings)
+    assert settings.condenser.max_size == 100
+
+
+def test_condenser_settings_base_requires_concrete_build_method() -> None:
+    with pytest.raises(NotImplementedError):
+        CondenserSettings().build_condenser(LLM(model="test-model"))
+
+
 def test_llm_create_agent_no_condenser_when_disabled() -> None:
     settings = OpenHandsAgentSettings(
-        condenser=CondenserSettings(enabled=False),
+        condenser=LLMSummarizingCondenserSettings(enabled=False),
     )
     agent = settings.create_agent()
     assert agent.condenser is None
+
+
+def test_llm_create_agent_builds_no_op_condenser_variant() -> None:
+    settings = OpenHandsAgentSettings(condenser=NoOpCondenserSettings())
+
+    agent = settings.create_agent()
+
+    assert isinstance(agent.condenser, NoOpCondenser)
 
 
 def test_llm_create_agent_builds_critic_when_enabled() -> None:
