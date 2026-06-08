@@ -23,7 +23,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Path as PathParam, Request, Response
 from pydantic import BaseModel
 
-from openhands.agent_server.config import get_default_config
+from openhands.agent_server.config import Config, get_default_config
 from openhands.sdk.logger import get_logger
 from openhands.sdk.settings.acp_providers import ACPProviderInfo, get_acp_provider
 from openhands.sdk.settings.acp_session_blob import (
@@ -60,8 +60,18 @@ def _resolve_provider(provider: str) -> ACPProviderInfo:
     return info
 
 
-def _data_root(conversation_id: UUID, provider: ACPProviderInfo):
-    config = get_default_config()
+def _config_from_request(request: Request) -> Config:
+    """Resolve the live app config that ``create_app`` stashed on ``app.state``.
+
+    Falls back to the module default only outside a configured app (e.g. a unit
+    test that mounts the router standalone). Using ``get_default_config()``
+    unconditionally would ignore a deployment's ``conversations_path`` and read/
+    write blobs under the wrong root — missing the real session files.
+    """
+    return getattr(request.app.state, "config", None) or get_default_config()
+
+
+def _data_root(config: Config, conversation_id: UUID, provider: ACPProviderInfo):
     return config.conversations_path / conversation_id.hex / "acp" / provider.key
 
 
@@ -75,12 +85,12 @@ def _data_root(conversation_id: UUID, provider: ACPProviderInfo):
 async def export_session_blob(
     conversation_id: UUID,
     provider: Annotated[str, PathParam(title="ACP provider key, e.g. 'codex'")],
+    request: Request,
 ) -> Response:
     """Download the allowlisted session-transcript blob (tar.gz)."""
     info = _resolve_provider(provider)
-    blob = await asyncio.to_thread(
-        export_acp_session_blob, _data_root(conversation_id, info), info
-    )
+    data_root = _data_root(_config_from_request(request), conversation_id, info)
+    blob = await asyncio.to_thread(export_acp_session_blob, data_root, info)
     if blob is None:
         return Response(status_code=204)
     return Response(content=blob, media_type="application/gzip")
@@ -99,9 +109,10 @@ async def import_session_blob(
         raise HTTPException(status_code=400, detail="empty session blob")
     if len(blob) > MAX_BLOB_SIZE:
         raise HTTPException(status_code=413, detail="session blob too large")
+    data_root = _data_root(_config_from_request(request), conversation_id, info)
     try:
         files_written = await asyncio.to_thread(
-            import_acp_session_blob, _data_root(conversation_id, info), info, blob
+            import_acp_session_blob, data_root, info, blob
         )
     except (ValueError, OSError, tarfile.TarError) as exc:
         logger.warning(

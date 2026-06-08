@@ -2,6 +2,7 @@
 
 import io
 import tarfile
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -18,12 +19,11 @@ def conversations_path(tmp_path):
 
 
 @pytest.fixture
-def client(monkeypatch, conversations_path):
-    monkeypatch.setattr(
-        "openhands.agent_server.acp_session_blob_router.get_default_config",
-        lambda: SimpleNamespace(conversations_path=conversations_path),
-    )
-    config = Config(session_api_keys=[])  # Disable authentication
+def client(conversations_path):
+    # Pass conversations_path through the real app Config: the routes must read
+    # it from app.state.config (what create_app stashes), NOT get_default_config,
+    # so a configured deployment finds the real ACP session files.
+    config = Config(session_api_keys=[], conversations_path=conversations_path)
     return TestClient(create_app(config), raise_server_exceptions=False)
 
 
@@ -43,6 +43,27 @@ def _make_blob(entries: dict[str, bytes]) -> bytes:
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     return buffer.getvalue()
+
+
+def test_routes_use_configured_path_not_default(monkeypatch, conversations_path):
+    # Regression for the QA finding: the routes must use the app's configured
+    # conversations_path (app.state.config), not get_default_config(). Point the
+    # default at a bogus root; the route must still find files seeded under the
+    # CONFIGURED path.
+    monkeypatch.setattr(
+        "openhands.agent_server.acp_session_blob_router.get_default_config",
+        lambda: SimpleNamespace(conversations_path=Path("/nonexistent/default")),
+    )
+    config = Config(session_api_keys=[], conversations_path=conversations_path)
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+
+    conversation_id = uuid4()
+    _seed_codex_session(conversations_path, conversation_id)
+
+    response = client.get(f"/api/acp_session_blob/{conversation_id}/codex")
+    assert (
+        response.status_code == 200
+    )  # found under the configured path, not the default
 
 
 def test_export_returns_allowlisted_tarball(client, conversations_path):
