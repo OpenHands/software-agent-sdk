@@ -1546,6 +1546,19 @@ class ACPAgentSettings(AgentSettingsBase):
         package, *extra_args = rest
         return package, extra_args
 
+    @staticmethod
+    def _npm_package_name(package: str) -> str:
+        """Strip any ``@version`` specifier from an npm package spec.
+
+        ``@scope/pkg@1.2.3`` → ``@scope/pkg``; ``pkg@1.2.3`` → ``pkg``; an
+        unversioned spec is returned unchanged. The version separator is the
+        ``@`` *after* the name — for scoped specs that is the second ``@`` (the
+        first introduces the scope), so a leading ``@`` is skipped.
+        """
+        start = 1 if package.startswith("@") else 0
+        at = package.find("@", start)
+        return package[:at] if at != -1 else package
+
     def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
         """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
 
@@ -1556,6 +1569,12 @@ class ACPAgentSettings(AgentSettingsBase):
         downloading npm-latest. Returned unchanged otherwise: no pinned binary
         (custom server), a non-matching/non-npx command, or the binary not on
         ``PATH`` (local dev).
+
+        Package matching ignores any ``@version`` suffix: the registry default
+        is version-pinned (so the native fallback can't drift to npm ``latest``),
+        but a client may still send the bare or a differently-pinned package
+        name. In the image the pinned binary stands in for the provider's package
+        regardless of the requested version, so the rewrite compares names only.
         """
         info = get_acp_provider(self.acp_server)
         if info is None or info.binary_name is None:
@@ -1568,7 +1587,10 @@ class ACPAgentSettings(AgentSettingsBase):
 
         default_pkg, _ = default_parsed
         actual_pkg, extra = actual_parsed
-        if actual_pkg != default_pkg or shutil.which(info.binary_name) is None:
+        same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
+            default_pkg
+        )
+        if not same_package or shutil.which(info.binary_name) is None:
             return command
 
         return [info.binary_name, *extra]

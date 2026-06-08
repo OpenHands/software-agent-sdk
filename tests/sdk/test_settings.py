@@ -771,7 +771,7 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp",
+        "@agentclientprotocol/claude-agent-acp@0.30.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
 
@@ -887,16 +887,40 @@ def test_acp_resolve_command_rewrites_explicit_npx_command(
     assert settings.resolve_acp_command() == ["codex-acp", "--verbose"]
 
 
+def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b') Matching is version-agnostic: an ``npx`` command for the provider's
+    package at *any* version (bare, the pinned default, or a drifted pin a client
+    sends) rewrites to the pinned binary on PATH — in the image we always stand
+    the reviewed binary in for the provider's package."""
+    monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
+    for pkg in (
+        "@zed-industries/codex-acp",
+        "@zed-industries/codex-acp@0.15.0",
+        "@zed-industries/codex-acp@0.11.1",
+    ):
+        settings = ACPAgentSettings(
+            acp_server="codex",
+            acp_command=["npx", "-y", pkg],
+        )
+        assert settings.resolve_acp_command() == ["codex-acp"], pkg
+
+
 def test_acp_resolve_command_keeps_npx_when_binary_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(c) Binary not on PATH (local dev) → the ``npx`` command is unchanged."""
+    """(c) Binary not on PATH (local dev) → the ``npx`` command is unchanged.
+
+    The default is version-pinned, so the native fallback launches the reviewed
+    version rather than npm ``latest``.
+    """
     monkeypatch.setattr(shutil, "which", lambda _: None)
     settings = ACPAgentSettings(acp_server="codex")
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp",
+        "@zed-industries/codex-acp@0.15.0",
     ]
 
 
