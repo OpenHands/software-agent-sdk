@@ -14,7 +14,7 @@ import os
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation, OpenHandsAgentSettings, Tool
-from openhands.sdk.settings import CondenserSettings
+from openhands.sdk.settings import LLMSummarizingCondenserSettings
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 
@@ -25,7 +25,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 settings = OpenHandsAgentSettings(
     llm=LLM(
-        model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+        model=os.getenv("LLM_MODEL", "gpt-5.5"),
         api_key=SecretStr(api_key),
         base_url=os.getenv("LLM_BASE_URL"),
     ),
@@ -33,7 +33,7 @@ settings = OpenHandsAgentSettings(
         Tool(name=TerminalTool.name),
         Tool(name=FileEditorTool.name),
     ],
-    condenser=CondenserSettings(enabled=True, max_size=50),
+    condenser=LLMSummarizingCondenserSettings(enabled=True, max_size=50),
 )
 
 # ── 2. Serialize → JSON → deserialize ────────────────────────────────────
@@ -76,7 +76,7 @@ print()
 terminal_only_settings = OpenHandsAgentSettings(
     llm=settings.llm,
     tools=[Tool(name=TerminalTool.name)],
-    condenser=CondenserSettings(enabled=False),
+    condenser=LLMSummarizingCondenserSettings(enabled=False),
 )
 
 terminal_agent = terminal_only_settings.create_agent()

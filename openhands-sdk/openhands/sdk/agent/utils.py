@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import json
 import logging
@@ -10,6 +12,7 @@ import textwrap
 import types
 from collections.abc import Collection, Sequence
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -25,6 +28,10 @@ from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.streaming import AnyTokenCallbackType
 
 
 # Regex matching raw ASCII control characters (U+0000–U+001F) that are
@@ -179,13 +186,40 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
 }
 
+# Regex to detect malformed tool names (e.g., "str_replace </parameter"
+# or "str_replace</function>"). These occur when LLMs emit XML/HTML
+# tag fragments in tool names. The leading identifier is extracted and
+# used as the lookup key.
+_MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _extract_tool_name_base(tool_name: str) -> str:
+    """Return the leading identifier of ``tool_name``.
+
+    This is used to recover from malformed tool names like
+    ``"str_replace </parameter"`` or ``"str_replace</function>"`` that LLMs
+    sometimes emit by appending XML/HTML tag fragments. If ``tool_name``
+    has no valid leading identifier, return it unchanged.
+    """
+    match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
+    return match.group(1) if match else tool_name
+
+
+# Terminal aliases that prepend the tool name to the command argument.
+# Unlike 'bash' which passes through the command directly, these tools
+# (e.g., 'git', 'reset') are themselves commands that should be combined
+# with their arguments (e.g., 'git status', 'reset clear').
+_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
+
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
-_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "git", "ls", "pwd"})
 
 # Typo normalization for common mistakes in security_risk field
 _SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
@@ -401,9 +435,30 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
+        # Extract the leading identifier so we can recover from malformed names
+        # like "str_replace </parameter" (the LLM appended an XML fragment).
+        # For clean names like "git" this is a no-op.
+        base_name = _extract_tool_name_base(tool_name)
+        alias_target = TOOL_NAME_ALIASES.get(base_name)
+        if base_name != tool_name and base_name in available_tools:
+            normalized_tool_name = base_name
+        elif alias_target and alias_target in available_tools:
             normalized_tool_name = alias_target
+            # For terminal alias with prefix, combine tool name with command
+            if (
+                alias_target == "terminal"
+                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+            ):
+                original_command = arguments.get("command")
+                normalized_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                if original_command:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
+                else:
+                    normalized_arguments["command"] = base_name
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,
@@ -554,6 +609,67 @@ def make_llm_completion(
         )
     else:
         return llm.completion(
+            messages=messages,
+            tools=tools or [],
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Async variants
+# ---------------------------------------------------------------------------
+
+
+async def aprepare_llm_messages(
+    events: Sequence[Event],
+    condenser: CondenserBase | None = None,
+    additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
+) -> list[Message] | Condensation:
+    """Async variant of :func:`prepare_llm_messages`.
+
+    Calls ``condenser.acondense()`` so that condensers backed by an LLM can
+    use async completions without blocking the event loop.
+    """
+    view = View.from_events(events)
+    llm_convertible_events: list[LLMConvertibleEvent] = view.events
+
+    if condenser is not None:
+        condensation_result = await condenser.acondense(view, agent_llm=llm)
+
+        match condensation_result:
+            case View():
+                llm_convertible_events = condensation_result.events
+            case Condensation():
+                return condensation_result
+
+    messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
+
+    if additional_messages:
+        messages.extend(additional_messages)
+
+    return messages
+
+
+async def amake_llm_completion(
+    llm: LLM,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None = None,
+    on_token: AnyTokenCallbackType | None = None,
+) -> LLMResponse:
+    """Async variant of :func:`make_llm_completion`."""
+    if llm.uses_responses_api():
+        return await llm.aresponses(
+            messages=messages,
+            tools=tools or [],
+            include=None,
+            store=False,
+            add_security_risk_prediction=True,
+            on_token=on_token,
+        )
+    else:
+        return await llm.acompletion(
             messages=messages,
             tools=tools or [],
             add_security_risk_prediction=True,

@@ -1,8 +1,9 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
+import threading
 from collections.abc import Sequence
 from typing import Any, ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from litellm import ChatCompletionMessageToolCall, CustomStreamWrapper
@@ -19,6 +20,7 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
+import openhands.sdk.llm.llm as llm_module
 from openhands.sdk.llm import (
     LLM,
     Message,
@@ -74,6 +76,61 @@ def default_config():
         retry_min_wait=1,
         retry_max_wait=2,
     )
+
+
+def test_litellm_modify_params_context_serializes_threads():
+    first_llm = LLM.model_construct(modify_params=True)
+    second_llm = LLM.model_construct(modify_params=False)
+    original = getattr(llm_module.litellm, "modify_params", None)
+
+    entered_first = threading.Event()
+    release_first = threading.Event()
+    started_second = threading.Event()
+    entered_second = threading.Event()
+    observed: list[tuple[str, bool]] = []
+    errors: list[BaseException] = []
+
+    def run_first():
+        try:
+            with first_llm._litellm_modify_params_ctx(True):
+                observed.append(("first", llm_module.litellm.modify_params))
+                entered_first.set()
+                release_first.wait(timeout=2)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_second():
+        entered_first.wait(timeout=2)
+        started_second.set()
+        try:
+            with second_llm._litellm_modify_params_ctx(False):
+                observed.append(("second", llm_module.litellm.modify_params))
+                entered_second.set()
+        except BaseException as exc:
+            errors.append(exc)
+
+    first_thread = threading.Thread(target=run_first)
+    second_thread = threading.Thread(target=run_second)
+    try:
+        first_thread.start()
+        assert entered_first.wait(timeout=2)
+
+        second_thread.start()
+        assert started_second.wait(timeout=2)
+        assert not entered_second.wait(timeout=0.2)
+
+        release_first.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+    finally:
+        release_first.set()
+        llm_module.litellm.modify_params = original
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    assert observed == [("first", True), ("second", False)]
+    assert llm_module.litellm.modify_params == original
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -770,5 +827,146 @@ def test_llm_streaming_preserves_cache_read_tokens(mock_completion):
     )
 
 
-# This file focuses on LLM completion functionality, configuration options,
-# and metrics tracking for the synchronous LLM implementation
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_retries_without_caching_on_prompt_cache_too_small(
+    mock_completion,
+):
+    """When Vertex AI rejects caching due to small content, retry without cache."""
+    from litellm.exceptions import BadRequestError
+
+    # First call raises the "cache too small" error, second succeeds
+    cache_error = BadRequestError(
+        (
+            "Vertex_aiException BadRequestError - "
+            '{"error":{"code":400,'
+            '"message":"The cached content is of 1171 tokens. '
+            'The minimum token count to start caching is 4096.",'
+            '"status":"INVALID_ARGUMENT"}}'
+        ),
+        model="gemini-3.5-flash",
+        llm_provider="vertex_ai",
+    )
+    mock_response = create_mock_response("Retry succeeded")
+    mock_completion.side_effect = [cache_error, mock_response]
+
+    llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        caching_prompt=True,
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    # Pass a kwarg via **kwargs to verify _caller_kwargs preservation on retry.
+    response = llm.completion(messages=messages, metadata={"trace": "sync"})
+
+    # Should succeed after retry without caching
+    assert response.raw_response == mock_response
+    # Two calls: first with cache (fails), second without cache (succeeds)
+    assert mock_completion.call_count == 2
+
+    # The first call SHOULD have cache_control markers
+    first_call_kwargs = mock_completion.call_args_list[0].kwargs
+    first_messages = first_call_kwargs.get("messages", [])
+    first_has_cache = any(
+        "cache_control" in str(block)
+        for msg in first_messages
+        for block in (
+            msg.get("content", []) if isinstance(msg.get("content"), list) else []
+        )
+    )
+    assert first_has_cache, "First call should include cache_control markers"
+
+    # The second call should NOT have cache_control markers
+    second_call_kwargs = mock_completion.call_args_list[1].kwargs
+    second_messages = second_call_kwargs.get("messages", [])
+    second_has_cache = any(
+        "cache_control" in str(block)
+        for msg in second_messages
+        for block in (
+            msg.get("content", []) if isinstance(msg.get("content"), list) else []
+        )
+    )
+    assert not second_has_cache, "Retry should not include cache_control markers"
+
+    # Caller kwargs preserved on the retry — without _caller_kwargs the retry
+    # would silently drop them.
+    assert second_call_kwargs.get("metadata") == {"trace": "sync"}
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_retries_without_caching_on_prompt_cache_too_small(
+    mock_acompletion,
+):
+    """Async version of the sync prompt-cache-too-small retry test.
+
+    When Vertex AI rejects caching due to small content, acompletion() should
+    retry without prompt caching while preserving caller kwargs. Mirrors
+    test_completion_retries_without_caching_on_prompt_cache_too_small.
+    """
+    from litellm.exceptions import BadRequestError
+
+    cache_error = BadRequestError(
+        (
+            "Vertex_aiException BadRequestError - "
+            '{"error":{"code":400,'
+            '"message":"The cached content is of 1171 tokens. '
+            'The minimum token count to start caching is 4096.",'
+            '"status":"INVALID_ARGUMENT"}}'
+        ),
+        model="gemini-3.5-flash",
+        llm_provider="vertex_ai",
+    )
+    mock_response = create_mock_response("Retry succeeded")
+    mock_acompletion.side_effect = [cache_error, mock_response]
+
+    llm = LLM(
+        model="claude-sonnet-4-20250514",
+        api_key=SecretStr("test_key"),
+        usage_id="test-llm",
+        caching_prompt=True,
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    # Pass a kwarg via **kwargs to verify _caller_kwargs preservation on retry.
+    response = await llm.acompletion(messages=messages, metadata={"trace": "abc"})
+
+    # Should succeed after retry without caching
+    assert response.raw_response == mock_response
+    # Two calls: first with cache (fails), second without cache (succeeds)
+    assert mock_acompletion.call_count == 2
+
+    # The first call SHOULD have cache_control markers
+    first_call_kwargs = mock_acompletion.call_args_list[0].kwargs
+    first_messages = first_call_kwargs.get("messages", [])
+    first_has_cache = any(
+        "cache_control" in str(block)
+        for msg in first_messages
+        for block in (
+            msg.get("content", []) if isinstance(msg.get("content"), list) else []
+        )
+    )
+    assert first_has_cache, "First call should include cache_control markers"
+
+    # The second call should NOT have cache_control markers
+    second_call_kwargs = mock_acompletion.call_args_list[1].kwargs
+    second_messages = second_call_kwargs.get("messages", [])
+    second_has_cache = any(
+        "cache_control" in str(block)
+        for msg in second_messages
+        for block in (
+            msg.get("content", []) if isinstance(msg.get("content"), list) else []
+        )
+    )
+    assert not second_has_cache, "Retry should not include cache_control markers"
+
+    # Caller kwargs preserved on the retry — without _caller_kwargs the retry
+    # would silently drop them.
+    assert second_call_kwargs.get("metadata") == {"trace": "abc"}

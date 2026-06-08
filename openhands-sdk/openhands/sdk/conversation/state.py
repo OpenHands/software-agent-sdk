@@ -1,5 +1,6 @@
 # state.py
 import json
+import threading
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from enum import Enum
@@ -9,6 +10,7 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -205,6 +207,12 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    # Cached projection of `_events`, lazily updated on read via a
+    # watermark.  Derived state — never persisted, never serialized.
+    # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+    _view: View = PrivateAttr(default_factory=View)
+    _view_watermark: int = PrivateAttr(default=0)
+    _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -224,6 +232,66 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def view(self) -> View:
+        """Lazily-updated, incrementally-maintained ``View`` of the events.
+
+        The view is brought up to date by replaying only the events
+        appended since the last read (tracked by an internal watermark).
+        This is O(k) where k is the number of new events — typically 2–4
+        per agent step — rather than O(n) over the entire history.
+
+        ``enforce_properties`` is *not* run on the incremental path.
+        Full enforcement happens only via ``rebuild_view()``, which is
+        called on cold load, fork, and error recovery.
+
+        Callers must treat the returned view as read-only.  This
+        reference is also invalidated by any call to ``rebuild_view()``;
+        re-read ``state.view`` after any rebuild if you need a fresh
+        snapshot.
+        """
+        with self._view_lock:
+            n = len(self._events)
+            for i in range(self._view_watermark, n):
+                try:
+                    self._view.append_event(self._events[i])
+                    self._view_watermark = i + 1
+                except Exception:
+                    logger.warning(
+                        "Incremental view append failed at index %d; "
+                        "rebuilding from scratch.",
+                        i,
+                        exc_info=True,
+                    )
+                    self._view = View.from_events(self._events)
+                    self._view_watermark = len(self._events)
+                    break
+            return self._view
+
+    def rebuild_view(self) -> None:
+        """Re-derive the cached view from the full event log.
+
+        Runs ``View.from_events`` which applies all view-property
+        enforcement.  This is the recovery / cold-load path described
+        in ``ViewPropertyBase`` and should be called only on:
+
+        - Cold load (resuming a persisted ``ConversationState``).
+        - Fork creation, after deep-copying events from the source.
+        - Explicit error recovery (e.g. malformed-history retry).
+
+        Any ``View`` reference previously returned by ``state.view``
+        is invalidated after this call and must not be used — it
+        will never reflect new events or the rebuilt state.
+
+        If ``View.from_events`` raises (e.g. due to corrupted events),
+        the cache is left unchanged and the exception propagates to
+        the caller.  ``state.view`` continues to serve the pre-rebuild
+        state until a successful ``rebuild_view()`` call.
+        """
+        with self._view_lock:
+            self._view = View.from_events(self._events)
+            self._view_watermark = len(self._events)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -362,6 +430,11 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+
+            # Cold-load: rebuild the cached view with full property
+            # enforcement — persisted events may come from an older code
+            # version or be corrupted.
+            state.rebuild_view()
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)

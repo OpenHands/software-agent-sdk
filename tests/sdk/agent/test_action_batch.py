@@ -55,9 +55,11 @@ def _make_executor(side_effect: Any = None) -> Any:
     if side_effect:
         executor.execute_batch = side_effect
     else:
-        executor.execute_batch = lambda actions, runner, tools=None: [
-            runner(a) for a in actions
-        ]
+        executor.execute_batch = (
+            lambda actions, runner, tools=None, cancel_token=None: [
+                runner(a) for a in actions
+            ]
+        )
     return executor
 
 

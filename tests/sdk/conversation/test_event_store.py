@@ -156,7 +156,11 @@ def test_event_log_missing_event_file():
     path = log._path(0, event_id="test-event")
     fs.delete(path)
 
-    # Accessing the event should raise FileNotFoundError
+    # Cached access still works — the event was cached on append
+    assert log[0].id == "test-event"
+
+    # Clear cache to test the disk-access path
+    log._event_cache.clear()
     with pytest.raises(FileNotFoundError):
         log[0]
 
@@ -272,14 +276,17 @@ def test_event_log_iteration_with_missing_files():
     path = log._path(1, event_id="event-2")
     fs.delete(path)
 
-    # Iteration will fail when it hits the missing file
-    # This is expected behavior - the EventLog expects all files to exist
+    # Cached iteration still works — all 3 events were cached on append
+    assert [e.id for e in log] == ["event-1", "event-2", "event-3"]
+
+    # Clear cache to test the disk-access path
+    log._event_cache.clear()
     with pytest.raises(FileNotFoundError):
         list(log)
 
 
 def test_event_log_iteration_backfills_missing_mappings():
-    """Test that iteration fails when mappings are missing."""
+    """Test that iteration fails when mappings are missing and cache is cold."""
     fs = InMemoryFileStore()
     log = EventLog(fs)
 
@@ -291,14 +298,15 @@ def test_event_log_iteration_backfills_missing_mappings():
     assert len(log) == 1
     assert log[0].id == "manual-event"
 
-    # Clear mappings to simulate missing data
+    # Clear mappings and cache to simulate missing data
     log._idx_to_id.clear()
     log._id_to_idx.clear()
+    log._event_cache.clear()
 
     # But keep the length so iteration can work
     log._length = 1
 
-    # Current implementation doesn't backfill mappings, so iteration fails
+    # Without cache or mappings, iteration fails on _path lookup
     with pytest.raises(KeyError):
         list(log)
 
@@ -441,3 +449,50 @@ def test_get_single_item_stale_index_out_of_range():
     # Index 3 doesn't exist on disk; should raise IndexError after rebuild
     with pytest.raises(IndexError, match="Event index out of range"):
         log[3]
+
+
+def test_event_cache_eliminates_repeated_deserialization():
+    """Repeated access to the same event returns the cached object."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    event = create_test_event("cached-event", "Hello")
+    log.append(event)
+
+    first = log[0]
+    second = log[0]
+    # Same object identity — no re-deserialization
+    assert first is second
+
+
+def test_event_cache_populated_by_iteration():
+    """Iterating the log populates the cache for subsequent indexed access."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    for i in range(3):
+        log.append(create_test_event(f"evt-{i}", f"Content {i}"))
+
+    # Clear cache to force cold iteration
+    log._event_cache.clear()
+    events_from_iter = list(log)
+
+    # Cache should now hold all 3 events
+    assert len(log._event_cache) == 3
+
+    # Indexed access returns the same cached object
+    for i, evt in enumerate(events_from_iter):
+        assert log[i] is evt
+
+
+def test_event_cache_survives_across_multiple_iterations():
+    """Multiple iterations return the same cached objects."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    log.append(create_test_event("a", "A"))
+    log.append(create_test_event("b", "B"))
+
+    first_pass = list(log)
+    second_pass = list(log)
+    assert all(a is b for a, b in zip(first_pass, second_pass, strict=True))

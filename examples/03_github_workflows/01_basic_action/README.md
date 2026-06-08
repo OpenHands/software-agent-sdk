@@ -33,7 +33,7 @@ jobs:
       PROMPT_STRING: 'Check for any changes that were made over the past week. If they have not been properly documented, create a PR to concisely update the documentation.'
       
       # Optional: Customize other settings
-      LLM_MODEL: openhands/claude-sonnet-4-5-20250929
+      LLM_MODEL: gpt-5.5
       # LLM_BASE_URL: 'https://custom-api.example.com'
 ```
 
@@ -47,7 +47,7 @@ jobs:
       PROMPT_LOCATION: 'https://example.com/prompts/maintenance.txt'
       
       # Optional: Customize other settings
-      LLM_MODEL: openhands/claude-sonnet-4-5-20250929
+      LLM_MODEL: gpt-5.5
       # LLM_BASE_URL: 'https://custom-api.example.com'
 ```
 
@@ -66,7 +66,7 @@ Before setting up automated runs, test the script locally:
 
 ```bash
 export LLM_API_KEY="your-api-key"
-export LLM_MODEL="openhands/claude-sonnet-4-5-20250929"
+export LLM_MODEL="gpt-5.5"
 
 # Create a test prompt
 echo "Check for outdated dependencies in requirements.txt and create a PR to update them" > prompt.txt

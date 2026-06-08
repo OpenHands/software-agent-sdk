@@ -25,6 +25,8 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.llm import llm_profile_store
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -608,6 +610,64 @@ def test_start_conversation_accepts_openhands_agent_settings(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_agent_settings_uses_sdk_default_tools(
+    client, mock_conversation_service, monkeypatch, tmp_path
+):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    monkeypatch.setattr(llm_profile_store, "_DEFAULT_PROFILE_DIR", profile_dir)
+    LLMProfileStore(base_dir=profile_dir).save(
+        "fast", LLM(model="fast-model", usage_id="fast")
+    )
+
+    now = utc_now()
+    info = ConversationInfo(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="settings-model", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+        execution_status=ConversationExecutionStatus.IDLE,
+        title="Settings Conversation",
+        created_at=now,
+        updated_at=now,
+    )
+    mock_conversation_service.start_conversation.return_value = (info, True)
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json={
+                "agent_settings": {
+                    "schema_version": 1,
+                    "agent_kind": "llm",
+                    "llm": {"model": "settings-model", "usage_id": "test-llm"},
+                    "enable_switch_llm_tool": True,
+                    "tools": [
+                        {"name": "terminal", "params": {}},
+                        {"name": "file_editor", "params": {}},
+                        {"name": "task_tracker", "params": {}},
+                        {"name": "browser_tool_set", "params": {}},
+                    ],
+                },
+                "workspace": {"working_dir": "/tmp/test"},
+            },
+        )
+
+        assert response.status_code == 201
+        request = mock_conversation_service.start_conversation.call_args.args[0]
+        assert "SwitchLLMTool" in request.agent.include_default_tools
+        assert {tool.name for tool in request.agent.tools} == {
+            "terminal",
+            "file_editor",
+            "task_tracker",
+            "browser_tool_set",
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_start_conversation_accepts_acp_agent(client, mock_conversation_service):
     now = utc_now()
     acp_info = ACPConversationInfo(
@@ -1028,6 +1088,146 @@ def test_run_conversation_not_found(
         mock_conversation_service.get_event_service.assert_called_once_with(
             sample_conversation_id
         )
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """switch_acp_model endpoint forwards the model to the event service."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+        mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """switch_acp_model returns 404 when the conversation is unknown."""
+    mock_conversation_service.get_event_service.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_non_acp_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A ValueError (e.g. non-ACP agent / unsupported provider) maps to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = ValueError(
+        "switch_acp_model is only supported for ACP conversations."
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 400
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_uninitialized_returns_409(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A RuntimeError (session not initialized yet) maps to 409."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = RuntimeError(
+        "ACP session is not initialized"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_protocol_error_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A rejected ACP ``session/set_model`` call maps to 400, not 500.
+
+    ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError`` (e.g.
+    method-not-found on a custom server, or an invalid model id) into a
+    ValueError, so a protocol-level rejection surfaces as a 400 client error
+    rather than an opaque 500.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = ValueError(
+        "ACP server rejected set_session_model(model='bogus'): method not found"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "bogus"},
+        )
+        assert response.status_code == 400
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_timeout_returns_504(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """A TimeoutError (wedged/slow ACP server) maps to 504, not 500.
+
+    ``ACPAgent.set_acp_model`` bounds the ``session/set_model`` round-trip with
+    ``acp_prompt_timeout``; an expired call raises ``TimeoutError``, which the
+    route surfaces as a Gateway Timeout rather than an opaque 500.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = TimeoutError(
+        "ACP server did not answer set_session_model within 600s"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 504
     finally:
         client.app.dependency_overrides.clear()
 

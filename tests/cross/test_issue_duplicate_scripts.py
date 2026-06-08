@@ -163,19 +163,20 @@ def test_github_headers_requires_token(monkeypatch):
         module.github_headers()
 
 
-def test_auto_close_parse_args_rejects_invalid_repository(monkeypatch):
+def test_auto_close_parse_args_rejects_invalid_repository(monkeypatch, capsys):
     module = load_module("auto_close_duplicate_issues.py")
 
     monkeypatch.setattr(
-        module.argparse.ArgumentParser,
-        "parse_args",
-        lambda self: argparse.Namespace(
-            repository="bad/repo/name", close_after_days=3, dry_run=False
-        ),
+        module.sys,
+        "argv",
+        ["auto_close_duplicate_issues.py", "--repository", "bad/repo/name"],
     )
 
-    with pytest.raises(ValueError, match="Invalid repository format"):
+    with pytest.raises(SystemExit, match="2"):
         module.parse_args()
+
+    captured = capsys.readouterr()
+    assert "Invalid repository format: bad/repo/name" in captured.err
 
 
 def test_auto_close_request_json_reports_urlerror(monkeypatch):
