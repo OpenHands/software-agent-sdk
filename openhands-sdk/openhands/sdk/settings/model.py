@@ -1304,10 +1304,15 @@ class ACPAgentSettings(AgentSettingsBase):
     acp_prompt_timeout: float = Field(
         default=1800.0,
         gt=0,
-        description="Timeout (seconds) for a single ACP prompt() round-trip.",
+        description=(
+            "Inactivity timeout (seconds) for a single ACP prompt() round-trip. "
+            "The deadline resets on every update from the ACP server, so a "
+            "steadily-progressing agent keeps running; the prompt is only "
+            "aborted after this many seconds with no activity at all."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="ACP prompt timeout (seconds)",
+                label="ACP prompt inactivity timeout (seconds)",
                 prominence=SettingProminence.MINOR,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(

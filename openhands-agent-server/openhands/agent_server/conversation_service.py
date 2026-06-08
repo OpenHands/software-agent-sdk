@@ -1256,9 +1256,15 @@ class WebhookSubscriber(Subscriber):
         if self.session_api_key:
             headers["X-Session-API-Key"] = self.session_api_key
 
-        # Convert events to serializable format
+        # Convert events to a JSON-serializable format. mode="json" is required
+        # so types like set and SecretStr become JSON-safe primitives; without
+        # it httpx's encoder raises "Object of type set/SecretStr is not JSON
+        # serializable", every retry fails identically, and the events are
+        # dropped. (Mirrors ConversationWebhookSubscriber.post_conversation_info.)
         event_data = [
-            event.model_dump() if hasattr(event, "model_dump") else event.__dict__
+            event.model_dump(mode="json")
+            if hasattr(event, "model_dump")
+            else event.__dict__
             for event in events_to_post
         ]
 
