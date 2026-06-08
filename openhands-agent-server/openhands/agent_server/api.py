@@ -26,7 +26,6 @@ from openhands.agent_server.config import (
     get_default_config,
 )
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_router_acp import conversation_router_acp
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -302,7 +301,6 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
-    api_router.include_router(conversation_router_acp)
     api_router.include_router(acp_session_blob_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
