@@ -6,6 +6,7 @@ from openhands.sdk.tool.builtins import (
 )
 from openhands.sdk.tool.client_tool import (
     ClientTool,
+    ClientToolSchemaConflictError,
     ClientToolSpec,
     register_client_tools,
 )
@@ -30,6 +31,7 @@ from openhands.sdk.tool.tool import (
 
 __all__ = [
     "ClientTool",
+    "ClientToolSchemaConflictError",
     "ClientToolSpec",
     "register_client_tools",
     "DeclaredResources",

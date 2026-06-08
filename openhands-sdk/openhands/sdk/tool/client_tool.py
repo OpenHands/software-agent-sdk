@@ -51,19 +51,29 @@ _client_action_schemas: dict[str, dict[str, Any]] = {}
 _client_action_lock = threading.Lock()
 
 
+class ClientToolSchemaConflictError(ValueError):
+    """Raised when a client tool name is reused with a different schema.
+
+    The generated action ``kind`` (``ClientAction_<name>``) is process-global,
+    so a single name cannot represent two different parameter schemas. This is a
+    caller/input error (e.g. a bad ``POST /conversations`` payload), so callers
+    such as the agent server map it to a 4xx response rather than a 500.
+    """
+
+
 def _get_client_action_type(name: str, schema: dict[str, Any]) -> type[Action]:
     """Return a cached ``Action`` subclass for ``name`` built from ``schema``.
 
     Reuses the previously generated type when the same ``name`` + ``schema``
-    is requested again. Raises ``ValueError`` if ``name`` was already
-    registered with a *different* schema, since the generated action ``kind``
-    is process-global and cannot represent two schemas at once.
+    is requested again. Raises :class:`ClientToolSchemaConflictError` if ``name``
+    was already registered with a *different* schema, since the generated action
+    ``kind`` is process-global and cannot represent two schemas at once.
     """
     with _client_action_lock:
         existing = _client_action_types.get(name)
         if existing is not None:
             if _client_action_schemas[name] != schema:
-                raise ValueError(
+                raise ClientToolSchemaConflictError(
                     f"Client tool '{name}' is already registered with a different "
                     "parameters schema. Client tool names must map to a single, "
                     "stable schema within a process."
