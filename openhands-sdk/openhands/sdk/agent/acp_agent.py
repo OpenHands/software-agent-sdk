@@ -23,7 +23,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -79,6 +79,10 @@ from openhands.sdk.settings.acp_providers import (
     default_acp_file_secrets,
     detect_acp_provider_by_agent_name,
     detect_acp_provider_by_command,
+)
+from openhands.sdk.settings.acp_session_blob import (
+    export_acp_session_blob,
+    import_acp_session_blob,
 )
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
@@ -806,6 +810,11 @@ class _OpenHandsACPBridge:
         # event stream in cleartext. ``None`` ⇒ no-op (bridge used standalone).
         self.mask: Callable[[str], str] | None = None
         self._last_activity_signal: float = float("-inf")
+        # Monotonic timestamp of the most recent ``session_update``. Unlike the
+        # throttled ``_last_activity_signal``, updated on *every* update so the
+        # prompt idle-timeout watchdog sees real progress. Armed per turn via
+        # ``arm_activity_clock``.
+        self._last_activity_monotonic: float = float("-inf")
         # Telemetry state from UsageUpdate (persists across turns)
         self._last_cost: float = 0.0  # last cumulative cost seen
         self._last_cost_by_session: dict[str, float] = {}
@@ -831,6 +840,26 @@ class _OpenHandsACPBridge:
         self._usage_received.clear()
         # Note: telemetry state (_last_cost, _context_window, _last_activity_signal,
         # etc.) is intentionally NOT cleared — it accumulates across turns.
+
+    def arm_activity_clock(self) -> None:
+        """Mark "now" as the last activity for the idle-timeout watchdog.
+
+        Called at the start of each prompt (and each retry) so the idle
+        window is measured from the moment the prompt is sent rather than
+        from a stale value — a server that legitimately takes a while before
+        its first ``session_update`` must not be killed prematurely.
+        """
+        self._last_activity_monotonic = time.monotonic()
+
+    def seconds_since_last_activity(self) -> float:
+        """Seconds since the last ``session_update`` (or ``arm_activity_clock``).
+
+        Drives the prompt idle-timeout: any streamed token, thought, tool-call
+        start/progress, or usage update from the ACP server resets the clock,
+        so a steadily-progressing agent never trips the deadline while a
+        genuinely silent (hung) server still does.
+        """
+        return time.monotonic() - self._last_activity_monotonic
 
     def prepare_usage_sync(self, session_id: str) -> asyncio.Event:
         """Prepare per-turn UsageUpdate synchronization for a session."""
@@ -888,6 +917,12 @@ class _OpenHandsACPBridge:
         **kwargs: Any,  # noqa: ARG002
     ) -> None:
         logger.debug("ACP session_update: type=%s", type(update).__name__)
+
+        # Any update — token, thought, tool-call start/progress, usage — is
+        # progress: reset the idle clock so the prompt's inactivity watchdog
+        # keeps a steadily-working agent alive (unthrottled, unlike the
+        # heartbeat in ``_maybe_signal_activity``).
+        self._last_activity_monotonic = time.monotonic()
 
         # Route fork session updates to the fork accumulator. ask_agent() joins
         # and returns this text to the caller (a UI/network sink), so mask it
@@ -1211,8 +1246,13 @@ class ACPAgent(AgentBase):
     acp_prompt_timeout: float = Field(
         default=1800.0,
         description=(
-            "Timeout in seconds for a single ACP prompt() call. "
-            "Prevents indefinite hangs when the ACP server fails to respond."
+            "Inactivity timeout in seconds for a single ACP prompt() call. "
+            "The deadline resets on every update from the ACP server (token, "
+            "thought, tool-call progress, usage), so a steadily-progressing "
+            "agent runs as long as it keeps making progress; the prompt is "
+            "only aborted after this many seconds with no activity at all. "
+            "Prevents indefinite hangs when the ACP server stops responding "
+            "without killing legitimately long-running work."
         ),
     )
     acp_model: str | None = Field(
@@ -1811,6 +1851,41 @@ class ACPAgent(AgentBase):
             return set()
         return set(state.secret_registry.secret_sources) & configured
 
+    def export_cli_session_blob(self, state: ConversationState) -> bytes | None:
+        """Allowlisted tar.gz of this conversation's CLI session transcripts.
+
+        Packs the provider's ``session_subtrees`` (Codex ``sessions/**``,
+        Claude Code ``projects/**``) from the per-conversation data root —
+        never credentials or global CLI state (see
+        :mod:`openhands.sdk.settings.acp_session_blob`). The blob, restored
+        onto a fresh sandbox via :meth:`import_cli_session_blob` together with
+        :attr:`acp_resume_session_id`, is what makes native ``session/load``
+        resume survive a pod recycle (#1126).
+
+        Returns ``None`` for unrecognised/custom commands, providers without
+        session snapshots (gemini-cli), or when no session files exist.
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return None
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return export_acp_session_blob(data_root, provider)
+
+    def import_cli_session_blob(self, state: ConversationState, blob: bytes) -> int:
+        """Restore a session blob into the per-conversation data root.
+
+        Seed-if-absent, allowlist-filtered, path-safe (see
+        :func:`~openhands.sdk.settings.acp_session_blob.import_acp_session_blob`).
+        Call before the conversation initialises so ``session/load`` finds the
+        restored transcripts. Returns the number of files written (0 for
+        unrecognised commands or snapshot-less providers).
+        """
+        provider = detect_acp_provider_by_command(self.acp_command)
+        if provider is None:
+            return 0
+        data_root = self._acp_file_secret_dir(state, provider.key)
+        return import_acp_session_blob(data_root, provider, blob)
+
     def _acp_file_secret_dir(self, state: ConversationState, subdir: str) -> Path:
         """Durable per-conversation directory for a credential file.
 
@@ -2377,6 +2452,9 @@ class ACPAgent(AgentBase):
         self._client.on_token = on_token
         self._client.on_event = on_event
         self._client.on_activity = self._on_activity
+        # Start the idle-timeout clock fresh for this attempt so the deadline
+        # is measured from the send (or retry), not from a stale value.
+        self._client.arm_activity_clock()
 
     def _cancel_inflight_tool_calls(self) -> None:
         """Emit a terminal ``failed`` ACPToolCallEvent for every tool call
@@ -2634,27 +2712,71 @@ class ACPAgent(AgentBase):
                 )
         return response
 
+    def _idle_timeout_message(self) -> str:
+        return (
+            f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s "
+            "with no activity from the ACP server"
+        )
+
+    async def _await_with_idle_deadline(
+        self,
+        awaitable: Awaitable[PromptResponse | None],
+        *,
+        cancel_on_exit: bool,
+    ) -> PromptResponse | None:
+        """Await *awaitable*, aborting only after a stretch of inactivity.
+
+        The deadline is an *idle* timeout, not a hard turn deadline: any
+        ``session_update`` from the ACP server (token, thought, tool-call
+        start/progress, usage) resets ``acp_prompt_timeout``, so a steadily-
+        progressing agent runs as long as it keeps making progress while a
+        genuinely silent (hung) server is still cut off after the idle window.
+        This is what keeps long-running ACP commands alive (issue
+        agent-canvas#1245).
+
+        ``asyncio.wait`` (not ``wait_for``) drives the polling so an idle-check
+        slice elapsing never cancels the underlying prompt — only a true idle
+        period raises ``TimeoutError``. ``cancel_on_exit`` controls cleanup:
+        the sync path passes ``True`` to cancel the prompt coroutine it owns;
+        the async path passes ``False`` because the portal task must survive
+        for ``astep``'s ``session/cancel`` + drain handler.
+        """
+        idle_limit = self.acp_prompt_timeout
+        fut = asyncio.ensure_future(awaitable)
+        try:
+            while True:
+                remaining = idle_limit - self._client.seconds_since_last_activity()
+                if remaining <= 0:
+                    raise TimeoutError(self._idle_timeout_message())
+                # wait() returns when the prompt finishes or the slice elapses,
+                # leaving fut untouched either way.
+                await asyncio.wait({fut}, timeout=remaining)
+                if fut.done():
+                    return fut.result()
+                # Slice elapsed: only give up if the server produced nothing in
+                # the meantime, otherwise the loop re-arms with a fresh window.
+                if self._client.seconds_since_last_activity() >= idle_limit:
+                    raise TimeoutError(self._idle_timeout_message())
+        finally:
+            if cancel_on_exit and not fut.done():
+                fut.cancel()
+
     async def _await_prompt_response_with_timeout(
         self,
         prompt_future: Future[PromptResponse | None],
     ) -> PromptResponse | None:
-        """Await an ACP prompt with a hard turn deadline.
+        """Await an ACP prompt with an idle (inactivity) turn deadline.
 
-        The terminal tool reports hard command timeouts back to the agent
-        instead of waiting forever for active commands. ACP prompts follow the
-        same rule: activity heartbeats keep the server alive, but they do not
-        extend this prompt deadline. The timeout handler sends ``session/cancel``
-        and closes any in-flight tool cards.
+        Wraps the portal-side prompt future in :meth:`_await_with_idle_deadline`
+        so the prompt is only abandoned after ``acp_prompt_timeout`` seconds
+        with no ACP activity. The timeout handler in ``astep`` sends
+        ``session/cancel`` and closes any in-flight tool cards.
         """
-        try:
-            return await asyncio.wait_for(
-                asyncio.shield(asyncio.wrap_future(prompt_future)),
-                timeout=self.acp_prompt_timeout,
-            )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"ACP prompt timed out after {self.acp_prompt_timeout:.0f}s"
-            ) from exc
+        # cancel_on_exit=False: the portal task behind ``prompt_future`` must
+        # outlive an idle timeout / cancellation so astep's drain can observe it.
+        return await self._await_with_idle_deadline(
+            asyncio.wrap_future(prompt_future), cancel_on_exit=False
+        )
 
     @staticmethod
     def _prompt_response_was_cancelled(response: PromptResponse | None) -> bool:
@@ -2736,12 +2858,11 @@ class ACPAgent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
-        """Error path when ``conn.prompt`` exceeded ``acp_prompt_timeout``."""
+        """Error path when ``conn.prompt`` went idle past ``acp_prompt_timeout``."""
         logger.error(
-            "ACP prompt timed out after %.1fs (limit=%.0fs). "
-            "The ACP server may have completed its work but failed to "
-            "send the JSON-RPC response. Accumulated %d text chunks, "
-            "%d tool calls.",
+            "ACP prompt timed out after %.1fs with no activity for the last "
+            "%.0fs. The ACP server may have stalled or failed to send the "
+            "JSON-RPC response. Accumulated %d text chunks, %d tool calls.",
             elapsed,
             self.acp_prompt_timeout,
             len(self._client.accumulated_text),
@@ -2752,9 +2873,10 @@ class ACPAgent(AgentBase):
             content=[
                 TextContent(
                     text=(
-                        f"ACP prompt timed out after {elapsed:.0f}s. "
-                        "The agent may have completed its work but "
-                        "the response was not received."
+                        "ACP prompt timed out after "
+                        f"{self.acp_prompt_timeout:.0f}s with no activity from "
+                        "the agent. The agent may have stalled, or it may have "
+                        "completed its work but the response was not received."
                     )
                 )
             ],
@@ -2879,7 +3001,7 @@ class ACPAgent(AgentBase):
         t0 = time.monotonic()
         try:
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, blocks=%d)",
+                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d)",
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )
@@ -2888,14 +3010,16 @@ class ACPAgent(AgentBase):
 
             async def _prompt() -> PromptResponse | None:
                 # Thin closure so existing mocks of ``_executor.run_async``
-                # that take a single positional callable keep working.
-                return await self._do_acp_prompt(prompt_blocks)
+                # that take a single positional callable keep working. The idle
+                # deadline is enforced inside (cancel_on_exit=True: this path
+                # owns the coroutine) rather than as a hard run_async timeout.
+                return await self._await_with_idle_deadline(
+                    self._do_acp_prompt(prompt_blocks), cancel_on_exit=True
+                )
 
             for attempt in range(max_retries + 1):
                 try:
-                    response = self._executor.run_async(
-                        _prompt, timeout=self.acp_prompt_timeout
-                    )
+                    response = self._executor.run_async(_prompt)
                     break
                 except TimeoutError:
                     raise
@@ -3020,7 +3144,7 @@ class ACPAgent(AgentBase):
         prompt_future: Future[PromptResponse | None] | None = None
         try:
             logger.info(
-                "Sending ACP prompt (timeout=%.0fs, blocks=%d, async)",
+                "Sending ACP prompt (idle_timeout=%.0fs, blocks=%d, async)",
                 self.acp_prompt_timeout,
                 len(prompt_blocks),
             )

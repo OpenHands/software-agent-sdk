@@ -193,6 +193,25 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "str_replace_editor": "file_editor",
 }
 
+# Regex to detect malformed tool names (e.g., "str_replace </parameter"
+# or "str_replace</function>"). These occur when LLMs emit XML/HTML
+# tag fragments in tool names. The leading identifier is extracted and
+# used as the lookup key.
+_MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _extract_tool_name_base(tool_name: str) -> str:
+    """Return the leading identifier of ``tool_name``.
+
+    This is used to recover from malformed tool names like
+    ``"str_replace </parameter"`` or ``"str_replace</function>"`` that LLMs
+    sometimes emit by appending XML/HTML tag fragments. If ``tool_name``
+    has no valid leading identifier, return it unchanged.
+    """
+    match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
+    return match.group(1) if match else tool_name
+
+
 # Terminal aliases that prepend the tool name to the command argument.
 # Unlike 'bash' which passes through the command directly, these tools
 # (e.g., 'git', 'reset') are themselves commands that should be combined
@@ -417,13 +436,19 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
+        # Extract the leading identifier so we can recover from malformed names
+        # like "str_replace </parameter" (the LLM appended an XML fragment).
+        # For clean names like "git" this is a no-op.
+        base_name = _extract_tool_name_base(tool_name)
+        alias_target = TOOL_NAME_ALIASES.get(base_name)
+        if base_name != tool_name and base_name in available_tools:
+            normalized_tool_name = base_name
+        elif alias_target and alias_target in available_tools:
             normalized_tool_name = alias_target
             # For terminal alias with prefix, combine tool name with command
             if (
                 alias_target == "terminal"
-                and tool_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
             ):
                 original_command = arguments.get("command")
                 normalized_arguments = {
@@ -432,9 +457,9 @@ def normalize_tool_call(
                     if key in {"security_risk", "summary"}
                 }
                 if original_command:
-                    normalized_arguments["command"] = f"{tool_name} {original_command}"
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
                 else:
-                    normalized_arguments["command"] = tool_name
+                    normalized_arguments["command"] = base_name
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,
