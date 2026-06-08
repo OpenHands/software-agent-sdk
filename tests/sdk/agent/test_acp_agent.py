@@ -2047,6 +2047,61 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_active_prompt_survives_idle_window(self, tmp_path):
+        """End-to-end via the real portal: an actively-streaming prompt that
+        runs well past ``acp_prompt_timeout`` finalizes normally.
+
+        Exercises the full concurrency model — the prompt runs on the portal
+        loop while the idle watchdog polls on the caller loop, and each
+        bridge ``session_update`` (fired across the loop boundary) resets the
+        deadline. Regression coverage for agent-canvas#1245.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(acp_prompt_timeout=0.3)
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
+            # deadline keeps resetting; then complete the turn.
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+                chunk = MagicMock(spec=AgentMessageChunk)
+                chunk.content = MagicMock(spec=TextContentBlock)
+                chunk.content.text = "tick"
+                await mock_client.session_update(session_id, chunk)
+            return None
+
+        agent._conn.prompt = _fake_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            asyncio.run(agent.astep(conversation, on_event=emitted.append))
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert not any(
+            isinstance(e, MessageEvent)
+            and any(
+                isinstance(c, TextContent) and "timed out" in c.text
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+
     def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
         """astep's error path must call ``_emit_turn_error`` AND re-raise.
 
