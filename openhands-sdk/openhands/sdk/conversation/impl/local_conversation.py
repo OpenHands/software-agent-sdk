@@ -369,6 +369,32 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    def _emit_stuck_pattern_detected(self, reason: str) -> None:
+        """Emit a typed ``StuckPatternDetected`` event and set STUCK status.
+
+        ``reason`` is one of the stable codes documented on
+        :py:meth:`StuckDetector.detect_stuck_reason`. The detail field
+        embeds it as ``stuck_pattern=<reason>`` so harnesses that only see
+        the string form can still branch on it without parsing
+        free-form English.
+        """
+        logger.warning("Stuck pattern detected: %s", reason)
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code="StuckPatternDetected",
+                detail=(
+                    "Agent appears to be stuck in a repetitive or "
+                    f"unproductive pattern (stuck_pattern={reason}). "
+                    "The conversation has been moved to the STUCK state; "
+                    "callers should treat this as a definitive failure "
+                    "rather than a transient one and avoid retrying "
+                    "without intervention."
+                ),
+            )
+        )
+        self._state.execution_status = ConversationExecutionStatus.STUCK
+
     @property
     def cancel_token(self) -> CancellationToken | None:
         """Active cancellation token for the current run, or ``None``.
@@ -1039,13 +1065,10 @@ class LocalConversation(BaseConversation):
 
                     # Check for stuck patterns if enabled
                     if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
+                        stuck_reason = self._stuck_detector.detect_stuck_reason()
 
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
+                        if stuck_reason is not None:
+                            self._emit_stuck_pattern_detected(stuck_reason)
                             continue
 
                     # clear the flag before calling agent.step() (user approved)
@@ -1225,12 +1248,9 @@ class LocalConversation(BaseConversation):
                         break
 
                     if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
-                            )
+                        stuck_reason = self._stuck_detector.detect_stuck_reason()
+                        if stuck_reason is not None:
+                            self._emit_stuck_pattern_detected(stuck_reason)
                             continue
 
                     if (
