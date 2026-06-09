@@ -653,6 +653,9 @@ def test_openai_chat_completions_gateway_over_real_server(
                     f"{env['host']}/api/conversations/{conversation_id}", timeout=2.0
                 )
                 assert persisted_response.status_code == 200
+                assert persisted_response.json()["workspace"]["working_dir"] == str(
+                    env["workspace_path"]
+                )
 
                 reused_response = client.post(
                     f"{env['host']}/v1/chat/completions",

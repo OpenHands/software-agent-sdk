@@ -33,7 +33,8 @@ def create_openai_api_key_dependency(config: Config):
     clients, while ``Authorization: Bearer`` lets OpenAI-compatible clients use
     their standard API-key header. Both forms validate against
     ``config.session_api_keys``; this does not introduce a second credential
-    system.
+    system. When no session keys are configured, the local server remains
+    unauthenticated like the existing agent-server API.
     """
 
     def check_openai_api_key(

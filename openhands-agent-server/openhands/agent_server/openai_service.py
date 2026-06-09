@@ -38,7 +38,6 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 _MODEL_PREFIX = "openhands_"
-_DEFAULT_WORKSPACE = "workspace/project"
 _GATEWAY_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 2
 
@@ -76,13 +75,9 @@ def _load_profile_llm(profile_name: str, config: Config) -> LLM:
 
 
 def _append_system_suffix(existing: str | None, system_text: str) -> str:
-    existing_text = (existing or "").strip()
-    system_text = system_text.strip()
-    if not existing_text:
-        return system_text
-    if not system_text:
-        return existing_text
-    return f"{existing_text}\n\n{system_text}"
+    return "\n\n".join(
+        text for text in ((existing or "").strip(), system_text.strip()) if text
+    )
 
 
 def _with_profile_llm_and_system_text(
@@ -199,7 +194,7 @@ def _conversation_request(
     )
     return conversation_settings.create_request(
         StartConversationRequest,
-        workspace=LocalWorkspace(working_dir=_DEFAULT_WORKSPACE),
+        workspace=LocalWorkspace(working_dir=config.workspace_path),
         conversation_id=conversation_id,
         initial_message=SendMessageRequest(
             role="user",
@@ -317,6 +312,7 @@ async def run_chat_completion(
     reusable_conversation_id: UUID | None,
 ) -> OpenAIChatCompletionResult:
     if request.stream:
+        # SSE streaming needs incremental agent-event forwarding; add it separately.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Streaming chat completions are not supported yet",
@@ -366,6 +362,8 @@ async def run_chat_completion(
     _raise_for_terminal_error(status_value)
     state = await event_service.get_state()
     final_response = await event_service.get_agent_final_response()
+    # EventService.get_agent_final_response() returns final text from the SDK's
+    # get_agent_final_response(), so the gateway emits assistant text only.
     response = OpenAIChatCompletionResponse(
         id=f"chatcmpl-{uuid4().hex}",
         object="chat.completion",

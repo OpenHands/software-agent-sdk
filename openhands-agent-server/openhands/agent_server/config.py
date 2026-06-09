@@ -132,6 +132,12 @@ class Config(BaseModel):
             "The location of the directory where conversations and events are stored."
         ),
     )
+    workspace_path: Path = Field(
+        default=Path("workspace/project"),
+        description=(
+            "Default workspace directory for conversations created by the server."
+        ),
+    )
     bash_events_dir: Path = Field(
         default=Path("workspace/bash_events"),
         description=(
