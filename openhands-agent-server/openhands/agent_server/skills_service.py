@@ -40,7 +40,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
-    PUBLIC_SKILLS_BRANCH,
+    PUBLIC_SKILLS_REF,
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
     load_skills_from_dir,
@@ -391,7 +391,7 @@ def sync_public_skills() -> tuple[bool, str]:
     try:
         cache_dir = get_skills_cache_dir()
         result = update_skills_repository(
-            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
+            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
         )
 
         if result:
@@ -634,7 +634,7 @@ def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
     """
     cache_dir = get_skills_cache_dir()
     repo_path = update_skills_repository(
-        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
+        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
     )
 
     if repo_path is None:

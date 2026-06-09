@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
@@ -46,6 +48,32 @@ def http_mcp_server():
     server.stop()
 
 
+@pytest.fixture
+def slack_like_mcp_server():
+    """Server mimicking the Slack MCP server's error reporting.
+
+    Upstream API failures come back as ordinary text content
+    (``{"ok": false, "error": ...}``) with the MCP ``isError`` flag unset --
+    the exact behavior that makes a tools/list-only probe a false positive
+    for invalid credentials.
+    """
+    server = MCPTestServer("slack-like")
+
+    @server.add_tool
+    def slack_list_channels(limit: int = 100) -> str:
+        """Return a Slack-style auth failure payload as plain content."""
+        return json.dumps({"ok": False, "error": "invalid_auth"})
+
+    @server.add_tool
+    def boom() -> str:
+        """Always raise so the call result carries isError=True."""
+        raise RuntimeError("upstream exploded")
+
+    server.start(transport="http")
+    yield server
+    server.stop()
+
+
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
@@ -69,6 +97,8 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     body = response.json()
     assert body["ok"] is True
     assert set(body["tools"]) == {"echo", "add"}
+    # No tool_call requested -> no tool_result (back-compat with old clients).
+    assert body.get("tool_result") is None
 
 
 def test_mcp_test_shttp_alias_is_accepted(
@@ -122,6 +152,134 @@ def test_mcp_test_stdio_success(client: TestClient):
     body = response.json()
     assert body["ok"] is True, body
     assert "ping" in body["tools"]
+
+
+# ---------------------------------------------------------------------------
+# Tool-call probe (credential verification)
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_test_tool_call_reports_in_band_failure_payload(
+    client: TestClient, slack_like_mcp_server: MCPTestServer
+):
+    """The requested tool runs and its payload is reported verbatim.
+
+    Slack-style servers return upstream auth errors as ordinary content
+    with isError unset; the endpoint must surface that payload (ok stays
+    True -- interpreting it is the caller's job).
+    """
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
+            },
+            "timeout": 10.0,
+            "tool_call": {"name": "slack_list_channels", "arguments": {"limit": 1}},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["tool_result"]["is_error"] is False
+    assert "invalid_auth" in body["tool_result"]["text"]
+
+
+def test_mcp_test_tool_call_handler_error_sets_is_error(
+    client: TestClient, slack_like_mcp_server: MCPTestServer
+):
+    """A tool handler that raises is reported via the isError flag."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
+            },
+            "timeout": 10.0,
+            "tool_call": {"name": "boom"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["tool_result"]["is_error"] is True
+
+
+def test_mcp_test_tool_call_unknown_tool_reported_without_invocation(
+    client: TestClient, http_mcp_server: MCPTestServer
+):
+    """Requesting a tool the server doesn't advertise yields an errored
+    tool_result naming the problem instead of a blind invocation."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+            },
+            "timeout": 10.0,
+            "tool_call": {"name": "definitely_not_a_tool"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert body["tool_result"]["is_error"] is True
+    assert "not advertised" in body["tool_result"]["text"]
+
+
+def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
+    """Fernet-encrypted env values round-tripped from settings are decrypted
+    before the server process is spawned; plaintext values pass through.
+
+    This is what lets the edit flow test the *stored* credentials even
+    though the GUI only ever sees redacted placeholders.
+    """
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    cipher = config.cipher
+    assert cipher is not None
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    script = (
+        "import json, os\n"
+        "from fastmcp import FastMCP\n"
+        "mcp = FastMCP('env-echo')\n"
+        "@mcp.tool()\n"
+        "def read_env() -> str:\n"
+        "    return json.dumps({\n"
+        "        'bot_token': os.environ.get('SLACK_BOT_TOKEN', ''),\n"
+        "        'team_id': os.environ.get('SLACK_TEAM_ID', ''),\n"
+        "    })\n"
+        "mcp.run()\n"
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "env-echo",
+            "server": {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": ["-c", script],
+                "env": {
+                    "SLACK_BOT_TOKEN": cipher.encrypt(SecretStr("xoxb-real-token")),
+                    "SLACK_TEAM_ID": "T0123",
+                },
+            },
+            "timeout": 20.0,
+            "tool_call": {"name": "read_env"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True, body
+    seen_env = json.loads(body["tool_result"]["text"])
+    assert seen_env == {"bot_token": "xoxb-real-token", "team_id": "T0123"}
 
 
 # ---------------------------------------------------------------------------

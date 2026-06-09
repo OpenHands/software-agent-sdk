@@ -41,7 +41,7 @@ if sigalrm := getattr(signal, "SIGALRM", None):
 # SDK-specific parameters that should not be passed to litellm.
 # These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
-SDK_ONLY_PARAMS = {"disable_vision"}
+SDK_ONLY_PARAMS = {"disable_vision", "inline_image_urls"}
 
 
 # Model configurations dictionary
@@ -79,6 +79,10 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/moonshot/kimi-k2.6",
             "temperature": 1.0,
+            # Moonshot's public Kimi API rejects http(s) image URLs and only
+            # accepts base64 ``data:`` URLs. This makes the SDK fetch each
+            # image URL and inline it as base64 before sending. See #3155.
+            "inline_image_urls": True,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
@@ -161,6 +165,22 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "display_name": "Gemini 3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.5-flash",
+            "temperature": 0.0,
+            # SWE-bench Multimodal runs against this model fail ~97% of
+            # image-bearing instances with an opaque Vertex 500
+            # "Internal error encountered" on the very first LLM call,
+            # while text-only instances complete normally. Fetching the
+            # image client-side and sending it as a base64 ``data:`` URL
+            # bypasses LiteLLM's server-side URL fetch path, which is the
+            # most plausible failure point. See run #26931958101 analysis.
+            "inline_image_urls": True,
+        },
+    },
     "gpt-5.2": {
         "id": "gpt-5.2",
         "display_name": "GPT-5.2",
@@ -230,6 +250,15 @@ MODELS = {
         "display_name": "MiniMax M2.7",
         "llm_config": {
             "model": "litellm_proxy/minimax/MiniMax-M2.7",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    "minimax-m3": {
+        "id": "minimax-m3",
+        "display_name": "MiniMax M3",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M3",
             "temperature": 1.0,
             "top_p": 0.95,
         },
@@ -320,6 +349,21 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    # https://openai.com/index/introducing-gpt-oss/
+    # Note: gpt-oss-20b uses a direct proxy alias (litellm_proxy/gpt-oss-20b);
+    # gpt-oss-120b requires OpenRouter because no equivalent proxy alias exists.
+    # The Fireworks-specific path (fireworks_ai/accounts/fireworks/models/...)
+    # is not registered as a model alias on the proxy, so preflight rejects it
+    # with "Invalid model name". OpenRouter is already configured on the proxy
+    # and routes to multiple backend providers (Fireworks, Together, etc.).
+    "gpt-oss-120b": {
+        "id": "gpt-oss-120b",
+        "display_name": "GPT OSS 120B",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/openai/gpt-oss-120b",
+            "temperature": 0.0,
+        },
+    },
     "nemotron-3-super-120b-a12b": {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
@@ -334,7 +378,19 @@ MODELS = {
         "id": "nemotron-3-ultra-550b-a55b",
         "display_name": "NVIDIA Nemotron-3 Ultra 550B",
         "llm_config": {
-            "model": "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b",
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    # Paid OpenRouter route (no training, smaller 262k context):
+    # https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+    # Backed by the `nemotron-3-ultra-550b-a55b-or-paid` model on the LiteLLM proxy.
+    "nemotron-3-ultra-550b-a55b-or-paid": {
+        "id": "nemotron-3-ultra-550b-a55b-or-paid",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B (OpenRouter, paid)",
+        "llm_config": {
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b-or-paid",
             "temperature": 1.0,
             "top_p": 0.95,
         },
@@ -356,12 +412,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
-    "amber-vector-3542": {
-        "id": "amber-vector-3542",
-        "display_name": "Amber Vector 3542",
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
         "llm_config": {
-            "model": "litellm_proxy/amber-vector-3542",
+            "model": "litellm_proxy/step-3.7-flash",
             "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }

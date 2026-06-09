@@ -21,6 +21,9 @@ Each record captures the static properties that are known at configuration time
 - ``available_models``      curated list of selectable models for the provider's
                             model picker (``acp_model`` candidates)
 - ``default_model``         model preselected when none is configured (or ``None``)
+- ``file_secrets``          reserved "file-content" credential secrets the
+                            provider authenticates from (Codex ``auth.json``,
+                            Gemini Vertex SA JSON); see :class:`ACPFileSecretSpec`
 
 Callers outside the SDK (e.g. ``openhands-agent-server``, the ``OpenHands``
 frontend, and the ``@openhands/typescript-client`` mirror) can import
@@ -30,10 +33,13 @@ own copies of this metadata.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,80 @@ class ACPModelOption:
 
     label: str
     """Human-readable label shown in the model picker (e.g. ``"Claude Opus 4.7"``)."""
+
+
+class ACPFileSecretSpec(BaseModel):
+    """Declarative mapping from a reserved "file-content" secret to a credential
+    file the ACP subprocess authenticates from.
+
+    Some providers read their credential from a *file on disk* rather than an
+    env var: Codex reads ``$CODEX_HOME/auth.json``; Gemini (Vertex AI) reads a
+    service-account JSON pointed at by ``GOOGLE_APPLICATION_CREDENTIALS``. The
+    user supplies that credential as a pasted blob — a reserved secret named
+    :attr:`secret_name` — and :class:`~openhands.sdk.agent.ACPAgent` materialises
+    it to :attr:`filename` under the conversation's durable per-conversation root
+    (seed-if-absent), then sets :attr:`env_var` so the CLI can find it.
+
+    Materialisation is keyed off :attr:`secret_name` (not the launch command),
+    so a custom or aliased ``acp_command`` still works as long as the reserved
+    secret is supplied.
+
+    The SDK owns the *mechanism* (writing the file in the runtime pod, setting
+    the env var, seed-if-absent, permissions); the *policy* — which secrets map
+    to which files for which CLIs — lives in these specs. Built-in defaults
+    cover the supported providers, but downstream applications can override
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_file_secrets` to support other ACP
+    servers with different file-auth schemes without an SDK change.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    secret_name: str = Field(min_length=1)
+    """Reserved secret whose value is the credential file's contents (looked up
+    in ``state.secret_registry`` / ``agent_context.secrets``)."""
+
+    filename: str = Field(min_length=1)
+    """Basename of the materialised file (e.g. ``auth.json``)."""
+
+    env_var: str = Field(min_length=1)
+    """Env var the CLI reads to locate the materialised credential."""
+
+    subdir: str = Field(min_length=1)
+    """Folder under the per-conversation ``<conversations>/{id.hex}/acp/`` root
+    where the file is written — the provider key for built-ins (``codex`` /
+    ``gemini-cli``), or any stable folder name for a custom spec. Keeps
+    concurrent providers' credential files isolated within one sandbox."""
+
+    env_points_to: Literal["dir", "file"] = "file"
+    """Whether :attr:`env_var` is set to the file's parent *directory* (Codex's
+    ``CODEX_HOME``) or to the *file* path itself (Gemini's
+    ``GOOGLE_APPLICATION_CREDENTIALS``)."""
+
+    warn_if_unset: tuple[str, ...] = ()
+    """Companion env vars to warn about when this secret is materialised but
+    they are missing (e.g. ``GOOGLE_CLOUD_PROJECT`` / ``GOOGLE_CLOUD_LOCATION``
+    for Vertex AI). Advisory only — materialisation still proceeds."""
+
+    @field_validator("filename")
+    @classmethod
+    def _validate_filename(cls, value: str) -> str:
+        """``filename`` must be a bare basename, never a path or traversal."""
+        if "/" in value or "\\" in value or value in (".", ".."):
+            raise ValueError("filename must be a bare basename, not a path")
+        return value
+
+    @field_validator("subdir")
+    @classmethod
+    def _validate_subdir(cls, value: str) -> str:
+        """``subdir`` must be a real relative folder (no traversal, root escape,
+        or the ``.`` identity path that would drop the credential straight into
+        the shared ``acp/`` root where two specs could collide)."""
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts or value.strip() in ("", "."):
+            raise ValueError(
+                "subdir must be a non-empty relative path without '.'/'..' segments"
+            )
+        return value
 
 
 @dataclass(frozen=True)
@@ -162,6 +242,47 @@ class ACPProviderInfo:
     signature break; the built-in providers set it explicitly.
     """
 
+    file_secrets: tuple[ACPFileSecretSpec, ...] = field(default=(), compare=False)
+    """Reserved file-content credential secrets this provider authenticates from.
+
+    Each entry maps a reserved secret name to the on-disk file (and the env var
+    pointing at it) that :class:`~openhands.sdk.agent.ACPAgent` materialises
+    before launching the subprocess. Empty for providers that authenticate
+    purely via env vars (e.g. Claude Code). Defaults to ``()`` so external
+    callers constructing this dataclass positionally keep working.
+    """
+
+    binary_name: str | None = field(default=None, compare=False)
+    """Pinned, pre-installed CLI binary for this provider (e.g. ``codex-acp``).
+
+    The agent-server image installs the ACP CLIs at a fixed version as ``PATH``
+    wrappers. When this binary resolves via :func:`shutil.which`,
+    :meth:`~openhands.sdk.settings.model.ACPAgentSettings.resolve_acp_command`
+    rewrites the ``npx -y <pkg>`` launch command to run it directly (preserving
+    trailing args like gemini's ``--acp``); otherwise the ``npx`` command is
+    used unchanged. ``None`` for providers with no pinned binary (and ``custom``
+    servers); defaulted so positional construction keeps working.
+    """
+
+    data_dir_env_var: str | None = None
+    """Env var that relocates this CLI's per-user data/config root.
+
+    Set it to a per-conversation directory to isolate the CLI's on-disk state
+    (config, transcripts, caches, lockfiles) when several of a user's
+    conversations share one sandbox (``SandboxGroupingStrategy != NO_GROUPING``)
+    — otherwise they race on a single shared ``HOME`` (see #1019). Each CLI
+    exposes a different lever:
+
+    - ``CODEX_HOME``        — codex-acp (relocates ``~/.codex`` wholesale)
+    - ``CLAUDE_CONFIG_DIR`` — claude-agent-acp (relocates ``~/.claude*``)
+    - ``HOME``              — gemini-cli (no dedicated var; it hard-codes
+      ``~/.gemini`` and ignores ``XDG``, so only ``HOME`` moves it)
+
+    ``None`` for providers with no known relocation lever, which then skip
+    isolation. Consumed by
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_isolate_data_dir`.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -232,12 +353,59 @@ _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Reserved file-content credential secrets for the built-in providers.
+#
+# Codex's ChatGPT-subscription ``auth.json`` relocates with ``CODEX_HOME`` (and
+# is rewritten in place on token refresh, so it must live on durable, writable
+# storage). Gemini's Vertex AI service-account JSON is pointed at directly by
+# ``GOOGLE_APPLICATION_CREDENTIALS``; Vertex also needs a project/location, so
+# warn when those are unset.
+# ---------------------------------------------------------------------------
+_CODEX_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    ACPFileSecretSpec(
+        secret_name="CODEX_AUTH_JSON",
+        filename="auth.json",
+        env_var="CODEX_HOME",
+        subdir="codex",
+        env_points_to="dir",
+    ),
+)
+_GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
+    ACPFileSecretSpec(
+        secret_name="GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        filename="gcloud-credentials.json",
+        env_var="GOOGLE_APPLICATION_CREDENTIALS",
+        subdir="gemini-cli",
+        env_points_to="file",
+        warn_if_unset=("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"),
+    ),
+)
+
+
+# Pinned npm versions for the built-in ACP launchers. Keep in sync with the
+# `npm install -g` line in
+# openhands-agent-server/openhands/agent_server/docker/Dockerfile — a bump must
+# edit both. The pin constrains the native (no pre-installed binary) path, where
+# the bare `npx -y <pkg>` would otherwise resolve npm `latest` at launch under a
+# permission-disabling session mode. In the image the binary rewrite in
+# `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
+# so the `@version` suffix is a no-op there.
+CLAUDE_AGENT_ACP_VERSION = "0.30.0"
+CODEX_ACP_VERSION = "0.15.0"
+GEMINI_CLI_VERSION = "0.38.0"
+
+
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
     {
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=("npx", "-y", "@agentclientprotocol/claude-agent-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
+            ),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -251,11 +419,17 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            binary_name="claude-agent-acp",
+            data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=("npx", "-y", "@zed-industries/codex-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@zed-industries/codex-acp@{CODEX_ACP_VERSION}",
+            ),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="full-access",
@@ -265,11 +439,19 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key=None,
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
+            file_secrets=_CODEX_FILE_SECRETS,
+            binary_name="codex-acp",
+            data_dir_env_var="CODEX_HOME",
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+                "--acp",
+            ),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             default_session_mode="yolo",
@@ -284,10 +466,27 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # make downstream clients persist a value that bypasses the CLI's
             # auto-routing.
             default_model="auto-gemini-2.5",
+            file_secrets=_GEMINI_FILE_SECRETS,
+            binary_name="gemini",
+            # Gemini CLI has no dedicated config-dir var; it hard-codes
+            # ``~/.gemini`` (ignoring XDG), so only HOME relocates its state.
+            data_dir_env_var="HOME",
         ),
     }
 )
 """Read-only registry of built-in ACP providers keyed by ``acp_server`` value."""
+
+
+def default_acp_file_secrets() -> tuple[ACPFileSecretSpec, ...]:
+    """Built-in file-content credential specs across all supported providers.
+
+    The union of every :attr:`ACPProviderInfo.file_secrets` (Codex ``auth.json``,
+    Gemini Vertex SA). Used as the default for
+    :attr:`~openhands.sdk.agent.ACPAgent.acp_file_secrets`, which a downstream
+    application may override or extend to support other ACP servers without an
+    SDK change.
+    """
+    return tuple(spec for info in ACP_PROVIDERS.values() for spec in info.file_secrets)
 
 
 def get_acp_provider(key: str) -> ACPProviderInfo | None:
@@ -308,6 +507,45 @@ def detect_acp_provider_by_agent_name(agent_name: str) -> ACPProviderInfo | None
     lower = agent_name.lower()
     for info in ACP_PROVIDERS.values():
         if any(pat in lower for pat in info.agent_name_patterns):
+            return info
+    return None
+
+
+def detect_acp_provider_by_command(
+    command: Sequence[str],
+) -> ACPProviderInfo | None:
+    """Identify a provider from its launch ``command``, before the subprocess runs.
+
+    Each provider's :attr:`~ACPProviderInfo.agent_name_patterns` fragments
+    (``"codex-acp"``, ``"claude-agent"``, ``"gemini-cli"``) are prefixes of its
+    npm-package / binary basename, so we can pick the provider *before* the server
+    starts and reports its name (when the subprocess environment, e.g. a relocated
+    data dir, must already be set).
+
+    Matching is deliberately stricter than
+    :func:`detect_acp_provider_by_agent_name` because the launch command is
+    *caller-controlled*: each token is reduced to its basename (last path segment,
+    minus a trailing ``@version`` pin) and a provider matches only when that
+    basename *starts with* one of its patterns. This accepts the real forms —
+    ``@zed-industries/codex-acp``, ``@google/gemini-cli@0.43.0``,
+    ``/opt/node_modules/.bin/codex-acp`` — while rejecting incidental substrings
+    like ``my-codex-acp-wrapper`` or ``/opt/shims/not-codex-acp`` that a plain
+    substring test would misattribute.
+
+    Returns ``None`` for a custom/unrecognised command, so callers that require a
+    known provider (e.g. data-dir isolation) safely no-op.
+    """
+    bases: list[str] = []
+    for token in command:
+        base = token.rsplit("/", 1)[-1].lower()
+        at = base.rfind("@")
+        if at > 0:  # strip a trailing @version pin (not a leading @scope)
+            base = base[:at]
+        bases.append(base)
+    for info in ACP_PROVIDERS.values():
+        if any(
+            base.startswith(pat) for base in bases for pat in info.agent_name_patterns
+        ):
             return info
     return None
 

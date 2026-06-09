@@ -50,7 +50,13 @@ START_ACP_CONVERSATION_EXAMPLES = [
         ),
     ).model_dump(exclude_defaults=True, mode="json"),
     StartACPConversationRequest(
-        agent=ACPAgent(acp_command=["npx", "-y", "claude-agent-acp"]),
+        agent=ACPAgent(
+            acp_command=[
+                "npx",
+                "-y",
+                "@agentclientprotocol/claude-agent-acp@0.30.0",
+            ]
+        ),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         initial_message=SendMessageRequest(
             role="user",

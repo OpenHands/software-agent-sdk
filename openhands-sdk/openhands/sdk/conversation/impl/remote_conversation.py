@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
@@ -195,7 +195,7 @@ class WebSocketCallbackClient:
 
         # Add API key as query parameter if provided
         if self.api_key:
-            ws_url += f"?session_api_key={self.api_key}"
+            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
         while not self._stop.is_set():
@@ -346,10 +346,14 @@ class RemoteEventsList(EventsListBase):
 
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
-        # ACP streaming emits one ACPToolCallEvent per ToolCallProgress, each
-        # carrying the full cumulative stdout so far — O(n²) memory growth.
-        # Deduplicate by tool_call_id: replace the existing entry in-place so
-        # only the latest (most complete) snapshot is kept.
+        # ACP emits two ACPToolCallEvents per call — an early ``started`` event
+        # and one terminal (``completed`` / ``failed``) event — the
+        # action->observation pair for a tool call. Merge by tool_call_id:
+        # replace the ``started`` entry in-place with the terminal one so a
+        # single card updates from running to its result, mirroring how an
+        # ObservationEvent supersedes its ActionEvent. (The source no longer
+        # fans out one frame per cumulative-output ToolCallProgress, so this is
+        # an O(1) two-event merge, not an O(n²) dedup.)
         if isinstance(event, ACPToolCallEvent):
             existing_id = self._acp_tool_call_id_to_event_id.get(event.tool_call_id)
             if existing_id is not None:
