@@ -383,12 +383,29 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 )
 
 
+# Pinned npm versions for the built-in ACP launchers. Keep in sync with the
+# `npm install -g` line in
+# openhands-agent-server/openhands/agent_server/docker/Dockerfile — a bump must
+# edit both. The pin constrains the native (no pre-installed binary) path, where
+# the bare `npx -y <pkg>` would otherwise resolve npm `latest` at launch under a
+# permission-disabling session mode. In the image the binary rewrite in
+# `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
+# so the `@version` suffix is a no-op there.
+CLAUDE_AGENT_ACP_VERSION = "0.30.0"
+CODEX_ACP_VERSION = "0.15.0"
+GEMINI_CLI_VERSION = "0.38.0"
+
+
 ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
     {
         "claude-code": ACPProviderInfo(
             key="claude-code",
             display_name="Claude Code",
-            default_command=("npx", "-y", "@agentclientprotocol/claude-agent-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@agentclientprotocol/claude-agent-acp@{CLAUDE_AGENT_ACP_VERSION}",
+            ),
             api_key_env_var="ANTHROPIC_API_KEY",
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
@@ -408,7 +425,11 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "codex": ACPProviderInfo(
             key="codex",
             display_name="Codex",
-            default_command=("npx", "-y", "@zed-industries/codex-acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@zed-industries/codex-acp@{CODEX_ACP_VERSION}",
+            ),
             api_key_env_var="OPENAI_API_KEY",
             base_url_env_var="OPENAI_BASE_URL",
             default_session_mode="full-access",
@@ -425,7 +446,12 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
             display_name="Gemini CLI",
-            default_command=("npx", "-y", "@google/gemini-cli", "--acp"),
+            default_command=(
+                "npx",
+                "-y",
+                f"@google/gemini-cli@{GEMINI_CLI_VERSION}",
+                "--acp",
+            ),
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             default_session_mode="yolo",

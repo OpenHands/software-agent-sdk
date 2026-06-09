@@ -383,6 +383,18 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    # Paid OpenRouter route (no training, smaller 262k context):
+    # https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+    # Backed by the `nemotron-3-ultra-550b-a55b-or-paid` model on the LiteLLM proxy.
+    "nemotron-3-ultra-550b-a55b-or-paid": {
+        "id": "nemotron-3-ultra-550b-a55b-or-paid",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B (OpenRouter, paid)",
+        "llm_config": {
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b-or-paid",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "converse-nemotron-super-3-120b": {
         "id": "converse-nemotron-super-3-120b",
         "display_name": "NVIDIA Converse Nemotron Super 3 120B",

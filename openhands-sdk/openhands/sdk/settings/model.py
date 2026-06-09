@@ -10,6 +10,7 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
+    ClassVar,
     Literal,
     TypeVar,
     cast,
@@ -75,7 +76,7 @@ from .metadata import (
 if TYPE_CHECKING:
     from openhands.sdk.agent import ACPAgent, Agent
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.context.condenser import LLMSummarizingCondenser
+    from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
     from openhands.sdk.critic.base import CriticBase
 
 
@@ -240,9 +241,15 @@ SecurityAnalyzerType = Literal["llm", "none"]
 
 
 class CondenserSettings(BaseModel):
+    """Shared base for condenser-settings variants.
+
+    Use :data:`CondenserSettingsConfig` for fields that may hold any supported
+    condenser-settings variant.
+    """
+
     enabled: bool = Field(
         default=True,
-        description="Enable the LLM summarizing condenser.",
+        description="Enable conversation memory condensation.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Enable memory condensation",
@@ -253,7 +260,11 @@ class CondenserSettings(BaseModel):
     max_size: int = Field(
         default=240,
         ge=20,
-        description="Maximum number of events kept before the condenser runs.",
+        description=(
+            "Maximum number of events kept before the condenser runs. "
+            "Kept on the base settings class for compatibility; concrete "
+            "condenser-settings variants may opt out when this does not apply."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
                 label="Max size",
@@ -262,6 +273,154 @@ class CondenserSettings(BaseModel):
             ).model_dump()
         },
     )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement build_condenser()"
+        )
+
+
+class LLMSummarizingCondenserSettings(CondenserSettings):
+    """Settings for the default LLM summarizing condenser."""
+
+    condenser_kind: Literal["llm_summarizing"] = Field(
+        default="llm_summarizing",
+        description=(
+            "Discriminator for the condenser settings union. ``'llm_summarizing'`` "
+            "selects the default LLM summarizing condenser."
+        ),
+    )
+    max_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Maximum number of tokens allowed before the condenser runs. "
+            "When unset, condensation is only based on event count."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Max tokens",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    keep_first: int = Field(
+        default=2,
+        ge=0,
+        description="Minimum number of initial events to preserve before condensation.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Keep first",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    minimum_progress: float = Field(
+        default=0.1,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Minimum fraction of events that must be condensed for condensation "
+            "to be considered successful."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Minimum progress",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_max_retries: int = Field(
+        default=5,
+        gt=0,
+        description="Number of hard context reset attempts before raising an error.",
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset retries",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+    hard_context_reset_context_scaling: float = Field(
+        default=0.8,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Factor used to reduce event string size after a hard context reset "
+            "summarization failure."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Hard reset scaling",
+                prominence=SettingProminence.MINOR,
+                depends_on=("enabled",),
+            ).model_dump()
+        },
+    )
+
+    def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
+        condenser_llm.reset_metrics()
+        condenser_kwargs = self.model_dump(
+            exclude={"enabled", "condenser_kind"},
+            exclude_none=True,
+        )
+        return LLMSummarizingCondenser(llm=condenser_llm, **condenser_kwargs)
+
+
+class NoOpCondenserSettings(CondenserSettings):
+    """Settings for a condenser that leaves conversation views unchanged."""
+
+    max_size: ClassVar[int] = 240  # type: ignore[reportIncompatibleVariableOverride]
+    condenser_kind: Literal["no_op"] = Field(
+        default="no_op",
+        description=(
+            "Discriminator for the condenser settings union. ``'no_op'`` selects "
+            "a condenser that leaves conversation views unchanged."
+        ),
+    )
+
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:  # noqa: ARG002
+        """Create a condenser from these settings, or ``None`` if disabled."""
+        if not self.enabled:
+            return None
+
+        from openhands.sdk.context.condenser import NoOpCondenser
+
+        return NoOpCondenser()
+
+
+def _condenser_settings_discriminator(value: Any) -> str:
+    """Discriminator for :data:`CondenserSettingsConfig`.
+
+    Existing payloads predate ``condenser_kind`` and carried only the default
+    LLM summarizing condenser fields. Treat missing discriminators as
+    ``'llm_summarizing'`` so those payloads continue to validate.
+    """
+    if isinstance(value, BaseModel):
+        return getattr(value, "condenser_kind", "llm_summarizing")
+    if isinstance(value, dict):
+        return value.get("condenser_kind", "llm_summarizing")
+    return "llm_summarizing"
+
+
+CondenserSettingsConfig = Annotated[
+    Annotated[LLMSummarizingCondenserSettings, Tag("llm_summarizing")]
+    | Annotated[NoOpCondenserSettings, Tag("no_op")],
+    Discriminator(_condenser_settings_discriminator),
+]
+"""Discriminated union over the condenser-settings variants."""
 
 
 class VerificationSettings(BaseModel):
@@ -848,6 +1007,23 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    tool_concurrency_limit: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of tool calls to execute concurrently per agent step. "
+            "1 = sequential (default). Values > 1 enable parallel tool calls; "
+            "concurrent tools share the conversation object, filesystem, and "
+            "working directory, so mutations to shared state may race."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Parallel tool calls",
+                prominence=SettingProminence.MAJOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
 
     mcp_config: MCPConfig | None = Field(
         default=None,
@@ -864,8 +1040,8 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         default_factory=AgentContext,
         description="Context for the agent (skills, secrets, message suffixes).",
     )
-    condenser: CondenserSettings = Field(
-        default_factory=CondenserSettings,
+    condenser: CondenserSettingsConfig = Field(
+        default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
         json_schema_extra={
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
@@ -889,6 +1065,13 @@ class OpenHandsAgentSettings(AgentSettingsBase):
 
     # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
     # module-level helpers — these stubs just bind them to the field.
+    @field_validator("condenser", mode="before")
+    @classmethod
+    def _upgrade_base_condenser_settings(cls, value: Any) -> Any:
+        if type(value) is CondenserSettings:
+            return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
+        return value
+
     @field_validator("mcp_config", mode="before")
     @classmethod
     def _normalize_empty_mcp_config(cls, value: Any) -> Any:
@@ -937,20 +1120,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent_context=self.agent_context,
             condenser=self.build_condenser(self.llm),
             critic=self.build_critic(),
+            tool_concurrency_limit=self.tool_concurrency_limit,
         )
 
-    def build_condenser(self, llm: LLM) -> LLMSummarizingCondenser | None:
+    def build_condenser(self, llm: LLM) -> CondenserBase | None:
         """Create a condenser from these settings, or ``None`` if disabled."""
-        if not self.condenser.enabled:
-            return None
-
-        from openhands.sdk.context.condenser import LLMSummarizingCondenser
-
-        condenser_llm = llm.model_copy(update={"usage_id": "condenser"})
-        condenser_llm.reset_metrics()
-        return LLMSummarizingCondenser(
-            llm=condenser_llm, max_size=self.condenser.max_size
-        )
+        return self.condenser.build_condenser(llm)
 
     def build_critic(self) -> CriticBase | None:
         """Create an :class:`APIBasedCritic` from these settings.
@@ -1160,10 +1335,15 @@ class ACPAgentSettings(AgentSettingsBase):
     acp_prompt_timeout: float = Field(
         default=1800.0,
         gt=0,
-        description="Timeout (seconds) for a single ACP prompt() round-trip.",
+        description=(
+            "Inactivity timeout (seconds) for a single ACP prompt() round-trip. "
+            "The deadline resets on every update from the ACP server, so a "
+            "steadily-progressing agent keeps running; the prompt is only "
+            "aborted after this many seconds with no activity at all."
+        ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="ACP prompt timeout (seconds)",
+                label="ACP prompt inactivity timeout (seconds)",
                 prominence=SettingProminence.MINOR,
             ).model_dump(),
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
@@ -1397,6 +1577,19 @@ class ACPAgentSettings(AgentSettingsBase):
         package, *extra_args = rest
         return package, extra_args
 
+    @staticmethod
+    def _npm_package_name(package: str) -> str:
+        """Strip any ``@version`` specifier from an npm package spec.
+
+        ``@scope/pkg@1.2.3`` → ``@scope/pkg``; ``pkg@1.2.3`` → ``pkg``; an
+        unversioned spec is returned unchanged. The version separator is the
+        ``@`` *after* the name — for scoped specs that is the second ``@`` (the
+        first introduces the scope), so a leading ``@`` is skipped.
+        """
+        start = 1 if package.startswith("@") else 0
+        at = package.find("@", start)
+        return package[:at] if at != -1 else package
+
     def _prefer_pinned_binary(self, command: list[str]) -> list[str]:
         """Swap an ``npx -y <pkg>`` command for the provider's pinned binary.
 
@@ -1407,6 +1600,12 @@ class ACPAgentSettings(AgentSettingsBase):
         downloading npm-latest. Returned unchanged otherwise: no pinned binary
         (custom server), a non-matching/non-npx command, or the binary not on
         ``PATH`` (local dev).
+
+        Package matching ignores any ``@version`` suffix: the registry default
+        is version-pinned (so the native fallback can't drift to npm ``latest``),
+        but a client may still send the bare or a differently-pinned package
+        name. In the image the pinned binary stands in for the provider's package
+        regardless of the requested version, so the rewrite compares names only.
         """
         info = get_acp_provider(self.acp_server)
         if info is None or info.binary_name is None:
@@ -1419,7 +1618,10 @@ class ACPAgentSettings(AgentSettingsBase):
 
         default_pkg, _ = default_parsed
         actual_pkg, extra = actual_parsed
-        if actual_pkg != default_pkg or shutil.which(info.binary_name) is None:
+        same_package = self._npm_package_name(actual_pkg) == self._npm_package_name(
+            default_pkg
+        )
+        if not same_package or shutil.which(info.binary_name) is None:
             return command
 
         return [info.binary_name, *extra]
@@ -1773,21 +1975,34 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
     for field_name, field in model.model_fields.items():
         explicit_section_metadata = settings_section_metadata(field)
         section_metadata = explicit_section_metadata or _GENERAL_SECTION_METADATA
-        nested_model = _nested_model_type(field.annotation)
+        nested_models = _nested_model_types(field.annotation)
 
         # Nested section (e.g., llm, condenser, critic)
-        if explicit_section_metadata is not None and nested_model is not None:
+        if explicit_section_metadata is not None and nested_models:
             section_default = field.get_default(call_default_factory=True)
             section = ensure_section(explicit_section_metadata)
-            for nested_key, nested_field in nested_model.model_fields.items():
-                if nested_field.exclude:
-                    continue
-                metadata = settings_metadata(nested_field)
-                default_value = None
-                if isinstance(section_default, BaseModel):
-                    default_value = getattr(section_default, nested_key)
-                section.fields.append(
-                    SettingsFieldSchema(
+            seen_nested_fields: dict[str, SettingsFieldSchema] = {}
+            for nested_model in nested_models:
+                for nested_key, nested_field in nested_model.model_fields.items():
+                    if nested_field.exclude:
+                        continue
+                    existing_field = seen_nested_fields.get(nested_key)
+                    if existing_field is not None:
+                        existing_choice_values = {
+                            choice.value for choice in existing_field.choices
+                        }
+                        for choice in _extract_choices(nested_field.annotation):
+                            if choice.value not in existing_choice_values:
+                                existing_field.choices.append(choice)
+                                existing_choice_values.add(choice.value)
+                        continue
+                    metadata = settings_metadata(nested_field)
+                    default_value = None
+                    if isinstance(section_default, BaseModel) and hasattr(
+                        section_default, nested_key
+                    ):
+                        default_value = getattr(section_default, nested_key)
+                    field_schema = SettingsFieldSchema(
                         key=f"{explicit_section_metadata.key}.{nested_key}",
                         label=(
                             metadata.label
@@ -1820,7 +2035,8 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
                             or section.variant
                         ),
                     )
-                )
+                    seen_nested_fields[nested_key] = field_schema
+                    section.fields.append(field_schema)
             continue
 
         metadata = settings_metadata(field)
@@ -1856,14 +2072,25 @@ def export_settings_schema(model: type[BaseModel]) -> SettingsSchema:
 
 
 def _nested_model_type(annotation: Any) -> type[BaseModel] | None:
-    candidates = _annotation_options(annotation)
+    candidates = _nested_model_types(annotation)
     if len(candidates) != 1:
         return None
 
-    candidate = candidates[0]
-    if isinstance(candidate, type) and issubclass(candidate, BaseModel):
-        return candidate
-    return None
+    return candidates[0]
+
+
+def _nested_model_types(annotation: Any) -> tuple[type[BaseModel], ...]:
+    seen: set[type[BaseModel]] = set()
+    models: list[type[BaseModel]] = []
+    for candidate in _annotation_options(annotation):
+        if (
+            isinstance(candidate, type)
+            and issubclass(candidate, BaseModel)
+            and candidate not in seen
+        ):
+            seen.add(candidate)
+            models.append(candidate)
+    return tuple(models)
 
 
 def _annotation_options(annotation: Any) -> tuple[Any, ...]:

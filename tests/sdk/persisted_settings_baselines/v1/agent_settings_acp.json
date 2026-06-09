@@ -1,0 +1,17 @@
+{
+  "__expected__": {
+    "agent_kind": "acp",
+    "acp_server": "claude-code",
+    "acp_model": "claude-opus-4-6",
+    "acp_env": {
+      "OPENAI_API_KEY": "sk-acp-fixture"
+    }
+  },
+  "schema_version": 1,
+  "agent_kind": "acp",
+  "acp_server": "claude-code",
+  "acp_model": "claude-opus-4-6",
+  "acp_env": {
+    "OPENAI_API_KEY": "sk-acp-fixture"
+  }
+}
