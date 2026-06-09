@@ -147,7 +147,6 @@ MODELS = {
         "display_name": "Claude Fable 5",
         "llm_config": {
             "model": "litellm_proxy/anthropic/claude-fable-5",
-            "temperature": 0.0,
         },
     },
     "claude-sonnet-4-6": {
