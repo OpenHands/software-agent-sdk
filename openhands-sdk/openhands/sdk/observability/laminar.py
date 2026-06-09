@@ -269,6 +269,7 @@ class RootSpan:
             with contextlib.suppress(Exception):
                 with Laminar.use_span(
                     self.span,
+                    # Don't mark the span ERROR if a helper raises.
                     record_exception=False,
                     set_status_on_exception=False,
                 ):

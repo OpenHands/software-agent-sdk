@@ -92,8 +92,8 @@ def _validate_observability_tags(v: Any) -> list[str]:
         return []
     if not isinstance(v, list):
         raise ValueError("Observability tags must be a list")
-    if not all(isinstance(tag, str) for tag in v):
-        raise ValueError("Observability tags must contain only strings")
+    if not all(isinstance(tag, str) and tag for tag in v):
+        raise ValueError("Observability tags must be non-empty strings")
     return v
 
 

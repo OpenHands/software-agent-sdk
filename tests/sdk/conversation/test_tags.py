@@ -149,3 +149,6 @@ def test_observability_tags_in_pydantic_model():
 
     with pytest.raises(ValidationError):
         TestModel.model_validate({"observability_tags": [1, 2]})
+
+    with pytest.raises(ValidationError):
+        TestModel.model_validate({"observability_tags": [""]})
