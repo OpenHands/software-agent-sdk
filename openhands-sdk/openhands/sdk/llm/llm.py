@@ -5,9 +5,9 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, get_args, get_origin
 
 import httpx  # noqa: F401
 from pydantic import (
@@ -577,15 +577,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
 
-        # LiteLLM-facing provider parsing is fixed for the lifetime of this LLM.
-        call_kwargs = self._litellm_call_kwargs()
-        self._provider_info = LLMProvider.from_model(
-            model=call_kwargs["model"],
-            api_base=call_kwargs["api_base"],
-        )
-
-        # Capabilities + model info
-        self._init_model_info_and_caps()
+        self._refresh_litellm_metadata()
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -593,6 +585,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _refresh_litellm_metadata(self) -> None:
+        call_kwargs = self._litellm_call_kwargs()
+        self._provider_info = LLMProvider.from_model(
+            model=call_kwargs["model"],
+            api_base=call_kwargs["api_base"],
+        )
+        self._init_model_info_and_caps()
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        copied = super().model_copy(update=update, deep=deep)
+        if update is not None and ("model" in update or "base_url" in update):
+            copied._refresh_litellm_metadata()
+        return copied
 
     def _openrouter_headers(self) -> dict[str, str]:
         """Build OpenRouter HTTP-Referer / X-Title headers for per-call use.

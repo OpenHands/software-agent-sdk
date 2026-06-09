@@ -515,6 +515,39 @@ def test_llm_initializes_transport_provider_info():
     assert provider_info.model == "gpt-4o"
 
 
+def test_llm_model_copy_refreshes_provider_for_model_update():
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    copied = llm.model_copy(update={"model": "anthropic/claude-3-5-sonnet-20241022"})
+    kwargs = copied._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert copied.model == "anthropic/claude-3-5-sonnet-20241022"
+    assert kwargs["model"] == "claude-3-5-sonnet-20241022"
+    assert kwargs["custom_llm_provider"] == "anthropic"
+
+
+def test_llm_model_copy_refreshes_provider_for_base_url_update():
+    llm = LLM(
+        usage_id="test-llm",
+        model="unknown-model",
+        base_url="https://old.example.com",
+        api_key=SecretStr("test_key"),
+        num_retries=0,
+    )
+
+    copied = llm.model_copy(update={"base_url": "https://new.example.com"})
+    kwargs = copied._prepare_transport_kwargs(messages=[], enable_streaming=False)
+
+    assert copied.base_url == "https://new.example.com"
+    assert kwargs["model"] == "unknown-model"
+    assert kwargs["api_base"] == "https://new.example.com"
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
     mock_completion,
