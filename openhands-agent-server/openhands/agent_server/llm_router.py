@@ -230,6 +230,8 @@ async def poll_openai_subscription_device_login(
     finally:
         async with _OPENAI_DEVICE_LOGIN_LOCK:
             _IN_FLIGHT_OPENAI_DEVICE_LOGINS.discard(request.device_code)
+            # Keep the opaque poll token usable if the provider is still pending
+            # or if the polling request fails before credentials are obtained.
             if credentials is None and pending.epoch == _OPENAI_DEVICE_LOGIN_EPOCH:
                 _PENDING_OPENAI_DEVICE_LOGINS[request.device_code] = pending
 
