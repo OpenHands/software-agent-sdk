@@ -175,9 +175,7 @@ def _format_action_for_guardrail(action: ActionEvent) -> str:
         # ``MessageToolCall.arguments`` is a JSON string (a direct field, not
         # nested under ``.function``).
         args_repr = action.tool_call.arguments or ""
-        parts.append(
-            f"<arguments unparsed=\"true\">{_safe(args_repr)}</arguments>"
-        )
+        parts.append(f'<arguments unparsed="true">{_safe(args_repr)}</arguments>')
 
     return "\n".join(parts)
 
@@ -268,7 +266,7 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
         description=(
             "Pre-generated safety guidelines injected into the guardrail's "
             "system prompt.\n"
-            "- ``\"\"`` (default): bare guardrail -- no experiences. The "
+            '- ``""`` (default): bare guardrail -- no experiences. The '
             "analyzer still separates actor from judge; it just classifies "
             "without distilled tool-specific guidance.\n"
             "- Any non-empty string: used as-is. The intended pattern is to "
@@ -423,9 +421,7 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
         try:
             response = self.llm.completion(messages=messages)
             text_parts = [
-                c.text
-                for c in response.message.content
-                if isinstance(c, TextContent)
+                c.text for c in response.message.content if isinstance(c, TextContent)
             ]
             llm_text = "\n".join(text_parts)
         except Exception as e:
@@ -436,7 +432,5 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
             return SecurityRisk.UNKNOWN
 
         risk = self._parse_risk(llm_text)
-        logger.debug(
-            f"Guardrail risk={risk.name} for tool={action.tool_name}"
-        )
+        logger.debug(f"Guardrail risk={risk.name} for tool={action.tool_name}")
         return risk

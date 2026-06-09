@@ -46,7 +46,9 @@ from openhands.sdk.logger import get_logger
 if TYPE_CHECKING:
     # Only for type hints; keep the real import lazy so the SDK doesn't
     # require toolshield to be installed.
-    from toolshield import ExperienceStore  # noqa: F401
+    from toolshield import (  # type: ignore[import-not-found]  # noqa: F401
+        ExperienceStore,
+    )
 
 
 logger = get_logger(__name__)
@@ -71,7 +73,7 @@ ALWAYS_ACTIVE_TOOLS: list[str] = ["terminal-mcp"]
 def _require_toolshield():
     """Import the toolshield package or raise a helpful ImportError."""
     try:
-        import toolshield  # noqa: F401
+        import toolshield  # type: ignore[import-not-found]  # noqa: F401
     except ImportError as e:
         raise ImportError(
             "toolshield is not installed. Install via "
@@ -167,9 +169,7 @@ def detect_active_mcp_tools(
         found = asyncio.run(_scan_main(start_port, end_port, verbose=verbose))
     except RuntimeError as e:
         # Typical cause: called from within a running event loop.
-        logger.warning(
-            f"MCP scan failed ({e}); returning always-active tools only"
-        )
+        logger.warning(f"MCP scan failed ({e}); returning always-active tools only")
         return list(ALWAYS_ACTIVE_TOOLS)
 
     active = list(ALWAYS_ACTIVE_TOOLS)
@@ -235,7 +235,10 @@ def auto_detect_safety_experiences(
         logger.info(f"Auto-detected active MCP tools: {active}")
         # Keep only tools with a bundled experience for ``model``; log
         # the misses so the operator knows coverage gaps.
-        from toolshield import ExperienceStore  # lazy; _require_toolshield above
+        from toolshield import (  # type: ignore[import-not-found]
+            ExperienceStore,  # lazy; _require_toolshield above
+        )
+
         available = set(ExperienceStore.list_bundled(model))
         runnable = [t for t in active if t in available]
         missing = [t for t in active if t not in available]
