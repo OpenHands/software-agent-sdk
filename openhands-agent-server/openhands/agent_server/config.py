@@ -139,6 +139,19 @@ class Config(BaseModel):
             "Defaults to 'workspace/bash_events'."
         ),
     )
+    bash_events_retention_seconds: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How long bash event files are retained on disk, in seconds. "
+            "A background task purges events older than this window on a "
+            "rolling basis. None (default) retains events indefinitely. "
+            "Should be set higher than the longest expected command timeout: "
+            "a command whose BashCommand file is purged mid-execution will "
+            "complete normally, but its on-disk event history will be "
+            "incomplete. A value >= 2x max command timeout avoids this."
+        ),
+    )
     static_files_path: Path | None = Field(
         default=None,
         description=(

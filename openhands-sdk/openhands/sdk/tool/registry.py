@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 if TYPE_CHECKING:
@@ -50,32 +49,6 @@ def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
                 f"ToolDefinition '{name}' is a fixed instance; params not supported"
             )
         return [tool]
-
-    return _resolve
-
-
-def _resolver_from_callable(
-    name: str, factory: Callable[..., Sequence[ToolDefinition]]
-) -> Resolver:
-    def _resolve(
-        params: dict[str, Any], conv_state: "ConversationState"
-    ) -> Sequence[ToolDefinition]:
-        try:
-            # Try to call with conv_state parameter first
-            created = factory(conv_state=conv_state, **params)
-        except TypeError as exc:
-            raise TypeError(
-                f"Unable to resolve tool '{name}': factory could not be called with "
-                f"params {params}."
-            ) from exc
-        if not isinstance(created, Sequence) or not all(
-            isinstance(t, ToolDefinition) for t in created
-        ):
-            raise TypeError(
-                f"Factory '{name}' must return Sequence[ToolDefinition], "
-                f"got {type(created)}"
-            )
-        return created
 
     return _resolve
 
@@ -127,13 +100,6 @@ def _usability_from_subclass(cls: type[ToolDefinition]) -> UsabilityChecker:
     return lambda: cls.is_usable()
 
 
-def _usability_from_callable(
-    _factory: Callable[..., Sequence[ToolDefinition]],
-) -> UsabilityChecker:
-    # Callable factories are deprecated and have no usability hook.
-    return lambda: True
-
-
 def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
     try:
         return checker()
@@ -146,9 +112,7 @@ def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
 
 def register_tool(
     name: str,
-    factory: ToolDefinition
-    | type[ToolDefinition]
-    | Callable[..., Sequence[ToolDefinition]],
+    factory: ToolDefinition | type[ToolDefinition],
 ) -> None:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("ToolDefinition name must be a non-empty string")
@@ -159,32 +123,16 @@ def register_tool(
     elif isinstance(factory, type) and issubclass(factory, ToolDefinition):
         resolver = _resolver_from_subclass(name, factory)
         usability_checker = _usability_from_subclass(factory)
-    elif callable(factory):
-        warn_deprecated(
-            "register_tool(callable_factory)",
-            deprecated_in="1.19.1",
-            removed_in="1.24.0",
-            details=(
-                "Register a ToolDefinition subclass with create(...) or a "
-                "ToolDefinition instance instead."
-            ),
-            stacklevel=2,
-        )
-        resolver = _resolver_from_callable(name, factory)
-        usability_checker = _usability_from_callable(factory)
     else:
         raise TypeError(
             "register_tool(...) only accepts: (1) a ToolDefinition instance with "
-            ".executor, (2) a ToolDefinition subclass with .create(**params), or "
-            "(3) a callable factory returning a Sequence[ToolDefinition]"
+            ".executor, or (2) a ToolDefinition subclass with .create(**params)"
         )
 
     # Track the module qualname for this tool
     module_qualname = None
     if isinstance(factory, type):
         module_qualname = factory.__module__
-    elif callable(factory):
-        module_qualname = getattr(factory, "__module__", None)
     elif isinstance(factory, ToolDefinition):
         module_qualname = factory.__class__.__module__
 

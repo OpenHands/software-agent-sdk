@@ -250,6 +250,19 @@ def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer)
     assert "a" in params["required"]
     assert "b" in params["required"]
 
+    responses_schema = add_tool.to_responses_tool()
+    responses_params = responses_schema["parameters"]
+    assert isinstance(responses_params, dict)
+    responses_properties = responses_params["properties"]
+    assert isinstance(responses_properties, dict)
+    responses_required = responses_params["required"]
+    assert isinstance(responses_required, list)
+    assert responses_properties["a"]["type"] == "integer"
+    assert responses_properties["b"]["type"] == "integer"
+    assert "a" in responses_required
+    assert "b" in responses_required
+    assert "data" not in responses_properties
+
 
 def test_create_mcp_tools_transport_inferred_from_url(http_mcp_server: MCPTestServer):
     """Test that transport type is inferred when not explicitly specified."""

@@ -81,7 +81,9 @@ jobs:
                     - runner: ubuntu-24.04-arm
                       os_label: linux
                       arch: arm64
-                    - runner: macos-13
+                    # macos-13 (Intel) was retired by GitHub on 2025-12-04;
+                    # macos-15-intel is the last x86_64 macOS image (until ~2027).
+                    - runner: macos-15-intel
                       os_label: macos
                       arch: x86_64
                     - runner: macos-14
@@ -186,7 +188,11 @@ jobs:
     publish-binaries:
         name: Publish binaries + SHA256SUMS
         needs: [resolve-tag, build-binary]
-        if: github.event_name != 'push'
+        # always() so one dead/failed build leg (e.g. a retired runner that
+        # queues until timeout) can't skip publishing the binaries that did
+        # build. download-artifact's `pattern: binary-*` uploads whatever set
+        # succeeded; if nothing built the checksum step fails the job loudly.
+        if: ${{ always() && github.event_name != 'push' }}
         runs-on: ubuntu-24.04
         steps:
             - name: Download binary artifacts

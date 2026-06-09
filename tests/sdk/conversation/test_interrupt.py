@@ -10,7 +10,8 @@ Covers:
 """
 
 import asyncio
-from unittest.mock import MagicMock
+import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 from litellm.types.utils import ModelResponse
@@ -301,8 +302,37 @@ async def test_interrupt_sets_cancel_token(tmp_path):
     conv.interrupt()
     await asyncio.wait_for(task, timeout=2.0)
 
-    # After arun finishes, token is cleared
-    assert conv._cancel_token is None
+    # After an interrupt the cancelled token is retained (not cleared) so tool
+    # threads that outlive arun() can still observe it.
+    assert conv._cancel_token is not None
+    assert conv._cancel_token.is_cancelled
+
+
+@pytest.mark.asyncio
+async def test_cancel_token_stays_observable_after_interrupt(tmp_path):
+    """A tool polling conversation.cancel_token from a worker thread that
+    outlives arun() must still see the cancellation, not the None the finally
+    used to clear. A fresh token is swapped in on the next run."""
+    conv = _make_conversation(SlowLLM(sleep_seconds=60.0), tmp_path)
+
+    task = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+    conv.interrupt()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # arun() has run its finally; a late poll via the public property (what
+    # tools use) must still observe the cancellation.
+    assert conv.cancel_token is not None
+    assert conv.cancel_token.is_cancelled
+
+    # The next run replaces it with a fresh, uncancelled token.
+    conv.send_message("again")
+    resumed = asyncio.create_task(conv.arun())
+    await asyncio.sleep(0.05)
+    assert conv.cancel_token is not None
+    assert not conv.cancel_token.is_cancelled
+    conv.interrupt()
+    await asyncio.wait_for(resumed, timeout=2.0)
 
 
 # ── ParallelToolExecutor cancellation tests ───────────────────────────
@@ -392,3 +422,31 @@ async def test_execute_batch_skips_all_on_pre_cancelled_token():
         assert len(r) == 1
         assert isinstance(r[0], AgentErrorEvent)
         assert "cancelled" in r[0].error.lower()
+
+
+@pytest.mark.asyncio
+async def test_arun_runs_init_off_the_event_loop(tmp_path):
+    """arun() offloads _ensure_agent_ready() to a worker thread.
+
+    Regression for agent-canvas#1072: an ACP agent resolves its credentials in
+    init_state via a *blocking* LookupSecret.get_value() (a synchronous
+    httpx.get). If arun() ran that inline on the event loop and the lookup
+    pointed back at the same single-process server, it would freeze the loop
+    that has to serve it — a self-deadlock. Verify init runs on a different
+    thread than the one driving the loop.
+    """
+    conv = _make_conversation(SlowLLM(sleep_seconds=0.0), tmp_path)
+
+    loop_thread_id = threading.get_ident()
+    captured: dict[str, int] = {}
+    real_ensure = conv._ensure_agent_ready
+
+    def spy_ensure() -> None:
+        captured["thread_id"] = threading.get_ident()
+        real_ensure()
+
+    with patch.object(conv, "_ensure_agent_ready", spy_ensure):
+        await asyncio.wait_for(conv.arun(), timeout=5.0)
+
+    assert captured["thread_id"] != loop_thread_id
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED

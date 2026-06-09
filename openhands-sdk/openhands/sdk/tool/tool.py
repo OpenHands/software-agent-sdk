@@ -392,15 +392,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     async def acall(
         self, action: ActionT, conversation: "LocalConversation | None" = None
     ) -> Observation:
-        """Async tool execution.
+        """Run this tool asynchronously when called directly.
 
-        The default implementation runs :meth:`__call__` in a thread via
-        :func:`asyncio.loop.run_in_executor` so that blocking tool I/O
-        (subprocess management, filesystem operations, etc.) does not
-        starve the event loop.
+        The default implementation runs :meth:`__call__` in a thread via the
+        event loop's executor, so callers can await a single tool invocation
+        without blocking the event loop.
 
-        Tools with native async implementations (e.g. HTTP-based tools)
-        can override this method to avoid the thread-pool overhead.
+        The SDK's internal async dispatch path does not call this hook; it
+        dispatches through :meth:`__call__` directly from its own executor.
         """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self, action, conversation)

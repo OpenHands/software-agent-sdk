@@ -1,10 +1,13 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 
 from litellm import get_supported_openai_params
 
+from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
-def model_matches(model: str, patterns: list[str]) -> bool:
+
+def model_matches(model: str, patterns: Iterable[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
 
     Matching semantics:
@@ -50,6 +53,9 @@ class ModelFeatures:
     force_string_serializer: bool
     send_reasoning_content: bool
     supports_prompt_cache_retention: bool
+    # True when the model's API rejects http(s) image URLs and only accepts
+    # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
+    requires_inline_image_data: bool
 
 
 LITELLM_PROXY_PREFIX = "litellm_proxy/"
@@ -65,8 +71,10 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
         return frozenset()
 
     normalized = model.strip().lower()
-    if normalized.startswith(LITELLM_PROXY_PREFIX):
-        normalized = normalized.removeprefix(LITELLM_PROXY_PREFIX)
+    for provider_prefix in (LITELLM_PROXY_PREFIX, OPENHANDS_PROVIDER_PREFIX):
+        if normalized.startswith(provider_prefix):
+            normalized = normalized.removeprefix(provider_prefix)
+            break
 
     # Strip deployment prefixes (e.g., "prod/", "dev/", "staging/", "test/")
     for prefix in DEPLOYMENT_PREFIXES:
@@ -111,11 +119,11 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-5",
     "claude-opus-4-6",
     "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-sonnet-4-6",
-    # Gemini uses the same cache_control marker format. LiteLLM handles
-    # Vertex/Gemini context-cache creation when these markers are present.
-    "gemini-2.5",
-    "gemini-3",
+    # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
+    # static prefix and disable Google's implicit caching on the growing body
+    # (~6-14x cost). Gemini uses implicit prefix caching instead.
 ]
 
 # Models that support a top-level prompt_cache_retention parameter
@@ -190,6 +198,23 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "deepseek/deepseek-v4-flash",  # Dual-mode (Thinking/Non-Thinking)
 ]
 
+# Models whose API rejects http(s) image URLs and only accepts base64
+# ``data:`` URLs (or vendor-specific file IDs). When this matches, the SDK
+# fetches each image URL and inlines it as ``data:{mime};base64,...`` before
+# sending. Only includes models where this restriction has been verified in
+# production runs (see issue #3155 for kimi-k2.6).
+#
+# NOTE: This is intentionally narrow. The same provider can host the same
+# model behind different upstreams that DO accept URLs (e.g.
+# bedrock/moonshotai.kimi-k2.5, fireworks_ai/.../kimi-k2.6), so we match on
+# the specific model id, not on the provider name.
+REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
+    # Moonshot public Kimi API: https://platform.kimi.ai/docs/guide/use-kimi-vision-model
+    # > URL-formatted images: Not supported, currently only supports
+    # > base64-encoded image content and images/videos uploaded via file ID
+    "moonshot/kimi-k2.6",
+)
+
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
@@ -204,5 +229,8 @@ def get_features(model: str) -> ModelFeatures:
         # Extended prompt_cache_retention support follows ordered include/exclude rules.
         supports_prompt_cache_retention=apply_ordered_model_rules(
             model, PROMPT_CACHE_RETENTION_MODELS
+        ),
+        requires_inline_image_data=model_matches(
+            model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
     )

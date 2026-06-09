@@ -394,6 +394,52 @@ async def switch_conversation_llm(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/switch_acp_model",
+    responses={
+        400: {"description": "Agent is not ACP, or provider can't switch models"},
+        404: {"description": "Conversation not found"},
+        409: {"description": "ACP session not initialized yet"},
+        504: {"description": "ACP server did not answer the model switch in time"},
+    },
+)
+async def switch_conversation_acp_model(
+    conversation_id: UUID,
+    model: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Switch the model of a running ACP conversation, mid-conversation.
+
+    Issues a protocol-level ``session/set_model`` call to the ACP subprocess
+    so the new model applies to subsequent turns without losing context. Only
+    valid for ACP conversations whose provider supports runtime switching.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await event_service.switch_acp_model(model)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except TimeoutError as e:
+        # The bounded session/set_model round-trip expired. The ACP server is
+        # wedged/slow rather than rejecting the request, so surface a 504
+        # instead of an opaque 500.
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=str(e),
+        )
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
