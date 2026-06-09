@@ -113,6 +113,7 @@ from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import get_features
 from openhands.sdk.llm.utils.openhands_provider import (
+    LiteLLMCallKwargs,
     canonicalize_openhands_llm_payload,
     litellm_call_kwargs,
 )
@@ -1719,7 +1720,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Transport + helpers
     # =========================================================================
 
-    def _litellm_call_kwargs(self) -> dict[str, str | None]:
+    def _litellm_call_kwargs(self) -> LiteLLMCallKwargs:
         return litellm_call_kwargs(self.model, self.base_url)
 
     def _infer_litellm_provider(self) -> str | None:
@@ -1728,7 +1729,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         call_kwargs = self._litellm_call_kwargs()
         provider = infer_litellm_provider(
-            model=call_kwargs["model"] or self.model,
+            model=call_kwargs["model"],
             api_base=call_kwargs["api_base"],
         )
         self._litellm_provider = provider

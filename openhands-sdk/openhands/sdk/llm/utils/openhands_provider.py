@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Final
+from typing import Any, Final, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
@@ -9,6 +9,12 @@ from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 OPENHANDS_PROVIDER_PREFIX: Final[str] = "openhands/"
 LITELLM_PROXY_PREFIX: Final[str] = "litellm_proxy/"
 OPENHANDS_LLM_PROXY_BASE_URL: Final[str] = "https://llm-proxy.app.all-hands.dev"
+
+
+class LiteLLMCallKwargs(TypedDict):
+    model: str
+    api_base: str | None
+
 
 _OPENHANDS_PROXY_BASE_URLS: Final[frozenset[str]] = frozenset(
     {
@@ -42,7 +48,7 @@ def _is_verified_openhands_model_name(model_name: str) -> bool:
     return model_name in VERIFIED_MODELS["openhands"]
 
 
-def litellm_call_kwargs(model: str, base_url: str | None) -> dict[str, str | None]:
+def litellm_call_kwargs(model: str, base_url: str | None) -> LiteLLMCallKwargs:
     if is_openhands_provider_model(model):
         model_name = model.removeprefix(OPENHANDS_PROVIDER_PREFIX)
         return {

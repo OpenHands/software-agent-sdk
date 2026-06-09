@@ -63,7 +63,7 @@ def get_litellm_model_info(
     secret_api_key: SecretStr | str | None, base_url: str | None, model: str
 ) -> ModelInfo | None:
     call_kwargs = litellm_call_kwargs(model, base_url)
-    model = call_kwargs["model"] or model
+    model = call_kwargs["model"]
     base_url = call_kwargs["api_base"]
 
     # Try to get model info via openrouter or litellm proxy first

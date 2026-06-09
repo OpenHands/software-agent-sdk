@@ -270,7 +270,7 @@ class Telemetry(BaseModel):
         except Exception as e:
             logger.debug(f"Failed to get cost from LiteLLM headers: {e}")
 
-        model = litellm_call_kwargs(self.model_name, None)["model"] or self.model_name
+        model = litellm_call_kwargs(self.model_name, None)["model"]
         if "/" in model:
             provider, bare = model.split("/", 1)
             extra_kwargs["model"] = bare
