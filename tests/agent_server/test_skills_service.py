@@ -11,10 +11,12 @@ from openhands.agent_server.skills_service import (
     create_sandbox_skill,
     load_all_skills,
     load_org_skills_from_url,
+    merge_marketplace_registrations,
     merge_skills,
     sync_public_skills,
 )
 from openhands.sdk.context.skills import Skill
+from openhands.sdk.plugin.types import MarketplaceRegistration
 
 
 class TestExposedUrlData:
@@ -429,3 +431,64 @@ class TestSkillLoadResult:
 
         assert result.skills == []
         assert result.sources == {}
+
+
+class TestMergeMarketplaceRegistrations:
+    """Tests for merge_marketplace_registrations helper."""
+
+    def _reg(
+        self, name: str, source: str = "github:owner/repo"
+    ) -> MarketplaceRegistration:
+        return MarketplaceRegistration(name=name, source=source, auto_load="all")
+
+    def test_both_empty_returns_empty(self):
+        assert merge_marketplace_registrations([], []) == []
+
+    def test_only_server_defaults(self):
+        defaults = [self._reg("public"), self._reg("team")]
+        result = merge_marketplace_registrations(defaults, [])
+        assert [r.name for r in result] == ["public", "team"]
+
+    def test_only_request_overrides(self):
+        overrides = [self._reg("public", source="https://internal/extensions.git")]
+        result = merge_marketplace_registrations([], overrides)
+        assert len(result) == 1
+        assert result[0].source == "https://internal/extensions.git"
+
+    def test_disjoint_merge_request_first(self):
+        defaults = [self._reg("team")]
+        overrides = [self._reg("experimental")]
+        result = merge_marketplace_registrations(defaults, overrides)
+        # Request entries come first, then non-shadowed server defaults.
+        assert [r.name for r in result] == ["experimental", "team"]
+
+    def test_request_shadows_server_by_name(self):
+        defaults = [
+            self._reg("public", source="github:OpenHands/extensions"),
+            self._reg("team", source="github:acme/team-skills"),
+        ]
+        overrides = [self._reg("public", source="https://internal/extensions.git")]
+        result = merge_marketplace_registrations(defaults, overrides)
+
+        # `public` from server defaults must be dropped; only the request's wins.
+        assert len(result) == 2
+        names_to_sources = {r.name: r.source for r in result}
+        assert names_to_sources["public"] == "https://internal/extensions.git"
+        assert names_to_sources["team"] == "github:acme/team-skills"
+
+    def test_preserves_order_within_each_source(self):
+        defaults = [self._reg("a"), self._reg("b"), self._reg("c")]
+        overrides = [self._reg("x"), self._reg("y")]
+        result = merge_marketplace_registrations(defaults, overrides)
+        assert [r.name for r in result] == ["x", "y", "a", "b", "c"]
+
+    def test_does_not_mutate_inputs(self):
+        defaults = [self._reg("public")]
+        overrides = [self._reg("public", source="https://internal/extensions.git")]
+        defaults_snapshot = list(defaults)
+        overrides_snapshot = list(overrides)
+
+        merge_marketplace_registrations(defaults, overrides)
+
+        assert defaults == defaults_snapshot
+        assert overrides == overrides_snapshot

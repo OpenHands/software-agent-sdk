@@ -10,9 +10,11 @@ from typing import Literal
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from openhands.agent_server.config import get_default_config
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
     load_all_skills,
+    merge_marketplace_registrations,
     sync_public_skills,
 )
 from openhands.sdk.context.skills.skill import DEFAULT_MARKETPLACE_PATH
@@ -156,13 +158,25 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_repo_url = request.org_config.org_repo_url
         org_name = request.org_config.org_name
 
+    # Merge server-level default marketplaces (from OH_REGISTERED_MARKETPLACES
+    # env var, populated into Config by env_parser.from_env at startup) with
+    # any marketplaces sent in the request body. Per-request entries shadow
+    # server defaults sharing the same `name`; other server defaults are
+    # appended. This lets operators of a self-hosted agent-server image set
+    # an organization-wide default (e.g. redirecting `public` to an internal
+    # mirror) without app-server or UI changes.
+    effective_marketplaces = merge_marketplace_registrations(
+        server_defaults=get_default_config().registered_marketplaces,
+        request_overrides=request.registered_marketplaces,
+    )
+
     # Handle deprecation: prefer registered_marketplaces over marketplace_path
     marketplace_path = request.marketplace_path
-    if request.registered_marketplaces:
+    if effective_marketplaces:
         # New behavior: use registered_marketplaces
         # For now, we extract marketplace_path from the first 'public' registration
         # with auto_load='all' for backward compatibility with the existing service
-        for reg in request.registered_marketplaces:
+        for reg in effective_marketplaces:
             if reg.name == "public" and reg.auto_load == "all":
                 # Use repo_path as marketplace_path if set
                 marketplace_path = reg.repo_path
@@ -187,7 +201,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_name=org_name,
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=marketplace_path,
-        registered_marketplaces=request.registered_marketplaces,
+        registered_marketplaces=effective_marketplaces,
     )
 
     # Convert Skill objects to SkillInfo for response

@@ -6,6 +6,7 @@ from typing import ClassVar
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.env_parser import from_env
+from openhands.sdk.plugin.types import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
 
@@ -187,6 +188,20 @@ class Config(BaseModel):
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
+        ),
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Server-level default marketplace registrations, loaded from the "
+            "OH_REGISTERED_MARKETPLACES environment variable (JSON list) by the "
+            "same env_parser machinery that handles `webhooks`. These defaults "
+            "are merged with per-request `SkillsRequest.registered_marketplaces` "
+            "in skills_router; per-request entries with the same `name` shadow "
+            "server defaults, other server defaults are appended. Lets operators "
+            "of a self-hosted/Enterprise agent-server image point public skill "
+            "loading at an alternative repository without app-server or UI "
+            "changes."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}

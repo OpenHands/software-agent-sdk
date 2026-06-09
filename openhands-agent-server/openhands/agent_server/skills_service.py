@@ -388,6 +388,39 @@ def load_all_skills(
     return SkillLoadResult(skills=all_skills, sources=sources)
 
 
+def merge_marketplace_registrations(
+    server_defaults: list[MarketplaceRegistration],
+    request_overrides: list[MarketplaceRegistration],
+) -> list[MarketplaceRegistration]:
+    """Merge server- and request-supplied marketplace registrations.
+
+    Per-request entries take precedence: any server default whose `name`
+    matches a request-supplied registration is dropped. Remaining server
+    defaults are appended after the request entries, preserving order
+    within each source.
+
+    This lets an operator pin a baseline set of marketplaces via the
+    `OH_REGISTERED_MARKETPLACES` env var (e.g. redirecting the `public`
+    marketplace to an internal mirror) while still allowing per-conversation
+    callers — including a future SaaS app-server admin setting — to override
+    or extend that baseline.
+
+    Args:
+        server_defaults: Registrations from `Config.registered_marketplaces`,
+            populated by `env_parser.from_env` at server startup.
+        request_overrides: Registrations from the incoming
+            `SkillsRequest.registered_marketplaces`.
+
+    Returns:
+        Merged registration list (request entries first, then non-shadowed
+        server defaults). Empty list if both inputs are empty.
+    """
+    overridden_names = {reg.name for reg in request_overrides}
+    return list(request_overrides) + [
+        reg for reg in server_defaults if reg.name not in overridden_names
+    ]
+
+
 def _load_marketplace_skills(
     registrations: list[MarketplaceRegistration],
 ) -> list[Skill]:

@@ -310,3 +310,132 @@ class TestPydanticModels:
             },
         )
         assert response.status_code == 422
+
+
+class TestServerDefaultMarketplaces:
+    """Integration tests: OH_REGISTERED_MARKETPLACES → /skills request flow.
+
+    These exercise the path that lets a self-hosted/Enterprise agent-server
+    image redirect public skill loading without app-server or UI changes:
+    operator sets the env var → Config.registered_marketplaces → merged into
+    SkillsRequest.registered_marketplaces by skills_router → forwarded to
+    load_all_skills.
+    """
+
+    @staticmethod
+    def _capture_kwargs(holder: dict):
+        """Build a mock side_effect that captures kwargs and returns an empty result."""
+
+        def _side_effect(*args, **kwargs):
+            holder.update(kwargs)
+            return SkillLoadResult(skills=[], sources={})
+
+        return _side_effect
+
+    def test_server_default_used_when_request_omits_marketplaces(self, client):
+        """With OH_REGISTERED_MARKETPLACES set and an empty request, the server
+        default is forwarded to load_all_skills."""
+        from openhands.agent_server.config import Config
+        from openhands.sdk.plugin.types import MarketplaceRegistration
+
+        server_default = MarketplaceRegistration(
+            name="public",
+            source="https://internal/extensions.git",
+            ref="v1.4",
+            auto_load="all",
+        )
+        captured: dict = {}
+
+        # Build a Config whose registered_marketplaces match what the env-var
+        # parser would have produced at startup. Override get_default_config so
+        # the router sees it. Real env-var → Config plumbing is covered by
+        # test_env_parser.test_config_registered_marketplaces_parsing.
+        with (
+            patch(
+                "openhands.agent_server.skills_router.get_default_config",
+                return_value=Config(registered_marketplaces=[server_default]),
+            ),
+            patch(
+                "openhands.agent_server.skills_router.load_all_skills",
+                side_effect=self._capture_kwargs(captured),
+            ),
+        ):
+            response = client.post("/api/skills", json={})
+
+        assert response.status_code == 200
+        regs = captured["registered_marketplaces"]
+        assert len(regs) == 1
+        assert regs[0].name == "public"
+        assert regs[0].source == "https://internal/extensions.git"
+        assert regs[0].ref == "v1.4"
+
+    def test_request_overrides_shadow_server_default_by_name(self, client):
+        """Per-request `public` registration replaces the server's `public`
+        default; non-overlapping server defaults are still forwarded."""
+        from openhands.agent_server.config import Config
+        from openhands.sdk.plugin.types import MarketplaceRegistration
+
+        server_defaults = [
+            MarketplaceRegistration(
+                name="public",
+                source="https://internal/extensions.git",
+                auto_load="all",
+            ),
+            MarketplaceRegistration(
+                name="team",
+                source="github:acme/team-skills",
+                auto_load="all",
+            ),
+        ]
+        captured: dict = {}
+
+        request_body = {
+            "registered_marketplaces": [
+                {
+                    "name": "public",
+                    "source": "github:OpenHands/extensions",
+                    "auto_load": "all",
+                }
+            ]
+        }
+
+        with (
+            patch(
+                "openhands.agent_server.skills_router.get_default_config",
+                return_value=Config(registered_marketplaces=server_defaults),
+            ),
+            patch(
+                "openhands.agent_server.skills_router.load_all_skills",
+                side_effect=self._capture_kwargs(captured),
+            ),
+        ):
+            response = client.post("/api/skills", json=request_body)
+
+        assert response.status_code == 200
+        regs = captured["registered_marketplaces"]
+        # 2 entries: request `public` (shadowed server `public`) + server `team`.
+        names_to_sources = {r.name: r.source for r in regs}
+        assert names_to_sources["public"] == "github:OpenHands/extensions"
+        assert names_to_sources["team"] == "github:acme/team-skills"
+        assert len(regs) == 2
+
+    def test_no_server_default_falls_back_to_request_only(self, client):
+        """With an empty Config.registered_marketplaces, behavior is identical
+        to the pre-PR path: only what's in the request body is forwarded."""
+        from openhands.agent_server.config import Config
+
+        captured: dict = {}
+        with (
+            patch(
+                "openhands.agent_server.skills_router.get_default_config",
+                return_value=Config(registered_marketplaces=[]),
+            ),
+            patch(
+                "openhands.agent_server.skills_router.load_all_skills",
+                side_effect=self._capture_kwargs(captured),
+            ),
+        ):
+            response = client.post("/api/skills", json={})
+
+        assert response.status_code == 200
+        assert captured["registered_marketplaces"] == []

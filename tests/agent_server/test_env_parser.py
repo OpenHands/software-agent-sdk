@@ -1378,3 +1378,48 @@ def test_discriminated_union_single_empty_kind_no_variables(clean_env):
     # because there's no indication that this entry is configured
     result = parser.from_env("TEST")
     assert result is MISSING
+
+
+def test_config_registered_marketplaces_parsing(clean_env):
+    """Operators configure server-default marketplaces via OH_REGISTERED_MARKETPLACES.
+
+    Mirrors the JSON-list pattern already used by OH_WEBHOOKS. This is the
+    primary "self-hosted operator wants to redirect public skills to an
+    internal mirror" path — no app-server or UI changes required.
+    """
+    marketplaces = [
+        {
+            "name": "public",
+            "source": "https://git.internal.example.com/extensions.git",
+            "ref": "v1.4.2",
+            "auto_load": "all",
+        },
+        {
+            "name": "team",
+            "source": "github:acme/team-skills",
+            "repo_path": "marketplaces/team",
+            "auto_load": "all",
+        },
+    ]
+    os.environ["OH_REGISTERED_MARKETPLACES"] = json.dumps(marketplaces)
+
+    config = from_env(Config, "OH")
+
+    assert len(config.registered_marketplaces) == 2
+    assert config.registered_marketplaces[0].name == "public"
+    assert (
+        config.registered_marketplaces[0].source
+        == "https://git.internal.example.com/extensions.git"
+    )
+    assert config.registered_marketplaces[0].ref == "v1.4.2"
+    assert config.registered_marketplaces[0].auto_load == "all"
+    assert config.registered_marketplaces[1].name == "team"
+    assert config.registered_marketplaces[1].repo_path == "marketplaces/team"
+
+
+def test_config_registered_marketplaces_default_empty(clean_env):
+    """With no env var set, server defaults must be the empty list — i.e. the
+    pre-PR behavior is preserved and nothing is loaded that operators didn't
+    explicitly opt into."""
+    config = from_env(Config, "OH")
+    assert config.registered_marketplaces == []
