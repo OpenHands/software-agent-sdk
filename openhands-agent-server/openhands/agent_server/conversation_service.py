@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import httpx
@@ -42,6 +42,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -307,6 +308,7 @@ def _compose_conversation_info(
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
+        client_tools=stored.client_tools,
     )
 
 
@@ -638,6 +640,22 @@ class ConversationService:
                     conversation_id,
                 )
 
+        # Register client-defined tools (JSON specs, no Python code). The
+        # ClientTool *class* is registered statelessly; each tool's schema
+        # travels with the conversation via the returned Tool.params, so
+        # concurrent conversations never clobber each other's schemas.
+        if request.client_tools:
+            client_tool_specs = register_client_tools(request.client_tools)
+            # Inject Tool specs into the agent so _initialize() resolves them
+            existing_names = {t.name for t in request.agent.tools}
+            new_tools = [
+                ts for ts in client_tool_specs if ts.name not in existing_names
+            ]
+            if new_tools:
+                request.agent = request.agent.model_copy(
+                    update={"tools": [*request.agent.tools, *new_tools]}
+                )
+
         # Register subagent definitions forwarded from the client
         if request.agent_definitions:
             _register_agent_definitions(
@@ -919,11 +937,25 @@ class ConversationService:
         fork_conv.close()
 
         # _start_event_service will resume from the persisted fork directory.
-        fork_stored = StoredConversation(
-            id=fork_conv_id,
-            agent=fork_agent,
-            workspace=fork_workspace,
-        )
+        # Copy the source's stored metadata so request-level configuration
+        # (client_tools, tool_module_qualnames, agent_definitions, plugins,
+        # secrets, ...) is preserved on the fork, then override only the
+        # fork-specific fields. Without this, e.g. a fork of a client-tool
+        # conversation would lose ``client_tools`` in meta.json and be unable
+        # to re-register its tools after a server restart.
+        fork_overrides: dict[str, Any] = {
+            "id": fork_conv_id,
+            "agent": fork_agent,
+            "workspace": fork_workspace,
+            "title": title,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        }
+        if reset_metrics:
+            fork_overrides["metrics"] = None
+        if tags is not None:
+            fork_overrides["tags"] = tags
+        fork_stored = source_service.stored.model_copy(update=fork_overrides)
         # If the service fails to start, clean up the orphaned persistence
         # directory so we don't leave stale state on disk.
         fork_dir = self.conversations_dir / fork_conv_id.hex
@@ -984,6 +1016,11 @@ class ConversationService:
                             f"resuming conversation {stored.id}: "
                             f"{list(stored.tool_module_qualnames.keys())}"
                         )
+                # Re-register client-defined tools when resuming. The agent's
+                # persisted tool specs already carry each schema via params, so
+                # we only need to (re-)register the ClientTool class per name.
+                if stored.client_tools:
+                    register_client_tools(stored.client_tools)
                 # Register agent definitions when resuming
                 if stored.agent_definitions:
                     _register_agent_definitions(

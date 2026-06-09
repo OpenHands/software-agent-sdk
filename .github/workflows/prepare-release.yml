@@ -14,12 +14,14 @@ jobs:
         runs-on: ubuntu-24.04
         steps:
             - name: Validate version format
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
-                  if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  if ! [[ "$INPUTS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                     echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.2.3)"
                     exit 1
                   fi
-                  echo "✅ Version format is valid: ${{ inputs.version }}"
+                  echo "✅ Version format is valid: $INPUTS_VERSION"
 
             - name: Checkout repository
               uses: actions/checkout@v6
@@ -38,46 +40,60 @@ jobs:
                   git config user.email "github-actions[bot]@users.noreply.github.com"
 
             - name: Create release branch
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
-                  BRANCH_NAME="rel-${{ inputs.version }}"
+                  BRANCH_NAME="rel-$INPUTS_VERSION"
                   echo "Creating branch: $BRANCH_NAME"
                   git checkout -b "$BRANCH_NAME"
                   echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
             - name: Set package version
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
-                  echo "🔧 Setting version to ${{ inputs.version }}"
-                  make set-package-version version=${{ inputs.version }}
+                  echo "🔧 Setting version to $INPUTS_VERSION"
+                  make set-package-version version="$INPUTS_VERSION"
 
             - name: Update sdk_ref default in run-eval workflow
-              run: python3 .github/scripts/update_sdk_ref_default.py "${{ inputs.version }}"
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
+              run: python3 .github/scripts/update_sdk_ref_default.py "$INPUTS_VERSION"
 
             - name: Commit version changes
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
                   git add .
                   if git diff --staged --quiet; then
                     echo "No changes to commit"
                   else
-                    git commit -m "Release v${{ inputs.version }}" -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                    git commit -m "Release v$INPUTS_VERSION" -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                     echo "✅ Changes committed"
                   fi
 
             - name: Push release branch
               run: |
-                  git push -u origin "${{ env.BRANCH_NAME }}"
-                  echo "✅ Branch pushed: ${{ env.BRANCH_NAME }}"
+                  git push -u origin "$BRANCH_NAME"
+                  echo "✅ Branch pushed: $BRANCH_NAME"
 
             - name: Create Pull Request
               env:
                   GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
-                  cat > pr_body.txt << 'EOF'
-                  ## Release v${{ inputs.version }}
+                  python3 << 'PY'
+                  import os
+                  from pathlib import Path
 
-                  This PR prepares the release for version **${{ inputs.version }}**.
+                  version = os.environ["INPUTS_VERSION"]
+                  Path("pr_body.txt").write_text(
+                      f"""## Release v{version}
+
+                  This PR prepares the release for version **{version}**.
 
                   ### Release Checklist
-                  - [x] Version set to ${{ inputs.version }}
+                  - [x] Version set to {version}
                   - [ ] Fix any deprecation deadlines if they exist
                   - [ ] Integration tests pass (tagged with `integration-test`)
                   - [ ] Behavior tests pass (tagged with `behavior-test`)
@@ -87,16 +103,18 @@ jobs:
 
                   ### What happens on merge
                   When this PR is merged, the `create-release.yml` workflow will automatically:
-                  1. Create a GitHub release with tag `v${{ inputs.version }}` and auto-generated notes, plus an explicit preamble for merged `release-note-required` PRs
+                  1. Create a GitHub release with tag `v{version}` and auto-generated notes, plus an explicit preamble for merged `release-note-required` PRs
                   2. Trigger `pypi-release.yml` to publish all packages to PyPI
                   3. Trigger `version-bump-prs.yml` to create downstream version bump PRs
-                  EOF
+                  """
+                  )
+                  PY
 
                   gh pr create \
-                    --title "Release v${{ inputs.version }}" \
+                    --title "Release v$INPUTS_VERSION" \
                     --body-file pr_body.txt \
                     --base main \
-                    --head "${{ env.BRANCH_NAME }}" \
+                    --head "$BRANCH_NAME" \
                     --label "integration-test" \
                     --label "behavior-test" \
                     --label "test-examples"
@@ -105,15 +123,17 @@ jobs:
                   echo "✅ Pull request created successfully!"
 
                   # Get PR URL and display it
-                  PR_URL=$(gh pr view "${{ env.BRANCH_NAME }}" --json url --jq '.url')
+                  PR_URL=$(gh pr view "$BRANCH_NAME" --json url --jq '.url')
                   echo "🔗 PR URL: $PR_URL"
                   echo "PR_URL=$PR_URL" >> $GITHUB_ENV
 
             - name: Summary
+              env:
+                  INPUTS_VERSION: ${{ inputs.version }}
               run: |
                   echo "## ✅ Release Preparation Complete!" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY
-                  echo "- **Version**: ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Version**: $INPUTS_VERSION" >> $GITHUB_STEP_SUMMARY
                   echo "- **Branch**: ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
                   echo "- **PR URL**: ${{ env.PR_URL }}" >> $GITHUB_STEP_SUMMARY
                   echo "" >> $GITHUB_STEP_SUMMARY

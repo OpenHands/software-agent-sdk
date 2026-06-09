@@ -86,15 +86,18 @@ jobs:
                     echo "Using specified model_ids: $MODEL_IDS"
                   fi
 
+                  export MODEL_IDS
+
                   # Resolve model configs using resolve_model_config.py
                   # Transform output to matrix format for integration tests
-                  MATRIX=$(python3 << EOF
+                  MATRIX=$(python3 << 'EOF'
                   import json
+                  import os
                   import sys
                   sys.path.insert(0, '.github/run-eval')
                   from resolve_model_config import MODELS
 
-                  model_ids = "$MODEL_IDS".split(",")
+                  model_ids = os.environ["MODEL_IDS"].split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
 
                   matrix = []
@@ -129,10 +132,14 @@ jobs:
               id: resolve-issue
               env:
                   ISSUE_NUMBER_INPUT: ${{ github.event.inputs.issue_number || '' }}
-                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  PR_NUMBER: ${{ github.event.pull_request.number || '' }}
               run: |
                   # Priority: explicit input > PR number from label trigger
                   if [ -n "$ISSUE_NUMBER_INPUT" ]; then
+                    if ! [[ "$ISSUE_NUMBER_INPUT" =~ ^[0-9]+$ ]]; then
+                      echo "Invalid issue_number input. Expected a numeric issue or PR number." >&2
+                      exit 1
+                    fi
                     echo "issue_number=$ISSUE_NUMBER_INPUT" >> "$GITHUB_OUTPUT"
                   elif [ -n "$PR_NUMBER" ]; then
                     echo "issue_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -181,22 +188,23 @@ jobs:
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
                   REASON: ${{ github.event.inputs.reason }}
+                  WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                   # Sanitize @OpenHands mentions to prevent self-mention loops
-                  SANITIZED_REASON=$(echo "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
-                  SANITIZED_MODEL_IDS=$(echo "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_REASON=$(printf '%s' "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_MODEL_IDS=$(printf '%s' "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   COMMENT_BODY=$(cat <<EOF
                   **Integration Tests Triggered**
 
                   - **Reason:** $SANITIZED_REASON
                   - **Test type:** $TEST_TYPE
                   - **Models:** $SANITIZED_MODEL_IDS
-                  - **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                  - **Workflow run:** $WORKFLOW_RUN_URL
 
                   Results will be posted here when complete.
                   EOF
                   )
-                  gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"
+                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
@@ -260,6 +268,8 @@ jobs:
 
             # Run integration test evaluation
             - name: Determine test selection
+              env:
+                  TEST_TYPE_INPUT: ${{ github.event.inputs.test_type }}
               run: |
                   TEST_TYPE_ARGS=""
                   if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
@@ -269,7 +279,7 @@ jobs:
                     TEST_TYPE_ARGS="--test-type integration"
                     echo "integration-test label detected; running integration tests only."
                   elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-                    test_type="${{ github.event.inputs.test_type }}"
+                    test_type="$TEST_TYPE_INPUT"
                     case "$test_type" in
                       behavior)
                         TEST_TYPE_ARGS="--test-type behavior"
@@ -415,8 +425,6 @@ jobs:
 
             - name: Consolidate test results
               env:
-                  EVENT_NAME: ${{ github.event_name }}
-                  PR_NUMBER: ${{ github.event.pull_request.number }}
                   MANUAL_REASON: ${{ github.event.inputs.reason }}
                   COMMIT_SHA: ${{ github.sha }}
                   PYTHONPATH: ${{ github.workspace }}
@@ -447,9 +455,10 @@ jobs:
                   # Sanitize @OpenHands mentions to prevent self-mention loops
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
-                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh pr comment "$PR_NUMBER" --body-file -
               env:
                   GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
 
             - name: Comment on specified issue/PR (workflow_dispatch)
               if: github.event_name == 'workflow_dispatch' && needs.setup-matrix.outputs.issue_number != ''

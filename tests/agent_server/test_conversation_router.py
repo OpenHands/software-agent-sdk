@@ -2217,3 +2217,39 @@ def test_fork_conversation_duplicate_id_returns_409(
         assert response.status_code == 409
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_client_tool_registration_error_returns_422(
+    client, mock_conversation_service
+):
+    """Client tool registration input errors yield 422, not 500."""
+    from openhands.sdk.tool.client_tool import ClientToolRegistrationError
+
+    mock_conversation_service.start_conversation.side_effect = (
+        ClientToolRegistrationError(
+            "Client tool name 'terminal' collides with an existing non-client tool."
+        )
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    request = StartConversationRequest(
+        agent=Agent(
+            llm=LLM(model="gpt-4o", api_key=SecretStr("test-key"), usage_id="t"),
+            tools=[],
+        ),
+        workspace=LocalWorkspace(working_dir="/tmp/test"),
+    )
+
+    try:
+        response = client.post(
+            "/api/conversations",
+            json=request.model_dump(mode="json"),
+        )
+
+        assert response.status_code == 422
+        assert "collides with an existing non-client tool" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
