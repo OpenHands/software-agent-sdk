@@ -230,6 +230,7 @@ jobs:
               if: github.event_name == 'pull_request_target'
               env:
                   GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
               run: |
                   # Add header to clarify these are non-blocking tests
                   echo "## Condenser Test Results (Non-Blocking)" > final_report.md
@@ -241,4 +242,4 @@ jobs:
                   # Sanitize @OpenHands mentions to prevent self-mention loops
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < final_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
-                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh pr comment "$PR_NUMBER" --body-file -

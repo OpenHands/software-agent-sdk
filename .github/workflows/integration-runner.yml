@@ -132,9 +132,14 @@ jobs:
               id: resolve-issue
               env:
                   ISSUE_NUMBER_INPUT: ${{ github.event.inputs.issue_number || '' }}
+                  PR_NUMBER: ${{ github.event.pull_request.number || '' }}
               run: |
                   # Priority: explicit input > PR number from label trigger
                   if [ -n "$ISSUE_NUMBER_INPUT" ]; then
+                    if ! [[ "$ISSUE_NUMBER_INPUT" =~ ^[0-9]+$ ]]; then
+                      echo "Invalid issue_number input. Expected a numeric issue or PR number." >&2
+                      exit 1
+                    fi
                     echo "issue_number=$ISSUE_NUMBER_INPUT" >> "$GITHUB_OUTPUT"
                   elif [ -n "$PR_NUMBER" ]; then
                     echo "issue_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -183,22 +188,23 @@ jobs:
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
                   REASON: ${{ github.event.inputs.reason }}
+                  WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                   # Sanitize @OpenHands mentions to prevent self-mention loops
-                  SANITIZED_REASON=$(echo "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
-                  SANITIZED_MODEL_IDS=$(echo "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_REASON=$(printf '%s' "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_MODEL_IDS=$(printf '%s' "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   COMMENT_BODY=$(cat <<EOF
                   **Integration Tests Triggered**
 
                   - **Reason:** $SANITIZED_REASON
                   - **Test type:** $TEST_TYPE
                   - **Models:** $SANITIZED_MODEL_IDS
-                  - **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                  - **Workflow run:** $WORKFLOW_RUN_URL
 
                   Results will be posted here when complete.
                   EOF
                   )
-                  gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"
+                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
@@ -449,9 +455,10 @@ jobs:
                   # Sanitize @OpenHands mentions to prevent self-mention loops
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
-                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh pr comment "$PR_NUMBER" --body-file -
               env:
                   GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
 
             - name: Comment on specified issue/PR (workflow_dispatch)
               if: github.event_name == 'workflow_dispatch' && needs.setup-matrix.outputs.issue_number != ''
