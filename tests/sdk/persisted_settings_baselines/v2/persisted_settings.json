@@ -11,10 +11,11 @@
     ],
     "conversation_settings.max_iterations": 240,
     "conversation_settings.confirmation_mode": true,
-    "app_preferences.language": "fr",
-    "app_preferences.git_user_name": "Fixture User",
-    "app_preferences.disabled_skills": [
-      "openhands/test-skill"
+    "misc_settings.theme": "dark",
+    "misc_settings.ui.sidebar": "open",
+    "misc_settings.ui.tags": [
+      "alpha",
+      "beta"
     ]
   },
   "schema_version": 2,
@@ -41,12 +42,14 @@
     "security_analyzer": "llm"
   },
   "active_profile": "fixture-v2-profile",
-  "app_preferences": {
-    "language": "fr",
-    "git_user_name": "Fixture User",
-    "git_user_email": "fixture@example.com",
-    "disabled_skills": [
-      "openhands/test-skill"
-    ]
+  "misc_settings": {
+    "theme": "dark",
+    "ui": {
+      "sidebar": "open",
+      "tags": [
+        "alpha",
+        "beta"
+      ]
+    }
   }
 }
