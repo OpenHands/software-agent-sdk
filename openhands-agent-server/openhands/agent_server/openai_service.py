@@ -38,6 +38,8 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 _MODEL_PREFIX = "openhands_"
+# Fixed gateway defaults are sufficient for the initial local-first endpoint;
+# promote them to Config only if clients need deployment-specific tuning.
 _GATEWAY_TIMEOUT_SECONDS = 120.0
 _POLL_INTERVAL_SECONDS = 2
 
@@ -205,6 +207,9 @@ def _conversation_request(
     )
 
 
+# Keep this server-side waiter close to the gateway for readability. It follows
+# the existing status-polling pattern, while RemoteConversation owns the richer
+# client-side WebSocket fallback; we can consolidate if this grows in follow-up.
 async def _wait_for_completion(
     event_service: EventService,
     *,
