@@ -41,7 +41,7 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.tool.client_tool import ClientToolSchemaConflictError
+from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
 
@@ -197,9 +197,7 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     try:
         info, is_new = await conversation_service.start_conversation(request)
-    except ClientToolSchemaConflictError as e:
-        # Reusing a client tool name with a different schema is a caller/input
-        # error, so surface it as a 422 instead of a 500.
+    except ClientToolRegistrationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
         ) from e

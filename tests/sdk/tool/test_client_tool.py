@@ -1,6 +1,6 @@
 """Tests for client-defined tools (ClientToolSpec / ClientTool)."""
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -9,8 +9,11 @@ from openhands.sdk.tool.client_tool import (
     ClientTool,
     ClientToolExecutor,
     ClientToolObservation,
+    ClientToolRegistrationError,
     ClientToolSpec,
+    register_client_tools,
 )
+from openhands.sdk.tool.registry import list_registered_tools, resolve_tool
 from openhands.sdk.tool.schema import Action
 from openhands.sdk.tool.tool import ToolAnnotations, ToolDefinition
 
@@ -340,9 +343,6 @@ def test_same_name_different_schema_conflicts():
 
 
 def test_register_client_tools_returns_tool_specs():
-    from openhands.sdk.tool.client_tool import register_client_tools
-    from openhands.sdk.tool.registry import list_registered_tools
-
     spec = ClientToolSpec(
         name="reg_tool",
         description="Registered",
@@ -361,3 +361,49 @@ def test_register_client_tools_returns_tool_specs():
     assert ts.params["spec"]["parameters"]["properties"]["q"]["type"] == "string"
     # The ClientTool class is registered under the tool name
     assert "reg_tool" in list_registered_tools()
+
+
+def test_register_client_tools_rejects_builtin_tool_name_collision():
+    from openhands.tools.terminal import TerminalTool
+
+    spec = ClientToolSpec(
+        name=TerminalTool.name,
+        description="Client terminal",
+    )
+
+    with pytest.raises(
+        ClientToolRegistrationError,
+        match="collides with an existing non-client tool",
+    ):
+        register_client_tools([spec])
+
+
+def test_register_client_tools_rejects_duplicate_names_in_single_request():
+    name = "client_duplicate_in_request"
+    spec = ClientToolSpec(name=name, description="One")
+
+    with pytest.raises(
+        ClientToolRegistrationError,
+        match=f"Duplicate client tool name '{name}'",
+    ):
+        register_client_tools([spec, spec])
+
+    assert name not in list_registered_tools()
+
+
+def test_register_client_tools_allows_existing_client_tool_same_schema():
+    spec = ClientToolSpec(
+        name="client_reuse_same_schema",
+        description="Reusable",
+        parameters={"type": "object", "properties": {"x": {"type": "string"}}},
+    )
+
+    first_tool_specs = register_client_tools([spec])
+    second_tool_specs = register_client_tools([spec])
+
+    assert [tool_spec.name for tool_spec in first_tool_specs] == [spec.name]
+    assert [tool_spec.name for tool_spec in second_tool_specs] == [spec.name]
+    resolved_tools = resolve_tool(second_tool_specs[0], cast(Any, None))
+    assert len(resolved_tools) == 1
+    assert isinstance(resolved_tools[0], ClientTool)
+    assert resolved_tools[0].name == spec.name

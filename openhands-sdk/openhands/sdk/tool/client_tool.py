@@ -48,16 +48,24 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 _client_action_types: dict[str, type[Action]] = {}
 _client_action_schemas: dict[str, dict[str, Any]] = {}
-_client_action_lock = threading.Lock()
+_client_tool_names: set[str] = set()
+_client_action_lock = threading.RLock()
 
 
-class ClientToolSchemaConflictError(ValueError):
+class ClientToolRegistrationError(ValueError):
+    """Raised when client tool registration receives invalid input.
+
+    This is a caller/input error (e.g. a bad ``POST /conversations`` payload),
+    so callers such as the agent server map it to a 4xx response rather than a
+    500.
+    """
+
+
+class ClientToolSchemaConflictError(ClientToolRegistrationError):
     """Raised when a client tool name is reused with a different schema.
 
     The generated action ``kind`` (``ClientAction_<name>``) is process-global,
-    so a single name cannot represent two different parameter schemas. This is a
-    caller/input error (e.g. a bad ``POST /conversations`` payload), so callers
-    such as the agent server map it to a 4xx response rather than a 500.
+    so a single name cannot represent two different parameter schemas.
     """
 
 
@@ -364,14 +372,33 @@ def register_client_tools(specs: Sequence[ClientToolSpec]) -> list["Tool"]:
     from openhands.sdk.tool.registry import list_registered_tools, register_tool
     from openhands.sdk.tool.spec import Tool
 
-    tool_specs: list[Tool] = []
-    already_registered = set(list_registered_tools())
+    seen_names: set[str] = set()
     for spec in specs:
-        # Validate the schema and surface same-name/different-schema conflicts
-        # early (also pre-populates the action-type cache).
-        _get_client_action_type(spec.name, spec.parameters)
-        if spec.name not in already_registered:
-            register_tool(spec.name, ClientTool)
-            already_registered.add(spec.name)
-        tool_specs.append(Tool(name=spec.name, params={"spec": spec.model_dump()}))
-    return tool_specs
+        if spec.name in seen_names:
+            raise ClientToolRegistrationError(
+                f"Duplicate client tool name '{spec.name}' in one registration "
+                "request. Client tool names must be unique."
+            )
+        seen_names.add(spec.name)
+
+    with _client_action_lock:
+        tool_specs: list[Tool] = []
+        already_registered = set(list_registered_tools())
+        for spec in specs:
+            collides_with_non_client_tool = (
+                spec.name in already_registered and spec.name not in _client_tool_names
+            )
+            if collides_with_non_client_tool:
+                raise ClientToolRegistrationError(
+                    f"Client tool name '{spec.name}' collides with an existing "
+                    "non-client tool. Choose a unique client tool name."
+                )
+
+        for spec in specs:
+            _get_client_action_type(spec.name, spec.parameters)
+            if spec.name not in already_registered:
+                register_tool(spec.name, ClientTool)
+                already_registered.add(spec.name)
+            _client_tool_names.add(spec.name)
+            tool_specs.append(Tool(name=spec.name, params={"spec": spec.model_dump()}))
+        return tool_specs
