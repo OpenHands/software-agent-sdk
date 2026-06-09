@@ -46,7 +46,7 @@ def test_llm_init_with_default_config(default_llm):
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider(mock_get):
-    """Test that openhands/ prefix automatically sets base_url to production proxy."""
+    """Test that openhands/ remains public while transport uses the proxy."""
     # Mock the model info fetch to avoid actual HTTP calls to production
     mock_get.return_value = Mock(json=lambda: {"data": []})
 
@@ -55,17 +55,17 @@ def test_base_url_for_openhands_provider(mock_get):
         api_key=SecretStr("test-key"),
         usage_id="test-openhands-llm",
     )
-    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
-    mock_get.assert_called_once()
+    assert llm.model == "openhands/claude-sonnet-4-20250514"
+    assert llm.base_url is None
+    mock_get.assert_called_once_with(
+        "https://llm-proxy.app.all-hands.dev/v1/model/info",
+        headers={"Authorization": "Bearer test-key"},
+    )
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
-    """Test that openhands/ provider defaults base_url when explicitly set to None.
-
-    This simulates the CLI behavior where settings are saved to JSON with
-    base_url=null and then reloaded, ensuring the default proxy URL is used.
-    """
+    """Test that explicit None remains public config, not persisted transport config."""
     # Mock the model info fetch to avoid actual HTTP calls to production
     mock_get.return_value = Mock(json=lambda: {"data": []})
 
@@ -73,11 +73,36 @@ def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
         model="openhands/claude-sonnet-4-20250514",
         api_key=SecretStr("test-key"),
         usage_id="test-openhands-llm",
-        base_url=None,  # Explicitly set to None (like CLI saves to JSON)
+        base_url=None,
     )
-    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
-    # Note: mock_get may be cached from previous test due to @lru_cache
-    # The important assertion is that base_url is set correctly
+    assert llm.model == "openhands/claude-sonnet-4-20250514"
+    assert llm.base_url is None
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_openhands_provider_translates_only_for_litellm(mock_completion, mock_get):
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+    mock_completion.return_value = create_mock_litellm_response("ok")
+
+    llm = LLM(
+        model="openhands/claude-haiku-4-5-20251001",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-transport",
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    llm.completion(messages=messages)
+
+    assert llm.model == "openhands/claude-haiku-4-5-20251001"
+    assert llm.base_url is None
+    _, kwargs = mock_completion.call_args
+    assert kwargs["model"] == "litellm_proxy/claude-haiku-4-5-20251001"
+    assert kwargs["api_base"] == "https://llm-proxy.app.all-hands.dev"
+    persisted = llm.to_persisted()
+    assert persisted["model"] == "openhands/claude-haiku-4-5-20251001"
+    assert "base_url" not in persisted
 
 
 @patch("openhands.sdk.llm.utils.model_info.httpx.get")

@@ -113,6 +113,11 @@ from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provi
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.openhands_provider import (
+    LiteLLMCallKwargs,
+    canonicalize_openhands_llm_payload,
+    litellm_call_kwargs,
+)
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -554,14 +559,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("azure") and not d.get("api_version"):
             d["api_version"] = "2024-12-01-preview"
 
-        # Provider rewrite: openhands/* -> litellm_proxy/*
-        if model_val.startswith("openhands/"):
-            model_name = model_val.removeprefix("openhands/")
-            d["model"] = f"litellm_proxy/{model_name}"
-            # Set base_url (default to the app proxy when base_url is unset or None)
-            # Use `or` instead of dict.get() to handle explicit None values
-            d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
-
         # Fix base_url for direct OpenAI - API expects /v1 suffix
         # If base_url is "https://api.openai.com", set to None to use LiteLLM default
         if model_val.startswith("openai/"):
@@ -856,14 +853,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         typed_input: ResponseInputParam | str = (
             cast(ResponseInputParam, input_items) if input_items else ""
         )
-        api_key_value = self._get_litellm_api_key_value()
         return {
-            "model": self.model,
+            **self._litellm_call_kwargs(),
             "input": typed_input,
             "instructions": instructions,
             "tools": resp_tools,
-            "api_key": api_key_value,
-            "api_base": self.base_url,
+            "api_key": self._get_litellm_api_key_value(),
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
@@ -1793,11 +1788,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Transport + helpers
     # =========================================================================
 
+    def _litellm_call_kwargs(self) -> LiteLLMCallKwargs:
+        return litellm_call_kwargs(self.model, self.base_url)
+
     def _infer_litellm_provider(self) -> str | None:
         if self._litellm_provider is not None:
             return self._litellm_provider
 
-        provider = infer_litellm_provider(model=self.model, api_base=self.base_url)
+        call_kwargs = self._litellm_call_kwargs()
+        provider = infer_litellm_provider(
+            model=call_kwargs["model"],
+            api_base=call_kwargs["api_base"],
+        )
         self._litellm_provider = provider
         return provider
 
@@ -1867,17 +1869,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # not silently discarded by litellm's streaming handler.
         if enable_streaming:
             kwargs.setdefault("stream_options", {"include_usage": True})
-        return dict(
-            model=self.model,
-            api_key=self._get_litellm_api_key_value(),
-            api_base=self.base_url,
-            api_version=self.api_version,
-            timeout=self.timeout,
-            drop_params=self.drop_params,
-            seed=self.seed,
-            messages=messages,
-            **{**self._aws_kwargs(), **kwargs},
-        )
+        return {
+            **self._litellm_call_kwargs(),
+            "api_key": self._get_litellm_api_key_value(),
+            "api_version": self.api_version,
+            "timeout": self.timeout,
+            "drop_params": self.drop_params,
+            "seed": self.seed,
+            "messages": messages,
+            **self._aws_kwargs(),
+            **kwargs,
+        }
 
     def _transport_call(
         self,
@@ -2408,6 +2410,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
 
         payload.pop("schema_version", None)
+        payload = canonicalize_openhands_llm_payload(payload)
         return cls.model_validate(payload, context=context)
 
     def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:

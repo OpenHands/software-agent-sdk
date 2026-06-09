@@ -412,7 +412,7 @@ def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
     settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
@@ -428,8 +428,8 @@ def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    # v1 → v2 → v3 keeps ACP payloads intact while bumping schema_version.
-    assert settings.schema_version == 3
+    # Migrations keep ACP payloads intact while bumping schema_version.
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
@@ -445,7 +445,7 @@ def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "legacy-model"
 
@@ -464,16 +464,39 @@ def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     verification = settings.verification.model_dump(mode="json")
     assert verification["critic_enabled"] is True
     assert "confirmation_mode" not in verification
     assert "security_analyzer" not in verification
 
 
+def test_validate_agent_settings_migrates_legacy_openhands_proxy_llm() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 3,
+            "agent_kind": "openhands",
+            "llm": {
+                "model": "litellm_proxy/claude-opus-4-8",
+                "base_url": "https://llm-proxy.app.all-hands.dev/",
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.llm.model == "openhands/claude-opus-4-8"
+    assert settings.llm.base_url is None
+
+
 def test_validate_agent_settings_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 3"):
-        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
+    with pytest.raises(
+        ValueError,
+        match=f"newer than supported version {AGENT_SETTINGS_SCHEMA_VERSION}",
+    ):
+        validate_agent_settings(
+            {"schema_version": AGENT_SETTINGS_SCHEMA_VERSION + 1, "llm": {"model": "m"}}
+        )
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:

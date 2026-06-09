@@ -12,6 +12,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 from filelock import FileLock, Timeout
 
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.pydantic_secrets import REDACTED_SECRET_VALUE
 
@@ -277,6 +280,7 @@ class LLMProfileStore:
                         f"[Profile Store] Skipping non-dict profile {name!r}"
                     )
                     continue
+                data = canonicalize_openhands_llm_payload(data)
                 api_key = data.get("api_key")
                 api_key_set = (
                     isinstance(api_key, str)
