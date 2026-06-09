@@ -272,7 +272,11 @@ def _raise_for_terminal_error(status_value: ConversationExecutionStatus) -> None
 def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
     token_usage = state.stats.get_combined_metrics().accumulated_token_usage
     if token_usage is None:
-        return OpenAIUsage()
+        return OpenAIUsage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+        )
 
     prompt_tokens = token_usage.prompt_tokens
     completion_tokens = token_usage.completion_tokens
@@ -292,7 +296,12 @@ async def list_openai_models() -> OpenAIModelListResponse:
             detail="Profile store is busy. Please retry.",
         )
     data = [
-        OpenAIModel(id=f"{_MODEL_PREFIX}{profile['name']}")
+        OpenAIModel(
+            id=f"{_MODEL_PREFIX}{profile['name']}",
+            object="model",
+            created=0,
+            owned_by="openhands",
+        )
         for profile in profiles
         if isinstance(profile.get("name"), str)
     ]
@@ -359,12 +368,17 @@ async def run_chat_completion(
     final_response = await event_service.get_agent_final_response()
     response = OpenAIChatCompletionResponse(
         id=f"chatcmpl-{uuid4().hex}",
+        object="chat.completion",
         created=int(time.time()),
         model=request.model,
         choices=[
             OpenAIChatCompletionChoice(
                 index=0,
-                message=OpenAIResponseMessage(content=final_response),
+                finish_reason="stop",
+                message=OpenAIResponseMessage(
+                    role="assistant",
+                    content=final_response,
+                ),
             )
         ],
         usage=_openai_usage_from_state(state),

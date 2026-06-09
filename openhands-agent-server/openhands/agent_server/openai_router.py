@@ -70,7 +70,11 @@ async def get_openai_models(request: Request) -> OpenAIModelListResponse:
     return await list_openai_models()
 
 
-@openai_router.post("/v1/chat/completions", response_model=OpenAIChatCompletionResponse)
+@openai_router.post(
+    "/v1/chat/completions",
+    response_model=OpenAIChatCompletionResponse,
+    response_model_exclude_none=True,
+)
 async def create_chat_completion(
     body: OpenAIChatCompletionRequest,
     request: Request,

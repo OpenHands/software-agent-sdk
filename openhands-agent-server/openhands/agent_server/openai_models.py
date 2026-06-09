@@ -2,7 +2,18 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from openai.types import CompletionUsage, Model
+from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from pydantic import BaseModel, ConfigDict
+
+
+OpenAIChatCompletionChoice = Choice
+OpenAIChatCompletionResponse = ChatCompletion
+OpenAIModel = Model
+OpenAIResponseMessage = ChatCompletionMessage
+OpenAIUsage = CompletionUsage
 
 
 class OpenAIImageURL(BaseModel):
@@ -30,39 +41,6 @@ class OpenAIChatCompletionRequest(BaseModel):
     stream: bool = False
 
     model_config = ConfigDict(extra="ignore")
-
-
-class OpenAIResponseMessage(BaseModel):
-    role: Literal["assistant"] = "assistant"
-    content: str
-
-
-class OpenAIChatCompletionChoice(BaseModel):
-    index: int
-    message: OpenAIResponseMessage
-    finish_reason: Literal["stop"] = "stop"
-
-
-class OpenAIUsage(BaseModel):
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-
-
-class OpenAIChatCompletionResponse(BaseModel):
-    id: str
-    object: Literal["chat.completion"] = "chat.completion"
-    created: int
-    model: str
-    choices: list[OpenAIChatCompletionChoice]
-    usage: OpenAIUsage = Field(default_factory=OpenAIUsage)
-
-
-class OpenAIModel(BaseModel):
-    id: str
-    object: Literal["model"] = "model"
-    created: int = 0
-    owned_by: Literal["openhands"] = "openhands"
 
 
 class OpenAIModelListResponse(BaseModel):
