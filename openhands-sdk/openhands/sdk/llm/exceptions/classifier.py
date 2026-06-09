@@ -76,6 +76,16 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
     return any(p in s for p in MALFORMED_HISTORY_PATTERNS)
 
 
+# Vertex AI (Gemini) rejects context-caching requests when the cached content
+# is below the provider's minimum token threshold (currently 4096 tokens).
+# Example error: "The cached content is of 1171 tokens. The minimum token
+# count to start caching is 4096." — the `.lower()` comparison handles case
+# variation across providers but won't match reworded messages; update this
+# pattern if the API phrasing changes.
+PROMPT_CACHE_TOO_SMALL_PATTERNS: list[str] = [
+    "minimum token count to start caching",
+]
+
 AUTH_PATTERNS: list[str] = [
     "invalid api key",
     "unauthorized",
@@ -83,6 +93,20 @@ AUTH_PATTERNS: list[str] = [
     "invalid authentication",
     "access denied",
 ]
+
+
+def is_prompt_cache_too_small(exception: Exception) -> bool:
+    """Return True if the error indicates the prompt cache content is too small.
+
+    Vertex AI (Gemini) requires a minimum number of tokens (currently 4096)
+    to create a context cache. When the cached content is below this threshold,
+    the API returns a 400 error. The SDK should detect this and retry without
+    prompt caching markers.
+    """
+    if not isinstance(exception, (BadRequestError, OpenAIError)):
+        return False
+    s = str(exception).lower()
+    return any(p in s for p in PROMPT_CACHE_TOO_SMALL_PATTERNS)
 
 
 def looks_like_auth_error(exception: Exception) -> bool:

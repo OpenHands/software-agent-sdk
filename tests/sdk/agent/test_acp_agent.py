@@ -1217,6 +1217,40 @@ class TestACPActivityHeartbeat:
         client.reset()
         assert client._last_activity_signal == 999.0
 
+    def test_idle_clock_unarmed_reports_infinite_idle(self):
+        """Before arming, the idle clock reports an unbounded gap."""
+        client = _OpenHandsACPBridge()
+        assert client.seconds_since_last_activity() == float("inf")
+
+    def test_arm_activity_clock_resets_idle(self):
+        client = _OpenHandsACPBridge()
+        client.arm_activity_clock()
+        # Just armed → effectively zero seconds since activity.
+        assert client.seconds_since_last_activity() < 1.0
+
+    @pytest.mark.asyncio
+    async def test_session_update_records_activity_for_idle_clock(self):
+        """Every session_update resets the idle clock, even when throttled.
+
+        The throttled heartbeat (_last_activity_signal) and the idle clock
+        (_last_activity_monotonic) are independent: a second update inside the
+        throttle window does not re-fire on_activity but still counts as
+        progress for the idle timeout.
+        """
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client._last_activity_monotonic = float("-inf")
+
+        # A thought chunk does not fire the on_activity heartbeat at all, but
+        # must still count as activity for the idle clock.
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "thinking"
+        await client.session_update("sess-1", chunk)
+
+        assert client.seconds_since_last_activity() < 1.0
+
     @pytest.mark.asyncio
     async def test_tool_call_start_signals_activity(self):
         from acp.schema import ToolCallStart
@@ -1399,6 +1433,103 @@ class TestACPActivityHeartbeat:
         # And that it was cleared afterward so a late session_update
         # cannot fire the per-turn heartbeat callback out-of-band.
         assert agent._client.on_activity is None
+
+
+# ---------------------------------------------------------------------------
+# Prompt idle (inactivity) timeout
+# ---------------------------------------------------------------------------
+
+
+class TestACPPromptIdleTimeout:
+    """The prompt deadline is an idle timeout: ACP activity resets it.
+
+    Regression coverage for agent-canvas#1245 — long-running ACP prompts must
+    keep working as long as the agent makes progress, rather than dying at a
+    hard wall-clock deadline.
+    """
+
+    @pytest.mark.asyncio
+    async def test_active_prompt_outlives_idle_window(self):
+        """A prompt that keeps streaming updates is not killed at the deadline.
+
+        The agent runs for well over ``acp_prompt_timeout`` of total wall-clock
+        time, but emits a ``session_update`` far more often than the idle window,
+        so the deadline keeps resetting and the prompt completes normally.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        agent = _make_agent(acp_prompt_timeout=0.3)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        sentinel = object()
+
+        async def _active_prompt() -> Any:
+            # ~0.5s total (> 0.3s idle window) but a tick every 0.02s
+            # (<< 0.3s), so the idle clock never elapses.
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+                chunk = MagicMock(spec=AgentMessageChunk)
+                chunk.content = MagicMock(spec=TextContentBlock)
+                chunk.content.text = "tick"
+                await client.session_update("sess-1", chunk)
+            return sentinel
+
+        result = await agent._await_with_idle_deadline(
+            _active_prompt(), cancel_on_exit=True
+        )
+        assert result is sentinel
+
+    @pytest.mark.asyncio
+    async def test_silent_prompt_times_out_after_idle_window(self):
+        """A prompt that produces no activity is aborted after the idle window."""
+        agent = _make_agent(acp_prompt_timeout=0.1)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        cancelled = asyncio.Event()
+
+        async def _silent_prompt() -> Any:
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return object()
+
+        with pytest.raises(TimeoutError, match="no activity"):
+            await agent._await_with_idle_deadline(_silent_prompt(), cancel_on_exit=True)
+
+        # The helper cancels the underlying prompt on timeout.
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_late_activity_extends_then_idle_times_out(self):
+        """Activity extends the deadline; silence after it still times out."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        agent = _make_agent(acp_prompt_timeout=0.15)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        async def _active_then_silent() -> Any:
+            # One burst of activity past the first idle window...
+            await asyncio.sleep(0.1)
+            chunk = MagicMock(spec=AgentMessageChunk)
+            chunk.content = MagicMock(spec=TextContentBlock)
+            chunk.content.text = "tick"
+            await client.session_update("sess-1", chunk)
+            # ...then go silent so the (extended) idle window elapses.
+            await asyncio.sleep(5.0)
+            return object()
+
+        with pytest.raises(TimeoutError, match="no activity"):
+            await agent._await_with_idle_deadline(
+                _active_then_silent(), cancel_on_exit=True
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1916,6 +2047,61 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_active_prompt_survives_idle_window(self, tmp_path):
+        """End-to-end via the real portal: an actively-streaming prompt that
+        runs well past ``acp_prompt_timeout`` finalizes normally.
+
+        Exercises the full concurrency model — the prompt runs on the portal
+        loop while the idle watchdog polls on the caller loop, and each
+        bridge ``session_update`` (fired across the loop boundary) resets the
+        deadline. Regression coverage for agent-canvas#1245.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(acp_prompt_timeout=0.3)
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
+            # deadline keeps resetting; then complete the turn.
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+                chunk = MagicMock(spec=AgentMessageChunk)
+                chunk.content = MagicMock(spec=TextContentBlock)
+                chunk.content.text = "tick"
+                await mock_client.session_update(session_id, chunk)
+            return None
+
+        agent._conn.prompt = _fake_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            asyncio.run(agent.astep(conversation, on_event=emitted.append))
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert not any(
+            isinstance(e, MessageEvent)
+            and any(
+                isinstance(c, TextContent) and "timed out" in c.text
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+
     def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
         """astep's error path must call ``_emit_turn_error`` AND re-raise.
 
@@ -1975,13 +2161,15 @@ class TestACPAgentAstep:
         )
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
-    def test_astep_times_out_while_tool_call_is_inflight(self, tmp_path):
-        """A hard ACP prompt timeout still fires during an active tool call.
+    def test_astep_times_out_when_idle_with_inflight_tool_call(self, tmp_path):
+        """The idle timeout fires when a tool call hangs with no further updates.
 
-        Mirroring OpenHands command handling, active output/heartbeats keep the
-        runtime alive but do not let a never-ending command suppress the hard
-        turn deadline. The timeout path must cancel the ACP session and close
-        any streamed tool cards as failed.
+        The deadline is an inactivity timeout: a tool card that was opened but
+        then produces no further ``session_update`` (the prompt future never
+        resolves and nothing streams) is silent, so the idle window elapses and
+        the timeout path must cancel the ACP session and close the streamed tool
+        card as failed. (Ongoing activity instead resets the clock — see
+        ``TestACPPromptIdleTimeout``.)
         """
         from concurrent.futures import Future
 
