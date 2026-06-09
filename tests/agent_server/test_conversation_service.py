@@ -2849,3 +2849,134 @@ class TestACPActivityHeartbeatWiring:
         # Should not raise and should not set any attribute
         EventService._setup_acp_activity_heartbeat(service, agent)
         assert not hasattr(agent, "_on_activity")
+
+
+# ---------------------------------------------------------------------------
+# Read-only metadata mode (used by docker-runtime mode)
+#
+# In docker-runtime mode the outer agent-server never owns a conversation —
+# the sub-containers do. The outer's ConversationService skips lease
+# acquisition and EventService startup, and answers metadata queries by
+# reading ``meta.json`` / ``base_state.json`` straight off disk on every
+# call.
+# ---------------------------------------------------------------------------
+
+
+def _seed_conversation_on_disk(
+    conversations_dir: Path,
+    stored: StoredConversation,
+    *,
+    execution_status: ConversationExecutionStatus = ConversationExecutionStatus.IDLE,
+    include_base_state: bool = True,
+) -> None:
+    """Write ``meta.json`` (always) and ``base_state.json`` (optional) for
+    one conversation under ``conversations_dir``. Mirrors what
+    ``EventService`` would persist in local mode."""
+    conv_dir = conversations_dir / stored.id.hex
+    conv_dir.mkdir(parents=True, exist_ok=True)
+    (conv_dir / "meta.json").write_text(stored.model_dump_json())
+    if include_base_state:
+        state = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            persistence_dir=str(conversations_dir),
+            execution_status=execution_status,
+        )
+        (conv_dir / "base_state.json").write_text(state.model_dump_json())
+
+
+@pytest.mark.asyncio
+async def test_read_only_metadata_skips_event_services(
+    tmp_path, sample_stored_conversation
+):
+    """``__aenter__`` in read-only mode must skip EventService startup and
+    must NOT acquire a lease, even when ``meta.json`` is present on disk."""
+    conversations_dir = tmp_path / "conversations"
+    _seed_conversation_on_disk(conversations_dir, sample_stored_conversation)
+
+    service = ConversationService(
+        conversations_dir=conversations_dir, read_only_metadata=True
+    )
+    async with service:
+        # No EventServices started -> empty dict.
+        assert service._event_services == {}
+        # No lease was acquired on disk.
+        cid_dir = conversations_dir / sample_stored_conversation.id.hex
+        assert not (cid_dir / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_read_only_metadata_get_and_search_from_disk(
+    tmp_path, sample_stored_conversation
+):
+    """``get_conversation`` / ``search_conversations`` / ``count_conversations``
+    must read straight off disk in read-only mode."""
+    conversations_dir = tmp_path / "conversations"
+    _seed_conversation_on_disk(conversations_dir, sample_stored_conversation)
+
+    service = ConversationService(
+        conversations_dir=conversations_dir, read_only_metadata=True
+    )
+    async with service:
+        info = await service.get_conversation(sample_stored_conversation.id)
+        assert info is not None
+        assert info.id == sample_stored_conversation.id
+
+        page = await service.search_conversations()
+        assert page.next_page_id is None
+        assert len(page.items) == 1
+        assert page.items[0].id == sample_stored_conversation.id
+
+        count = await service.count_conversations()
+        assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_only_metadata_synthesizes_state_when_base_missing(
+    tmp_path, sample_stored_conversation
+):
+    """A freshly-created conversation has ``meta.json`` but no
+    ``base_state.json`` yet. Read-only mode must still surface it in
+    listings, with a synthetic state seeded from ``stored.agent`` /
+    ``stored.workspace``."""
+    conversations_dir = tmp_path / "conversations"
+    _seed_conversation_on_disk(
+        conversations_dir, sample_stored_conversation, include_base_state=False
+    )
+
+    service = ConversationService(
+        conversations_dir=conversations_dir, read_only_metadata=True
+    )
+    async with service:
+        info = await service.get_conversation(sample_stored_conversation.id)
+        assert info is not None
+        assert info.id == sample_stored_conversation.id
+
+        count = await service.count_conversations()
+        assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_read_only_metadata_picks_up_conversations_added_after_aenter(
+    tmp_path, sample_stored_conversation
+):
+    """The outer agent-server doesn't get notified when a sub-container
+    creates a new conversation — it must re-walk the persistence dir on
+    each metadata call so freshly-written ``meta.json`` files show up
+    immediately."""
+    conversations_dir = tmp_path / "conversations"
+
+    service = ConversationService(
+        conversations_dir=conversations_dir, read_only_metadata=True
+    )
+    async with service:
+        assert await service.count_conversations() == 0
+
+        # Simulate a sub-container creating a conversation while the
+        # outer is already running.
+        _seed_conversation_on_disk(conversations_dir, sample_stored_conversation)
+
+        assert await service.count_conversations() == 1
+        info = await service.get_conversation(sample_stored_conversation.id)
+        assert info is not None

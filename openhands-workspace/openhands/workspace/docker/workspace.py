@@ -87,6 +87,29 @@ class DockerWorkspace(RemoteWorkspace):
         default=None,
         description="Port to bind the container to. If None, finds available port.",
     )
+    bind_host: str = Field(
+        default="",
+        description=(
+            "Host interface to publish the container port on. Empty (the "
+            "default) binds to all interfaces, matching ``-p HOST_PORT:8000``. "
+            "Set to ``127.0.0.1`` to publish on loopback only "
+            "(``-p 127.0.0.1:HOST_PORT:8000``) — useful when the container is "
+            "reached exclusively through an authenticated reverse-proxy on "
+            "the same host and you don't want other hosts on the network to "
+            "be able to talk to the inner agent-server."
+        ),
+    )
+    extra_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Additional environment variables to set inside the container. "
+            "Unlike ``forward_env`` (which looks values up from the calling "
+            "process's environment), these are literal key/value pairs. Used "
+            "when the caller already has the value in hand and doesn't want "
+            "to round-trip through ``os.environ`` — e.g. when handing a "
+            "per-container session API key to the inner agent-server."
+        ),
+    )
     forward_env: list[str] = Field(
         default_factory=lambda: ["DEBUG"],
         description="Environment variables to forward to the container.",
@@ -217,18 +240,21 @@ class DockerWorkspace(RemoteWorkspace):
         for key in self.forward_env:
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
+        for key, value in self.extra_env.items():
+            flags += ["-e", f"{key}={value}"]
 
         for volume in self.volumes:
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
 
-        ports = ["-p", f"{self.host_port}:8000"]
+        host_prefix = f"{self.bind_host}:" if self.bind_host else ""
+        ports = ["-p", f"{host_prefix}{self.host_port}:8000"]
         if self.extra_ports:
             ports += [
                 "-p",
-                f"{self.host_port + 1}:8001",  # VSCode
+                f"{host_prefix}{self.host_port + 1}:8001",  # VSCode
                 "-p",
-                f"{self.host_port + 2}:8002",  # Desktop VNC
+                f"{host_prefix}{self.host_port + 2}:8002",  # Desktop VNC
             ]
         flags += ports
 
@@ -278,7 +304,6 @@ class DockerWorkspace(RemoteWorkspace):
         # Override parent's host initialization
         if not self.host:
             object.__setattr__(self, "host", f"http://127.0.0.1:{self.host_port}")
-        object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
         self._wait_for_health(timeout=self.health_check_timeout)

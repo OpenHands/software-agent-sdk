@@ -379,6 +379,16 @@ class ConversationService:
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
+    # When True, ``__aenter__`` skips starting per-conversation EventServices
+    # and never acquires conversation leases. Metadata-only methods
+    # (``get_conversation``, ``search_conversations``, ``count_conversations``,
+    # ``batch_get_conversations``) read ``(meta.json, base_state.json)``
+    # snapshots directly off disk on every call. Mutation methods raise.
+    #
+    # Used by docker-runtime mode: the outer agent-server reads the shared
+    # persistence directory (bind-mounted into every sub-container) for
+    # listings while sub-containers own the per-conversation work.
+    read_only_metadata: bool = False
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -386,7 +396,105 @@ class ConversationService:
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
 
+    def _load_disk_snapshot(
+        self, conversation_id: UUID
+    ) -> tuple[StoredConversation, ConversationState] | None:
+        """Read ``(meta.json, base_state.json)`` for one conversation off disk.
+
+        Used by :data:`read_only_metadata` mode (docker-runtime). Returns
+        ``None`` if the conversation directory or its ``meta.json`` is
+        missing. ``base_state.json`` not existing is treated as "conversation
+        was created but hasn't been started yet" — we return a minimal
+        in-memory state seeded from the stored ``agent`` / ``workspace`` so
+        a listing still includes the conversation.
+        """
+        from openhands.sdk.conversation.persistence_const import BASE_STATE
+
+        conv_dir = self.conversations_dir / conversation_id.hex
+        meta_file = conv_dir / "meta.json"
+        if not meta_file.exists():
+            return None
+        context = {"cipher": self.cipher} if self.cipher else None
+        try:
+            stored = StoredConversation.model_validate_json(
+                meta_file.read_text(), context=context
+            )
+        except Exception:
+            logger.exception(
+                "Failed to load meta.json for conversation %s", conversation_id
+            )
+            return None
+
+        base_state_file = conv_dir / BASE_STATE
+        if base_state_file.exists():
+            try:
+                state = ConversationState.model_validate_json(
+                    base_state_file.read_text(), context=context
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to load base_state.json for conversation %s; "
+                    "falling back to a synthetic snapshot",
+                    conversation_id,
+                )
+                state = self._synthesize_state(stored)
+        else:
+            state = self._synthesize_state(stored)
+        return stored, state
+
+    def _synthesize_state(self, stored: StoredConversation) -> ConversationState:
+        """Build a minimal :class:`ConversationState` from a
+        :class:`StoredConversation` when ``base_state.json`` is missing.
+
+        This happens briefly between ``meta.json`` being written and the
+        first ``base_state.json`` snapshot — for example, immediately after
+        the outer server's POST proxy returns to the client. Producing a
+        thin state here keeps the listing endpoints consistent with the
+        local-mode contract (a freshly-created conversation always shows
+        up in ``search`` / ``count``).
+        """
+        return ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            persistence_dir=str(self.conversations_dir),
+        )
+
+    def _iter_disk_snapshots(
+        self,
+    ) -> list[tuple[UUID, StoredConversation, ConversationState]]:
+        """Walk ``conversations_dir`` and load every conversation snapshot.
+
+        Re-reads the directory on every call so that conversations created
+        by sub-containers (in docker mode) show up immediately without any
+        outer-side cache invalidation.
+        """
+        results: list[tuple[UUID, StoredConversation, ConversationState]] = []
+        if not self.conversations_dir.exists():
+            return results
+        for conv_dir in self.conversations_dir.iterdir():
+            if not conv_dir.is_dir():
+                continue
+            try:
+                cid = UUID(conv_dir.name)
+            except ValueError:
+                continue
+            snapshot = self._load_disk_snapshot(cid)
+            if snapshot is None:
+                continue
+            stored, state = snapshot
+            results.append((cid, stored, state))
+        return results
+
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
+        if self.read_only_metadata:
+            snapshot = await asyncio.to_thread(
+                self._load_disk_snapshot, conversation_id
+            )
+            if snapshot is None:
+                return None
+            stored, state = snapshot
+            return _compose_conversation_info(stored, state)
         if self._event_services is None:
             raise ValueError("inactive_service")
         event_service = self._event_services.get(conversation_id)
@@ -398,13 +506,9 @@ class ConversationService:
     async def get_acp_conversation(
         self, conversation_id: UUID
     ) -> ConversationInfo | None:
-        if self._event_services is None:
-            raise ValueError("inactive_service")
-        event_service = self._event_services.get(conversation_id)
-        if event_service is None:
-            return None
-        state = await event_service.get_state()
-        return _compose_conversation_info(event_service.stored, state)
+        # Same contract as ``get_conversation`` — historically there was a
+        # separate ACP variant, but both branches resolve to the same data.
+        return await self.get_conversation(conversation_id)
 
     async def search_conversations(
         self,
@@ -449,22 +553,35 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None,
         sort_order: ConversationSortOrder,
     ) -> tuple[list[ConversationInfo], str | None]:
-        if self._event_services is None:
-            raise ValueError("inactive_service")
-
         # Collect all conversations with their info
-        all_conversations = []
-        for id, event_service in self._event_services.items():
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
-            # Apply status filter if provided
-            if (
-                execution_status is not None
-                and conversation_info.execution_status != execution_status
-            ):
-                continue
+        all_conversations: list[tuple[UUID, ConversationInfo]] = []
+        if self.read_only_metadata:
+            snapshots = await asyncio.to_thread(self._iter_disk_snapshots)
+            pairs: list[tuple[UUID, StoredConversation, ConversationState]] = snapshots
+            for cid, stored, state in pairs:
+                conversation_info = _compose_conversation_info(stored, state)
+                if (
+                    execution_status is not None
+                    and conversation_info.execution_status != execution_status
+                ):
+                    continue
+                all_conversations.append((cid, conversation_info))
+        else:
+            if self._event_services is None:
+                raise ValueError("inactive_service")
+            for id, event_service in self._event_services.items():
+                state = await event_service.get_state()
+                conversation_info = _compose_conversation_info(
+                    event_service.stored, state
+                )
+                # Apply status filter if provided
+                if (
+                    execution_status is not None
+                    and conversation_info.execution_status != execution_status
+                ):
+                    continue
 
-            all_conversations.append((id, conversation_info))
+                all_conversations.append((id, conversation_info))
 
         # Sort conversations based on sort_order
         if sort_order == ConversationSortOrder.CREATED_AT:
@@ -510,6 +627,16 @@ class ConversationService:
         execution_status: ConversationExecutionStatus | None,
     ) -> int:
         """Count conversations matching the given filters."""
+        if self.read_only_metadata:
+            snapshots = await asyncio.to_thread(self._iter_disk_snapshots)
+            if execution_status is None:
+                return len(snapshots)
+            return sum(
+                1
+                for _, _, state in snapshots
+                if state.execution_status == execution_status
+            )
+
         if self._event_services is None:
             raise ValueError("inactive_service")
 
@@ -943,6 +1070,20 @@ class ConversationService:
             thread_name_prefix="conversation-run",
         )
         self._event_services = {}
+        # In read-only metadata mode the outer doesn't own conversations:
+        # sub-containers do, via their own bind-mounted persistence dir.
+        # Skip the eager EventService startup (no lease acquisition, no
+        # LocalConversation) — metadata methods read snapshots off disk
+        # on demand instead.
+        if self.read_only_metadata:
+            self._conversation_webhook_subscribers = [
+                ConversationWebhookSubscriber(
+                    spec=webhook_spec,
+                    session_api_key=self.session_api_key,
+                )
+                for webhook_spec in self.webhook_specs
+            ]
+            return self
         for conversation_dir in self.conversations_dir.iterdir():
             stored: StoredConversation | None = None
             try:
@@ -1070,6 +1211,10 @@ class ConversationService:
             ),
             cipher=config.cipher,
             max_concurrent_runs=config.max_concurrent_runs,
+            # Outer agent-server reads disk for metadata in docker mode;
+            # the actual conversations are owned by sub-containers, each
+            # of which sees only its own subdirectory.
+            read_only_metadata=(config.conversation_runtime == "docker"),
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:

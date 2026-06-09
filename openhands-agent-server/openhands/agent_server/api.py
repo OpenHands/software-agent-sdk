@@ -35,6 +35,13 @@ from openhands.agent_server.dependencies import (
 )
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
+from openhands.agent_server.docker_runtime import DockerConversationRegistry
+from openhands.agent_server.docker_runtime.routers import (
+    docker_conversation_proxy_router,
+    docker_global_proxy_router,
+    docker_sockets_router,
+    docker_workspace_proxy_router,
+)
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
@@ -204,9 +211,28 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     config.bash_events_retention_seconds,
                 )
 
+            # Docker runtime: per-conversation container registry, backed by
+            # ``DockerWorkspace``. The proxy routers each construct their own
+            # short-lived ``httpx.AsyncClient`` per request, so there is no
+            # shared HTTP client to plumb in here. The in-process
+            # ``ConversationService`` stays live but runs in
+            # ``read_only_metadata`` mode — it answers list/count/search/get
+            # by reading the shared persistence directory off disk while the
+            # sub-containers own the actual conversations.
+            docker_registry: DockerConversationRegistry | None = None
+            if config.conversation_runtime == "docker":
+                docker_registry = DockerConversationRegistry(config)
+                api.state.docker_registry = docker_registry
+                logger.info(
+                    "Docker conversation runtime enabled (image=%s)",
+                    config.conversation_image,
+                )
+
             try:
                 yield
             finally:
+                if docker_registry is not None:
+                    await docker_registry.shutdown()
                 if retention_task is not None:
                     retention_task.cancel()
                     with suppress(asyncio.CancelledError):
@@ -299,19 +325,46 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
         dependencies.append(Depends(create_session_api_key_dependency(config)))
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
-    api_router.include_router(event_router)
-    api_router.include_router(conversation_router)
-    api_router.include_router(conversation_router_acp)
-    api_router.include_router(tool_router)
-    api_router.include_router(bash_router)
-    api_router.include_router(git_router)
-    api_router.include_router(file_router)
-    api_router.include_router(vscode_router)
-    api_router.include_router(desktop_router)
-    api_router.include_router(skills_router)
-    api_router.include_router(hooks_router)
-    api_router.include_router(llm_router)
-    api_router.include_router(mcp_router)
+
+    if config.conversation_runtime == "docker":
+        # Docker mode: per-conversation mutations and the global per-host
+        # routers reverse-proxy to a per-conversation container. Metadata
+        # (list / count / search / get) and the cross-conversation routers
+        # (settings, profiles, workspaces, auth, …) still run in-process
+        # on the outer server, reading the shared on-disk persistence dir.
+        #
+        # Order matters:
+        #   1. ``docker_global_proxy_router`` catches ``/api/{bash,git,
+        #      file,vscode,desktop,hooks,mcp,skills,tools,llm}/...`` and
+        #      forwards them based on the required ``?cid=`` query param.
+        #      For any other path it raises 404 so the local routers get a
+        #      chance to match.
+        #   2. ``docker_conversation_proxy_router`` claims the mutation
+        #      verbs on ``/api/conversations/...``. It intentionally does
+        #      NOT register ``GET`` on the metadata paths so the local
+        #      ``conversation_router``'s GETs match.
+        #   3. The unchanged ``conversation_router`` / ``event_router``
+        #      provide GET metadata and serve the workspace static-file
+        #      tree for sub-container conversations via the same routes.
+        api_router.include_router(docker_global_proxy_router)
+        api_router.include_router(docker_conversation_proxy_router)
+        api_router.include_router(event_router)
+        api_router.include_router(conversation_router)
+        api_router.include_router(conversation_router_acp)
+    else:
+        api_router.include_router(event_router)
+        api_router.include_router(conversation_router)
+        api_router.include_router(conversation_router_acp)
+        api_router.include_router(tool_router)
+        api_router.include_router(bash_router)
+        api_router.include_router(git_router)
+        api_router.include_router(file_router)
+        api_router.include_router(vscode_router)
+        api_router.include_router(desktop_router)
+        api_router.include_router(skills_router)
+        api_router.include_router(hooks_router)
+        api_router.include_router(mcp_router)
+        api_router.include_router(llm_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
@@ -319,7 +372,6 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
-    app.include_router(api_router)
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
@@ -332,10 +384,26 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
             Depends(create_workspace_session_dependency(config))
         )
     workspace_api_router = APIRouter(prefix="/api", dependencies=workspace_dependencies)
-    workspace_api_router.include_router(workspace_router)
-    app.include_router(workspace_api_router)
+    if config.conversation_runtime == "docker":
+        # Proxy workspace static files via the per-conversation container,
+        # but under the workspace-cookie auth group so iframe/img embeds work.
+        workspace_api_router.include_router(docker_workspace_proxy_router)
+    else:
+        workspace_api_router.include_router(workspace_router)
 
-    app.include_router(sockets_router)
+    # Order matters: the workspace router is more specific
+    # (``/conversations/{cid}/workspace/...``) than the docker catch-all
+    # (``/conversations/{cid}/{tail:path}``). Starlette matches in
+    # registration order, so we MUST include the cookie-auth workspace
+    # router before the header-auth api_router; otherwise the catch-all
+    # would shadow workspace requests and demand the header.
+    app.include_router(workspace_api_router)
+    app.include_router(api_router)
+
+    if config.conversation_runtime == "docker":
+        app.include_router(docker_sockets_router)
+    else:
+        app.include_router(sockets_router)
 
 
 def _setup_static_files(app: FastAPI, config: Config) -> None:
