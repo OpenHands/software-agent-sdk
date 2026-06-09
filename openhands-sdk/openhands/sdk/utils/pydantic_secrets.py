@@ -1,10 +1,10 @@
 import logging
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationInfo
 
-from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
 REDACTED_SECRET_VALUE = "**********"
@@ -113,3 +113,85 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
         return v
     else:
         return SecretStr(secret_value)
+
+
+@overload
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher, value: str, *, description: str = ...
+) -> str: ...
+
+
+@overload
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher, value: Any, *, description: str = ...
+) -> Any: ...
+
+
+def decrypt_str_with_cipher_or_keep(
+    cipher: Cipher,
+    value: Any,
+    *,
+    description: str = "secret",
+) -> Any:
+    """Decrypt a single Fernet-encrypted string in place.
+
+    Returned unchanged when the value isn't a string, doesn't look like a
+    Fernet token (legacy plaintext from clients that pre-date the
+    encryption pipeline), or fails to decrypt (cipher mismatch / token
+    corruption — logged so the operator can repair rather than the
+    object dying at construction).
+
+    Building block for the dict-of-string secret-bearing fields
+    (`acp_env`, `agent_context.secrets`, MCP server `env`/`headers`)
+    where each value is a per-key plaintext that's separately
+    encrypted at rest — they can't be typed as :class:`SecretStr`
+    because their keys are user-supplied.
+    """
+    if not isinstance(value, str):
+        return value
+    if not value.startswith(FERNET_TOKEN_PREFIX):
+        return value
+    decrypted = cipher.try_decrypt_str(value)
+    if decrypted is None:
+        _logger.warning(
+            "%s value looks encrypted but could not be decrypted "
+            "(cipher mismatch or corruption); leaving the ciphertext in place.",
+            description,
+        )
+        return value
+    return decrypted
+
+
+def validate_secret_dict(
+    value: Any,
+    info: ValidationInfo,
+    *,
+    description: str = "secret",
+) -> Any:
+    """Decrypt every Fernet-encrypted entry in a ``dict[str, str]`` field.
+
+    Mirrors :func:`validate_secret` for fields whose secret values live
+    in a per-key dict (env-var maps, header maps, agent-context
+    secrets). Use as a ``field_validator(mode="before")`` hook:
+
+    .. code-block:: python
+
+        @field_validator("acp_env", mode="before")
+        @classmethod
+        def _decrypt_acp_env(cls, value, info):
+            return validate_secret_dict(value, info, description="ACP env")
+
+    No-ops when the field isn't a dict (lets downstream validation
+    raise the canonical type error), and when no cipher is in context
+    (legacy plaintext callers, or contexts that have already done the
+    decryption).
+    """
+    if not isinstance(value, dict):
+        return value
+    cipher: Cipher | None = info.context.get("cipher") if info.context else None
+    if cipher is None:
+        return value
+    return {
+        k: decrypt_str_with_cipher_or_keep(cipher, v, description=description)
+        for k, v in value.items()
+    }

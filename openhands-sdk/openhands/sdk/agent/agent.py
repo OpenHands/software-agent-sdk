@@ -634,6 +634,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "triggering condensation retry with condensed history: "
                     f"{e}"
                 )
+                # The incremental view may itself be the source of the
+                # malformed history.  Re-derive with full enforcement so
+                # the condenser operates on a clean view.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(
@@ -681,6 +685,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     response_type=response_type,
                 )
 
+    @observe(name="agent.astep", ignore_inputs=["state", "on_event"])
     async def astep(
         self,
         conversation: LocalConversation,
@@ -769,6 +774,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "history: %s",
                     e,
                 )
+                # Mirror step(): re-derive the cached view with full
+                # enforcement before the condensation retry.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(

@@ -1,0 +1,179 @@
+"""Dynamic workflow tool definitions."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Final, Literal
+
+from pydantic import Field
+
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    register_tool,
+)
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.tools.workflow.impl import WorkflowExecutor
+
+
+class WorkflowAction(Action):
+    """Schema for running a Python dynamic workflow script."""
+
+    name: str = Field(description="A short name for this workflow run.")
+    script: str = Field(
+        description=(
+            "Python workflow script to run. It must define `async def main(wf):` "
+            "and coordinate work only through the provided `wf` object."
+        )
+    )
+    max_concurrency: int = Field(
+        default=8,
+        ge=1,
+        le=64,
+        description=(
+            "Maximum number of sub-agent tasks to run concurrently. "
+            "Consider 2–4 for LLM-heavy workflows to avoid hitting API rate limits."
+        ),
+    )
+
+
+class WorkflowObservation(Observation):
+    """Observation from a dynamic workflow run."""
+
+    name: str = Field(description="The workflow name that was executed.")
+    status: Literal["completed", "error"] = Field(
+        description="The workflow execution status."
+    )
+
+
+_WORKFLOW_DESCRIPTION: Final[
+    str
+] = """Run a dynamic workflow written as Python orchestration code.
+
+Use this tool for large tasks that benefit from parallel sub-agents, such as
+codebase-wide audits, independent plan reviews, security sweeps, or discovery
+work where intermediate results should stay outside the main conversation.
+
+Provide a Python script that defines exactly this entry point:
+
+```python
+async def main(wf):
+    ...
+```
+
+The script coordinates sub-agents through the `wf` object. It should not read or
+write files, run shell commands, or perform the engineering work directly.
+Sub-agents should do that work through their normal OpenHands tools and security
+policy. Scripts should use only the documented `wf` methods; private `wf`
+attributes are rejected. Large reducer inputs may be truncated before being sent
+to the reducer sub-agent.
+
+Available `wf` methods:
+- `await wf.run_agent(prompt, subagent_type="general-purpose", description=None)`
+- `await wf.map_agents(items, prompt, subagent_type="general-purpose",
+  max_concurrency=None, description=None)`
+- `await wf.reduce_agent(items, prompt, subagent_type="general-purpose",
+  description=None)`
+- `wf.flatten(values)` — flatten one level of nesting (not recursive)
+
+`subagent_type` must be a sub-agent type registered in the parent application.
+Use the same type names you registered when building your agent.
+
+Scripts must use only the documented `wf` methods listed above; calling
+`wf.close()` or any other undocumented attribute is not supported.
+
+`print()` is available for debugging but writes to the server logs, not to
+the workflow observation seen by the LLM; use the return value of `main()` to
+surface results.
+
+If one or more `map_agents` items fail, the whole call raises an
+`ExceptionGroup`. The name `ExceptionGroup` is not available by name in the
+workflow sandbox, so scripts cannot use `except*` for selective group handling.
+A plain `except Exception` will still catch the entire group. To handle partial
+failures and collect all results, design sub-agent prompts to return an error
+sentinel value instead of raising.
+
+`map_agents` accepts either a callable prompt, such as
+`lambda item: f"Review this finding: {item}"`, or a string template containing
+`{item}`.
+
+Example:
+```python
+async def main(wf):
+    strategies = ["minimal fix", "test-first", "security-focused"]
+    plans = await wf.map_agents(
+        items=strategies,
+        subagent_type="general-purpose",
+        max_concurrency=3,
+        prompt=lambda strategy: f"Create a plan using this strategy: {strategy}",
+    )
+    critiques = await wf.map_agents(
+        items=plans,
+        subagent_type="code-reviewer",
+        prompt=lambda plan: f"Adversarially critique this plan: {plan}",
+    )
+    return await wf.reduce_agent(
+        items={"plans": plans, "critiques": critiques},
+        prompt="Synthesize the safest and simplest final plan.",
+    )
+```
+
+This MVP executes generated Python in-process after best-effort validation. Treat
+running a workflow as approving generated code execution.
+"""
+
+
+class WorkflowTool(ToolDefinition[WorkflowAction, WorkflowObservation]):
+    """Low-level tool for explicit executor injection.
+
+    Prefer ``WorkflowToolSet`` for standard SDK auto-create usage.
+    Use ``WorkflowTool`` when you need to inject a custom executor
+    (e.g., in tests or extensions).
+    """
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: ConversationState | None = None,  # noqa: ARG003
+        executor: WorkflowExecutor | None = None,
+        description: str = _WORKFLOW_DESCRIPTION,
+    ) -> Sequence[WorkflowTool]:
+        from openhands.tools.workflow.impl import WorkflowExecutor
+
+        return [
+            cls(
+                action_type=WorkflowAction,
+                observation_type=WorkflowObservation,
+                description=description,
+                annotations=ToolAnnotations(
+                    title="workflow",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+                executor=executor if executor is not None else WorkflowExecutor(),
+            )
+        ]
+
+
+class WorkflowToolSet(ToolDefinition[WorkflowAction, WorkflowObservation]):
+    """Tool set that creates the dynamic workflow tool."""
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: ConversationState,  # noqa: ARG003
+    ) -> Sequence[WorkflowTool]:
+        from openhands.tools.workflow.impl import WorkflowExecutor
+
+        return WorkflowTool.create(executor=WorkflowExecutor())
+
+
+register_tool(WorkflowToolSet.name, WorkflowToolSet)
+register_tool(WorkflowTool.name, WorkflowTool)

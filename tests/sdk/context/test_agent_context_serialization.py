@@ -1,14 +1,19 @@
 """Tests for AgentContext serialization and deserialization."""
 
 import json
+from base64 import urlsafe_b64encode
+
+from pydantic import SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.secret import SecretSource, StaticSecret
 from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
     TaskTrigger,
 )
 from openhands.sdk.skills.types import InputMetadata
+from openhands.sdk.utils.cipher import Cipher
 
 
 def test_agent_context_serialization_roundtrip():
@@ -78,3 +83,70 @@ def test_agent_context_serialization_roundtrip():
     assert isinstance(deserialized_from_json.skills[2].trigger, TaskTrigger)
     assert deserialized_from_json.skills[2] == task_skill
     assert deserialized_from_json.model_dump() == serialized
+
+
+def test_agent_context_secrets_round_trip_through_cipher_context():
+    """``AgentContext.secrets`` raw-string values must round-trip cleanly
+    when re-validated with a cipher.
+
+    Regression for the same bug class as ``ACPAgent.acp_env``: the
+    field has a ``field_serializer`` that encrypts under cipher
+    context (via :func:`serialize_secret`) but until now had no
+    matching ``field_validator``. So ciphertext survived
+    ``StoredConversation.model_validate(..., context={'cipher': ...})``
+    in the conversation-start flow and reached the agent's system
+    prompt as ``gAAAA...`` instead of the configured value.
+    """
+    cipher = Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
+    plaintext = {"GITHUB_TOKEN": "ghp-real-token", "DB_PASS": "pw"}
+
+    ctx = AgentContext(secrets=plaintext)
+    dumped = ctx.model_dump(mode="json", context={"cipher": cipher})
+    # Sanity check: the dump produced Fernet ciphertext, not plaintext.
+    for key, raw_value in plaintext.items():
+        stored = dumped["secrets"][key]
+        assert isinstance(stored, str)
+        assert stored != raw_value
+        assert stored.startswith("gAAAA")
+
+    restored = AgentContext.model_validate(dumped, context={"cipher": cipher})
+    assert restored.secrets == plaintext
+
+
+def test_agent_context_secrets_plaintext_passes_through_with_cipher():
+    """First writes from older clients carry plaintext. They must validate
+    cleanly when cipher is present in context (no FERNET_TOKEN_PREFIX,
+    no decryption attempted)."""
+    cipher = Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
+    ctx = AgentContext.model_validate(
+        {"secrets": {"FOO": "plaintext-value"}},
+        context={"cipher": cipher},
+    )
+    assert ctx.secrets == {"FOO": "plaintext-value"}
+
+
+def test_agent_context_secrets_secret_source_passes_through_with_cipher():
+    """``SecretSource`` entries serialize to a dict on the wire, so they
+    must slip past ``validate_secret_dict``'s ``isinstance(value, str)``
+    gate untouched while raw-string siblings are still decrypted.
+
+    Locks in the invariant the ``_decrypt_secrets`` docstring describes:
+    if ``SecretSource`` serialization ever produced a bare string, the
+    str-gate would silently start mangling it and ciphertext could reach
+    the prompt.
+    """
+    cipher = Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
+    source = StaticSecret(value=SecretStr("source-secret"))
+    ctx = AgentContext(secrets={"RAW": "plaintext", "SRC": source})
+
+    dumped = ctx.model_dump(mode="json", context={"cipher": cipher})
+    # The raw string is encrypted to a Fernet token; the SecretSource stays
+    # a dict (its own nested ``value`` is the part that gets encrypted).
+    assert dumped["secrets"]["RAW"].startswith("gAAAA")
+    assert isinstance(dumped["secrets"]["SRC"], dict)
+
+    restored = AgentContext.model_validate(dumped, context={"cipher": cipher})
+    assert restored.secrets is not None
+    assert restored.secrets["RAW"] == "plaintext"
+    assert isinstance(restored.secrets["SRC"], SecretSource)
+    assert restored.secrets["SRC"].get_value() == "source-secret"

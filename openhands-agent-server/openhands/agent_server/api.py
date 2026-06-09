@@ -2,8 +2,9 @@ import asyncio
 import os
 import tempfile
 import traceback
+import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -17,6 +18,7 @@ from starlette.requests import Request
 
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
@@ -188,9 +190,28 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         async with service:
             # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
+
+            config = api.state.config
+            retention_task: asyncio.Task | None = None
+            if config.bash_events_retention_seconds is not None:
+                retention_task = asyncio.create_task(
+                    get_default_bash_event_service().run_retention_cleanup_loop(
+                        config.bash_events_retention_seconds
+                    )
+                )
+                logger.info(
+                    "Bash events retention cleanup started (retention: %ds)",
+                    config.bash_events_retention_seconds,
+                )
+
             try:
                 yield
             finally:
+                if retention_task is not None:
+                    retention_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await retention_task
+
                 # Define async functions for stopping each service
                 async def stop_vscode_service():
                     if vscode_service is not None:
@@ -411,18 +432,24 @@ def _add_exception_handlers(api: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         """Handle unhandled exceptions."""
+        # Correlation id that ties the 500 a caller receives to the server-side
+        # log line (with full traceback) for this failure, so an otherwise
+        # opaque 500 can be matched to its traceback in the server logs.
+        error_id = uuid.uuid4().hex
         # Always log that we're in the exception handler for debugging
         logger.debug(
-            "Exception handler called for %s %s with %s: %s",
+            "Exception handler called for %s %s with %s: %s [error_id=%s]",
             request.method,
             request.url.path,
             type(exc).__name__,
             str(exc),
+            error_id,
         )
 
         content = {
             "detail": "Internal Server Error",
             "exception": str(exc),
+            "error_id": error_id,
         }
         # In DEBUG mode, include stack trace in response
         if DEBUG:
@@ -438,9 +465,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 return await _http_exception_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
-                "Unhandled ExceptionGroup on %s %s",
+                "Unhandled ExceptionGroup on %s %s [error_id=%s]",
                 request.method,
                 request.url.path,
+                error_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             return JSONResponse(status_code=500, content=content)
@@ -448,9 +476,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Logs full stack trace for any unhandled error that FastAPI would
         # turn into a 500
         logger.error(
-            "Unhandled exception on %s %s",
+            "Unhandled exception on %s %s [error_id=%s]",
             request.method,
             request.url.path,
+            error_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         return JSONResponse(status_code=500, content=content)
