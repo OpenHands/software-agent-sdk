@@ -298,6 +298,20 @@ NODE_SHAPE_CASES: tuple[NodeShapeCase, ...] = (
         clean_but_opaque=True,
     ),
     NodeShapeCase(
+        case_id="ansi_c_octal_command_name",
+        command=r"$'\162\155' -rf /",
+        has_error=False,
+        root_named_children=("command",),
+        expected_nodes=(
+            ExpectedNode(
+                "command_name",
+                r"$'\162\155'",
+                (("ansi_c_string", r"$'\162\155'"),),
+            ),
+        ),
+        clean_but_opaque=True,
+    ),
+    NodeShapeCase(
         case_id="bash_c_raw_string_payload",
         command="bash -c 'rm -rf /'",
         has_error=False,
