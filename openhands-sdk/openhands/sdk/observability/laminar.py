@@ -2,7 +2,7 @@ import contextlib
 import functools
 import inspect
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from openhands.sdk.logger import get_logger
@@ -253,12 +253,17 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
+        attributes: Mapping[str, str] | None = None,
     ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
+        if attributes:
+            with contextlib.suppress(Exception):
+                for key, value in attributes.items():
+                    self.span.set_attribute(key, value)
         if session_id or user_id:
             # ``set_trace_session_id`` / ``set_trace_user_id`` require an
             # active span; briefly enter the span context to apply them.
@@ -285,6 +290,7 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
+    attributes: Mapping[str, str] | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -293,7 +299,9 @@ def start_root_span(
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id, user_id=user_id)
+        return RootSpan(
+            name, session_id=session_id, user_id=user_id, attributes=attributes
+        )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None

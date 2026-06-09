@@ -768,6 +768,8 @@ class RemoteConversation(BaseConversation):
                 # Include tags if provided
                 "tags": tags or {},
             }
+            if user_id:
+                payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -920,7 +922,7 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id), user_id=user_id)
+        self._start_observability_span(str(self._id), user_id=user_id, tags=tags)
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close

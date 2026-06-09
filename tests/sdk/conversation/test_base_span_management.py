@@ -116,6 +116,37 @@ def test_base_conversation_span_management():
         assert conversation._span_ended is True
 
 
+def test_base_conversation_span_includes_tag_attributes():
+    """Conversation tags are attached to the root span for trace filtering."""
+    conversation = MockConversation()
+
+    with (
+        patch(
+            "openhands.sdk.conversation.base.should_enable_observability"
+        ) as mock_should_enable,
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+    ):
+        mock_should_enable.return_value = True
+        fake_root = MagicMock(name="root-span")
+        mock_start_span.return_value = fake_root
+
+        conversation._start_observability_span(
+            "test-session-id",
+            user_id="user-42",
+            tags={"automationid": "auto-1", "automationrunid": "run-1"},
+        )
+
+        mock_start_span.assert_called_once_with(
+            "conversation",
+            session_id="test-session-id",
+            user_id="user-42",
+            attributes={
+                "conversation.tags.automationid": "auto-1",
+                "conversation.tags.automationrunid": "run-1",
+            },
+        )
+
+
 def test_base_conversation_span_management_disabled():
     """Test that BaseConversation doesn't perform span operations when observability is disabled."""  # noqa: E501
 

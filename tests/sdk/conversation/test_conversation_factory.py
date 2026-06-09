@@ -102,6 +102,26 @@ def test_conversation_factory_forwards_remote_parameters(
     assert conversation.max_iteration_per_run == 200
 
 
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_forwards_remote_user_id_to_create_payload(
+    mock_ws_client, agent, remote_workspace
+):
+    """RemoteConversation must send user_id to the agent-server create request."""
+    conversation = Conversation(
+        agent=agent,
+        workspace=remote_workspace,
+        tags={"automationid": "auto-1"},
+        user_id="user-42",
+    )
+
+    assert isinstance(conversation, RemoteConversation)
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.args[:2] == ("POST", "/api/conversations")
+    payload = create_call.kwargs["json"]
+    assert payload["user_id"] == "user-42"
+    assert payload["tags"] == {"automationid": "auto-1"}
+
+
 def test_conversation_factory_string_workspace_creates_local(agent):
     """Test that string workspace creates LocalConversation."""
     conversation = Conversation(agent=agent, workspace="")

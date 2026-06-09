@@ -28,6 +28,14 @@ from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.workspace.base import BaseWorkspace
 
 
+def _conversation_tag_attributes(
+    tags: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    if not tags:
+        return None
+    return {f"conversation.tags.{key}": value for key, value in tags.items()}
+
+
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -128,22 +136,35 @@ class BaseConversation(ABC):
         self._observability_root_span: RootSpan | None = None
 
     def _start_observability_span(
-        self, session_id: str, user_id: str | None = None
+        self,
+        session_id: str,
+        user_id: str | None = None,
+        tags: Mapping[str, str] | None = None,
     ) -> None:
         """Start a per-conversation observability root span.
 
         Args:
             session_id: The session ID to associate with the trace
             user_id: Optional user ID to associate with the trace
+            tags: Optional conversation tags to add as root span attributes
         """
         if not should_enable_observability():
             return
         if self._observability_root_span is not None:
             # Idempotent: never start two roots for one conversation.
             return
-        self._observability_root_span = start_root_span(
-            "conversation", session_id=session_id, user_id=user_id
-        )
+        attributes = _conversation_tag_attributes(tags)
+        if attributes:
+            self._observability_root_span = start_root_span(
+                "conversation",
+                session_id=session_id,
+                user_id=user_id,
+                attributes=attributes,
+            )
+        else:
+            self._observability_root_span = start_root_span(
+                "conversation", session_id=session_id, user_id=user_id
+            )
 
     def _end_observability_span(self) -> None:
         """End the observability span if it hasn't been ended already."""

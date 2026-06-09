@@ -438,6 +438,30 @@ def test_root_span_skips_user_id_when_none():
         os.environ.pop("LMNR_PROJECT_API_KEY", None)
 
 
+def test_root_span_sets_attributes():
+    """RootSpan must attach provided attributes to the underlying span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        with patch.object(Laminar, "start_span", return_value=mock_span):
+            lam._observability_enabled = True
+            root = lam.RootSpan(
+                "conversation",
+                attributes={"conversation.tags.automationid": "auto-1"},
+            )
+            assert root.span is mock_span
+            mock_span.set_attribute.assert_called_once_with(
+                "conversation.tags.automationid", "auto-1"
+            )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
 def test_two_concurrent_conversations_do_not_collide():
     """Each conversation must own its own root span (no global stack).
 
