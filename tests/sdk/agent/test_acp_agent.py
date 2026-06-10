@@ -4445,14 +4445,34 @@ class TestMaybeSetSessionModel:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_does_not_apply_override_at_init(self):
-        # An unknown/custom server gets neither _meta nor the protocol call on a
-        # fresh session, so the override never reaches the server.
+    async def test_unknown_provider_uses_set_config_option_fallback(self):
+        # An unknown/custom server now tries set_config_option as a fallback
+        # for model selection, which is a standard ACP method.
         conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "devin-cli", "session-1", "kimi-k2-6"
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="session-1",
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_set_config_option_failure_is_tolerated(self):
+        # If set_config_option fails for an unknown provider, we log a warning
+        # but don't break session creation.
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
         applied = await _maybe_set_session_model(
             conn, "some-custom-acp", "session-1", "whatever"
         )
         conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once()
         assert applied is False
 
 
@@ -4496,17 +4516,18 @@ class TestReapplySessionModelOnResume:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_attempts_reapply(self):
-        # provider=None (custom server) is allowed to attempt the switch by
-        # set_acp_model, and such switches are persisted as authoritative — so
-        # resume must mirror that and attempt the reapply too (otherwise the
-        # resumed session would silently revert to the server default).
+    async def test_unknown_provider_attempts_reapply_via_set_config_option(self):
+        # provider=None (custom server) now attempts reapply via set_config_option
+        # as a fallback, which is a standard ACP method.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever"
+            conn, "devin-cli", "sess-1", "kimi-k2-6"
         )
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="whatever", session_id="sess-1"
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="sess-1",
         )
         assert applied is True
 
@@ -4543,13 +4564,13 @@ class TestReapplySessionModelOnResume:
         # the call, or invalid model id) must not break resume — mirrors the
         # load_session fallback. The error is logged, not raised.
         conn = AsyncMock()
-        conn.set_session_model.side_effect = ACPRequestError(
+        conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         applied = await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
-        conn.set_session_model.assert_awaited_once()
+        conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
         assert applied is False
@@ -5968,13 +5989,10 @@ class TestACPSessionIdPersistence:
         models.available_models = entries
         return models
 
-    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
-        self, tmp_path
-    ):
+    def test_unknown_provider_applies_override_via_set_config_option(self, tmp_path):
         """Fresh session on an unknown/custom provider with ``acp_model`` set:
-        the override is never pushed to the server (no ``_meta``, no protocol
-        call), so ``current_model_id`` must reflect what the server reported —
-        not the override the live session isn't actually running.
+        the override is pushed via ``set_config_option`` (not ``set_session_model``),
+        so ``current_model_id`` must reflect the applied override.
         """
         agent = _make_agent(acp_model="caller-model")
         state = _make_state(tmp_path)
@@ -5982,15 +6000,18 @@ class TestACPSessionIdPersistence:
         new_response.session_id = "fresh-sess"
         new_response.models = self._models_block("server-model", ["server-model"])
         conn = self._make_conn()
+        conn.set_config_option = AsyncMock()
         conn.initialize.return_value.agent_info.name = "some-custom-acp"
         conn.initialize.return_value.auth_methods = []
         conn.new_session = AsyncMock(return_value=new_response)
 
         self._patched_start_acp_server(agent, state, conn=conn)
 
-        # Unknown provider => the override never reached the server.
         conn.set_session_model.assert_not_awaited()
-        assert agent.current_model_id == "server-model"
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
 
     def test_known_provider_surfaces_applied_override(self, tmp_path):
         """Fresh session on a provider that applies the override via the
@@ -6991,11 +7012,12 @@ class TestACPAgentAvailableModelsProperty:
 
 
 class TestACPAgentSupportsRuntimeModelSwitch:
-    """``supports_runtime_model_switch`` mirrors ``set_acp_model``'s gate.
+    """``supports_runtime_model_switch`` gates the live-switch picker.
 
-    It refuses only for a *known* provider that declares no support, attempts
-    optimistically for unknown/custom servers, and is ``False`` before a
-    session exists.
+    ``True`` only for known providers that declare ``session/set_model`` support.
+    Unknown/custom providers use ``set_config_option`` for initial model selection
+    but that is a generic config write, not a guaranteed live-switch primitive,
+    so the picker is hidden for them. ``False`` before a session exists.
     """
 
     def test_false_before_session(self):
@@ -7010,13 +7032,13 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._agent_name = "codex-acp"
         assert agent.supports_runtime_model_switch is True
 
-    def test_optimistic_true_for_unknown_provider(self):
-        # Mirrors set_acp_model, which attempts the call for unknown/custom
-        # servers rather than refusing — so the picker isn't needlessly hidden.
+    def test_false_for_unknown_provider(self):
+        # Unknown/custom providers use set_config_option for initial model
+        # selection only; the live-switch picker is hidden for them.
         agent = _make_agent()
         agent._session_id = "sess-1"
         agent._agent_name = "some-third-party-acp-server"
-        assert agent.supports_runtime_model_switch is True
+        assert agent.supports_runtime_model_switch is False
 
     def test_false_for_known_unsupported_provider(self, monkeypatch):
         # A known provider that declares no support is the one case we refuse.

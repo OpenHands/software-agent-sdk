@@ -678,6 +678,55 @@ def test_openai_chat_completions_gateway_over_real_server(
                     "content": "Hello from patched LLM",
                 }
 
+                from openai import OpenAI
+
+                openai_client = OpenAI(
+                    api_key="unused",
+                    base_url=f"{env['host']}/v1",
+                    timeout=10,
+                )
+                stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[
+                        {"role": "developer", "content": "Answer tersely."},
+                        {"role": "user", "content": "Say hello as a stream."},
+                    ],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    user="compat-test-user",
+                )
+                chunks = list(stream)
+                streamed_text = "".join(
+                    chunk.choices[0].delta.content or ""
+                    for chunk in chunks
+                    if chunk.choices
+                )
+                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+                assert streamed_text == "Hello from patched LLM"
+                assert usage_chunks[-1].prompt_tokens == 7
+                assert usage_chunks[-1].completion_tokens == 5
+                assert usage_chunks[-1].total_tokens == 12
+
+                stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Say hello as a default stream.",
+                        },
+                    ],
+                    stream=True,
+                )
+                chunks = list(stream)
+                streamed_text = "".join(
+                    chunk.choices[0].delta.content or ""
+                    for chunk in chunks
+                    if chunk.choices
+                )
+                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+                assert streamed_text == "Hello from patched LLM"
+                assert usage_chunks == []
+
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

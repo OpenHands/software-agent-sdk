@@ -3,13 +3,17 @@
 from typing import Literal
 
 from openai.types import CompletionUsage, Model
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_chunk import Choice as ChunkChoice, ChoiceDelta
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 from pydantic import BaseModel, ConfigDict
 
 
 OpenAIChatCompletionChoice = Choice
+OpenAIChatCompletionChunk = ChatCompletionChunk
+OpenAIChatCompletionChunkChoice = ChunkChoice
+OpenAIChatCompletionChunkChoiceDelta = ChoiceDelta
 OpenAIChatCompletionResponse = ChatCompletion
 OpenAIModel = Model
 OpenAIResponseMessage = ChatCompletionMessage
@@ -29,8 +33,14 @@ class OpenAIContentPart(BaseModel):
 
 
 class OpenAIChatMessage(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"]
+    role: Literal["system", "developer", "user", "assistant", "tool"]
     content: str | list[OpenAIContentPart] | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class OpenAIStreamOptions(BaseModel):
+    include_usage: bool = False
 
     model_config = ConfigDict(extra="ignore")
 
@@ -39,6 +49,7 @@ class OpenAIChatCompletionRequest(BaseModel):
     model: str
     messages: list[OpenAIChatMessage]
     stream: bool = False
+    stream_options: OpenAIStreamOptions | None = None
 
     model_config = ConfigDict(extra="ignore")
 

@@ -177,9 +177,15 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
-        llm_response = self.llm.completion(
-            messages=messages,
-        )
+        try:
+            llm_response = self.llm.completion(
+                messages=messages,
+            )
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
         # Extract summary from the LLMResponse message
         summary = None
         if llm_response.message.content:
@@ -364,7 +370,12 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
-        llm_response = await self.llm.acompletion(messages=messages)
+        try:
+            llm_response = await self.llm.acompletion(messages=messages)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
 
         summary = None
         if llm_response.message.content:

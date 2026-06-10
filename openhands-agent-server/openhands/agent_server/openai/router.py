@@ -4,6 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from openhands.agent_server.config import Config
@@ -15,6 +16,7 @@ from openhands.agent_server.openai.models import (
     OpenAIModelListResponse,
 )
 from openhands.agent_server.openai.service import (
+    iter_openai_chat_completion_sse,
     list_openai_models,
     run_chat_completion,
 )
@@ -84,12 +86,26 @@ async def create_chat_completion(
         UUID | None, Header(alias="X-OpenHands-ServerConversation-ID")
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
-) -> OpenAIChatCompletionResponse:
+) -> OpenAIChatCompletionResponse | StreamingResponse:
     result = await run_chat_completion(
-        request=body,
+        request=body.model_copy(update={"stream": False}) if body.stream else body,
         config=_get_config(request),
         conversation_service=conversation_service,
         reusable_conversation_id=x_openhands_server_conversation_id,
     )
-    response.headers["X-OpenHands-ServerConversation-ID"] = str(result.conversation_id)
+    conversation_id = str(result.conversation_id)
+    if body.stream:
+        include_usage = (
+            body.stream_options is not None and body.stream_options.include_usage
+        )
+        return StreamingResponse(
+            iter_openai_chat_completion_sse(
+                result.response,
+                include_usage=include_usage,
+            ),
+            media_type="text/event-stream",
+            headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+        )
+
+    response.headers["X-OpenHands-ServerConversation-ID"] = conversation_id
     return result.response
