@@ -800,3 +800,30 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
+
+
+def test_generate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """LLM failures in _generate_condensation raise NoCondensationAvailableException."""  # noqa: E501
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.completion).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        condenser.get_condensation(view)
+
+
+@pytest.mark.asyncio
+async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """Async variant: LLM failures surface as NoCondensationAvailableException."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.acompletion).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        await condenser.aget_condensation(view)
