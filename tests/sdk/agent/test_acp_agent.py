@@ -5989,13 +5989,12 @@ class TestACPSessionIdPersistence:
         models.available_models = entries
         return models
 
-    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
+    def test_unknown_provider_applies_override_via_set_config_option(
         self, tmp_path
     ):
         """Fresh session on an unknown/custom provider with ``acp_model`` set:
-        the override is never pushed to the server (no ``_meta``, no protocol
-        call), so ``current_model_id`` must reflect what the server reported —
-        not the override the live session isn't actually running.
+        the override is pushed via ``set_config_option`` (not ``set_session_model``),
+        so ``current_model_id`` must reflect the applied override.
         """
         agent = _make_agent(acp_model="caller-model")
         state = _make_state(tmp_path)
@@ -6003,15 +6002,18 @@ class TestACPSessionIdPersistence:
         new_response.session_id = "fresh-sess"
         new_response.models = self._models_block("server-model", ["server-model"])
         conn = self._make_conn()
+        conn.set_config_option = AsyncMock()
         conn.initialize.return_value.agent_info.name = "some-custom-acp"
         conn.initialize.return_value.auth_methods = []
         conn.new_session = AsyncMock(return_value=new_response)
 
         self._patched_start_acp_server(agent, state, conn=conn)
 
-        # Unknown provider => the override never reached the server.
         conn.set_session_model.assert_not_awaited()
-        assert agent.current_model_id == "server-model"
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
 
     def test_known_provider_surfaces_applied_override(self, tmp_path):
         """Fresh session on a provider that applies the override via the
