@@ -577,10 +577,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Tokenizer
         if self.custom_tokenizer:
-            self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
             self._chat_template_tokenizer = self._load_chat_template_tokenizer(
                 self.custom_tokenizer
             )
+            if self._chat_template_tokenizer is None:
+                try:
+                    self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
+                except Exception:
+                    logger.debug(
+                        "Unable to load LiteLLM tokenizer for %s",
+                        self.custom_tokenizer,
+                        exc_info=True,
+                    )
+                    self._tokenizer = None
 
         # Capabilities + model info
         self._init_model_info_and_caps()
@@ -2366,8 +2375,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
             return self._count_tokenized_output(tokenized, tokenizer)
         except Exception:
-            logger.debug(
-                "Chat-template token counting failed; falling back to LiteLLM",
+            logger.warning(
+                "Chat-template token counting failed for %d messages and %d tools; "
+                "falling back to LiteLLM",
+                len(formatted_messages),
+                len(tools or []),
                 exc_info=True,
             )
             return None
@@ -2404,16 +2416,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         template_messages = copy.deepcopy(messages)
         for message in template_messages:
             content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            text_parts: list[str] = []
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "text":
-                    text_parts = []
-                    break
-                text_parts.append(str(block.get("text", "")))
-            if text_parts:
-                message["content"] = "".join(text_parts)
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "text":
+                        text_parts = []
+                        break
+                    text_parts.append(str(block.get("text", "")))
+                if text_parts:
+                    message["content"] = "".join(text_parts)
+
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                arguments = function.get("arguments")
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed_arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_arguments, dict):
+                    function["arguments"] = parsed_arguments
         return template_messages
 
     @staticmethod

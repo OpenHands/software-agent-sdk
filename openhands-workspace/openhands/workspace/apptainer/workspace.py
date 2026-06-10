@@ -79,6 +79,14 @@ class ApptainerWorkspace(RemoteWorkspace):
         default=None,
         description="Optional host directory to mount into the container.",
     )
+    extra_bind_mounts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional Apptainer bind mount specs to pass as --bind values. "
+            "Use src[:dest[:opts]] syntax. OPENHANDS_APPTAINER_EXTRA_BINDS can "
+            "also provide comma-separated bind specs."
+        ),
+    )
     detach_logs: bool = Field(
         default=True, description="Whether to stream container logs in background."
     )
@@ -260,6 +268,14 @@ class ApptainerWorkspace(RemoteWorkspace):
                 self.mount_dir,
                 mount_path,
             )
+        env_extra_binds = [
+            item.strip()
+            for item in os.getenv("OPENHANDS_APPTAINER_EXTRA_BINDS", "").split(",")
+            if item.strip()
+        ]
+        for bind_spec in [*self.extra_bind_mounts, *env_extra_binds]:
+            bind_args += ["--bind", bind_spec]
+            logger.info("Adding Apptainer bind mount: %s", bind_spec)
 
         # Build container options
         container_opts: list[str] = []

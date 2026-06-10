@@ -10,7 +10,7 @@ from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk import ConversationStats, RegistryEvent
-from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.llm import LLM, LLMResponse, Message, MessageToolCall, TextContent
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, TokenUsage
@@ -432,6 +432,45 @@ def test_llm_token_counting_prefers_chat_template_tokenizer(
     assert kwargs["add_generation_prompt"] is True
     assert kwargs["tools"][0]["function"]["name"] == "finish"
     assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_chat_template_token_counting_parses_tool_call_arguments(
+    mock_token_counter, default_llm
+):
+    """HF chat templates may expect assistant tool-call arguments as objects."""
+
+    class FakeChatTemplateTokenizer:
+        def __init__(self):
+            self.messages = None
+
+        def apply_chat_template(self, messages, **_kwargs):
+            self.messages = messages
+            return list(range(12))
+
+    tokenizer = FakeChatTemplateTokenizer()
+    default_llm._chat_template_tokenizer = tokenizer
+    messages = [
+        Message(
+            role="assistant",
+            tool_calls=[
+                MessageToolCall(
+                    id="call_1",
+                    name="finish",
+                    arguments='{"message": "done"}',
+                    origin="completion",
+                )
+            ],
+        )
+    ]
+
+    token_count = default_llm.get_token_count(messages)
+
+    assert token_count == 12
+    mock_token_counter.assert_not_called()
+    assert tokenizer.messages is not None
+    function = tokenizer.messages[0]["tool_calls"][0]["function"]
+    assert function["arguments"] == {"message": "done"}
 
 
 def test_llm_count_tokenized_output_handles_encoding_objects(default_llm):

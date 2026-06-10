@@ -610,9 +610,7 @@ def test_condensation_requirement_returns_none(
 @pytest.mark.parametrize(
     "reasons",
     [
-        {Reason.TOKENS},
         {Reason.EVENTS},
-        {Reason.TOKENS, Reason.EVENTS},
     ],
 )
 def test_condensation_requirement_returns_soft(
@@ -631,6 +629,28 @@ def test_condensation_requirement_returns_soft(
     ):
         result = condenser.condensation_requirement(view)
         assert result == CondensationRequirement.SOFT
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.TOKENS},
+        {Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_hard_for_token_pressure(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Token pressure should trigger before the next LLM request can overflow."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.HARD
 
 
 @pytest.mark.parametrize(
