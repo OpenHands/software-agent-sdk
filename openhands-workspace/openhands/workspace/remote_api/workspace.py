@@ -422,4 +422,5 @@ class APIRemoteWorkspace(RemoteWorkspace):
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        super().__exit__(exc_type, exc_val, exc_tb)
         self.cleanup()

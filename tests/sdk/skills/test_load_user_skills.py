@@ -9,8 +9,11 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.skills import (
     KeywordTrigger,
     Skill,
+    installed,
     load_user_skills,
+    skill,
 )
+from openhands.sdk.skills.installed import disable_skill, install_skill
 
 
 @pytest.fixture
@@ -304,5 +307,91 @@ def test_agent_context_explicit_skill_takes_precedence(temp_user_skills_dir):
         assert len(context.skills) == 1
         # Explicit skill should be used, not the user skill
         assert context.skills[0].content == "Explicit skill content."
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+def test_load_user_skills_includes_installed_skills(tmp_path, monkeypatch):
+    """Test that load_user_skills also loads enabled installed skills."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    installed_dir = tmp_path / "skills" / "installed"
+    installed_dir.mkdir()
+
+    # Create and install a skill
+    source_dir = tmp_path / "my-installed-skill"
+    source_dir.mkdir()
+    (source_dir / "SKILL.md").write_text(
+        "---\nname: my-installed-skill\ndescription: Installed skill\n---\n"
+        "Installed skill content."
+    )
+    install_skill(str(source_dir), installed_dir=installed_dir)
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        skill.USER_SKILLS_DIRS = [skills_dir]
+        monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+        skills = load_user_skills()
+        skill_names = {s.name for s in skills}
+        assert "my-installed-skill" in skill_names
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+def test_load_user_skills_user_skill_takes_precedence_over_installed(
+    tmp_path, monkeypatch
+):
+    """Test that user skills take precedence over installed skills."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    installed_dir = tmp_path / "skills" / "installed"
+    installed_dir.mkdir()
+
+    # Create a user skill
+    (skills_dir / "duplicate.md").write_text("---\nname: duplicate\n---\nUser version.")
+
+    # Install a skill with the same name
+    source_dir = tmp_path / "duplicate"
+    source_dir.mkdir()
+    (source_dir / "SKILL.md").write_text(
+        "---\nname: duplicate\ndescription: dup\n---\nInstalled version."
+    )
+    install_skill(str(source_dir), installed_dir=installed_dir)
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        skill.USER_SKILLS_DIRS = [skills_dir]
+        monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+        skills = load_user_skills()
+        dupes = [s for s in skills if s.name == "duplicate"]
+        assert len(dupes) == 1
+        assert dupes[0].content == "User version."
+    finally:
+        skill.USER_SKILLS_DIRS = original_dirs
+
+
+def test_load_user_skills_disabled_installed_skill_excluded(tmp_path, monkeypatch):
+    """Test that disabled installed skills are not loaded."""
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    installed_dir = tmp_path / "skills" / "installed"
+    installed_dir.mkdir()
+
+    # Install and disable a skill
+    source_dir = tmp_path / "disabled-skill"
+    source_dir.mkdir()
+    (source_dir / "SKILL.md").write_text(
+        "---\nname: disabled-skill\ndescription: test\n---\nContent."
+    )
+    install_skill(str(source_dir), installed_dir=installed_dir)
+    disable_skill("disabled-skill", installed_dir=installed_dir)
+
+    original_dirs = skill.USER_SKILLS_DIRS
+    try:
+        skill.USER_SKILLS_DIRS = [skills_dir]
+        monkeypatch.setattr(installed, "DEFAULT_INSTALLED_SKILLS_DIR", installed_dir)
+        skills = load_user_skills()
+        skill_names = {s.name for s in skills}
+        assert "disabled-skill" not in skill_names
     finally:
         skill.USER_SKILLS_DIRS = original_dirs

@@ -1,6 +1,6 @@
 """Secrets manager for handling sensitive data in conversations."""
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from pydantic import Field, PrivateAttr, SecretStr
 
@@ -93,6 +93,41 @@ class SecretRegistry(OpenHandsModel):
         logger.debug(f"Prepared {len(env_vars)} secrets as environment variables")
         return env_vars
 
+    def get_all_secrets_as_env_vars(
+        self, exclude: Collection[str] | None = None
+    ) -> dict[str, str]:
+        """Resolve every registered secret to an env-var mapping.
+
+        Unlike :meth:`get_secrets_as_env_vars`, which name-scans a single
+        command and injects only the secrets it references, this resolves the
+        whole registry. It is for opaque consumers (e.g. an ACP CLI subprocess)
+        that cannot be name-scanned per command and must receive their
+        credentials upfront. Resolved values are tracked for output masking, and
+        lookup failures are skipped rather than raised.
+
+        Note: this injects the *whole* registry; least-privilege scoping
+        (provider creds + an explicit allowlist only) is deferred to #1039
+        task 6.
+
+        Args:
+            exclude: Secret names to skip — e.g. keys a higher-precedence tier
+                will set anyway, or file-content secrets materialised to disk
+                (avoids a wasted, possibly remote, ``get_value()``).
+
+        Returns:
+            Dictionary of environment variables to export (key -> value),
+            omitting empty values and excluded names.
+        """
+        skip = set(exclude or ())
+        env_vars: dict[str, str] = {}
+        for name in self.secret_sources:
+            if name in skip:
+                continue
+            value = self.get_secret_value(name)
+            if value:
+                env_vars[name] = value
+        return env_vars
+
     def mask_secrets_in_output(self, text: str) -> str:
         """Mask secret values in the given text.
 
@@ -131,6 +166,55 @@ class SecretRegistry(OpenHandsModel):
             description = source.description
             secret_infos.append({"name": name, "description": description})
         return secret_infos
+
+    def get_secret_value(self, name: str) -> str | None:
+        """Look up a single secret value by name.
+
+        This method retrieves the value of a specific secret. It's designed
+        to be passed as a callback to functions that need secret lookup
+        (e.g., expand_mcp_variables) without exposing all secrets at once.
+
+        Retrieved values are tracked in _exported_values for consistent masking
+        in command outputs.
+
+        Args:
+            name: The name of the secret to retrieve.
+
+        Returns:
+            The secret value if found and successfully retrieved, None otherwise.
+
+        Note:
+            Returns None for both missing secrets and retrieval failures.
+            Retrieval errors (network, auth, etc.) are logged as warnings.
+        """
+        source = self.secret_sources.get(name)
+        if source is None:
+            return None
+        try:
+            value = source.get_value()
+            if value:
+                # Track retrieved value for output masking
+                self._exported_values[name] = value
+            return value
+        except (OSError, TimeoutError) as e:
+            # Network/IO errors - likely transient, log and return None
+            logger.warning(
+                f"Transient error retrieving secret '{name}' "
+                f"(may retry later): {type(e).__name__}: {e}"
+            )
+            return None
+        except (ValueError, KeyError, TypeError) as e:
+            # Configuration/data errors - likely permanent
+            logger.warning(
+                f"Configuration error for secret '{name}': {type(e).__name__}: {e}"
+            )
+            return None
+        except Exception as e:
+            # Unexpected errors - log with full details for debugging
+            logger.warning(
+                f"Unexpected error retrieving secret '{name}': {type(e).__name__}: {e}"
+            )
+            return None
 
 
 def _wrap_secret(value: SecretValue) -> SecretSource:

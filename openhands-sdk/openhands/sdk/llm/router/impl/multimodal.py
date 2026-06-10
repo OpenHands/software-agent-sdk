@@ -44,11 +44,12 @@ class MultimodalRouter(RouterLLM):
         # compared to the primary model
         secondary_llm = self.llms_for_routing.get(self.SECONDARY_MODEL_KEY)
         if secondary_llm and (
-            secondary_llm.max_input_tokens
-            and secondary_llm.get_token_count(messages) > secondary_llm.max_input_tokens
+            secondary_llm.effective_max_input_tokens
+            and secondary_llm.get_token_count(messages)
+            > secondary_llm.effective_max_input_tokens
         ):
             logger.warning(
-                f"Messages having {secondary_llm.get_token_count(messages)} tokens, exceeded secondary model's max input tokens ({secondary_llm.max_input_tokens} tokens). "  # noqa: E501
+                f"Messages having {secondary_llm.get_token_count(messages)} tokens, exceeded secondary model's max input tokens ({secondary_llm.effective_max_input_tokens} tokens). "  # noqa: E501
                 "Routing to the primary model."
             )
             route_to_primary = True

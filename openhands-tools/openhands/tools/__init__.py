@@ -29,6 +29,7 @@ from openhands.tools.preset.default import (
 from openhands.tools.task import TaskToolSet
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
+from openhands.tools.workflow import WorkflowToolSet
 
 
 try:
@@ -44,6 +45,7 @@ __all__ = [
     "TaskToolSet",
     "TaskTrackerTool",
     "TerminalTool",
+    "WorkflowToolSet",
     "get_default_agent",
     "get_default_tools",
     "register_default_tools",

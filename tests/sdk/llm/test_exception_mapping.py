@@ -1,4 +1,10 @@
-from litellm.exceptions import BadRequestError
+import httpx
+from litellm.exceptions import (
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    PermissionDeniedError,
+)
 
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
@@ -27,6 +33,24 @@ def test_map_auth_error_from_openai_error():
     assert isinstance(mapped, LLMAuthenticationError)
 
 
+def test_map_typed_authentication_error_without_pattern_match():
+    # Typed 401 from litellm whose message text doesn't contain any of the
+    # auth heuristic patterns — should still map via the isinstance check.
+    e = AuthenticationError("Bearer token expired", PROVIDER, MODEL)
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMAuthenticationError)
+
+
+def test_map_typed_permission_denied_error():
+    response = httpx.Response(
+        status_code=403,
+        request=httpx.Request("POST", "https://example.test"),
+    )
+    e = PermissionDeniedError("Region not allowed", PROVIDER, MODEL, response)
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMAuthenticationError)
+
+
 def test_map_malformed_tool_history_bad_request():
     e = BadRequestError(
         (
@@ -38,6 +62,19 @@ def test_map_malformed_tool_history_bad_request():
         ),
         MODEL,
         PROVIDER,
+    )
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMMalformedConversationHistoryError)
+
+
+def test_map_openai_tool_argument_parse_internal_server_error():
+    e = InternalServerError(
+        (
+            "OpenAIException - Failed to parse tool call arguments as JSON: "
+            "invalid string: missing closing quote"
+        ),
+        PROVIDER,
+        MODEL,
     )
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMMalformedConversationHistoryError)

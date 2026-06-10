@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import copy
+import json
 import os
 import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
+    SecretStr,
+    SerializationInfo,
+    ValidationInfo,
+    model_serializer,
     model_validator,
 )
 
@@ -32,7 +38,8 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
+from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
 
 if TYPE_CHECKING:
@@ -43,6 +50,51 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
+    if not value.startswith(FERNET_TOKEN_PREFIX):
+        return value
+    decrypted = cipher.try_decrypt_str(value)
+    if decrypted is None:
+        logger.warning(
+            "MCP env/headers value looks encrypted but could not be decrypted "
+            "(cipher mismatch or corruption); leaving the ciphertext in place."
+        )
+        return value
+    return decrypted
+
+
+def _decrypt_mcp_secret_values(
+    config: dict[str, Any], cipher: Cipher
+) -> dict[str, Any]:
+    config = copy.deepcopy(config)
+    if "mcpServers" not in config:
+        return config
+    servers = config["mcpServers"]
+    if not isinstance(servers, dict):
+        raise ValueError("mcp_config.mcpServers must be a dictionary when provided")
+    for server_name, server in servers.items():
+        if not isinstance(server, dict):
+            raise ValueError(
+                f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
+            )
+        for key in ("env", "headers"):
+            if key not in server:
+                continue
+            mapping = server[key]
+            if not isinstance(mapping, dict):
+                raise ValueError(
+                    f"mcp_config.mcpServers[{server_name!r}].{key} must be "
+                    "a dictionary when provided"
+                )
+            server[key] = {
+                name: _decrypt_mcp_value_or_keep(cipher, value)
+                if isinstance(value, str)
+                else value
+                for name, value in mapping.items()
+            }
+    return config
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -63,7 +115,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="LLM configuration for the agent.",
         examples=[
             {
-                "model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                "model": "litellm_proxy/openai/gpt-5.5",
                 "base_url": "https://llm-proxy.eval.all-hands.dev",
                 "api_key": "your_api_key_here",
             }
@@ -197,6 +249,123 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _decrypt_mcp_config(cls, data: Any, info: ValidationInfo) -> Any:
+        """Decrypt encrypted_mcp_config if present and cipher is in context.
+
+        Handles backward compatibility:
+        - If encrypted_mcp_config exists and cipher is present: decrypt and
+          set mcp_config
+        - If mcp_config exists directly: use it as-is (plaintext or
+          expose_secrets case)
+        - If neither exists: default empty dict will be used
+        """
+        if not isinstance(data, dict):
+            return data
+        cipher: Cipher | None = info.context.get("cipher") if info.context else None
+        data = dict(data)
+        has_encrypted_mcp_config = "encrypted_mcp_config" in data
+        encrypted = data.pop("encrypted_mcp_config", None)
+        if not has_encrypted_mcp_config:
+            mcp_config = data.get("mcp_config")
+            if mcp_config is not None and not isinstance(mcp_config, dict):
+                raise ValueError("mcp_config must be a dictionary when provided")
+            if isinstance(mcp_config, dict) and cipher is not None:
+                data["mcp_config"] = _decrypt_mcp_secret_values(mcp_config, cipher)
+            return data
+
+        if not isinstance(encrypted, str):
+            raise ValueError("encrypted_mcp_config must be a string when provided")
+
+        # If no cipher in context, we can't decrypt - the encrypted value is lost
+        if cipher is None:
+            logger.warning(
+                "Found encrypted_mcp_config but no cipher in context - "
+                "MCP configuration will be lost. Provide a cipher to preserve it."
+            )
+            return data
+
+        decrypted = cipher.decrypt(encrypted)
+        if decrypted is None:
+            logger.warning(
+                "Failed to decrypt mcp_config (cipher mismatch or corruption) - "
+                "MCP configuration will be lost."
+            )
+            return data
+
+        try:
+            mcp_config = json.loads(decrypted.get_secret_value())
+        except json.JSONDecodeError as e:
+            raise ValueError("encrypted_mcp_config must decrypt to valid JSON") from e
+        if not isinstance(mcp_config, dict):
+            raise ValueError("encrypted_mcp_config must decrypt to a JSON object")
+        data["mcp_config"] = mcp_config
+
+        return data
+
+    @model_serializer(mode="wrap")
+    def _serialize_with_mcp_handling(self, handler, info: SerializationInfo):
+        """Serialize the agent, handling mcp_config encryption/redaction.
+
+        This serializer handles:
+        1. Polymorphic serialization for subclasses (e.g., ACPAgent)
+        2. mcp_config encryption when cipher is in context
+        3. mcp_config redaction (omission) when neither cipher nor expose_secrets
+
+        The mcp_config handling is done here (not in a field_serializer) to avoid
+        changing the field's schema type, which would break REST API compatibility.
+        """
+        if isinstance(self, dict):
+            # Sometimes pydantic passes a dict in here.
+            return self
+
+        # Check if handler is for the current (actual) class
+        # See get_handler_class_name() for details on the fragile string parsing
+        handler_class = get_handler_class_name(handler)
+
+        if handler_class != self.__class__.__name__:
+            # Handler is for a base class, delegate to model_dump for proper
+            # subclass serialization (e.g., ACPAgent fields)
+            result = self.model_dump(
+                mode=info.mode,
+                context=info.context,
+                by_alias=info.by_alias,
+                exclude_unset=info.exclude_unset,
+                exclude_defaults=info.exclude_defaults,
+                exclude_none=info.exclude_none,
+                round_trip=info.round_trip,
+                serialize_as_any=info.serialize_as_any,
+            )
+        else:
+            result = handler(self)
+
+        # Handle mcp_config based on context:
+        # - Empty config: omit (nothing sensitive)
+        # - expose_secrets=True: keep as-is (explicitly requested)
+        # - cipher present: encrypt and store in encrypted_mcp_config, omit original
+        # - default: omit (redact sensitive data)
+        if not self.mcp_config:  # Only process non-empty configs
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("cipher"):
+            # Encrypt and add encrypted_mcp_config
+            cipher: Cipher = info.context["cipher"]
+            json_str = json.dumps(self.mcp_config)
+            encrypted = cipher.encrypt(SecretStr(json_str))
+            if encrypted:
+                result["encrypted_mcp_config"] = encrypted
+            # Remove plaintext mcp_config
+            result.pop("mcp_config", None)
+            return result
+        elif info.context and info.context.get("expose_secrets"):
+            # Keep mcp_config as-is (already in result from handler)
+            return result
+        else:
+            # Default: redact by omitting
+            result.pop("mcp_config", None)
+            return result
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -204,7 +373,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {
                 "kind": "LLMSummarizingCondenser",
                 "llm": {
-                    "model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+                    "model": "litellm_proxy/openai/gpt-5.5",
                     "base_url": "https://llm-proxy.eval.all-hands.dev",
                     "api_key": "your_api_key_here",
                 },
@@ -362,30 +531,31 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 result = future.result()
                 tools.extend(result)
 
-        logger.info(
-            f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
-        )
+        logger.info("Loaded %d tools from spec", len(tools))
         if self.filter_tools_regex:
             pattern = re.compile(self.filter_tools_regex)
             tools = [tool for tool in tools if pattern.match(tool.name)]
-            logger.info(
-                f"Filtered to {len(tools)} tools after applying regex filter: "
-                f"{[tool.name for tool in tools]}",
-            )
+            logger.info("Filtered to %d tools after applying regex filter", len(tools))
 
         # Include default tools from include_default_tools; not subject to regex
         # filtering. Use explicit mapping to resolve tool class names.
         # Auto-attach `InvokeSkillTool` iff an AgentSkills-format skill is
-        # loaded and the user hasn't already opted in explicitly.
-        has_agentskills = bool(
+        # directly invocable and the user hasn't already opted in explicitly.
+        has_invocable_agentskills = bool(
             self.agent_context
-            and any(s.is_agentskills_format for s in self.agent_context.skills)
+            and any(
+                s.is_agentskills_format and not s.disable_model_invocation
+                for s in self.agent_context.skills
+            )
         )
         default_tool_names = list(self.include_default_tools)
-        if has_agentskills and InvokeSkillTool.__name__ not in default_tool_names:
+        if (
+            has_invocable_agentskills
+            and InvokeSkillTool.__name__ not in default_tool_names
+        ):
             default_tool_names.append(InvokeSkillTool.__name__)
             logger.debug(
-                "Auto-attached %s (AgentSkills-format skill present in agent_context)",
+                "Auto-attached %s (invocable AgentSkills-format skill present)",
                 InvokeSkillTool.__name__,
             )
 
@@ -439,6 +609,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         NOTE: state will be mutated in-place.
         """
+
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Async variant of :meth:`step`.
+
+        Default implementation runs the synchronous ``step()`` in a
+        thread via :func:`asyncio.loop.run_in_executor` so that
+        blocking tool I/O does not starve the event loop.
+        Subclasses that perform async LLM calls should override this.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.step, conversation, on_event, on_token)
 
     def verify(
         self,
@@ -597,6 +785,43 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools
+
+    # -- Capability helpers -----------------------------------------------
+    # Downstream code should branch on these properties rather than doing
+    # ``isinstance(agent, ACPAgent)`` checks.  That keeps the regular/ACP
+    # code paths decoupled from the concrete class hierarchy.
+
+    @property
+    def supports_openhands_tools(self) -> bool:
+        """``True`` if OpenHands can inject tools into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own toolset.
+        """
+        return True
+
+    @property
+    def supports_openhands_mcp(self) -> bool:
+        """``True`` if OpenHands can inject MCP servers into this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — MCP
+        configuration is owned by the ACP subprocess.
+        """
+        return True
+
+    @property
+    def supports_condenser(self) -> bool:
+        """``True`` if OpenHands context condensing is supported for this agent.
+
+        ``False`` for :class:`~openhands.sdk.agent.acp_agent.ACPAgent` — the
+        ACP server manages its own context window.
+        """
+        return True
+
+    @property
+    def agent_kind(self) -> Literal["openhands", "acp"]:
+        """Agent kind, matching the ``agent_kind`` settings discriminator."""
+        return "openhands"
 
     def ask_agent(self, question: str) -> str | None:  # noqa: ARG002
         """Optional override for stateless question answering.

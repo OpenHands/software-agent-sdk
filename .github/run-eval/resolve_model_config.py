@@ -34,13 +34,14 @@ def _sigterm_handler(signum: int, _frame: object) -> None:
 
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
-signal.signal(signal.SIGALRM, _sigterm_handler)
+if sigalrm := getattr(signal, "SIGALRM", None):
+    signal.signal(sigalrm, _sigterm_handler)
 
 
 # SDK-specific parameters that should not be passed to litellm.
 # These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
-SDK_ONLY_PARAMS = {"disable_vision"}
+SDK_ONLY_PARAMS = {"disable_vision", "inline_image_urls"}
 
 
 # Model configurations dictionary
@@ -69,6 +70,19 @@ MODELS = {
             "model": "litellm_proxy/moonshot/kimi-k2.5",
             "temperature": 1.0,
             "top_p": 0.95,
+        },
+    },
+    # https://www.kimi.com/blog/kimi-k2-6
+    "kimi-k2.6": {
+        "id": "kimi-k2.6",
+        "display_name": "Kimi K2.6",
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2.6",
+            "temperature": 1.0,
+            # Moonshot's public Kimi API rejects http(s) image URLs and only
+            # accepts base64 ``data:`` URLs. This makes the SDK fetch each
+            # image URL and inline it as base64 before sending. See #3155.
+            "inline_image_urls": True,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
@@ -119,6 +133,22 @@ MODELS = {
             "model": "litellm_proxy/anthropic/claude-opus-4-7",
         },
     },
+    # https://www.anthropic.com/news/claude-opus-4-8
+    "claude-opus-4-8": {
+        "id": "claude-opus-4-8",
+        "display_name": "Claude Opus 4.8",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-8",
+        },
+    },
+    # https://www.anthropic.com/news/claude-fable-5
+    "claude-fable-5": {
+        "id": "claude-fable-5",
+        "display_name": "Claude Fable 5",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-fable-5",
+        },
+    },
     "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
@@ -141,6 +171,22 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/gemini-3.1-pro-preview",
             "temperature": 0.0,
+        },
+    },
+    "gemini-3.5-flash": {
+        "id": "gemini-3.5-flash",
+        "display_name": "Gemini 3.5 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/gemini-3.5-flash",
+            "temperature": 0.0,
+            # SWE-bench Multimodal runs against this model fail ~97% of
+            # image-bearing instances with an opaque Vertex 500
+            # "Internal error encountered" on the very first LLM call,
+            # while text-only instances complete normally. Fetching the
+            # image client-side and sending it as a base64 ``data:`` URL
+            # bypasses LiteLLM's server-side URL fetch path, which is the
+            # most plausible failure point. See run #26931958101 analysis.
+            "inline_image_urls": True,
         },
     },
     "gpt-5.2": {
@@ -171,6 +217,14 @@ MODELS = {
         "display_name": "GPT-5.4",
         "llm_config": {
             "model": "litellm_proxy/openai/gpt-5.4",
+            "reasoning_effort": "high",
+        },
+    },
+    "gpt-5.5": {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.5",
             "reasoning_effort": "high",
         },
     },
@@ -208,10 +262,30 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    "minimax-m3": {
+        "id": "minimax-m3",
+        "display_name": "MiniMax M3",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M3",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
         "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
+    },
+    # https://api-docs.deepseek.com/news/news260424
+    "deepseek-v4-pro": {
+        "id": "deepseek-v4-pro",
+        "display_name": "DeepSeek V4 Pro",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-pro"},
+    },
+    "deepseek-v4-flash": {
+        "id": "deepseek-v4-flash",
+        "display_name": "DeepSeek V4 Flash",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
@@ -283,12 +357,50 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    # https://openai.com/index/introducing-gpt-oss/
+    # Note: gpt-oss-20b uses a direct proxy alias (litellm_proxy/gpt-oss-20b);
+    # gpt-oss-120b requires OpenRouter because no equivalent proxy alias exists.
+    # The Fireworks-specific path (fireworks_ai/accounts/fireworks/models/...)
+    # is not registered as a model alias on the proxy, so preflight rejects it
+    # with "Invalid model name". OpenRouter is already configured on the proxy
+    # and routes to multiple backend providers (Fireworks, Together, etc.).
+    "gpt-oss-120b": {
+        "id": "gpt-oss-120b",
+        "display_name": "GPT OSS 120B",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/openai/gpt-oss-120b",
+            "temperature": 0.0,
+        },
+    },
     "nemotron-3-super-120b-a12b": {
         "id": "nemotron-3-super-120b-a12b",
         "display_name": "NVIDIA Nemotron-3 Super 120B",
         "llm_config": {
             "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
+        },
+    },
+    # https://developer.nvidia.com/nemotron
+    # NVIDIA recommends temperature=1.0 and top_p=0.95 for all Nemotron 3 models.
+    "nemotron-3-ultra-550b-a55b": {
+        "id": "nemotron-3-ultra-550b-a55b",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B",
+        "llm_config": {
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    # Paid OpenRouter route (no training, smaller 262k context):
+    # https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+    # Backed by the `nemotron-3-ultra-550b-a55b-or-paid` model on the LiteLLM proxy.
+    "nemotron-3-ultra-550b-a55b-or-paid": {
+        "id": "nemotron-3-ultra-550b-a55b-or-paid",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B (OpenRouter, paid)",
+        "llm_config": {
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b-or-paid",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
     "converse-nemotron-super-3-120b": {
@@ -306,6 +418,17 @@ MODELS = {
             "model": "litellm_proxy/trinity-large-thinking",
             "temperature": 1.0,
             "top_p": 0.95,
+        },
+    },
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/step-3.7-flash",
+            "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }

@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 from pydantic import PrivateAttr
@@ -52,7 +53,19 @@ class MalformedHistoryRaisingLLM(LLM):
             "immediately after"
         )
 
+    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
     def responses(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
+    async def aresponses(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
         raise LLMMalformedConversationHistoryError(
             "messages.134: `tool_use` ids were found without `tool_result` blocks "
             "immediately after"
@@ -176,6 +189,51 @@ def test_agent_logs_warning_when_no_condenser_on_ctx_exceeded(
     )
     assert any("Condenser: None" in record.message for record in caplog.records)
     assert any("test-model" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("force_responses", [True, False])
+def test_agent_rebuilds_view_on_malformed_history_recovery(
+    force_responses: bool,
+):
+    """rebuild_view is called before CondensationRequest on malformed history."""
+    llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
+    agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
+    convo = Conversation(agent=agent)
+    convo._ensure_agent_ready()
+
+    seen: list = []
+    with patch.object(
+        type(convo._state),
+        "rebuild_view",
+        wraps=convo._state.rebuild_view,
+    ) as mock_rebuild:
+        agent.step(convo, on_event=lambda e: seen.append(e))
+        assert mock_rebuild.call_count == 1
+
+    assert any(isinstance(e, CondensationRequest) for e in seen)
+
+
+@pytest.mark.parametrize("force_responses", [True, False])
+@pytest.mark.asyncio
+async def test_agent_rebuilds_view_on_malformed_history_recovery_async(
+    force_responses: bool,
+):
+    """Async parity: astep calls rebuild_view before condensation retry."""
+    llm = MalformedHistoryRaisingLLM(force_responses=force_responses)
+    agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
+    convo = Conversation(agent=agent)
+    convo._ensure_agent_ready()
+
+    seen: list = []
+    with patch.object(
+        type(convo._state),
+        "rebuild_view",
+        wraps=convo._state.rebuild_view,
+    ) as mock_rebuild:
+        await agent.astep(convo, on_event=lambda e: seen.append(e))
+        assert mock_rebuild.call_count == 1
+
+    assert any(isinstance(e, CondensationRequest) for e in seen)
 
 
 class NoHandlesRequestsCondenser(CondenserBase):

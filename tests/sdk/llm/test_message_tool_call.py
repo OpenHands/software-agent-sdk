@@ -47,24 +47,26 @@ def test_from_chat_tool_call_missing_function_name_raises():
 
 
 def test_from_responses_function_call_output_and_response_variants():
-    # OutputFunctionToolCall variant (LiteLLM typed)
     ofc = OutputFunctionToolCall(
         type="function_call",
         name="x",
         arguments="{}",
-        call_id="fc_1",
-        id="fc_1",
+        call_id="call_xyz789",
+        id="fc_abc123",
         status="completed",
     )
     mtc1 = MessageToolCall.from_responses_function_call(ofc)
-    assert mtc1.id == "fc_1" and mtc1.origin == "responses"
+    assert mtc1.id == "call_xyz789"
+    assert mtc1.responses_item_id == "fc_abc123"
+    assert mtc1.origin == "responses"
 
-    # ResponseFunctionToolCall variant (OpenAI typed)
     rfc = ResponseFunctionToolCall(
-        type="function_call", name="y", arguments="{}", call_id="fc_2", id="fc_2"
+        type="function_call", name="y", arguments="{}", call_id="call_2", id="fc_2"
     )
     mtc2 = MessageToolCall.from_responses_function_call(rfc)  # type: ignore[arg-type]
-    assert mtc2.id == "fc_2" and mtc2.name == "y"
+    assert mtc2.id == "call_2"
+    assert mtc2.responses_item_id == "fc_2"
+    assert mtc2.name == "y"
 
 
 def test_from_responses_function_call_missing_ids_raises():
@@ -85,12 +87,12 @@ def test_from_responses_function_call_missing_name_raises():
 
 
 def test_to_responses_dict_prefix_and_stringify_arguments():
-    # Adds fc_ prefix when missing
+    # No responses_item_id: synthesize `fc_{id}` for the item id; call_id verbatim.
     mtc = MessageToolCall(id="123", name="do", arguments="{}", origin="responses")
     d = mtc.to_responses_dict()
-    assert d["id"].startswith("fc_") and d["call_id"].startswith("fc_")
+    assert d["id"] == "fc_123" and d["call_id"] == "123"
 
-    # Keeps existing fc_ prefix
+    # id already fc-prefixed: pass through unchanged.
     mtc2 = MessageToolCall(id="fc_99", name="do", arguments="{}", origin="responses")
     d2 = mtc2.to_responses_dict()
     assert d2["id"] == "fc_99" and d2["call_id"] == "fc_99"
@@ -102,3 +104,22 @@ def test_to_responses_dict_prefix_and_stringify_arguments():
     d3 = mtc3.to_responses_dict()
     assert isinstance(d3["arguments"], str)
     assert json.loads(d3["arguments"]) == {"a": 1}
+
+
+def test_responses_function_call_round_trip_preserves_ids():
+    """Regression for #2905: Responses ingest → replay must be byte-identical."""
+    original = ResponseFunctionToolCall(
+        type="function_call",
+        id="fc_abc123",
+        call_id="call_xyz789",
+        name="bash",
+        arguments='{"cmd": "ls"}',
+    )
+    mtc = MessageToolCall.from_responses_function_call(original)  # type: ignore[arg-type]
+    assert mtc.to_responses_dict() == {
+        "type": "function_call",
+        "id": "fc_abc123",
+        "call_id": "call_xyz789",
+        "name": "bash",
+        "arguments": '{"cmd": "ls"}',
+    }

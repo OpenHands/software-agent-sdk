@@ -99,7 +99,7 @@ if not api_key:
     sys.exit(0)
 
 # Configure LLM
-model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "gpt-5.5")
 llm = LLM(
     usage_id="skills-demo",
     model=model,

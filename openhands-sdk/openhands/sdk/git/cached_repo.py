@@ -6,6 +6,7 @@ and keeping them updated. Used by both the skills system and plugin fetching.
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -21,6 +22,9 @@ logger = get_logger(__name__)
 # Default timeout for acquiring cache locks (seconds)
 # Consistent with other lock timeouts in the SDK (io/local.py, event_store.py)
 DEFAULT_LOCK_TIMEOUT = 30
+
+# Matches a full 40-character git commit SHA (lowercase hex)
+_FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class GitHelper:
@@ -302,14 +306,22 @@ def _clone_repository(
     Args:
         url: Git URL to clone.
         dest: Destination path.
-        branch: Branch to checkout (optional).
+        branch: Branch or tag to checkout during clone. For full 40-character
+            commit SHAs, ``--branch`` is not used; the default branch is cloned
+            in full (no ``--depth``) and the SHA is checked out afterward.
         git: GitHelper instance.
     """
     # Remove existing directory if it exists but isn't a valid git repo
     if dest.exists():
         shutil.rmtree(dest)
 
-    git.clone(url, dest, depth=1, branch=branch)
+    if branch and _FULL_SHA_RE.fullmatch(branch):
+        # git clone --branch does not accept raw commit SHAs. Clone the full
+        # history without specifying a branch, then checkout the target commit.
+        git.clone(url, dest, depth=None, branch=None)
+        git.checkout(dest, branch)
+    else:
+        git.clone(url, dest, depth=1, branch=branch)
     logger.debug(f"Repository cloned to {dest}")
 
 
@@ -320,22 +332,22 @@ def _update_repository(
 ) -> None:
     """Update an existing cached repository to the latest remote state.
 
-    Fetches from origin and resets to match the remote. On any failure, logs a
-    warning and returns silently—the cached repository remains usable (just
-    potentially stale).
+    For a specific ref, first attempts a purely local checkout. If that checkout
+    lands in detached HEAD (the ref is a tag or commit SHA already present in the
+    local object store), the fetch is skipped entirely — immutable refs never
+    change, so the cached objects are already correct. This lets air-gapped clients
+    with a pre-populated cache work without any network access.
+
+    If the local checkout fails (ref not yet cached) or lands on a branch (needs
+    the remote's latest), falls through to the normal fetch → checkout → reset
+    cycle. On any failure, logs a warning and returns silently so the cached
+    repository remains usable.
 
     Behavior by scenario:
-        1. ref is specified: Checkout and reset to that ref (branch/tag/commit)
-        2. ref is None, on a branch: Reset to origin/{current_branch}
-        3. ref is None, detached HEAD: Checkout the remote's default branch
-           (determined via origin/HEAD), then reset to origin/{default_branch}.
-           This handles the case where a previous fetch with a specific ref
-           (e.g., a tag) left the repo in detached HEAD state.
-
-    The detached HEAD recovery ensures that calling fetch(source, update=True)
-    without a ref always updates to "the latest", even if a previous call used
-    a specific tag or commit. Without this, the repo would be stuck on the old
-    ref with no way to get back to the default branch.
+        1. ref locally present and immutable (detached HEAD): local checkout only.
+        2. ref specified but requires fetch: fetch -> checkout + reset.
+        3. ref is None, on a branch: fetch -> reset to origin/{current_branch}.
+        4. ref is None, detached HEAD: fetch -> checkout default branch -> reset.
 
     Args:
         repo_path: Path to the repository.
@@ -343,6 +355,18 @@ def _update_repository(
             or falls back to the remote's default branch.
         git: GitHelper instance.
     """
+    if ref:
+        # Optimistically attempt a local checkout before touching the network.
+        # Detached HEAD after checkout means the ref is a tag or commit SHA that
+        # is already present in the local object store — skip the fetch entirely.
+        try:
+            git.checkout(repo_path, ref)
+            if git.get_current_branch(repo_path) is None:
+                logger.debug("Ref %r already present locally; skipping fetch", ref)
+                return
+        except GitCommandError:
+            pass  # ref not cached locally; fall through to fetch
+
     # Fetch from origin - if this fails, we still have a usable (stale) cache
     if not _try_fetch(repo_path, git):
         return

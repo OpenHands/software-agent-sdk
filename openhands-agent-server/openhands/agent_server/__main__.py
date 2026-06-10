@@ -1,6 +1,8 @@
 import argparse
 import atexit
 import faulthandler
+import importlib
+import os
 import signal
 import sys
 from types import FrameType
@@ -13,6 +15,97 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
+
+_INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+_EXTRA_PYTHON_PATH_ENV = "OH_EXTRA_PYTHON_PATH"
+
+
+def _get_internal_server_url(host: str, port: int) -> str:
+    """Build the current agent-server URL for local secret lookups.
+
+    Wildcard binds are rewritten to loopback so in-process callers can connect
+    back to the current server instance, and IPv6 literals are bracketed to
+    produce a valid URL.
+
+    Examples:
+        >>> _get_internal_server_url("0.0.0.0", 8000)
+        'http://127.0.0.1:8000'
+        >>> _get_internal_server_url("::", 8000)
+        'http://127.0.0.1:8000'
+        >>> _get_internal_server_url("fe80::1", 8000)
+        'http://[fe80::1]:8000'
+    """
+    resolved_host = host
+    if host in {"0.0.0.0", "::", "[::]"}:
+        resolved_host = "127.0.0.1"
+    elif ":" in host and not host.startswith("["):
+        resolved_host = f"[{host}]"
+    return f"http://{resolved_host}:{port}"
+
+
+def extend_python_path(extra_paths: str | None) -> None:
+    """Add directories to ``sys.path`` so ``importlib.import_module`` can find
+    external custom-tool modules — even when running from a PyInstaller binary.
+
+    Paths are read from *extra_paths* (``--extra-python-path`` CLI arg) **and**
+    the ``OH_EXTRA_PYTHON_PATH`` environment variable.  Both use the
+    platform path separator (``':'`` on POSIX, ``';'`` on Windows).
+
+    Non-existent directories are skipped with a warning; duplicates and paths
+    already on ``sys.path`` are silently ignored.
+    """
+    raw_parts: list[str] = []
+    for source in (extra_paths, os.environ.get(_EXTRA_PYTHON_PATH_ENV)):
+        if source:
+            raw_parts.extend(source.split(os.pathsep))
+
+    added = 0
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+        resolved = os.path.abspath(part)
+        if not os.path.isdir(resolved):
+            logger.warning(
+                "Ignoring non-existent --extra-python-path entry: %s", resolved
+            )
+            continue
+        if resolved not in sys.path:
+            sys.path.insert(0, resolved)
+            logger.info("Added to sys.path: %s", resolved)
+            added += 1
+
+    if added:
+        logger.info(
+            "Extended sys.path with %d director%s for custom tool imports",
+            added,
+            "y" if added == 1 else "ies",
+        )
+
+
+def preload_modules(modules_arg: str | None) -> None:
+    """Import user-specified modules so their top-level side effects run.
+
+    Used to register custom tools before any conversation is created, avoiding
+    a race with dynamic `tool_module_qualnames` import in conversation_service.
+    """
+    if not modules_arg:
+        return
+    for module_name in modules_arg.split(","):
+        module_name = module_name.strip()
+        if not module_name:
+            continue
+        try:
+            importlib.import_module(module_name)
+            logger.info("Imported module: %s", module_name)
+        except ImportError as e:
+            logger.error(
+                "Failed to import module '%s' specified in --import-modules: %s",
+                module_name,
+                e,
+            )
+            raise
 
 
 def check_browser():
@@ -110,25 +203,55 @@ def main() -> None:
         action="store_true",
         help="Check if browser functionality works and exit",
     )
+    parser.add_argument(
+        "--import-modules",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated list of modules to import at startup "
+            "(e.g. 'myapp.tools,myapp.plugins')"
+        ),
+    )
+    parser.add_argument(
+        "--extra-python-path",
+        type=str,
+        default=None,
+        help=(
+            "Additional directories to add to sys.path for custom tool imports "
+            f"('{os.pathsep}'-separated).  Also reads from the "
+            f"{_EXTRA_PYTHON_PATH_ENV} environment variable."
+        ),
+    )
 
     args = parser.parse_args()
 
-    # Handle browser check
+    # Handle browser check (should run without importing user modules)
     if args.check_browser:
         if check_browser():
             sys.exit(0)
         else:
             sys.exit(1)
 
-    print(f"🙌 Starting OpenHands Agent Server on {args.host}:{args.port}")
-    print(f"📖 API docs will be available at http://{args.host}:{args.port}/docs")
-    print(f"🔄 Auto-reload: {'enabled' if args.reload else 'disabled'}")
+    # Extend sys.path before importing user modules so external .py files
+    # are reachable — critical for PyInstaller binary builds.
+    extend_python_path(args.extra_python_path)
+
+    # Import user modules after early-exit checks
+    preload_modules(args.import_modules)
+
+    os.environ[_INTERNAL_SERVER_URL_ENV] = _get_internal_server_url(
+        args.host, args.port
+    )
+
+    print(f"Starting OpenHands Agent Server on {args.host}:{args.port}")
+    print(f"API docs will be available at http://{args.host}:{args.port}/docs")
+    print(f"Auto-reload: {'enabled' if args.reload else 'disabled'}")
 
     # Show debug mode status
     if DEBUG:
-        print("🐛 DEBUG mode: ENABLED (stack traces will be shown)")
+        print("DEBUG mode: ENABLED (stack traces will be shown)")
     else:
-        print("🔒 DEBUG mode: DISABLED")
+        print("DEBUG mode: DISABLED")
     print()
 
     # Configure uvicorn logging based on DEBUG environment variable

@@ -18,6 +18,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -45,7 +46,7 @@ class Conversation:
         from openhands.sdk.plugin import PluginSource
         from pydantic import SecretStr
 
-        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
         agent = Agent(llm=llm, tools=[])
         conversation = Conversation(
             agent=agent,
@@ -80,6 +81,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -104,6 +107,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -128,6 +133,8 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -181,6 +188,8 @@ class Conversation:
                 secrets=secrets,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
+                user_id=user_id,
+                client_tools=client_tools,
             )
 
         return LocalConversation(
@@ -199,4 +208,6 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            user_id=user_id,
+            client_tools=client_tools,
         )

@@ -69,7 +69,7 @@ class TestResolveSourcePath:
 
     def test_resolve_relative_with_base(self):
         result = resolve_source_path("./skill", base_path=Path("/project"))
-        assert result == Path("/project/skill")
+        assert result == (Path("/project") / "skill").resolve()
 
     def test_resolve_home_path(self):
         result = resolve_source_path("~/documents/skill")

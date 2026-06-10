@@ -39,7 +39,7 @@ from pydantic import ConfigDict, Field, PrivateAttr
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
-from openhands.sdk.llm.streaming import TokenCallbackType
+from openhands.sdk.llm.streaming import AnyTokenCallbackType, TokenCallbackType
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
 
@@ -200,6 +200,40 @@ class TestLLM(LLM):
             message=message,
             metrics=self._zero_metrics(),
             raw_response=raw_response,
+        )
+
+    async def acompletion(
+        self,
+        messages: list[Message],
+        tools: Sequence[ToolDefinition] | None = None,
+        _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
+        on_token: AnyTokenCallbackType | None = None,  # noqa: ARG002
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Async variant that delegates to the synchronous :meth:`completion`.
+
+        Runs the sync call in an executor so the event loop is not
+        blocked, even though the underlying ``deque.popleft()`` is
+        effectively instantaneous.
+
+        ``on_token`` is accepted for API compatibility but not forwarded
+        because :meth:`completion` ignores it and the type union
+        (sync | async callback) is not assignable to the sync-only
+        signature.
+        """
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.completion(
+                messages=messages,
+                tools=tools,
+                _return_metrics=_return_metrics,
+                add_security_risk_prediction=add_security_risk_prediction,
+                **kwargs,
+            ),
         )
 
     def responses(

@@ -1,150 +1,111 @@
-import re
-import traceback
-from typing import Any
+"""Command splitting and escape utilities backed by tree-sitter-bash."""
 
-import bashlex
-from bashlex.errors import ParsingError
+import re
+
+from tree_sitter import Node
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.shell_parser import parse
 
 
 logger = get_logger(__name__)
 
+# Regions whose contents bash takes verbatim — escape doubling stops at
+# their boundaries so operators nested inside (e.g.) a double-quoted
+# string remain untouched. Walking does not recurse into these nodes.
+_PRESERVE_TYPES: frozenset[str] = frozenset(
+    {
+        "string",
+        "raw_string",
+        "ansi_c_string",
+        "translated_string",
+        "command_substitution",
+        "expansion",
+        "simple_expansion",
+        "heredoc_body",
+        "comment",
+    }
+)
+
+_ESCAPE_PATTERN: re.Pattern[bytes] = re.compile(rb"\\([;&|<>])")
+
 
 def split_bash_commands(commands: str) -> list[str]:
+    """Split a multi-statement bash input into top-level statements.
+
+    Statements separated by a newline (with or without intermediate
+    whitespace/comments) become separate entries; statements joined by
+    ``;``, ``&&``, ``||``, ``|``, or ``&`` stay together. Comments and
+    whitespace between two statements are folded into the preceding
+    entry. On parse failure the input is returned as a single-element
+    list.
+    """
     if not commands.strip():
         return [""]
-    try:
-        parsed = bashlex.parse(commands)
-    except (
-        ParsingError,
-        NotImplementedError,
-        TypeError,
-        AttributeError,
-    ):
-        # Added AttributeError to catch 'str' object has no attribute 'kind' error
-        # (issue #8369)
+
+    source = commands.encode()
+    result = parse(commands)
+    root = result.tree.root_node
+
+    if result.has_error:
         logger.debug(
-            f"Failed to parse bash commands\n[input]: {commands}\n[warning]: "
-            f"{traceback.format_exc()}\nThe original command will be returned as is."
+            "tree-sitter-bash reported parse errors; returning input as-is\n"
+            "[input]: %s",
+            commands,
         )
-        # If parsing fails, return the original commands
         return [commands]
 
-    result: list[str] = []
-    last_end = 0
+    statements = [c for c in root.named_children if c.type != "comment"]
+    if not statements:
+        return [commands]
 
-    for node in parsed:
-        start, end = node.pos
+    boundaries = [statements[0].start_byte]
+    for cur, nxt in zip(statements, statements[1:]):
+        if b"\n" in source[cur.end_byte : nxt.start_byte]:
+            boundaries.append(nxt.start_byte)
+    boundaries.append(len(source))
 
-        # Include any text between the last command and this one
-        if start > last_end:
-            between = commands[last_end:start]
-            logger.debug(f"BASH PARSING between: {between}")
-            if result:
-                result[-1] += between.rstrip()
-            elif between.strip():
-                # THIS SHOULD NOT HAPPEN
-                result.append(between.rstrip())
-
-        # Extract the command, preserving original formatting
-        command = commands[start:end].rstrip()
-        logger.debug(f"BASH PARSING command: {command}")
-        result.append(command)
-
-        last_end = end
-
-    # Add any remaining text after the last command to the last command
-    remaining = commands[last_end:].rstrip()
-    logger.debug(f"BASH PARSING remaining: {remaining}")
-    if last_end < len(commands) and result:
-        result[-1] += remaining
-        logger.debug(f"BASH PARSING result[-1] += remaining: {result[-1]}")
-    elif last_end < len(commands):
-        if remaining:
-            result.append(remaining)
-            logger.debug(f"BASH PARSING result.append(remaining): {result[-1]}")
-    return result
+    return [source[a:b].decode().rstrip() for a, b in zip(boundaries, boundaries[1:])]
 
 
 def escape_bash_special_chars(command: str) -> str:
-    r"""Escapes characters that have different interpretations in bash vs python.
-    Specifically handles escape sequences like \;, \|, \&, etc.
+    r"""Double the escape on ``\;``, ``\&``, ``\|``, ``\<``, ``\>``.
+
+    Sequences inside regions bash takes verbatim — single- and
+    double-quoted strings, command substitutions, parameter expansions,
+    heredoc bodies, and comments — are left untouched. On parse failure
+    the input is returned unchanged.
     """
     if command.strip() == "":
         return ""
 
-    try:
-        parts = []
-        last_pos = 0
-
-        def visit_node(node: Any) -> None:
-            nonlocal last_pos
-            if (
-                node.kind == "redirect"
-                and hasattr(node, "heredoc")
-                and node.heredoc is not None
-            ):
-                # We're entering a heredoc - preserve everything as-is until we see EOF
-                # Store the heredoc end marker (usually 'EOF' but could be different)
-                between = command[last_pos : node.pos[0]]
-                parts.append(between)
-                # Add the heredoc start marker
-                parts.append(command[node.pos[0] : node.heredoc.pos[0]])
-                # Add the heredoc content as-is
-                parts.append(command[node.heredoc.pos[0] : node.heredoc.pos[1]])
-                last_pos = node.pos[1]
-                return
-
-            if node.kind == "word":
-                # Get the raw text between the last position and current word
-                between = command[last_pos : node.pos[0]]
-                word_text = command[node.pos[0] : node.pos[1]]
-
-                # Add the between text, escaping special characters
-                between = re.sub(r"\\([;&|><])", r"\\\\\1", between)
-                parts.append(between)
-
-                # Check if word_text is a quoted string or command substitution
-                if (
-                    (word_text.startswith('"') and word_text.endswith('"'))
-                    or (word_text.startswith("'") and word_text.endswith("'"))
-                    or (word_text.startswith("$(") and word_text.endswith(")"))
-                    or (word_text.startswith("`") and word_text.endswith("`"))
-                ):
-                    # Preserve quoted strings, command substitutions, and heredoc
-                    # content as-is
-                    parts.append(word_text)
-                else:
-                    # Escape special chars in unquoted text
-                    word_text = re.sub(r"\\([;&|><])", r"\\\\\1", word_text)
-                    parts.append(word_text)
-
-                last_pos = node.pos[1]
-                return
-
-            # Visit child nodes
-            if hasattr(node, "parts"):
-                for part in node.parts:
-                    visit_node(part)
-
-        # Process all nodes in the AST
-        nodes = list(bashlex.parse(command))
-        for node in nodes:
-            between = command[last_pos : node.pos[0]]
-            between = re.sub(r"\\([;&|><])", r"\\\\\1", between)
-            parts.append(between)
-            last_pos = node.pos[0]
-            visit_node(node)
-
-        # Handle any remaining text after the last word
-        remaining = command[last_pos:]
-        parts.append(remaining)
-        return "".join(parts)
-    except (ParsingError, NotImplementedError, TypeError, AttributeError):
+    source = command.encode()
+    result = parse(command)
+    if result.has_error:
         logger.debug(
-            f"Failed to parse bash commands for special characters escape\n[input]: "
-            f"{command}\n[warning]: {traceback.format_exc()}\nThe original command "
-            f"will be returned as is."
+            "tree-sitter-bash reported parse errors; returning input as-is\n"
+            "[input]: %s",
+            command,
         )
         return command
+
+    preserved: list[tuple[int, int]] = []
+
+    def collect(node: Node) -> None:
+        if node.type in _PRESERVE_TYPES:
+            preserved.append((node.start_byte, node.end_byte))
+            return
+        for child in node.children:
+            collect(child)
+
+    collect(result.tree.root_node)
+
+    out = bytearray()
+    cursor = 0
+    for start, end in preserved:
+        out.extend(_ESCAPE_PATTERN.sub(rb"\\\\\1", source[cursor:start]))
+        out.extend(source[start:end])
+        cursor = end
+    out.extend(_ESCAPE_PATTERN.sub(rb"\\\\\1", source[cursor:]))
+
+    return out.decode()

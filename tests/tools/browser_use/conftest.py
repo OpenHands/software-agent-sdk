@@ -1,6 +1,6 @@
 """Shared test utilities for browser_use tests."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,13 +15,19 @@ def mock_browser_server():
     server = MagicMock()
     server._init_browser_session = AsyncMock()
     server._inject_scripts_to_session = AsyncMock()
+    server._close_all_sessions = AsyncMock()
     return server
 
 
 @pytest.fixture
 def mock_browser_executor(mock_browser_server):
     """Create a BrowserToolExecutor with mocked server."""
-    executor = BrowserToolExecutor()
+    with patch.object(
+        BrowserToolExecutor,
+        "_ensure_chromium_available",
+        return_value="/usr/bin/chromium",
+    ):
+        executor = BrowserToolExecutor()
     executor._server = mock_browser_server
     return executor
 

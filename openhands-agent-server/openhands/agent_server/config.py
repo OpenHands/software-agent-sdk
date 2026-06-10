@@ -7,13 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.env_parser import from_env
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 # Environment variable constants
 V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
 V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
-V0_RUNTIME_URL = "RUNTIME_URL"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 _logger = logging.getLogger(__name__)
 
@@ -53,17 +51,7 @@ def _default_web_url() -> str | None:
     if web_url:
         return web_url
 
-    legacy_web_url = os.getenv(V0_RUNTIME_URL)
-    if not legacy_web_url:
-        return None
-
-    warn_deprecated(
-        "RUNTIME_URL environment variable",
-        deprecated_in="1.15.0",
-        removed_in="1.20.0",
-        details="Use OH_WEB_URL instead.",
-    )
-    return legacy_web_url
+    return None
 
 
 class WebhookSpec(BaseModel):
@@ -100,6 +88,17 @@ class WebhookSpec(BaseModel):
     )
     retry_delay: int = Field(default=5, ge=0, description="The delay between retries")
 
+    # Backpressure parameters
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on the number of events buffered for delivery. When the "
+            "downstream is failing and events are re-queued for retry, the oldest "
+            "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+
 
 class Config(BaseModel):
     """
@@ -121,8 +120,10 @@ class Config(BaseModel):
     allow_cors_origins: list[str] = Field(
         default_factory=list,
         description=(
-            "Set of CORS origins permitted by this server (Anything from localhost is "
-            "always accepted regardless of what's in here)."
+            "CORS origins permitted by this server. Localhost / 127.0.0.1 "
+            "and ``DOCKER_HOST_ADDR`` are always allowed. Does not apply to "
+            "the workspace cookie routes, which accept any origin — see "
+            "``middleware.py``."
         ),
     )
     conversations_path: Path = Field(
@@ -136,6 +137,19 @@ class Config(BaseModel):
         description=(
             "The location of the directory where bash events are stored as files. "
             "Defaults to 'workspace/bash_events'."
+        ),
+    )
+    bash_events_retention_seconds: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How long bash event files are retained on disk, in seconds. "
+            "A background task purges events older than this window on a "
+            "rolling basis. None (default) retains events indefinitely. "
+            "Should be set higher than the longest expected command timeout: "
+            "a command whose BashCommand file is purged mid-execution will "
+            "complete normally, but its on-disk event history will be "
+            "incomplete. A value >= 2x max command timeout avoids this."
         ),
     )
     static_files_path: Path | None = Field(
@@ -174,6 +188,15 @@ class Config(BaseModel):
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
+    )
+    max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Maximum number of conversations that can execute agent steps "
+            "concurrently.  Controls the size of the dedicated thread pool "
+            "used for conversation.run() calls."
+        ),
     )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,

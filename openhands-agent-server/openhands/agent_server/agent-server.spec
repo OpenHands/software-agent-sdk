@@ -6,11 +6,16 @@ PyInstaller spec for OpenHands Agent Server with PEP 420 (implicit namespace) la
 from pathlib import Path
 import os
 import site
+import sys
 from PyInstaller.utils.hooks import (
     collect_submodules,
     collect_data_files,
     copy_metadata,
 )
+
+# GNU strip on Windows PE files (notably python3XX.dll) can corrupt the binary
+# and cause LoadLibrary to fail at runtime with "Invalid access to memory location".
+IS_WINDOWS = sys.platform == "win32"
 
 # Get the project root directory (current working directory when running PyInstaller)
 project_root = Path.cwd()
@@ -81,7 +86,17 @@ a = Analysis(
         # OpenHands Tools browser recording JS files
         *collect_data_files("openhands.tools.browser_use", includes=["js/*.js"]),
 
+        # Built-in subagent definitions consumed by register_builtins_agents()
+        # at agent-server startup. Without these, the registry stays empty in
+        # PyInstaller builds and downstream clients see an unpopulated
+        # task_tool_set description.
+        *collect_data_files("openhands.tools.preset", includes=["subagents/*.md"]),
+
         # Package metadata for importlib.metadata
+        *copy_metadata("openhands-agent-server"),
+        *copy_metadata("openhands-sdk"),
+        *copy_metadata("openhands-tools"),
+        *copy_metadata("openhands-workspace"),
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
     ],
@@ -99,6 +114,9 @@ a = Analysis(
         *collect_submodules("fastmcp"),
         *collect_submodules("fakeredis"),
         *collect_submodules("lupa"),  # Required for fakeredis[lua] Lua scripting support
+        # rich._unicode_data.unicodeX_Y_Z is imported dynamically based on
+        # unicodedata.unidata_version (e.g. unicode17_0_0 on Python 3.13).
+        *collect_submodules("rich"),
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",
@@ -148,7 +166,7 @@ exe = EXE(
     name="openhands-agent-server",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=not IS_WINDOWS,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,

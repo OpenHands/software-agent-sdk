@@ -28,6 +28,7 @@ def _make_skill(
     content: str = "# body\n\nSome guidance.",
     is_agentskills_format: bool = True,
     trigger=None,
+    disable_model_invocation: bool = False,
 ) -> Skill:
     return Skill(
         name=name,
@@ -36,6 +37,7 @@ def _make_skill(
         source=f"/skills/{name}/SKILL.md",
         is_agentskills_format=is_agentskills_format,
         trigger=trigger,
+        disable_model_invocation=disable_model_invocation,
     )
 
 
@@ -171,7 +173,7 @@ def test_footer_uses_absolute_path_when_outside_working_dir(tmp_path):
     obs = _run("pdf-analyst", conv)
 
     assert obs.is_error is False
-    assert str(skill_dir.resolve()) in obs.text
+    assert skill_dir.resolve().as_posix() in obs.text
     assert "scripts/" in obs.text and "references/" in obs.text
     assert obs.text.rstrip().endswith("relative to that directory.")
 
@@ -265,6 +267,22 @@ def test_legacy_triggered_skill_is_invocable():
     assert conv.state.invoked_skills == ["flarglebargle"]
 
 
+def test_disable_model_invocation_rejects_direct_invocation():
+    skill = _make_skill(
+        "trigger-only",
+        disable_model_invocation=True,
+        trigger=KeywordTrigger(keywords=["trigger-only"]),
+    )
+    conv = _make_conv([skill])
+
+    obs = _run("trigger-only", conv)
+
+    assert obs.is_error is True
+    assert obs.skill_name == "trigger-only"
+    assert "cannot be invoked directly" in obs.text
+    assert conv.state.invoked_skills == []
+
+
 @pytest.mark.parametrize(
     ("conv_factory", "requested", "expected_substrings"),
     [
@@ -336,6 +354,29 @@ def _make_agent(skills: list[Skill]) -> Agent:
             [_make_skill("frontend-design", is_agentskills_format=True)],
             True,
             id="agentskills-present",
+        ),
+        pytest.param(
+            [
+                _make_skill(
+                    "trigger-only",
+                    is_agentskills_format=True,
+                    disable_model_invocation=True,
+                )
+            ],
+            False,
+            id="only-disabled-agentskills",
+        ),
+        pytest.param(
+            [
+                _make_skill(
+                    "trigger-only",
+                    is_agentskills_format=True,
+                    disable_model_invocation=True,
+                ),
+                _make_skill("frontend-design", is_agentskills_format=True),
+            ],
+            True,
+            id="mixed-disabled-and-invocable-agentskills",
         ),
     ],
 )

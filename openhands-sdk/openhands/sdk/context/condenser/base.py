@@ -39,6 +39,10 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
 
         Args:
             view: A view of the history containing all events that should be condensed.
+                **Implementations must treat this view as read-only.** The view may be
+                a cached projection owned by ``ConversationState``, and
+                mutating it in place will corrupt that cache.  Return a new ``View``
+                (e.g. ``View(events=view.events[k:])``) or a ``Condensation`` instead.
             agent_llm: LLM instance used by the agent. Condensers use this for token
                 counting purposes. Defaults to None.
 
@@ -46,6 +50,16 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
             View | Condensation: A condensed view of the events or an event indicating
             the history has been condensed.
         """
+
+    async def acondense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation:
+        """Async variant of :meth:`condense`.
+
+        Default implementation delegates to the synchronous ``condense()``.
+        Subclasses that perform async I/O (e.g. LLM calls) should override this.
+        """
+        return self.condense(view, agent_llm=agent_llm)
 
     def handles_condensation_requests(self) -> bool:
         """Whether this condenser handles explicit condensation requests.
@@ -182,3 +196,57 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
         # Otherwise we're safe to just return the view.
         else:
             return view
+
+    async def acondense(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> View | Condensation:
+        """Async variant of :meth:`condense`.
+
+        Delegates to :meth:`aget_condensation` when condensation is required,
+        allowing subclasses that perform async LLM calls to override only
+        ``aget_condensation``.
+        """
+        request = self.condensation_requirement(view, agent_llm=agent_llm)
+        if request is not None:
+            try:
+                return await self.aget_condensation(view, agent_llm=agent_llm)
+
+            except NoCondensationAvailableException as e:
+                logger.debug(f"No condensation available: {e}")
+
+                if request == CondensationRequirement.SOFT:
+                    return view
+
+                elif request == CondensationRequirement.HARD:
+                    try:
+                        hard_reset_condensation = await self.ahard_context_reset(
+                            view, agent_llm=agent_llm
+                        )
+                        if hard_reset_condensation is not None:
+                            return hard_reset_condensation
+                    except Exception as hard_reset_exception:
+                        raise hard_reset_exception from e
+
+                raise e
+
+        return view
+
+    async def aget_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        """Async variant of :meth:`get_condensation`.
+
+        Default delegates to the sync version.
+        """
+        return self.get_condensation(view, agent_llm=agent_llm)
+
+    async def ahard_context_reset(
+        self,
+        view: View,
+        agent_llm: LLM | None = None,
+    ) -> Condensation | None:
+        """Async variant of :meth:`hard_context_reset`.
+
+        Default delegates to the sync version.
+        """
+        return self.hard_context_reset(view, agent_llm=agent_llm)

@@ -22,7 +22,7 @@ on:
             model_ids:
                 description: >-
                     Comma-separated model IDs to test (from resolve_model_config.py).
-                    Example: claude-sonnet-4-6,glm-4.7. Defaults to a standard set.
+                    Example: gpt-5.5,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -50,7 +50,7 @@ on:
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
     # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
-    DEFAULT_MODEL_IDS: claude-sonnet-4-6,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3.1-pro
+    DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro
 
 jobs:
     setup-matrix:
@@ -86,15 +86,18 @@ jobs:
                     echo "Using specified model_ids: $MODEL_IDS"
                   fi
 
+                  export MODEL_IDS
+
                   # Resolve model configs using resolve_model_config.py
                   # Transform output to matrix format for integration tests
-                  MATRIX=$(python3 << EOF
+                  MATRIX=$(python3 << 'EOF'
                   import json
+                  import os
                   import sys
                   sys.path.insert(0, '.github/run-eval')
                   from resolve_model_config import MODELS
 
-                  model_ids = "$MODEL_IDS".split(",")
+                  model_ids = os.environ["MODEL_IDS"].split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
 
                   matrix = []
@@ -129,10 +132,14 @@ jobs:
               id: resolve-issue
               env:
                   ISSUE_NUMBER_INPUT: ${{ github.event.inputs.issue_number || '' }}
-                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  PR_NUMBER: ${{ github.event.pull_request.number || '' }}
               run: |
                   # Priority: explicit input > PR number from label trigger
                   if [ -n "$ISSUE_NUMBER_INPUT" ]; then
+                    if ! [[ "$ISSUE_NUMBER_INPUT" =~ ^[0-9]+$ ]]; then
+                      echo "Invalid issue_number input. Expected a numeric issue or PR number." >&2
+                      exit 1
+                    fi
                     echo "issue_number=$ISSUE_NUMBER_INPUT" >> "$GITHUB_OUTPUT"
                   elif [ -n "$PR_NUMBER" ]; then
                     echo "issue_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -153,14 +160,14 @@ jobs:
         steps:
             - name: Comment on PR (integration tests via label)
               if: github.event.label.name == 'integration-test'
-              uses: KeisukeYamashita/create-comment@v1
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
               with:
                   unique: false
                   comment: |
                       Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
             - name: Comment on PR (behavior tests via label)
               if: github.event.label.name == 'behavior-test'
-              uses: KeisukeYamashita/create-comment@v1
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
               with:
                   unique: false
                   comment: |
@@ -181,22 +188,23 @@ jobs:
                   MODEL_IDS: ${{ github.event.inputs.model_ids || 'all models' }}
                   TEST_TYPE: ${{ github.event.inputs.test_type || 'all' }}
                   REASON: ${{ github.event.inputs.reason }}
+                  WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                   # Sanitize @OpenHands mentions to prevent self-mention loops
-                  SANITIZED_REASON=$(echo "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
-                  SANITIZED_MODEL_IDS=$(echo "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_REASON=$(printf '%s' "$REASON" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
+                  SANITIZED_MODEL_IDS=$(printf '%s' "$MODEL_IDS" | sed 's/@OpenHands/@\u200BOpenHands/g; s/@openhands/@\u200Bopenhands/g')
                   COMMENT_BODY=$(cat <<EOF
                   **Integration Tests Triggered**
 
                   - **Reason:** $SANITIZED_REASON
                   - **Test type:** $TEST_TYPE
                   - **Models:** $SANITIZED_MODEL_IDS
-                  - **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                  - **Workflow run:** $WORKFLOW_RUN_URL
 
                   Results will be posted here when complete.
                   EOF
                   )
-                  gh issue comment "$ISSUE_NUMBER" --body "$COMMENT_BODY"
+                  printf '%s' "$COMMENT_BODY" | gh issue comment "$ISSUE_NUMBER" --body-file -
 
     run-integration-tests:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
@@ -215,7 +223,7 @@ jobs:
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-label-comment, post-dispatch-comment]
-        runs-on: ubuntu-22.04
+        runs-on: ubuntu-24.04
         timeout-minutes: 180
         permissions:
             contents: read
@@ -239,18 +247,29 @@ jobs:
                   persist-credentials: false
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: ${{ matrix.python-version }}
 
+            - name: Install Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: '22'
+
+            - name: Install Chromium
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y chromium-browser
+
             - name: Install Python dependencies using uv
               run: |
-                  uv sync --dev
-                  uv pip install pytest
+                  uv sync --frozen --group dev
 
             # Run integration test evaluation
             - name: Determine test selection
+              env:
+                  TEST_TYPE_INPUT: ${{ github.event.inputs.test_type }}
               run: |
                   TEST_TYPE_ARGS=""
                   if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
@@ -260,7 +279,7 @@ jobs:
                     TEST_TYPE_ARGS="--test-type integration"
                     echo "integration-test label detected; running integration tests only."
                   elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-                    test_type="${{ github.event.inputs.test_type }}"
+                    test_type="$TEST_TYPE_INPUT"
                     case "$test_type" in
                       behavior)
                         TEST_TYPE_ARGS="--test-type behavior"
@@ -382,7 +401,7 @@ jobs:
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
@@ -406,8 +425,6 @@ jobs:
 
             - name: Consolidate test results
               env:
-                  EVENT_NAME: ${{ github.event_name }}
-                  PR_NUMBER: ${{ github.event.pull_request.number }}
                   MANUAL_REASON: ${{ github.event.inputs.reason }}
                   COMMIT_SHA: ${{ github.sha }}
                   PYTHONPATH: ${{ github.workspace }}
@@ -438,9 +455,10 @@ jobs:
                   # Sanitize @OpenHands mentions to prevent self-mention loops
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
-                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+                  printf '%s' "$COMMENT_BODY" | gh pr comment "$PR_NUMBER" --body-file -
               env:
                   GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
 
             - name: Comment on specified issue/PR (workflow_dispatch)
               if: github.event_name == 'workflow_dispatch' && needs.setup-matrix.outputs.issue_number != ''
@@ -465,7 +483,7 @@ jobs:
 
             - name: Comment with results on tracker issue
               if: github.event_name == 'schedule'
-              uses: KeisukeYamashita/create-comment@v1
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
               with:
                   number: 2078
                   unique: false

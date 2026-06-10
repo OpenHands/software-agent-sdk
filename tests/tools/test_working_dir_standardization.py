@@ -7,9 +7,11 @@ Both TerminalTool (BashTool) and FileEditorTool (StrReplaceEditorTool) should us
 the same source for working directory: conv_state.workspace.working_dir
 """
 
+import os
 import tempfile
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
@@ -18,6 +20,12 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.file_editor import FileEditorAction, FileEditorTool
 from openhands.tools.terminal import TerminalAction, TerminalTool
+
+
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="TerminalTool currently uses Unix terminal backends",
+)
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:

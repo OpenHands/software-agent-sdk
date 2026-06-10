@@ -27,7 +27,7 @@ jobs:
             pull-requests: write
         steps:
             - name: Comment on PR
-              uses: KeisukeYamashita/create-comment@v1
+              uses: KeisukeYamashita/create-comment@1d95d97d7b1b73ab66e5ca931610e4e10ddc5eed # v1
               with:
                   unique: false
                   comment: |
@@ -79,7 +79,7 @@ jobs:
                   persist-credentials: false
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: ${{ matrix.python-version }}
@@ -176,7 +176,7 @@ jobs:
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
@@ -228,6 +228,9 @@ jobs:
 
             - name: Create consolidated PR comment
               if: github.event_name == 'pull_request_target'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
               run: |
                   # Add header to clarify these are non-blocking tests
                   echo "## Condenser Test Results (Non-Blocking)" > final_report.md
@@ -239,6 +242,4 @@ jobs:
                   # Sanitize @OpenHands mentions to prevent self-mention loops
                   COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < final_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
-                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
-              env:
-                  GH_TOKEN: ${{ github.token }}
+                  printf '%s' "$COMMENT_BODY" | gh pr comment "$PR_NUMBER" --body-file -

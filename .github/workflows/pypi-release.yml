@@ -17,6 +17,9 @@ jobs:
             github.event_name == 'workflow_dispatch' ||
             !github.event.release.prerelease
         runs-on: ubuntu-24.04
+        permissions:
+            actions: write
+            contents: read
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
@@ -25,10 +28,12 @@ jobs:
 
             - name: Extract version from release tag
               id: extract_version
+              env:
+                  GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
               run: |
                   # Get version from release tag (e.g., v1.2.3 -> 1.2.3)
                   if [[ "${{ github.event_name }}" == "release" ]]; then
-                    VERSION="${{ github.event.release.tag_name }}"
+                    VERSION="$GITHUB_EVENT_RELEASE_TAG_NAME"
                     VERSION="${VERSION#v}"  # Remove 'v' prefix if present
                   else
                     # For manual dispatch, extract from pyproject.toml
@@ -38,7 +43,7 @@ jobs:
                   echo "📦 Version: $VERSION"
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
@@ -73,4 +78,15 @@ jobs:
                   echo "✅ All packages built and published successfully!"
                   echo ""
                   echo "📋 Note: Version bump PRs will be created by the 'Create Version Bump PRs' workflow"
-                  echo "   which triggers automatically after this workflow completes."
+                  echo "   which is dispatched after this publish succeeds."
+
+            - name: Dispatch version bump workflow
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.extract_version.outputs.version }}
+              run: |
+                  gh workflow run version-bump-prs.yml \
+                    --repo "${{ github.repository }}" \
+                    -f "version=${VERSION}"
+
+                  echo "🚀 Dispatched version-bump-prs.yml for v${VERSION}"

@@ -1,3 +1,4 @@
+import asyncio
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -163,6 +164,18 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         """
         pass
 
+    def interrupt(self) -> None:
+        """Interrupt any in-flight execution (e.g., send Ctrl+C).
+
+        Called from a *different* thread when a conversation interrupt
+        fires while this tool is still executing.  Implementations should
+        be thread-safe and idempotent.
+
+        The default is a no-op; tools with long-running operations
+        (terminal subprocesses, browser navigations, …) should override.
+        """
+        pass
+
 
 class ExecutableTool(Protocol):
     """Protocol for tools that are guaranteed to have a non-None executor.
@@ -238,6 +251,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
     )
+
+    @classmethod
+    def is_usable(cls) -> bool:
+        """Return whether the tool can be used in the current environment."""
+        return True
 
     @classmethod
     @abstractmethod
@@ -371,6 +389,21 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 "Output must be dict or BaseModel when no output schema is defined"
             )
 
+    async def acall(
+        self, action: ActionT, conversation: "LocalConversation | None" = None
+    ) -> Observation:
+        """Run this tool asynchronously when called directly.
+
+        The default implementation runs :meth:`__call__` in a thread via the
+        event loop's executor, so callers can await a single tool invocation
+        without blocking the event loop.
+
+        The SDK's internal async dispatch path does not call this hook; it
+        dispatches through :meth:`__call__` directly from its own executor.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self, action, conversation)
+
     def to_mcp_tool(
         self,
         input_schema: dict[str, Any] | None = None,
@@ -422,7 +455,12 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         # Always add summary field for transparency and explainability
         action_type = _create_action_type_with_summary(action_type)
 
-        return action_type.to_mcp_schema()
+        schema = action_type.to_mcp_schema()
+        _prioritize_schema_fields(
+            schema=schema,
+            priority=("security_risk", "summary"),
+        )
+        return schema
 
     def to_openai_tool(
         self,
@@ -522,6 +560,24 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         raise ValueError(error_msg)
 
 
+def _prioritize_schema_fields(
+    schema: dict[str, Any], priority: tuple[str, ...]
+) -> None:
+    """Move *priority* fields to the front of ``schema["properties"]``.
+
+    This ensures the LLM generates short metadata fields before large content
+    parameters, so output-token truncation does not cut required fields.
+    See https://github.com/OpenHands/software-agent-sdk/issues/1911
+    """
+    if "properties" not in schema:
+        return
+    props = schema["properties"]
+    priority_set = set(priority)
+    ordered = {k: props[k] for k in priority if k in props}
+    ordered.update({k: v for k, v in props.items() if k not in priority_set})
+    schema["properties"] = ordered
+
+
 def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
     with _action_type_lock:
         action_type_with_risk = _action_types_with_risk.get(action_type)
@@ -541,8 +597,7 @@ def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
             (action_type,),
             {
                 "security_risk": Field(
-                    # We do NOT add default value to make it an required field
-                    # default=risk.SecurityRisk.UNKNOWN
+                    default=risk.SecurityRisk.UNKNOWN,
                     description="The LLM's assessment of the safety risk of this action.",  # noqa:E501
                 ),
                 "__annotations__": {"security_risk": risk.SecurityRisk},

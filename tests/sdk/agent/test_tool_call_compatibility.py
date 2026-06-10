@@ -1,7 +1,7 @@
 """Tests for legacy tool-name compatibility shims."""
 
 import json
-import shlex
+import os
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,7 +18,7 @@ from litellm.types.utils import (
 )
 from pydantic import SecretStr
 
-from openhands.sdk.agent import Agent
+from openhands.sdk.agent import Agent, utils as agent_utils
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent, ObservationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -52,11 +52,12 @@ class _TerminalExecutor(ToolExecutor[_TerminalAction, _TerminalObservation]):
     ) -> _TerminalObservation:
         working_dir = conversation.workspace.working_dir if conversation else None
         completed = subprocess.run(
-            shlex.split(action.command),
+            action.command,
             cwd=working_dir,
             capture_output=True,
             text=True,
             check=False,
+            shell=True,
         )
         return _TerminalObservation.from_text(completed.stdout or completed.stderr)
 
@@ -193,7 +194,7 @@ def test_bash_alias_executes_terminal_tool(tmp_path):
     events = _run_tool_call(
         tmp_path,
         tool_name="bash",
-        arguments={"command": "printf hello"},
+        arguments={"command": "echo hello"},
         tool_names=(TERMINAL_TOOL_SPEC,),
     )
 
@@ -203,7 +204,7 @@ def test_bash_alias_executes_terminal_tool(tmp_path):
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.tool_call.name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
-    assert getattr(action_event.action, "command") == "printf hello"
+    assert getattr(action_event.action, "command") == "echo hello"
     assert "hello" in observation_event.observation.text
 
 
@@ -308,6 +309,10 @@ def test_shell_tool_name_does_not_fall_back_without_terminal(tmp_path):
     assert errors[0].tool_name == "ls"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="covered by dedicated Windows command-generation tests",
+)
 def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     test_file = tmp_path / "needle.txt"
     test_file.write_text("needle\n")
@@ -326,19 +331,68 @@ def test_grep_arguments_can_fall_back_to_terminal(tmp_path):
     assert not errors
     assert action_event.tool_name == TERMINAL_TOOL_NAME
     assert action_event.action is not None
-    assert "grep -RIn" in getattr(action_event.action, "command")
+    command = getattr(action_event.action, "command")
+    assert command.startswith(
+        ("rg ", '"rg" ', "grep ", '"grep" ', "python ", '"python" ')
+    )
+    assert "needle" in command
     assert "needle.txt" in observation_event.observation.text
+
+
+def test_grep_terminal_command_prefers_ripgrep(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        agent_utils.shutil,
+        "which",
+        lambda name: "/bin/tool" if name == "rg" else None,
+    )
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path), "include": "*.py"}
+    )
+
+    assert command is not None
+    assert command.startswith(("rg ", '"rg" '))
+    assert "--sortr=modified" in command
+    assert "*.py" in command
+
+
+def test_grep_terminal_command_falls_back_to_grep(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        agent_utils.shutil,
+        "which",
+        lambda name: "/bin/grep" if name == "grep" else None,
+    )
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path), "include": "*.py"}
+    )
+
+    assert command is not None
+    assert command.startswith(("grep ", '"grep" '))
+    assert "--include=*.py" in command
+    assert "python -c" not in command
+
+
+def test_grep_terminal_command_falls_back_to_python_on_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_utils.os, "name", "nt", raising=False)
+    monkeypatch.setattr(agent_utils.shutil, "which", lambda _: None)
+
+    command = agent_utils._build_grep_terminal_command(
+        {"pattern": "needle", "path": str(tmp_path)}
+    )
+
+    assert command is not None
+    assert command.startswith(("python ", '"python" '))
+    assert "grep -RIn" not in command
+    assert "\n" not in command
 
 
 def test_security_risk_typo_normalized(tmp_path):
     """Test that security_risk typos are normalized before validation."""
-    test_file = tmp_path / "hello.txt"
-    test_file.write_text("hello\n")
-
     events = _run_tool_call(
         tmp_path,
         tool_name="bash",
-        arguments={"command": "cat hello.txt", "security_rort": "LOW"},
+        arguments={"command": "echo hello", "security_rort": "LOW"},
         tool_names=(TERMINAL_TOOL_SPEC,),
     )
 
@@ -470,3 +524,199 @@ def test_explicitly_registered_tool_not_hijacked_by_alias():
         "str_replace", {"old_str": "x", "new_str": "y"}, available_tools
     )
     assert tool_name == "file_editor", "str_replace alias should map to file_editor"
+
+
+def test_malformed_tool_name_str_replace_xml_tag(tmp_path):
+    """Test that malformed tool names like 'str_replace </parameter' are fixed.
+
+    This addresses errors where LLMs emit XML/HTML tag fragments in tool names.
+    The fix extracts the first valid identifier and maps it to the correct tool.
+    """
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace </parameter",  # Malformed: XML tag appended
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "str_replace"
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_str_replace_function_tag(tmp_path):
+    """Test that malformed tool names like 'str_replace</function>' are fixed."""
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace</function>",  # Malformed: XML tag appended
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_str_replace_editor_xml_tag(tmp_path):
+    """Test that malformed 'str_replace_editor </tool_call>' names are fixed."""
+    test_file = tmp_path / "sample.py"
+    test_file.write_text("value = 'old'\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="str_replace_editor </tool_call>",  # Malformed
+        arguments={
+            "path": str(test_file),
+            "old_str": "'old'",
+            "new_str": "'new'",
+        },
+        tool_names=(FILE_EDITOR_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == FILE_EDITOR_TOOL_NAME
+    assert action_event.action is not None
+    assert test_file.read_text() == "value = 'new'\n"
+
+
+def test_malformed_tool_name_bash_xml_tag(tmp_path):
+    """Test that malformed tool names like 'bash </request>' are fixed."""
+    test_file = tmp_path / "hello.txt"
+    test_file.write_text("hello\n")
+
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="bash </request>",  # Malformed: XML tag appended
+        arguments={"command": "cat hello.txt"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    observation_event = next(e for e in events if isinstance(e, ObservationEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors, f"Expected no errors but got: {errors}"
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert "hello" in observation_event.observation.text
+
+
+def test_malformed_tool_name_no_fix_when_no_match():
+    """Test that truly malformed names that don't match any alias return original."""
+    from openhands.sdk.agent.utils import normalize_tool_call
+
+    available_tools = {"terminal", "file_editor"}
+
+    # "straight" doesn't match any alias or tool, so it should remain unchanged
+    tool_name, args = normalize_tool_call("straight", {}, available_tools)
+    assert tool_name == "straight", "Unknown malformed name should remain unchanged"
+
+    # "xyz123 </invalid>" doesn't match any known alias
+    tool_name, args = normalize_tool_call("xyz123 </invalid>", {}, available_tools)
+    assert tool_name == "xyz123 </invalid>", (
+        "Non-matching malformed name should remain unchanged"
+    )
+
+
+def test_malformed_tool_name_alias_precedence():
+    """Test that aliases are correctly resolved from malformed names.
+
+    When a malformed name like 'str_replace </parameter' is fixed to 'str_replace',
+    it should then be mapped to 'file_editor' via the alias.
+    """
+    from openhands.sdk.agent.utils import normalize_tool_call
+
+    available_tools = {"terminal", "file_editor"}
+
+    # 'str_replace </parameter' fixed to 'str_replace', then aliased to 'file_editor'
+    tool_name, args = normalize_tool_call(
+        "str_replace </parameter",
+        {"path": "/tmp/test", "old_str": "a", "new_str": "b"},
+        available_tools,
+    )
+    assert tool_name == "file_editor", (
+        "Malformed str_replace should map to file_editor via alias"
+    )
+
+
+def test_git_alias_executes_terminal_tool(tmp_path):
+    """Test that 'git' tool name is aliased to 'terminal'."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="git",
+        arguments={"command": "status"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.tool_call.name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "git status"
+
+
+def test_reset_alias_executes_terminal_tool(tmp_path):
+    """Test that 'reset' tool name is aliased to 'terminal'."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="reset",
+        arguments={"command": "clear"},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.tool_call.name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "reset clear"
+
+
+def test_shell_tool_name_git_falls_back_to_terminal(tmp_path):
+    """Test that 'git' without arguments falls back to terminal."""
+    events = _run_tool_call(
+        tmp_path,
+        tool_name="git",
+        arguments={},
+        tool_names=(TERMINAL_TOOL_SPEC,),
+    )
+
+    action_event = next(e for e in events if isinstance(e, ActionEvent))
+    errors = [e for e in events if isinstance(e, AgentErrorEvent)]
+
+    assert not errors
+    assert action_event.tool_name == TERMINAL_TOOL_NAME
+    assert action_event.action is not None
+    assert getattr(action_event.action, "command") == "git"

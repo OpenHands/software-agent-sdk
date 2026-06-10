@@ -23,6 +23,7 @@ from openhands.sdk.skills.execute import (
     _execute_inline_command,
     render_content_with_commands,
 )
+from tests.command_utils import python_command
 
 
 # ---------------------------------------------------------------------------
@@ -35,13 +36,23 @@ from openhands.sdk.skills.execute import (
     [
         pytest.param("echo hello", 10.0, lambda r: r == "hello", id="success"),
         pytest.param(
-            "printf 'line1\nline2\nline3'",
+            python_command("print('line1'); print('line2'); print('line3')"),
             10.0,
             lambda r: r == "line1\nline2\nline3",
             id="multiline_output",
         ),
-        pytest.param("exit 1", 10.0, lambda r: "[Error:" in r, id="failure"),
-        pytest.param("sleep 5", 0.1, lambda r: "timed out" in r, id="timeout"),
+        pytest.param(
+            python_command("import sys; sys.exit(1)"),
+            10.0,
+            lambda r: "[Error:" in r,
+            id="failure",
+        ),
+        pytest.param(
+            python_command("import time; time.sleep(5)"),
+            0.1,
+            lambda r: "timed out" in r,
+            id="timeout",
+        ),
     ],
 )
 def test_execute_inline_command(command, timeout, check_fn):
@@ -49,13 +60,18 @@ def test_execute_inline_command(command, timeout, check_fn):
 
 
 def test_execute_inline_command_respects_working_dir(tmp_path: Path):
-    result = _execute_inline_command("pwd", working_dir=tmp_path)
+    result = _execute_inline_command(
+        python_command("from pathlib import Path; print(Path.cwd())"),
+        working_dir=tmp_path,
+    )
     assert result == str(tmp_path.resolve())
 
 
 def test_execute_inline_command_truncates_large_output():
     size = MAX_OUTPUT_SIZE + 100
-    result = _execute_inline_command(f"python3 -c \"print('x' * {size})\"")
+    result = _execute_inline_command(
+        python_command(f"import sys; sys.stdout.write('x' * {size})")
+    )
     assert result.endswith("... [output truncated]")
     assert len(result.encode()) <= MAX_OUTPUT_SIZE + 50  # small overhead ok
 

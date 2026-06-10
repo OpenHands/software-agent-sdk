@@ -371,6 +371,27 @@ class TestTaskManager:
         )
         assert conv._visualizer is None
 
+    def test_sub_agents_inherit_parent_prompt_cache_key(self, tmp_path):
+        """Sibling sub-agents share the parent's OpenAI prefix-cache shard."""
+        manager, parent = _manager_with_parent(tmp_path)
+        register_builtins_agents()
+        parent_key = parent.agent.llm._prompt_cache_key
+
+        sub_keys = []
+        for _ in range(2):
+            task_id, conversation_id = manager._generate_ids()
+            agent = manager._get_sub_agent("general-purpose")
+            conv = manager._get_conversation(
+                description=None,
+                max_iteration_per_run=500,
+                task_id=task_id,
+                conversation_id=conversation_id,
+                worker_agent=agent,
+            )
+            sub_keys.append(conv.agent.llm._prompt_cache_key)
+
+        assert sub_keys == [parent_key, parent_key]
+
 
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
     """Create a Task with a MagicMock conversation, bypassing Pydantic validation."""

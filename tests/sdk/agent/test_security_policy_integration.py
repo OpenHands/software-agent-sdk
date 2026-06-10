@@ -95,7 +95,7 @@ def test_custom_security_policy_in_system_message():
             "This is a custom security policy for testing.\n"
             "- **CUSTOM_RULE**: Always test custom policies."
         )
-        custom_policy_path.write_text(custom_policy_content)
+        custom_policy_path.write_text(custom_policy_content, encoding="utf-8")
 
         # Copy required template files to temp directory
         original_prompt_dir = (

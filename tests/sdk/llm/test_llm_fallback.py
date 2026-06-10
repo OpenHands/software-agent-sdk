@@ -1,10 +1,12 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from litellm.exceptions import (
     APIConnectionError,
+    ContextWindowExceededError,
     RateLimitError,
 )
+from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import (
     Choices,
     Message as LiteLLMMessage,
@@ -14,7 +16,10 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, FallbackStrategy, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
+from openhands.sdk.llm.exceptions import (
+    LLMContextWindowExceedError,
+    LLMServiceUnavailableError,
+)
 
 
 def _get_mock_response(content: str = "ok", model: str = "gpt-4o") -> ModelResponse:
@@ -305,3 +310,163 @@ def test_fallback_profiles_resolved_via_store(mock_comp, tmp_path):
     content = resp.message.content[0]
     assert isinstance(content, TextContent)
     assert content.text == "from store"
+
+
+# =========================================================================
+# Async error-handling parity tests (acompletion / aresponses)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_fallback_on_transport_error(mock_acomp, mock_comp):
+    """acompletion must invoke fallback when the primary transport raises."""
+    primary_error = APIConnectionError(
+        message="connection reset", llm_provider="openai", model="gpt-4o"
+    )
+    mock_acomp.side_effect = primary_error
+
+    # Fallback uses sync completion path
+    mock_comp.return_value = _get_mock_response("fallback ok", model="fallback-model")
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.acompletion(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_maps_context_window_error(mock_acomp):
+    """acompletion must map ContextWindowExceededError to SDK type."""
+    mock_acomp.side_effect = ContextWindowExceededError(
+        message="context window exceeded",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMContextWindowExceedError):
+        await primary.acompletion(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+async def test_acompletion_maps_connection_error(mock_acomp):
+    """acompletion must map APIConnectionError to LLMServiceUnavailableError."""
+    mock_acomp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMServiceUnavailableError):
+        await primary.acompletion(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_responses")
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_fallback_on_transport_error(mock_aresp, mock_resp):
+    """aresponses must invoke fallback when the primary transport raises."""
+
+    primary_error = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    mock_aresp.side_effect = primary_error
+
+    fallback_response = ResponsesAPIResponse(
+        id="resp-fb",
+        created_at=1,
+        model="fb",
+        object="response",
+        output=[
+            {
+                "type": "message",
+                "id": "msg-1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {"type": "output_text", "text": "fb ok", "annotations": []}
+                ],
+            }
+        ],
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        tools=[],
+    )
+    mock_resp.return_value = fallback_response
+
+    fb = _get_llm("fb")
+    strategy = FallbackStrategy(fallback_llms=["fb-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = await primary.aresponses(_MSGS)
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fb ok"
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_maps_context_window_error(mock_aresp):
+    """aresponses must map ContextWindowExceededError to SDK type."""
+    mock_aresp.side_effect = ContextWindowExceededError(
+        message="context window exceeded",
+        llm_provider="openai",
+        model="gpt-4o",
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMContextWindowExceedError):
+        await primary.aresponses(_MSGS)
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_aresponses", new_callable=AsyncMock)
+async def test_aresponses_maps_connection_error(mock_aresp):
+    """aresponses must map APIConnectionError to LLMServiceUnavailableError."""
+    mock_aresp.side_effect = APIConnectionError(
+        message="down", llm_provider="openai", model="gpt-4o"
+    )
+    primary = _get_llm("gpt-4o")
+    with pytest.raises(LLMServiceUnavailableError):
+        await primary.aresponses(_MSGS)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_fallback_forwards_caller_kwargs(mock_comp):
+    """Caller kwargs (e.g. ``metadata``) must reach the fallback LLM call.
+
+    Regression guard for the ``_caller_kwargs`` forwarding added alongside
+    the prompt-cache-too-small retry: the fallback path now receives the
+    same kwargs the caller passed to the primary's ``completion()``.
+    """
+    primary_error = APIConnectionError(
+        message="connection reset", llm_provider="openai", model="gpt-4o"
+    )
+
+    def side_effect(**kwargs):
+        if kwargs.get("model") == "gpt-4o":
+            raise primary_error
+        return _get_mock_response("fallback ok", model="fallback-model")
+
+    mock_comp.side_effect = side_effect
+
+    fb = _get_llm("fallback-model")
+    strategy = FallbackStrategy(fallback_llms=["fallback-profile"])
+    primary = _get_llm("gpt-4o", fallback_strategy=strategy)
+    _patch_resolve(primary, [fb])
+
+    resp = primary.completion(_MSGS, metadata={"trace": "fallback-kwargs"})
+    content = resp.message.content[0]
+    assert isinstance(content, TextContent)
+    assert content.text == "fallback ok"
+
+    # Primary call (failed) + fallback call (succeeded).
+    assert mock_comp.call_count == 2
+    fallback_call_kwargs = mock_comp.call_args_list[1].kwargs
+    assert fallback_call_kwargs.get("metadata") == {"trace": "fallback-kwargs"}

@@ -629,17 +629,17 @@ class TestTool:
         writable_no_risk_params = writable_no_risk_function["parameters"]
         assert "security_risk" not in writable_no_risk_params["properties"]
 
-    def test_security_risk_is_required_field_in_schema(self):
-        """Test that _create_action_type_with_risk always makes security_risk a required field."""  # noqa: E501
+    def test_security_risk_is_optional_field_in_schema(self):
+        """Test that _create_action_type_with_risk makes security_risk an optional field defaulting to UNKNOWN."""  # noqa: E501
         from openhands.sdk.tool.tool import create_action_type_with_risk
 
         # Test with a simple action type
         action_type_with_risk = create_action_type_with_risk(ToolMockAction)
 
-        # Get the schema and check that security_risk is in required fields
+        # security_risk should appear in properties but NOT in required
         schema = action_type_with_risk.to_mcp_schema()
         assert "security_risk" in schema["properties"]
-        assert "security_risk" in schema["required"]
+        assert "security_risk" not in schema.get("required", [])
 
         # Test via to_openai_tool method
         tool = MockTestTool(
@@ -653,11 +653,8 @@ class TestTool:
         assert "parameters" in function_chunk
         function_params = function_chunk["parameters"]
 
-        # Verify security_risk is present in properties
         assert "security_risk" in function_params["properties"]
-
-        # Verify security_risk is in the required fields list
-        assert "security_risk" in function_params["required"]
+        assert "security_risk" not in function_params.get("required", [])
 
         # Test with a tool that has annotations but is not read-only
         writable_annotations = ToolAnnotations(
@@ -679,9 +676,36 @@ class TestTool:
         assert "parameters" in writable_function_chunk
         writable_function_params = writable_function_chunk["parameters"]
 
-        # Verify security_risk is present and required
         assert "security_risk" in writable_function_params["properties"]
-        assert "security_risk" in writable_function_params["required"]
+        assert "security_risk" not in writable_function_params.get("required", [])
+
+    def test_security_risk_precedes_content_params_in_schema(self):
+        """Test that security_risk appears before content parameters in the schema.
+
+        When the LLM exhausts its output token budget, truncation should cut
+        content parameters rather than the required security_risk field.
+        See https://github.com/OpenHands/software-agent-sdk/issues/1911
+        """
+        tool = MockTestTool(
+            description="A test tool",
+            action_type=ToolMockAction,
+            observation_type=ToolMockObservation,
+        )
+
+        schema = tool._get_tool_schema(add_security_risk_prediction=True)
+        keys = list(schema["properties"].keys())
+
+        assert keys[0] == "security_risk"
+        assert keys[1] == "summary"
+        # Original action fields must come after
+        assert keys.index("command") > keys.index("security_risk")
+
+        # Verify all original fields are still present (exclude discriminator
+        # fields like 'kind' which are stripped by to_mcp_schema)
+        original_schema = ToolMockAction.to_mcp_schema()
+        original_keys = set(original_schema["properties"].keys())
+        schema_keys = set(keys)
+        assert original_keys.issubset(schema_keys)
 
     def test_as_executable_with_executor(self):
         """Test as_executable() method with a tool that has an executor."""

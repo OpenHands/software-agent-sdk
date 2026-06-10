@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 from abc import ABC
 from datetime import datetime
-from enum import Enum
-from typing import Any
+from enum import Enum, StrEnum
+from typing import Any, TypeAlias
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM
+from openhands.sdk.agent.acp_models import ACPModelInfo
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.request import (  # re-export for backward compat
     ACPEnabledAgent as ACPEnabledAgent,
@@ -30,6 +34,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -51,7 +56,7 @@ class ServerErrorEvent(Event):
     detail: str = Field(description="Details about the error")
 
 
-class ConversationSortOrder(str, Enum):
+class ConversationSortOrder(StrEnum):
     """Enum for conversation sorting options."""
 
     CREATED_AT = "CREATED_AT"
@@ -60,14 +65,14 @@ class ConversationSortOrder(str, Enum):
     UPDATED_AT_DESC = "UPDATED_AT_DESC"
 
 
-class EventSortOrder(str, Enum):
+class EventSortOrder(StrEnum):
     """Enum for event sorting options."""
 
     TIMESTAMP = "TIMESTAMP"
     TIMESTAMP_DESC = "TIMESTAMP_DESC"
 
 
-class StoredConversation(StartACPConversationRequest):
+class StoredConversation(StartConversationRequest):
     """Stored details about a conversation.
 
     Extends StartConversationRequest with server-assigned fields.
@@ -181,16 +186,70 @@ class _ConversationInfoBase(BaseModel):
             "alphanumeric. Values are arbitrary strings up to 256 characters."
         ),
     )
+    current_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Model the agent is actually using for this session. For ACP "
+            "agents, this is lifted off ``ACPAgent.current_model_id`` "
+            "(populated from the ``models.currentModelId`` field on the "
+            "ACP session response, or from ``acp_model`` when the caller "
+            "forced an override). May be an opaque alias (e.g. "
+            'claude-agent-acp\'s ``"default"``); match it against '
+            "``available_models`` to get a display label. ``None`` for older "
+            "ACP servers that don't surface the field, or while the agent is "
+            "still initializing. Native OpenHands agents leave this ``None`` — "
+            "consumers should read ``agent.llm.model`` for those."
+        ),
+    )
+    available_models: list[ACPModelInfo] = Field(
+        default_factory=list,
+        description=(
+            "Models the ACP server offers for this session, lifted off "
+            "``ACPAgent.available_models`` (the ``models.availableModels`` "
+            "field on the ACP session response). Each entry carries a "
+            "``model_id`` plus an optional ``name``/``description``. Surfaced "
+            "verbatim so clients can render a model picker and resolve "
+            "``current_model_id`` to a display label themselves — the server "
+            "does no name curation. Empty for ACP servers that don't surface "
+            "the (UNSTABLE) capability and for native OpenHands agents. "
+            "Client contract: ``current_model_id`` is NOT guaranteed to be a "
+            "member — a forced ``acp_model`` override may name a model absent "
+            "from the list — so treat a miss as 'show the raw id'. Some "
+            "entries are opaque aliases whose human identity lives in "
+            '``description`` (e.g. claude-agent-acp\'s ``"default"`` -> '
+            '``"Opus 4.7 with 1M context · ..."``).'
+        ),
+    )
+    supports_runtime_model_switch: bool = Field(
+        default=False,
+        description=(
+            "Whether a live, mid-conversation model switch (via "
+            "``session/set_model``) will be attempted for this conversation — "
+            "tells the inline picker whether to offer a live-switch control. "
+            "Mirrors the SDK's switch gate: ``True`` for known switch-capable "
+            "providers; ``True`` for unknown/custom ACP servers too, since "
+            "OpenHands attempts the switch optimistically rather than refusing "
+            "(a rejection then surfaces as an error). ``False`` for native "
+            "OpenHands agents, for a known provider that declares no support, "
+            "and before the conversation has started a session."
+        ),
+    )
 
 
 class ConversationInfo(_ConversationInfoBase):
     """Information about a conversation running locally without a Runtime sandbox."""
 
-    agent: Agent = Field(
+    agent: AgentBase = Field(
         ...,
+        description="The agent running in the conversation.",
+    )
+    client_tools: list[ClientToolSpec] = Field(
+        default_factory=list,
         description=(
-            "The legacy v1 agent configuration. "
-            "This endpoint remains pinned to the standard Agent contract."
+            "Client-defined tool specs registered for this conversation. "
+            "Surfaced so that a client re-attaching by conversation id can "
+            "register the dynamic ClientAction_* action types before syncing "
+            "persisted events, avoiding 'Unknown kind' deserialization errors."
         ),
     )
 
@@ -200,21 +259,62 @@ class ConversationPage(BaseModel):
     next_page_id: str | None = None
 
 
-class ACPConversationInfo(_ConversationInfoBase):
-    """Conversation info that supports ACP-capable agent configs."""
+INCLUDE_SKILLS_PARAM_TITLE = (
+    "Whether to include ``agent.agent_context.skills`` in the response. "
+    "Default ``false`` (breaking change as of this release): skills are "
+    "trimmed to ``[]`` on the wire because no known consumer reads them "
+    "from HTTP responses, and a stock agent inlines ~260 KB of skill "
+    "content per fetch. Pass ``true`` to opt back into the legacy "
+    "full-payload shape — useful only for callers that still rely on "
+    "``RemoteConversation.agent.agent_context.skills`` round-tripping "
+    "over the wire. The persisted conversation state on disk and the "
+    "in-memory runtime copy are untouched either way."
+)
 
-    agent: ACPEnabledAgent = Field(
-        ...,
-        description=(
-            "The agent running in the conversation. "
-            "Supports both Agent and ACPAgent payloads."
-        ),
+
+def trim_conversation_response_skills(info: ConversationInfo) -> ConversationInfo:
+    """Return ``info`` with ``agent.agent_context.skills`` set to ``[]``.
+
+    Applied **by default** on every route that emits ``ConversationInfo``
+    (search, get, batch-get, start, fork, and the deprecated ACP
+    equivalents). Callers that still need the legacy shape can opt in
+    with ``?include_skills=true``.
+
+    The trim exists because when an ``AgentContext`` is constructed
+    with ``load_user_skills=True`` / ``load_public_skills=True``, its
+    model_validator resolves the entire skill catalog (~40 entries in
+    stock setups) and persists them inline. Every conversation fetch
+    therefore carried ~260 KB of skill content that no known client
+    actually reads from the HTTP response (agent-canvas, OpenHands
+    app-server, SDK examples all ignore the field on
+    ``ConversationInfo`` — they either use the in-process
+    ``LocalConversation`` directly or read other fields like
+    ``agent.llm.model``).
+
+    The persisted ``ConversationState`` on disk and the in-memory copy
+    held by the agent's runtime are untouched.
+
+    A ``model_copy`` chain is enough because ``BaseModel.model_copy``
+    is shallow on default — we replace the leaf ``skills`` list with
+    an empty list without touching any other field. The returned
+    object is a fresh ``ConversationInfo`` instance; callers that
+    hold the input reference observe no mutation.
+    """
+    agent_ctx = getattr(info.agent, "agent_context", None)
+    if agent_ctx is None or not agent_ctx.skills:
+        return info
+    trimmed_agent_context = agent_ctx.model_copy(update={"skills": []})
+    trimmed_agent = info.agent.model_copy(
+        update={"agent_context": trimmed_agent_context}
     )
+    return info.model_copy(update={"agent": trimmed_agent})
 
 
-class ACPConversationPage(BaseModel):
-    items: list[ACPConversationInfo]
-    next_page_id: str | None = None
+# Deprecated compatibility aliases for the old ACP-specific response names.
+# Keep runtime assignment aliases so existing imports still resolve to the
+# canonical Pydantic models; PEP 695 ``type`` aliases would not preserve that.
+ACPConversationInfo: TypeAlias = ConversationInfo  # noqa: UP040
+ACPConversationPage: TypeAlias = ConversationPage  # noqa: UP040
 
 
 class ConversationResponse(BaseModel):

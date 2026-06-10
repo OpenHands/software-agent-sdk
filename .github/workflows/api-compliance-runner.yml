@@ -18,7 +18,7 @@ on:
 
 env:
     # Default models to test (matches DEFAULT_MODELS in run_compliance.py)
-    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.2,gemini-3.1-pro
+    DEFAULT_MODELS: claude-sonnet-4-5,gpt-5.5,gemini-3.1-pro
 
 jobs:
     run-compliance-tests:
@@ -39,7 +39,7 @@ jobs:
                   persist-credentials: false
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v7
+              uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
               with:
                   version: latest
                   python-version: '3.13'
@@ -49,28 +49,36 @@ jobs:
 
             - name: Determine test parameters
               id: params
+              env:
+                  PATTERNS_INPUT: ${{ github.event.inputs.patterns }}
+                  MODELS_INPUT: ${{ github.event.inputs.models }}
               run: |
                   # Use input values or defaults
                   if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-                    PATTERNS="${{ github.event.inputs.patterns }}"
-                    MODELS="${{ github.event.inputs.models }}"
+                    PATTERNS="$PATTERNS_INPUT"
+                    MODELS="$MODELS_INPUT"
                   else
                     PATTERNS=""
                     MODELS=""
                   fi
 
-                  # Build command args
-                  ARGS=""
-                  if [ -n "$PATTERNS" ]; then
-                    ARGS="$ARGS --patterns $PATTERNS"
-                  fi
-                  if [ -n "$MODELS" ]; then
-                    ARGS="$ARGS --models $MODELS"
-                  else
-                    ARGS="$ARGS --models $DEFAULT_MODELS"
+                  if [ -z "$MODELS" ]; then
+                    MODELS="$DEFAULT_MODELS"
                   fi
 
-                  echo "args=$ARGS" >> $GITHUB_OUTPUT
+                  write_output() {
+                    local name=$1
+                    local value=$2
+                    local delimiter="${name}_$(openssl rand -hex 16)"
+                    {
+                      echo "$name<<$delimiter"
+                      printf '%s\n' "$value"
+                      echo "$delimiter"
+                    } >> "$GITHUB_OUTPUT"
+                  }
+
+                  write_output patterns "$PATTERNS"
+                  write_output models "$MODELS"
 
             - name: Run API compliance tests
               id: compliance
@@ -78,9 +86,16 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY_EVAL }}
                   LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
                   GITHUB_RUN_ID: ${{ github.run_id }}
+                  PATTERNS: ${{ steps.params.outputs.patterns }}
+                  MODELS: ${{ steps.params.outputs.models }}
               run: |
+                  args=(--models "$MODELS")
+                  if [ -n "$PATTERNS" ]; then
+                    args=(--patterns "$PATTERNS" "${args[@]}")
+                  fi
+
                   uv run python tests/integration/api_compliance/run_compliance.py \
-                    ${{ steps.params.outputs.args }} \
+                    "${args[@]}" \
                     --output-dir compliance-results/
               continue-on-error: true  # Tests may "fail" but that's expected
 

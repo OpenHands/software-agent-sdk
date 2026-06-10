@@ -66,7 +66,7 @@ def test_batch_atomicity_partial_batch_forgotten() -> None:
         obs3,
         obs4,
         Condensation(
-            forgotten_event_ids=[action1.id, action2.id, action3.id],
+            forgotten_event_ids={action1.id, action2.id, action3.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -116,7 +116,7 @@ def test_batch_atomicity_complete_batch_forgotten() -> None:
         obs1,
         obs2,
         Condensation(
-            forgotten_event_ids=[action1.id, action2.id],
+            forgotten_event_ids={action1.id, action2.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -164,7 +164,7 @@ def test_batch_atomicity_no_forgetting_preserves_batch() -> None:
         obs2,
         obs3,
         Condensation(
-            forgotten_event_ids=[], llm_response_id="condensation_response_1"
+            forgotten_event_ids=set(), llm_response_id="condensation_response_1"
         ),  # Don't forget anything
     ]
 
@@ -221,7 +221,7 @@ def test_batch_atomicity_multiple_batches() -> None:
         obs2_1,
         obs2_2,
         Condensation(
-            forgotten_event_ids=[action1_1.id],
+            forgotten_event_ids={action1_1.id},
             llm_response_id="condensation_response_1",
         ),
     ]
@@ -259,7 +259,7 @@ def test_batch_atomicity_single_action_batch() -> None:
         action,
         obs,
         Condensation(
-            forgotten_event_ids=[action.id], llm_response_id="condensation_response_1"
+            forgotten_event_ids={action.id}, llm_response_id="condensation_response_1"
         ),
     ]
 
@@ -296,7 +296,7 @@ def test_batch_atomicity_no_thinking_blocks() -> None:
         action3,
         obs3,
         Condensation(
-            forgotten_event_ids=[action1.id, action2.id],
+            forgotten_event_ids={action1.id, action2.id},
             llm_response_id="condensation_response_1",
         ),
     ]

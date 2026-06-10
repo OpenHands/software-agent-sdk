@@ -23,8 +23,11 @@ jobs:
         steps:
             - name: Check if fork PR
               id: check-fork
+              env:
+                  PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+                  PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
               run: |
-                  if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.event.pull_request.base.repo.full_name }}" ]; then
+                  if [ "$PR_HEAD_REPO" != "$PR_BASE_REPO" ]; then
                     echo "is_fork=true" >> $GITHUB_OUTPUT
                     echo "::notice::Fork PR detected - skipping auto-cleanup (manual removal required)"
                   else
@@ -38,7 +41,7 @@ jobs:
               if: steps.check-fork.outputs.is_fork == 'false'
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
-                  token: ${{ secrets.PAT_TOKEN }}
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
             - name: Remove .pr/ directory
               id: remove
