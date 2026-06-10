@@ -141,6 +141,14 @@ MODELS = {
             "model": "litellm_proxy/anthropic/claude-opus-4-8",
         },
     },
+    # https://www.anthropic.com/news/claude-fable-5
+    "claude-fable-5": {
+        "id": "claude-fable-5",
+        "display_name": "Claude Fable 5",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-fable-5",
+        },
+    },
     "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",

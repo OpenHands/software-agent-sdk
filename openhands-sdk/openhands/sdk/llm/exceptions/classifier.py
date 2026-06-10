@@ -5,6 +5,7 @@ from litellm.exceptions import (
     AuthenticationError,
     BadRequestError,
     ContextWindowExceededError,
+    InternalServerError,
     OpenAIError,
     PermissionDeniedError,
 )
@@ -48,6 +49,9 @@ MALFORMED_HISTORY_PATTERNS: list[str] = [
     ),
     # Moonshot / Kimi variant
     "must be followed by tool messages responding to each 'tool_call_id'",
+    # OpenAI-compatible providers may reject replayed assistant tool calls whose
+    # arguments are not valid JSON.
+    "failed to parse tool call arguments as json",
 ]
 
 
@@ -58,7 +62,10 @@ def is_context_window_exceeded(exception: Exception) -> bool:
     # Check for litellm/openai exception types that may contain context window errors.
     # APIConnectionError can wrap provider-specific errors (e.g., Minimax) that include
     # context window messages in their error text.
-    if not isinstance(exception, (BadRequestError, OpenAIError, APIConnectionError)):
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
         return False
 
     s = str(exception).lower()
@@ -69,7 +76,10 @@ def looks_like_malformed_conversation_history_error(exception: Exception) -> boo
     if isinstance(exception, LLMMalformedConversationHistoryError):
         return True
 
-    if not isinstance(exception, (BadRequestError, OpenAIError, APIConnectionError)):
+    if not isinstance(
+        exception,
+        (BadRequestError, OpenAIError, APIConnectionError, InternalServerError),
+    ):
         return False
 
     s = str(exception).lower()

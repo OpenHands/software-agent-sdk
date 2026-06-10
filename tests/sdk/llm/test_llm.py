@@ -365,6 +365,121 @@ def test_llm_token_counting_includes_tools(mock_token_counter, default_llm):
     assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
 
 
+def test_llm_load_chat_template_tokenizer_prefers_transformers(monkeypatch):
+    """The optional chat-template tokenizer uses Transformers when available."""
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return []
+
+    class FakeAutoTokenizer:
+        loaded_identifier = None
+
+        @classmethod
+        def from_pretrained(cls, identifier):
+            cls.loaded_identifier = identifier
+            return FakeTokenizer()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    tokenizer = LLM._load_chat_template_tokenizer("model-with-template")
+
+    assert isinstance(tokenizer, FakeTokenizer)
+    assert FakeAutoTokenizer.loaded_identifier == "model-with-template"
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_prefers_chat_template_tokenizer(
+    mock_token_counter, default_llm
+):
+    """Token counting uses apply_chat_template when the tokenizer supports it."""
+
+    class FakeChatTemplateTokenizer:
+        def __init__(self):
+            self.calls = []
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.calls.append((messages, kwargs))
+            return list(range(321))
+
+    tokenizer = FakeChatTemplateTokenizer()
+    default_llm._chat_template_tokenizer = tokenizer
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    tools = list(FinishTool.create())
+
+    token_count = default_llm.get_token_count(
+        messages,
+        tools=tools,
+        add_security_risk_prediction=True,
+    )
+
+    assert token_count == 321
+    mock_token_counter.assert_not_called()
+    applied_messages, kwargs = tokenizer.calls[0]
+    assert applied_messages[0]["role"] == "user"
+    assert applied_messages[0]["content"] == "Hello"
+    assert kwargs["tokenize"] is True
+    assert kwargs["add_generation_prompt"] is True
+    assert kwargs["tools"][0]["function"]["name"] == "finish"
+    assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
+
+
+def test_llm_count_tokenized_output_handles_encoding_objects(default_llm):
+    """Token counting handles Hugging Face BatchEncoding/Encoding shapes."""
+
+    class FakeEncoding:
+        def __init__(self):
+            self.ids = list(range(321))
+
+    class FakeBatchEncoding:
+        def __init__(self):
+            self.encodings = [FakeEncoding()]
+
+        def get(self, key):
+            if key == "input_ids":
+                return list(range(321))
+            return None
+
+    class FakeChatTemplateTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return FakeBatchEncoding()
+
+    default_llm._chat_template_tokenizer = FakeChatTemplateTokenizer()
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+
+    assert default_llm.get_token_count(messages) == 321
+
+
+@patch("openhands.sdk.llm.llm.token_counter")
+def test_llm_token_counting_falls_back_when_chat_template_fails(
+    mock_token_counter, default_llm
+):
+    """A broken tokenizer chat template must not break token counting."""
+
+    class BrokenChatTemplateTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            raise RuntimeError("template unavailable")
+
+    default_llm._chat_template_tokenizer = BrokenChatTemplateTokenizer()
+    mock_token_counter.return_value = 123
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+
+    token_count = default_llm.get_token_count(messages)
+
+    assert token_count == 123
+    mock_token_counter.assert_called_once()
+
+
 @patch("openhands.sdk.llm.llm.token_counter")
 def test_llm_token_counting_mocks_tools_for_non_native_models(mock_token_counter):
     """Test token counting prompt-mocks tools when native tool calling is disabled."""

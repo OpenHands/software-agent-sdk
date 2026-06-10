@@ -2219,16 +2219,15 @@ def test_fork_conversation_duplicate_id_returns_409(
         client.app.dependency_overrides.clear()
 
 
-def test_start_conversation_client_tool_schema_conflict_returns_422(
+def test_start_conversation_client_tool_registration_error_returns_422(
     client, mock_conversation_service
 ):
-    """A client tool name reused with a different schema yields 422, not 500."""
-    from openhands.sdk.tool.client_tool import ClientToolSchemaConflictError
+    """Client tool registration input errors yield 422, not 500."""
+    from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 
     mock_conversation_service.start_conversation.side_effect = (
-        ClientToolSchemaConflictError(
-            "Client tool 'show_dialog' is already registered with a different "
-            "parameters schema."
+        ClientToolRegistrationError(
+            "Client tool name 'terminal' collides with an existing non-client tool."
         )
     )
 
@@ -2251,6 +2250,6 @@ def test_start_conversation_client_tool_schema_conflict_returns_422(
         )
 
         assert response.status_code == 422
-        assert "different" in response.json()["detail"]
+        assert "collides with an existing non-client tool" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()

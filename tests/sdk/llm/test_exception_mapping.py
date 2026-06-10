@@ -2,6 +2,7 @@ import httpx
 from litellm.exceptions import (
     AuthenticationError,
     BadRequestError,
+    InternalServerError,
     PermissionDeniedError,
 )
 
@@ -61,6 +62,19 @@ def test_map_malformed_tool_history_bad_request():
         ),
         MODEL,
         PROVIDER,
+    )
+    mapped = map_provider_exception(e)
+    assert isinstance(mapped, LLMMalformedConversationHistoryError)
+
+
+def test_map_openai_tool_argument_parse_internal_server_error():
+    e = InternalServerError(
+        (
+            "OpenAIException - Failed to parse tool call arguments as JSON: "
+            "invalid string: missing closing quote"
+        ),
+        PROVIDER,
+        MODEL,
     )
     mapped = map_provider_exception(e)
     assert isinstance(mapped, LLMMalformedConversationHistoryError)

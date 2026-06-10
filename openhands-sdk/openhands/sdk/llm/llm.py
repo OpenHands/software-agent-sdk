@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import importlib
 import json
 import os
 import threading
@@ -500,6 +501,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
+    _chat_template_tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
@@ -576,6 +578,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Tokenizer
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
+            self._chat_template_tokenizer = self._load_chat_template_tokenizer(
+                self.custom_tokenizer
+            )
 
         # Capabilities + model info
         self._init_model_info_and_caps()
@@ -2305,6 +2310,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             cc_tools = []
 
         try:
+            template_count = self._get_chat_template_token_count(
+                formatted_messages, cc_tools
+            )
+            if template_count is not None:
+                return template_count
             return int(
                 token_counter(
                     model=self.model,
@@ -2324,6 +2334,115 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 exc_info=True,
             )
             return 0
+
+    def _get_chat_template_token_count(
+        self,
+        formatted_messages: list[dict],
+        tools: list[ChatCompletionToolParam],
+    ) -> int | None:
+        """Count tokens with a tokenizer chat template when one is available.
+
+        LiteLLM's generic token counter estimates OpenAI-style chat/tool overhead.
+        Local OpenAI-compatible servers commonly apply the model tokenizer's chat
+        template before tokenization, which can differ substantially once tool
+        schemas are rendered into the prompt. If a caller configured a tokenizer
+        that supports ``apply_chat_template``, prefer that exact rendered prompt
+        shape for condenser token checks and fall back to LiteLLM otherwise.
+        """
+        tokenizer = self._chat_template_tokenizer or self._tokenizer
+        if isinstance(tokenizer, dict):
+            tokenizer = tokenizer.get("tokenizer")
+        if tokenizer is None or not hasattr(tokenizer, "apply_chat_template"):
+            return None
+
+        try:
+            template_messages = self._messages_for_chat_template(formatted_messages)
+            kwargs: dict[str, Any] = {
+                "tokenize": True,
+                "add_generation_prompt": True,
+            }
+            if tools:
+                kwargs["tools"] = tools
+            tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
+            return self._count_tokenized_output(tokenized, tokenizer)
+        except Exception:
+            logger.debug(
+                "Chat-template token counting failed; falling back to LiteLLM",
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _count_tokenized_output(tokenized: Any, tokenizer: Any) -> int:
+        if isinstance(tokenized, str):
+            encoded = tokenizer.encode(tokenized)
+            return LLM._count_tokenized_output(encoded, tokenizer)
+        if hasattr(tokenized, "shape") and len(tokenized.shape) > 0:
+            return int(tokenized.shape[-1])
+        if hasattr(tokenized, "ids"):
+            return len(tokenized.ids)
+        if isinstance(tokenized, dict) and "input_ids" in tokenized:
+            return LLM._count_tokenized_output(tokenized["input_ids"], tokenizer)
+        get_input_ids = getattr(tokenized, "get", None)
+        if callable(get_input_ids):
+            input_ids = get_input_ids("input_ids")
+            if input_ids is not None:
+                return LLM._count_tokenized_output(input_ids, tokenizer)
+        encodings = getattr(tokenized, "encodings", None)
+        if encodings:
+            return LLM._count_tokenized_output(encodings[0], tokenizer)
+        if isinstance(tokenized, Sequence):
+            if tokenized and hasattr(tokenized[0], "ids"):
+                return LLM._count_tokenized_output(tokenized[0], tokenizer)
+            if tokenized and isinstance(tokenized[0], Sequence):
+                return len(tokenized[0])
+            return len(tokenized)
+        raise TypeError(f"Unsupported tokenized output: {type(tokenized).__name__}")
+
+    @staticmethod
+    def _messages_for_chat_template(messages: list[dict]) -> list[dict]:
+        template_messages = copy.deepcopy(messages)
+        for message in template_messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            text_parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "text":
+                    text_parts = []
+                    break
+                text_parts.append(str(block.get("text", "")))
+            if text_parts:
+                message["content"] = "".join(text_parts)
+        return template_messages
+
+    @staticmethod
+    def _load_chat_template_tokenizer(identifier: str) -> Any | None:
+        try:
+            transformers = importlib.import_module("transformers")
+        except ModuleNotFoundError:
+            return None
+        except Exception:
+            logger.debug("Unable to import transformers", exc_info=True)
+            return None
+
+        auto_tokenizer = getattr(transformers, "AutoTokenizer", None)
+        if auto_tokenizer is None:
+            return None
+
+        try:
+            tokenizer = auto_tokenizer.from_pretrained(identifier)
+        except Exception:
+            logger.debug(
+                "Unable to load chat-template tokenizer for %s",
+                identifier,
+                exc_info=True,
+            )
+            return None
+
+        if hasattr(tokenizer, "apply_chat_template"):
+            return tokenizer
+        return None
 
     @classmethod
     def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
