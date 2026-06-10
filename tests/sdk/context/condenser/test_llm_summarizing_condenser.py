@@ -827,3 +827,27 @@ async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
 
     with pytest.raises(NoCondensationAvailableException, match="boom"):
         await condenser.aget_condensation(view)
+
+
+def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
+    """A summarizer LLM failure during condense() triggers hard_context_reset."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Force a HARD condensation requirement via a CondensationRequest
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # First call (get_condensation path) fails; second call
+    # (hard_context_reset path) succeeds.
+    success_response = cast(Any, mock_llm).completion.return_value
+    cast(MagicMock, mock_llm.completion).side_effect = [
+        RuntimeError("context window exceeded"),
+        success_response,
+    ]
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary of forgotten events"
+    assert cast(MagicMock, mock_llm.completion).call_count == 2
