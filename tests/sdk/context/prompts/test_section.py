@@ -60,6 +60,13 @@ def test_prompt_context_is_frozen() -> None:
         ctx.working_dir = "/other"  # type: ignore[misc]
 
 
+def test_template_kwargs_is_read_only() -> None:
+    ctx = PromptContext(template_kwargs={"enable_browser": False})
+    with pytest.raises(TypeError):
+        ctx.template_kwargs["enable_browser"] = True  # type: ignore[index]
+    assert ctx.enable_browser is False
+
+
 def test_typed_views_read_template_kwargs() -> None:
     ctx = PromptContext(
         template_kwargs={

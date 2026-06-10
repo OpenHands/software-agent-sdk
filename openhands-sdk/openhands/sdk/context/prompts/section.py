@@ -6,9 +6,10 @@ Pure data types -- no I/O -- so they unit-test in isolation.
 import sys
 from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 from typing import NamedTuple, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 __all__ = [
@@ -58,13 +59,24 @@ class PromptContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    template_kwargs: Mapping[str, object] = Field(default_factory=dict)
+    template_kwargs: Mapping[str, object] = Field(
+        default_factory=dict, validate_default=True
+    )
     tool_names: tuple[str, ...] = Field(default_factory=tuple)
     platform: Platform = Field(default_factory=Platform.current)
     working_dir: str | None = None
     now: str | None = None
     skill_names: tuple[str, ...] = Field(default_factory=tuple)
     secret_names: tuple[str, ...] = Field(default_factory=tuple)
+
+    @field_validator("template_kwargs", mode="after")
+    @classmethod
+    def _freeze_template_kwargs(
+        cls, value: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        # frozen=True blocks attribute reassignment but not nested mutation;
+        # store a read-only copy so the snapshot and its views cannot drift.
+        return MappingProxyType(dict(value))
 
     @property
     def enable_browser(self) -> bool:
