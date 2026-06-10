@@ -1635,10 +1635,10 @@ class ACPAgent(AgentBase):
         """Whether a live, mid-conversation model switch will be attempted.
 
         Tells a client whether to offer the inline picker's live-switch control.
-        Kept in lockstep with :meth:`set_acp_model`, which refuses the switch
-        only for a *known* provider that declares no support and otherwise
-        attempts it optimistically — so a custom/unknown ACP server that does
-        support ``session/set_model`` isn't needlessly blocked from the picker.
+        ``True`` only for known providers that explicitly declare support for
+        ``session/set_model``. Unknown/custom providers use ``set_config_option``
+        for *initial* model selection but that RPC is a generic config write, not
+        a guaranteed live-switch primitive, so the picker is hidden for them.
         ``False`` before a session exists (nothing to switch yet).
 
         See
@@ -1647,7 +1647,7 @@ class ACPAgent(AgentBase):
         if self._session_id is None:
             return False
         provider = detect_acp_provider_by_agent_name(self._agent_name)
-        return provider is None or provider.supports_runtime_model_switch
+        return provider is not None and provider.supports_runtime_model_switch
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm

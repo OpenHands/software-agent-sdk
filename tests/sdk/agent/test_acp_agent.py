@@ -7014,11 +7014,12 @@ class TestACPAgentAvailableModelsProperty:
 
 
 class TestACPAgentSupportsRuntimeModelSwitch:
-    """``supports_runtime_model_switch`` mirrors ``set_acp_model``'s gate.
+    """``supports_runtime_model_switch`` gates the live-switch picker.
 
-    It refuses only for a *known* provider that declares no support, attempts
-    optimistically for unknown/custom servers, and is ``False`` before a
-    session exists.
+    ``True`` only for known providers that declare ``session/set_model`` support.
+    Unknown/custom providers use ``set_config_option`` for initial model selection
+    but that is a generic config write, not a guaranteed live-switch primitive,
+    so the picker is hidden for them. ``False`` before a session exists.
     """
 
     def test_false_before_session(self):
@@ -7033,13 +7034,13 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._agent_name = "codex-acp"
         assert agent.supports_runtime_model_switch is True
 
-    def test_optimistic_true_for_unknown_provider(self):
-        # Mirrors set_acp_model, which attempts the call for unknown/custom
-        # servers rather than refusing — so the picker isn't needlessly hidden.
+    def test_false_for_unknown_provider(self):
+        # Unknown/custom providers use set_config_option for initial model
+        # selection only; the live-switch picker is hidden for them.
         agent = _make_agent()
         agent._session_id = "sess-1"
         agent._agent_name = "some-third-party-acp-server"
-        assert agent.supports_runtime_model_switch is True
+        assert agent.supports_runtime_model_switch is False
 
     def test_false_for_known_unsupported_provider(self, monkeypatch):
         # A known provider that declares no support is the one case we refuse.
