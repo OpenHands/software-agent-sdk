@@ -27,6 +27,8 @@ _COMMAND_CHILD_SKIP_TYPES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class ShellProgram:
+    """Parsed shell source plus the tree-sitter parse result it came from."""
+
     source: str
     source_bytes: bytes
     parse_result: ParseResult = field(repr=False, compare=False)
@@ -34,6 +36,8 @@ class ShellProgram:
 
 @dataclass(frozen=True, slots=True)
 class ShellWord:
+    """A command word or assignment with its original shell syntax text."""
+
     text: str
     node_type: str
     opaque: bool
@@ -42,6 +46,8 @@ class ShellWord:
 
 @dataclass(frozen=True, slots=True)
 class ShellCommand:
+    """A simple command, including its command name and argument words."""
+
     name: ShellWord | None
     words: tuple[ShellWord, ...]
     assignments: tuple[ShellWord, ...]
@@ -51,6 +57,8 @@ class ShellCommand:
 
 @dataclass(frozen=True, slots=True)
 class ShellPipeline:
+    """A pipeline of simple commands connected by shell pipe operators."""
+
     commands: tuple[ShellCommand, ...]
     complete: bool
     node: Node = field(repr=False, compare=False)
