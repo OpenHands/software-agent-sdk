@@ -707,6 +707,26 @@ def test_openai_chat_completions_gateway_over_real_server(
                 assert usage_chunks[-1].completion_tokens == 5
                 assert usage_chunks[-1].total_tokens == 12
 
+                stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Say hello as a default stream.",
+                        },
+                    ],
+                    stream=True,
+                )
+                chunks = list(stream)
+                streamed_text = "".join(
+                    chunk.choices[0].delta.content or ""
+                    for chunk in chunks
+                    if chunk.choices
+                )
+                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+                assert streamed_text == "Hello from patched LLM"
+                assert usage_chunks == []
+
 
 def test_openai_gateway_replays_frozen_llm_fixtures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

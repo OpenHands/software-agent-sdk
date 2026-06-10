@@ -323,22 +323,21 @@ def iter_openai_chat_completion_sse(
             ],
         )
     )
-    if content:
-        yield _openai_stream_event(
-            OpenAIChatCompletionChunk(
-                id=completion_id,
-                object="chat.completion.chunk",
-                created=created,
-                model=model,
-                choices=[
-                    OpenAIChatCompletionChunkChoice(
-                        index=0,
-                        delta=OpenAIChatCompletionChunkChoiceDelta(content=content),
-                        finish_reason=None,
-                    )
-                ],
-            )
+    yield _openai_stream_event(
+        OpenAIChatCompletionChunk(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=created,
+            model=model,
+            choices=[
+                OpenAIChatCompletionChunkChoice(
+                    index=0,
+                    delta=OpenAIChatCompletionChunkChoiceDelta(content=content),
+                    finish_reason=None,
+                )
+            ],
         )
+    )
     yield _openai_stream_event(
         OpenAIChatCompletionChunk(
             id=completion_id,
