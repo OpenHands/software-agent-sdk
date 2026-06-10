@@ -44,6 +44,9 @@ def test_model_matches(name, pattern, expected):
         ("gemini-1.5-pro", False),
         # DeepSeek Reasoner
         ("deepseek/deepseek-reasoner", True),
+        ("deepseek/deepseek-v4-flash", False),
+        ("litellm_proxy/deepseek/deepseek-v4-flash", False),
+        ("openrouter/deepseek/deepseek-v4-flash", False),
         # Moonshot Kimi thinking models expose reasoning content but do not
         # accept the reasoning_effort parameter.
         ("moonshot/kimi-k2.5", False),

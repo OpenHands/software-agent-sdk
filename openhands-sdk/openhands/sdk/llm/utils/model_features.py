@@ -89,9 +89,16 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     return frozenset(params or ())
 
 
+REASONING_EFFORT_UNSUPPORTED_MODELS: list[str] = [
+    "deepseek/deepseek-v4-flash",
+]
+
+
 def _supports_reasoning_effort(model: str | None) -> bool:
     """Return True if LiteLLM says the model accepts reasoning_effort."""
-    return "reasoning_effort" in _normalized_supported_openai_params(model)
+    return "reasoning_effort" in _normalized_supported_openai_params(
+        model
+    ) and not model_matches(model or "", REASONING_EFFORT_UNSUPPORTED_MODELS)
 
 
 EXTENDED_THINKING_MODELS: list[str] = [
