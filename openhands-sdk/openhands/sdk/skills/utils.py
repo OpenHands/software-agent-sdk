@@ -47,7 +47,8 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     """
     if not skill_dir.is_dir():
         return None
-    for item in skill_dir.iterdir():
+    # sorted() so a SKILL.md/skill.md case-collision picks a deterministic winner.
+    for item in sorted(skill_dir.iterdir()):
         if item.is_file() and item.name.lower() == "skill.md":
             return item
     return None
@@ -278,7 +279,8 @@ def find_third_party_files(
     files: list[Path] = []
     seen_names: set[str] = set()
     seen_real_paths: set[Path] = set()
-    for item in repo_root.iterdir():
+    # sorted() so an AGENTS.md/agents.md collision and the order are deterministic.
+    for item in sorted(repo_root.iterdir()):
         if item.is_file() and item.name.lower() in target_names:
             # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
             name_lower = item.name.lower()
@@ -316,7 +318,7 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     results: list[Path] = []
     if not skill_dir.exists():
         return results
-    for subdir in skill_dir.iterdir():
+    for subdir in sorted(skill_dir.iterdir()):
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
             if skill_md:
@@ -337,7 +339,7 @@ def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path
     files: list[Path] = []
     if not skill_dir.exists():
         return files
-    for f in skill_dir.rglob("*.md"):
+    for f in sorted(skill_dir.rglob("*.md")):
         is_readme = f.name == "README.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
