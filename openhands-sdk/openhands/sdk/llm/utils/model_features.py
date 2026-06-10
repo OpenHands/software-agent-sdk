@@ -89,8 +89,33 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
     return frozenset(params or ())
 
 
+# SDK-side override allowlist for models that support the ``reasoning_effort``
+# parameter but are not (yet) recognized by LiteLLM's
+# ``get_supported_openai_params`` registry. Without this, brand-new model ids
+# fall through to the non-reasoning branch in ``chat_options.py`` and the SDK
+# leaves ``temperature``/``top_p`` in the request, which providers like
+# Anthropic now reject for these models with
+# ``temperature is deprecated for this model``.
+#
+# Entries should be removed once the corresponding LiteLLM release ships
+# metadata for the model.
+REASONING_EFFORT_MODELS: list[str] = [
+    # https://www.anthropic.com/news/claude-fable-5
+    "claude-fable-5",
+]
+
+
 def _supports_reasoning_effort(model: str | None) -> bool:
-    """Return True if LiteLLM says the model accepts reasoning_effort."""
+    """Return True if LiteLLM or our override list says the model accepts
+    ``reasoning_effort``.
+
+    The override list (``REASONING_EFFORT_MODELS``) lets us recognize new
+    reasoning models before LiteLLM's metadata catches up, so the chat-options
+    layer can strip ``temperature``/``top_p`` (and forward ``reasoning_effort``)
+    before the request reaches the provider.
+    """
+    if model_matches(model or "", REASONING_EFFORT_MODELS):
+        return True
     return "reasoning_effort" in _normalized_supported_openai_params(model)
 
 

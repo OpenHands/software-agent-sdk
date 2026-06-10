@@ -61,6 +61,13 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
+        # SDK-side override for models LiteLLM doesn't yet recognize.
+        # claude-fable-5 must be detected as a reasoning model so the chat
+        # options layer strips temperature/top_p before the request reaches
+        # Anthropic (which rejects temperature for this model).
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
         # LiteLLM proxy with deployment path prefixes (prod/, dev/, staging/, test/)
         ("litellm_proxy/prod/claude-opus-4-5-20251101", True),
         ("litellm_proxy/dev/claude-opus-4-5", True),
