@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import mimetypes
 import os
 import re
@@ -60,6 +61,15 @@ class FileEditor:
     _max_file_size: int
     _encoding_manager: EncodingManager
     _cwd: str
+    # SDK-6: per-path *set* of SHA256s of every distinct `view` response
+    # already returned. Used to short-circuit any repeated view (including
+    # ABA patterns across different `view_range`s) with a tiny hint instead
+    # of re-emitting the full file content. Trajectory analysis of
+    # long-running agents (Nemotron 550B SWE-Bench) showed the same file
+    # being viewed 19–34 times per task with no edits between views — pure
+    # context waste on providers without prompt caching. The entire set for
+    # a path is dropped on any successful `write_file` to that path.
+    _view_response_hashes: dict[str, set[str]]
 
     def __init__(
         self,
@@ -79,6 +89,7 @@ class FileEditor:
         self._max_file_size = (
             (max_file_size_mb or self.MAX_FILE_SIZE_MB) * 1024 * 1024
         )  # Convert to bytes
+        self._view_response_hashes = {}
 
         # Initialize encoding manager
         self._encoding_manager = EncodingManager()
@@ -94,6 +105,66 @@ class FileEditor:
             self._cwd = os.path.abspath(os.getcwd())
         logger.info(f"FileEditor initialized with cwd: {self._cwd}")
 
+    # ------------------------------------------------------------------ #
+    # SDK-6: view-response deduplication                                 #
+    # ------------------------------------------------------------------ #
+
+    _VIEW_DEDUPE_HINT: str = (
+        "[file_editor view dedupe] You already viewed `{path}` earlier in "
+        "this conversation and the file has not changed since (same byte "
+        "content, same range). Scroll back to your previous `view` "
+        "observation rather than re-loading the same content here. "
+        "If you need different lines, pass an explicit `view_range`. "
+        "If you really need to re-read this file (e.g. you suspect an "
+        "external change), run `cat {path}` via the terminal tool."
+    )
+
+    @staticmethod
+    def _extract_text_for_dedupe(obs: FileEditorObservation) -> str | None:
+        """Return a stable text payload to hash for dedupe, or None when the
+        observation has non-text content (e.g. images) and dedupe based on
+        text alone would be incorrect."""
+        text_parts: list[str] = []
+        for item in obs.content:
+            if isinstance(item, TextContent):
+                text_parts.append(item.text)
+            else:
+                # Image (or any future non-text payload). Skip dedupe rather
+                # than risk false positives — the image bytes might differ
+                # even when the surrounding text is identical.
+                return None
+        return "\n".join(text_parts)
+
+    def _maybe_dedupe_view(
+        self,
+        path: Path,
+        obs: FileEditorObservation,
+    ) -> FileEditorObservation:
+        # Never dedupe errors — the model needs to see the full error each
+        # time so it can correct course.
+        if obs.is_error:
+            return obs
+        response_text = self._extract_text_for_dedupe(obs)
+        if response_text is None:
+            return obs
+        path_key = str(path.resolve())
+        new_hash = hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+        seen = self._view_response_hashes.setdefault(path_key, set())
+        if new_hash in seen:
+            logger.info(
+                "file_editor view dedupe: returning hint for %s "
+                "(identical response already returned in this session)",
+                path,
+            )
+            return FileEditorObservation.from_text(
+                text=self._VIEW_DEDUPE_HINT.format(path=path),
+                command="view",
+                path=str(path),
+                prev_exist=True,
+            )
+        seen.add(new_hash)
+        return obs
+
     def __call__(
         self,
         *,
@@ -108,7 +179,7 @@ class FileEditor:
         _path = Path(path)
         self.validate_path(command, _path)
         if command == "view":
-            return self.view(_path, view_range)
+            return self._maybe_dedupe_view(_path, self.view(_path, view_range))
         elif command == "create":
             if file_text is None:
                 raise EditorToolParameterMissingError(command, "file_text")
@@ -468,6 +539,10 @@ class FileEditor:
                 f.write(file_text)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
+        # SDK-6: the file just changed; any cached view response is stale.
+        # Drop the entry so the next `view` returns fresh content rather than
+        # the dedupe hint.
+        self._view_response_hashes.pop(str(path.resolve()), None)
 
     @with_encoding
     def insert(
