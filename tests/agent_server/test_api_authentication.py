@@ -124,7 +124,7 @@ def test_openai_routes_accept_bearer_session_key(client_with_auth, monkeypatch):
             return []
 
     monkeypatch.setattr(
-        "openhands.agent_server.openai_service.LLMProfileStore", EmptyProfileStore
+        "openhands.agent_server.openai.service.LLMProfileStore", EmptyProfileStore
     )
 
     response = client_with_auth.get("/v1/models")

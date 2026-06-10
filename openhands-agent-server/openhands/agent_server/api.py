@@ -41,7 +41,7 @@ from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
-from openhands.agent_server.openai_router import (
+from openhands.agent_server.openai.router import (
     create_openai_api_key_dependency,
     openai_router,
 )

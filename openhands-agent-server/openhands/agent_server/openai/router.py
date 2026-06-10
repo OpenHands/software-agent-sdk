@@ -9,12 +9,12 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.openai_models import (
+from openhands.agent_server.openai.models import (
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
     OpenAIModelListResponse,
 )
-from openhands.agent_server.openai_service import (
+from openhands.agent_server.openai.service import (
     list_openai_models,
     run_chat_completion,
 )

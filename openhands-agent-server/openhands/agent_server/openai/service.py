@@ -10,7 +10,7 @@ from fastapi import HTTPException, status
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.openai_models import (
+from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,

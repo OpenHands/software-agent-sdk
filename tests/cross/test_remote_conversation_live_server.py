@@ -607,7 +607,7 @@ def test_openai_chat_completions_gateway_over_real_server(
     )
 
     with patch(
-        "openhands.agent_server.openai_service.LLMProfileStore",
+        "openhands.agent_server.openai.service.LLMProfileStore",
         lambda: LLMProfileStore(base_dir=profiles_dir),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
@@ -731,7 +731,7 @@ def test_openai_gateway_replays_frozen_llm_fixtures(
         return info.id
 
     with patch(
-        "openhands.agent_server.openai_service.LLMProfileStore",
+        "openhands.agent_server.openai.service.LLMProfileStore",
         lambda: LLMProfileStore(base_dir=profiles_dir),
     ):
         with live_server_env(tmp_path, monkeypatch) as env:
