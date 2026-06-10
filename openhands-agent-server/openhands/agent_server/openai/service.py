@@ -1,7 +1,9 @@
 """Service logic for the OpenAI-compatible agent-server gateway."""
 
 import asyncio
+import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -12,6 +14,9 @@ from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.openai.models import (
     OpenAIChatCompletionChoice,
+    OpenAIChatCompletionChunk,
+    OpenAIChatCompletionChunkChoice,
+    OpenAIChatCompletionChunkChoiceDelta,
     OpenAIChatCompletionRequest,
     OpenAIChatCompletionResponse,
     OpenAIChatMessage,
@@ -168,7 +173,7 @@ def _latest_user_message(messages: list[OpenAIChatMessage]) -> OpenAIChatMessage
 def _system_text(messages: list[OpenAIChatMessage]) -> str:
     text_parts: list[str] = []
     for message in messages:
-        if message.role != "system":
+        if message.role not in {"system", "developer"}:
             continue
         text = _message_text(message)
         if text:
@@ -285,6 +290,81 @@ def _openai_usage_from_state(state: ConversationState) -> OpenAIUsage:
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
     )
+
+
+def _openai_stream_event(payload: OpenAIChatCompletionChunk) -> str:
+    data = payload.model_dump(mode="json", exclude_none=True)
+    return f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+def iter_openai_chat_completion_sse(
+    response: OpenAIChatCompletionResponse,
+    *,
+    include_usage: bool,
+) -> Iterator[str]:
+    created = int(response.created)
+    completion_id = response.id
+    model = response.model
+    content = response.choices[0].message.content
+    finish_reason = response.choices[0].finish_reason
+
+    yield _openai_stream_event(
+        OpenAIChatCompletionChunk(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=created,
+            model=model,
+            choices=[
+                OpenAIChatCompletionChunkChoice(
+                    index=0,
+                    delta=OpenAIChatCompletionChunkChoiceDelta(role="assistant"),
+                    finish_reason=None,
+                )
+            ],
+        )
+    )
+    yield _openai_stream_event(
+        OpenAIChatCompletionChunk(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=created,
+            model=model,
+            choices=[
+                OpenAIChatCompletionChunkChoice(
+                    index=0,
+                    delta=OpenAIChatCompletionChunkChoiceDelta(content=content),
+                    finish_reason=None,
+                )
+            ],
+        )
+    )
+    yield _openai_stream_event(
+        OpenAIChatCompletionChunk(
+            id=completion_id,
+            object="chat.completion.chunk",
+            created=created,
+            model=model,
+            choices=[
+                OpenAIChatCompletionChunkChoice(
+                    index=0,
+                    delta=OpenAIChatCompletionChunkChoiceDelta(),
+                    finish_reason=finish_reason,
+                )
+            ],
+        )
+    )
+    if include_usage:
+        yield _openai_stream_event(
+            OpenAIChatCompletionChunk(
+                id=completion_id,
+                object="chat.completion.chunk",
+                created=created,
+                model=model,
+                choices=[],
+                usage=response.usage,
+            )
+        )
+    yield "data: [DONE]\n\n"
 
 
 async def list_openai_models() -> OpenAIModelListResponse:
