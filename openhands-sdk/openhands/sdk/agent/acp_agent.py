@@ -522,11 +522,11 @@ async def _maybe_set_session_model(
 
     This is the session-creation path only, gated on
     :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.supports_set_session_model`.
-    Providers that select their initial model via session ``_meta``
-    (claude-agent-acp, ``supports_set_session_model=False``) already received
-    the model in ``new_session()``, so this is a no-op for them. Providers that
-    use the protocol call for initial selection (codex-acp, gemini-cli) get a
-    one-shot ``set_session_model`` call here.
+    All built-in providers get a one-shot ``set_session_model`` call here.
+    claude-agent-acp used to be skipped on the assumption that it already
+    received the model via ``new_session()`` ``_meta``, but 0.30.0 silently
+    ignores that payload (#3654) — the protocol call is the only path that
+    both validates and applies the model.
 
     For unknown/custom providers (e.g. Devin CLI), we fall back to the generic
     ``set_config_option`` method with configId="model", which is a standard ACP
@@ -2110,7 +2110,7 @@ class ACPAgent(AgentBase):
         # agent_context.secrets are seeded into secret_registry at
         # LocalConversation.__init__ (lower priority than request.secrets), so
         # the registry is now the single channel for all secrets including
-        # provider credentials folded in by ACPAgentSettings.create_agent().
+        # provider credentials (keyed by the provider's env var name).
         env = default_environment()
         env.update(os.environ)
         if self.acp_env:

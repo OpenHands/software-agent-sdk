@@ -4421,21 +4421,22 @@ class TestMaybeSetSessionModel:
         assert applied is True
 
     @pytest.mark.asyncio
-    async def test_meta_key_provider_skips_protocol_override_at_init(self):
-        # claude-agent-acp selects its *initial* model via session _meta, so the
-        # one-shot init set_session_model call is skipped (even though the
-        # provider now supports the protocol call for runtime switches).
+    async def test_claude_agent_uses_protocol_model_override(self):
+        # claude-agent-acp 0.30.0 silently ignores the session-_meta model
+        # selection (#3654), so the init path pushes the model via the same
+        # one-shot set_session_model call as codex/gemini.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn,
             "claude-agent-acp",
             "session-1",
-            "claude-opus-4-6",
+            "claude-opus-4-8",
         )
-        conn.set_session_model.assert_not_called()
-        # Not applied *via this call* — claude rode the model in via _meta on
-        # new_session, which the caller accounts for separately.
-        assert applied is False
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-opus-4-8",
+            session_id="session-1",
+        )
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -4481,11 +4482,8 @@ class TestReapplySessionModelOnResume:
 
     @pytest.mark.asyncio
     async def test_claude_reapplies_persisted_model_on_resume(self):
-        # claude selects its initial model via _meta (supports_set_session_model
-        # =False) but DOES support set_session_model for runtime switches.
-        # load_session() carries no _meta, so on resume the persisted model must
-        # be reapplied via the runtime-switch gate — _maybe_set_session_model
-        # would skip it.
+        # load_session() carries no model selection, so on resume the persisted
+        # model must be reapplied via the runtime-switch gate.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
             conn, "claude-agent-acp", "sess-1", "claude-haiku-4-5-20251001"
@@ -5953,10 +5951,8 @@ class TestACPSessionIdPersistence:
             "acp_session_id": "stored-sess",
             "acp_session_cwd": str(tmp_path),
         }
-        # Name the server "codex-acp" so _maybe_set_session_model routes
-        # acp_model through conn.set_session_model (claude-acp uses _meta,
-        # which only applies on new_session and so wouldn't exercise the
-        # protocol-level override on the resume path).
+        # Named "codex-acp"; any built-in provider routes acp_model through
+        # conn.set_session_model on this path.
         conn = self._make_conn()
         conn.initialize.return_value.agent_info.name = "codex-acp"
         conn.initialize.return_value.auth_methods = []
@@ -6138,9 +6134,8 @@ class TestACPSecretsEnvInjection:
     env so the ACP server (Claude Code, Codex CLI, etc.) can use them. They
     reach the subprocess through ``state.secret_registry``: ``LocalConversation``
     seeds ``agent_context.secrets`` into the registry at init (covering
-    canvas-local, which folds ``llm.api_key`` into ``agent_context.secrets``
-    server-side via ``create_agent`` but never lifts it into ``request.secrets``),
-    and ``_start_acp_server`` injects the registry. ``acp_env`` entries take
+    callers that never lift them into ``request.secrets``), and
+    ``_start_acp_server`` injects the registry. ``acp_env`` entries take
     precedence over registry secrets.
     """
 
