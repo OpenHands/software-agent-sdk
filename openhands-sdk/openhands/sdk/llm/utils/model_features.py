@@ -146,6 +146,30 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-7",
     "claude-opus-4-8",
     "claude-sonnet-4-6",
+    # NVIDIA Nemotron-3 Ultra (550B MoE).
+    #
+    # Marker emission is gated by the upstream actually honoring
+    # `cache_control: {"type": "ephemeral"}` and reporting cache hits in
+    # `usage.prompt_tokens_details.cached_tokens`. The OpenRouter route via
+    # DeepInfra does NOT honor this today (see OpenRouter prompt-caching
+    # docs: NVIDIA / DeepInfra are not in the supported-provider list;
+    # dashboard for the model shows ~0.2% cache rate across all traffic).
+    #
+    # We allowlist the SDK side anyway because:
+    #   1. Sending the markers on a route that ignores them is a no-op —
+    #      not an error — so this change is safe to ship before any infra
+    #      work lands.
+    #   2. The companion infra work routes Nemotron to a provider that
+    #      DOES honor these markers (DeepInfra direct, NVIDIA NIM direct,
+    #      or self-hosted vLLM). On that route the SDK must be sending
+    #      markers for caching to register, so we want this in place
+    #      first to avoid a coordinated cross-repo release.
+    #
+    # The substring `nemotron-3-ultra` matches every form we use:
+    #   - `litellm_proxy/nemotron-3-ultra-550b-a55b`
+    #   - `openrouter/nvidia/nemotron-3-ultra-550b-a55b`
+    #   - `deepinfra/nvidia/Nemotron-3-Ultra-550B-A55B` (case-insensitive)
+    "nemotron-3-ultra",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
     # static prefix and disable Google's implicit caching on the growing body
     # (~6-14x cost). Gemini uses implicit prefix caching instead.
