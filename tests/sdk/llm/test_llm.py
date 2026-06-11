@@ -365,10 +365,12 @@ def test_llm_token_counting_includes_tools(mock_token_counter, default_llm):
     assert "message" in kwargs["tools"][0]["function"]["parameters"]["properties"]
 
 
-def test_llm_load_chat_template_tokenizer_prefers_transformers(monkeypatch):
-    """The optional chat-template tokenizer uses Transformers when available."""
+def test_llm_load_required_chat_template_tokenizer_prefers_transformers(monkeypatch):
+    """The required chat-template tokenizer uses Transformers when available."""
 
     class FakeTokenizer:
+        chat_template = "template"
+
         def apply_chat_template(self, messages, **kwargs):
             return []
 
@@ -392,10 +394,110 @@ def test_llm_load_chat_template_tokenizer_prefers_transformers(monkeypatch):
         "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
     )
 
-    tokenizer = LLM._load_chat_template_tokenizer("model-with-template")
+    tokenizer = LLM._load_required_chat_template_tokenizer("model-with-template")
 
     assert isinstance(tokenizer, FakeTokenizer)
     assert FakeAutoTokenizer.loaded_identifier == "model-with-template"
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_requires_transformers(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    mock_create_pretrained_tokenizer.return_value = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+
+    def fake_import_module(name):
+        if name == "transformers":
+            raise ModuleNotFoundError(name)
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    with pytest.raises(ModuleNotFoundError, match="requires the `transformers`"):
+        LLM(
+            model="openai/qwen-test",
+            api_key=SecretStr("test_key"),
+            custom_tokenizer="Qwen/Qwen3-test",
+        )
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_requires_chat_template(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    mock_create_pretrained_tokenizer.return_value = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+
+    class FakeAutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, identifier):
+            return object()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    with pytest.raises(ValueError, match="does not support apply_chat_template"):
+        LLM(
+            model="openai/qwen-test",
+            api_key=SecretStr("test_key"),
+            custom_tokenizer="Qwen/Qwen3-test",
+        )
+
+
+@patch("openhands.sdk.llm.llm.create_pretrained_tokenizer")
+def test_llm_custom_tokenizer_rejects_missing_chat_template(
+    mock_create_pretrained_tokenizer, monkeypatch
+):
+    mock_create_pretrained_tokenizer.return_value = {
+        "type": "huggingface_tokenizer",
+        "tokenizer": object(),
+    }
+
+    class FakeTokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, messages, **kwargs):
+            return []
+
+    class FakeAutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, identifier):
+            return FakeTokenizer()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeAutoTokenizer
+
+    def fake_import_module(name):
+        if name == "transformers":
+            return FakeTransformers
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr(
+        "openhands.sdk.llm.llm.importlib.import_module", fake_import_module
+    )
+
+    with pytest.raises(ValueError, match="does not define a chat template"):
+        LLM(
+            model="openai/qwen-test",
+            api_key=SecretStr("test_key"),
+            custom_tokenizer="gpt2",
+        )
 
 
 @patch("openhands.sdk.llm.llm.token_counter")
@@ -461,10 +563,10 @@ def test_llm_count_tokenized_output_handles_encoding_objects(default_llm):
 
 
 @patch("openhands.sdk.llm.llm.token_counter")
-def test_llm_token_counting_falls_back_when_chat_template_fails(
+def test_llm_token_counting_raises_when_chat_template_fails(
     mock_token_counter, default_llm
 ):
-    """A broken tokenizer chat template must not break token counting."""
+    """A broken tokenizer chat template must not silently change counting methods."""
 
     class BrokenChatTemplateTokenizer:
         def apply_chat_template(self, messages, **kwargs):
@@ -474,10 +576,10 @@ def test_llm_token_counting_falls_back_when_chat_template_fails(
     mock_token_counter.return_value = 123
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    token_count = default_llm.get_token_count(messages)
+    with pytest.raises(RuntimeError, match="template unavailable"):
+        default_llm.get_token_count(messages)
 
-    assert token_count == 123
-    mock_token_counter.assert_called_once()
+    mock_token_counter.assert_not_called()
 
 
 @patch("openhands.sdk.llm.llm.token_counter")
