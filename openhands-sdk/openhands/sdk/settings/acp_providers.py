@@ -11,9 +11,9 @@ Each record captures the static properties that are known at configuration time
 - ``default_session_mode``  ACP mode ID that disables permission prompts
 - ``agent_name_patterns``   lowercase substrings in the runtime agent name;
                             used by ``ACPAgent`` to auto-detect mode / protocol
-- ``supports_set_session_model``  whether the provider selects its *initial*
+- ``supports_set_session_model``  whether the provider applies its *initial*
                                   model via the ``set_session_model`` protocol
-                                  call (vs session ``_meta``) at session creation
+                                  call at session creation
 - ``supports_runtime_model_switch``  whether the server supports the
                                   ``session/set_model`` protocol call for
                                   runtime, mid-conversation model switching
@@ -176,12 +176,12 @@ class ACPProviderInfo:
     """``True`` if this provider selects its *initial* model via the
     ``set_session_model`` protocol call (rather than session ``_meta``).
 
-    This governs the **session-creation** path only:
-
-    - ``False`` for claude-agent-acp, which selects its initial model via
-      session ``_meta`` (see :attr:`session_meta_key`).
-    - ``True`` for codex-acp and gemini-cli, which get a one-shot
-      ``set_session_model`` call right after the session is created.
+    This governs the **session-creation** path only. ``True`` for all three
+    built-in providers, which get a one-shot ``set_session_model`` call right
+    after the session is created. claude-agent-acp was ``False`` until 0.30.0
+    was found to silently ignore the session-``_meta`` selection it relied on
+    (#3654); its ``_meta`` payload is still sent alongside (see
+    :attr:`session_meta_key`).
 
     This is **independent of** runtime switching capability — see
     :attr:`supports_runtime_model_switch`. The original meaning of this flag
@@ -192,15 +192,15 @@ class ACPProviderInfo:
     session_meta_key: str | None
     """Top-level ``_meta`` key for model selection *at session creation*.
 
-    When non-``None``, the provider selects its **initial** model via ACP
-    session ``_meta`` using the structure
+    When non-``None``, the model is additionally advertised via ACP session
+    ``_meta`` using the structure
     ``{session_meta_key: {"options": {"model": <model>}}}`` passed to
-    ``new_session()``. When ``None``, the initial model is applied with a
-    one-shot ``set_session_model`` call right after the session is created
-    (gated on :attr:`supports_set_session_model`).
+    ``new_session()``. This is best-effort only: claude-agent-acp 0.30.0
+    ignores it (#3654), so the authoritative initial selection is the
+    ``set_session_model`` call gated on :attr:`supports_set_session_model`.
 
-    This only governs the *initial* selection; runtime switches always use
-    ``set_session_model`` (gated on :attr:`supports_runtime_model_switch`).
+    Runtime switches always use ``set_session_model`` (gated on
+    :attr:`supports_runtime_model_switch`).
 
     - ``"claudeCode"`` — claude-agent-acp
     - ``None``         — codex-acp, gemini-cli
@@ -397,11 +397,13 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             base_url_env_var="ANTHROPIC_BASE_URL",
             default_session_mode="bypassPermissions",
             agent_name_patterns=("claude-agent",),
-            # claude-agent-acp selects its *initial* model via session _meta
-            # (session_meta_key below), so the init path does NOT use
-            # set_session_model. It DOES, however, support session/set_model
-            # for mid-conversation switches.
-            supports_set_session_model=False,
+            # claude-agent-acp 0.30.0 silently ignores the session-_meta model
+            # selection (the requested model only becomes a picker option; the
+            # session keeps running "default"), so the init path must push the
+            # model via session/set_model like codex/gemini (#3654). The _meta
+            # payload (session_meta_key below) is still sent — harmless, and
+            # picks up the same model if a future CLI honours it.
+            supports_set_session_model=True,
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
