@@ -130,6 +130,20 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
         ("anthropic.claude-3-opus-20240229", True),
+        # NVIDIA Nemotron-3 Ultra — every routing form we actually deploy.
+        # See the comment block on PROMPT_CACHE_MODELS for why this is
+        # allowlisted even before the infra route honors the markers.
+        ("litellm_proxy/nemotron-3-ultra-550b-a55b", True),
+        ("openrouter/nvidia/nemotron-3-ultra-550b-a55b", True),
+        # Case-insensitive: DeepInfra uses MixedCase in their model IDs.
+        ("deepinfra/nvidia/Nemotron-3-Ultra-550B-A55B", True),
+        # Negative — other Nemotron family members. We deliberately do
+        # NOT bulk-allowlist "nemotron"; each variant should be added
+        # only after its caching story has been verified separately.
+        # If the substring were just "nemotron", these would
+        # accidentally start emitting markers too.
+        ("nvidia/llama-nemotron-rerank-vl-1b", False),
+        ("nvidia/nemotron-3.5-content-safety", False),
         # Gemini must NOT use explicit cache_control markers: they freeze the
         # cache at the static prefix and disable Google's implicit caching.
         ("gemini-2.5-pro", False),
