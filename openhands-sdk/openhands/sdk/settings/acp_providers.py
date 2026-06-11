@@ -413,7 +413,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
-            default_model="claude-opus-4-7",
+            default_model="claude-opus-4-8",
             binary_name="claude-agent-acp",
             data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
