@@ -41,8 +41,8 @@ class TestACPProviderInfo:
         # ... but it DOES support session/set_model for mid-conversation switches.
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
-        assert info.default_model == "claude-opus-4-7"
-        assert any(m.id == "claude-opus-4-7" for m in info.available_models)
+        assert info.default_model == "claude-opus-4-8"
+        assert any(m.id == "claude-opus-4-8" for m in info.available_models)
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"

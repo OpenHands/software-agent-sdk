@@ -2091,7 +2091,7 @@ class ACPAgent(AgentBase):
         # agent_context.secrets are seeded into secret_registry at
         # LocalConversation.__init__ (lower priority than request.secrets), so
         # the registry is now the single channel for all secrets including
-        # provider credentials folded in by ACPAgentSettings.create_agent().
+        # provider credentials (keyed by the provider's env var name).
         env = default_environment()
         env.update(os.environ)
         if self.acp_env:

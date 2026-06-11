@@ -293,47 +293,34 @@ class ACPProviderInfo:
 # ``acp_model`` outside these lists is always allowed.
 # ---------------------------------------------------------------------------
 
-# Canonical model IDs the Claude Code CLI accepts. ``opus[1m]`` / ``sonnet[1m]``
-# are the SDK-documented version-agnostic 1M-context aliases (so they auto-track
-# the newest 1M-capable model — keep their labels version-less to match).
-# ``opusplan`` routes planning to Opus and execution to Sonnet.
+# Canonical model IDs the Claude Code CLI accepts, curated to the newest
+# generation per capability tier. ``opus[1m]`` is the SDK-documented
+# version-agnostic 1M-context alias (auto-tracks the newest 1M-capable model —
+# keep its label version-less to match). ``opusplan`` routes planning to Opus
+# and execution to Sonnet.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
-    ACPModelOption(id="claude-opus-4-7", label="Claude Opus 4.7"),
-    ACPModelOption(id="claude-opus-4-6", label="Claude Opus 4.6"),
+    ACPModelOption(id="claude-fable-5", label="Claude Fable 5"),
+    ACPModelOption(id="claude-opus-4-8", label="Claude Opus 4.8"),
     ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
-    ACPModelOption(id="claude-opus-4-5", label="Claude Opus 4.5"),
-    ACPModelOption(id="claude-opus-4-1-20250805", label="Claude Opus 4.1"),
     ACPModelOption(id="claude-sonnet-4-6", label="Claude Sonnet 4.6"),
-    ACPModelOption(id="sonnet[1m]", label="Claude Sonnet (1M)"),
-    ACPModelOption(id="claude-sonnet-4-5", label="Claude Sonnet 4.5"),
     ACPModelOption(id="claude-haiku-4-5", label="Claude Haiku 4.5"),
     ACPModelOption(id="opusplan", label="Opus (plan) + Sonnet (execute)"),
 )
 
-# Model IDs accepted by ``@zed-industries/codex-acp``, mirroring the Codex CLI's
-# ``/model`` picker. Format is ``<base-model>/<effort>`` where the trailing tier
-# (``low``/``medium``/``high``/``xhigh``) hints the reasoning effort for the turn.
+# Model IDs accepted by ``@zed-industries/codex-acp`` (``session/new``
+# ``availableModels`` on the pinned CLI), curated to the frontier family plus
+# the cost-efficient mini tier. Format is ``<base-model>/<effort>`` where the
+# trailing tier (``low``/``medium``/``high``/``xhigh``) hints the reasoning
+# effort for the turn.
 _CODEX_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="gpt-5.5/low", label="GPT-5.5 (low)"),
     ACPModelOption(id="gpt-5.5/medium", label="GPT-5.5 (medium)"),
     ACPModelOption(id="gpt-5.5/high", label="GPT-5.5 (high)"),
     ACPModelOption(id="gpt-5.5/xhigh", label="GPT-5.5 (xhigh)"),
-    ACPModelOption(id="gpt-5.4/low", label="GPT-5.4 (low)"),
-    ACPModelOption(id="gpt-5.4/medium", label="GPT-5.4 (medium)"),
-    ACPModelOption(id="gpt-5.4/high", label="GPT-5.4 (high)"),
-    ACPModelOption(id="gpt-5.4/xhigh", label="GPT-5.4 (xhigh)"),
     ACPModelOption(id="gpt-5.4-mini/low", label="GPT-5.4 Mini (low)"),
     ACPModelOption(id="gpt-5.4-mini/medium", label="GPT-5.4 Mini (medium)"),
     ACPModelOption(id="gpt-5.4-mini/high", label="GPT-5.4 Mini (high)"),
     ACPModelOption(id="gpt-5.4-mini/xhigh", label="GPT-5.4 Mini (xhigh)"),
-    ACPModelOption(id="gpt-5.3-codex/low", label="GPT-5.3 Codex (low)"),
-    ACPModelOption(id="gpt-5.3-codex/medium", label="GPT-5.3 Codex (medium)"),
-    ACPModelOption(id="gpt-5.3-codex/high", label="GPT-5.3 Codex (high)"),
-    ACPModelOption(id="gpt-5.3-codex/xhigh", label="GPT-5.3 Codex (xhigh)"),
-    ACPModelOption(id="gpt-5.2/low", label="GPT-5.2 (low)"),
-    ACPModelOption(id="gpt-5.2/medium", label="GPT-5.2 (medium)"),
-    ACPModelOption(id="gpt-5.2/high", label="GPT-5.2 (high)"),
-    ACPModelOption(id="gpt-5.2/xhigh", label="GPT-5.2 (xhigh)"),
 )
 
 # Model IDs accepted by ``@google/gemini-cli --acp``. The ``auto-gemini-*``
@@ -418,7 +405,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             supports_runtime_model_switch=True,
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
-            default_model="claude-opus-4-7",
+            default_model="claude-opus-4-8",
             binary_name="claude-agent-acp",
             data_dir_env_var="CLAUDE_CONFIG_DIR",
         ),
