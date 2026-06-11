@@ -213,5 +213,8 @@ agent-sdk.workspace.code-workspace
 tests/integration/outputs/
 tests/integration/api_compliance/outputs/
 
+# Generated agent-canvas frontend bundle
+openhands-agent-server/openhands/agent_server/_frontend/
+
 # Agent-generated temp
 .agent_tmp/

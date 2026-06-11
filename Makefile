@@ -13,8 +13,10 @@ UNDERLINE := \033[4m
 # Required uv version
 REQUIRED_UV_VERSION := 0.8.13
 PKGS ?= openhands-sdk openhands-tools openhands-workspace openhands-agent-server
+AGENT_CANVAS_PACKAGE ?= @openhands/agent-canvas
+AGENT_SERVER_FRONTEND_DIR := openhands-agent-server/openhands/agent_server/_frontend
 
-.PHONY: build format lint clean help check-uv-version
+.PHONY: build build-with-frontend agent-canvas-frontend format lint clean help check-uv-version
 
 # Default target
 .DEFAULT_GOAL := help
@@ -40,6 +42,29 @@ build: check-uv-version
 	@uv run pre-commit install
 	@$(ECHO) "$(GREEN)Pre-commit hooks installed successfully.$(RESET)"
 	@$(ECHO) "$(GREEN)Build complete! Development environment is ready.$(RESET)"
+
+build-with-frontend: build agent-canvas-frontend
+	@$(ECHO) "$(GREEN)Build complete with bundled agent-canvas frontend.$(RESET)"
+
+agent-canvas-frontend:
+	@$(ECHO) "$(CYAN)Fetching prebuilt agent-canvas frontend...$(RESET)"
+	@tmp_dir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp_dir"' EXIT; \
+	npm --silent pack "$(AGENT_CANVAS_PACKAGE)" --pack-destination "$$tmp_dir" >/dev/null; \
+	tarball=$$(find "$$tmp_dir" -maxdepth 1 -name '*.tgz' -print -quit); \
+	if [ -z "$$tarball" ]; then \
+		$(ECHO) "$(RED)No agent-canvas tarball was downloaded.$(RESET)"; \
+		exit 1; \
+	fi; \
+	tar -xzf "$$tarball" -C "$$tmp_dir"; \
+	if [ ! -d "$$tmp_dir/package/build" ]; then \
+		$(ECHO) "$(RED)agent-canvas package does not contain build/ assets.$(RESET)"; \
+		exit 1; \
+	fi; \
+	rm -rf "$(AGENT_SERVER_FRONTEND_DIR)"; \
+	mkdir -p "$(AGENT_SERVER_FRONTEND_DIR)"; \
+	cp -R "$$tmp_dir/package/build/." "$(AGENT_SERVER_FRONTEND_DIR)/"
+	@$(ECHO) "$(GREEN)Bundled frontend assets in $(AGENT_SERVER_FRONTEND_DIR).$(RESET)"
 
 format:
 	@$(ECHO) "$(YELLOW)Formatting code with uv format...$(RESET)"
@@ -72,6 +97,8 @@ help:
 	@$(ECHO) ""
 	@$(ECHO) "$(UNDERLINE)Commands:$(RESET)"
 	@$(ECHO) "  $(GREEN)build$(RESET)                Setup development environment (install deps + hooks)"
+	@$(ECHO) "  $(GREEN)build-with-frontend$(RESET)  Setup dev env and bundle agent-canvas frontend"
+	@$(ECHO) "  $(GREEN)agent-canvas-frontend$(RESET) Bundle prebuilt agent-canvas frontend assets"
 	@$(ECHO) "  $(GREEN)build-server$(RESET)         Build agent-server executable"
 	@$(ECHO) "  $(GREEN)test-server-schema$(RESET)   Test server schema"
 	@$(ECHO) "  $(GREEN)format$(RESET)               Format code with uv format"

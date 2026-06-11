@@ -48,6 +48,9 @@ jobs:
                   version: latest
                   python-version: '3.13'
 
+            - name: Bundle agent-canvas frontend assets
+              run: make agent-canvas-frontend
+
             - name: Build and publish all packages
               env:
                   UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN_OPENHANDS }}

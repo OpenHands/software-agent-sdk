@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import libtmux
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
@@ -66,6 +66,21 @@ from openhands.tools.terminal.constants import TMUX_SOCKET_NAME
 
 
 logger = get_logger(__name__)
+BUNDLED_FRONTEND_PATH = Path(__file__).parent / "_frontend"
+FRONTEND_RESERVED_PATHS = frozenset(
+    {
+        "alive",
+        "api",
+        "docs",
+        "health",
+        "openapi.json",
+        "ready",
+        "redoc",
+        "server_info",
+        "sockets",
+        "static",
+    }
+)
 
 
 def _default_server_tmux_tmpdir() -> Path:
@@ -345,42 +360,75 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     app.include_router(sockets_router)
 
 
-def _setup_static_files(app: FastAPI, config: Config) -> None:
-    """Set up static file serving and root redirect if configured.
+def _is_existing_directory(path: Path | None) -> bool:
+    return path is not None and path.exists() and path.is_dir()
 
-    Args:
-        app: FastAPI application instance.
-        config: Configuration object containing static files settings.
-    """
-    # Only proceed if static files are configured and directory exists
-    if not (
-        config.static_files_path
-        and config.static_files_path.exists()
-        and config.static_files_path.is_dir()
+
+def _get_bundled_frontend_path() -> Path | None:
+    if (
+        _is_existing_directory(BUNDLED_FRONTEND_PATH)
+        and (BUNDLED_FRONTEND_PATH / "index.html").is_file()
     ):
-        # Map the root path to server info if there are no static files
-        app.get("/", tags=["Server Details"])(get_server_info)
+        return BUNDLED_FRONTEND_PATH
+    return None
+
+
+def _is_reserved_frontend_path(path: str) -> bool:
+    first_segment = path.split("/", maxsplit=1)[0]
+    return first_segment in FRONTEND_RESERVED_PATHS
+
+
+def _resolve_frontend_file(frontend_dir: Path, path: str) -> Path | None:
+    frontend_root = frontend_dir.resolve()
+    requested_path = (frontend_root / path).resolve()
+    if requested_path == frontend_root:
+        return frontend_root / "index.html"
+    if not requested_path.is_relative_to(frontend_root):
+        return None
+    if requested_path.is_file():
+        return requested_path
+    return frontend_root / "index.html"
+
+
+def _setup_bundled_frontend(app: FastAPI, frontend_dir: Path) -> None:
+    @app.get("/{path:path}", include_in_schema=False)
+    async def serve_frontend(path: str):
+        if _is_reserved_frontend_path(path):
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        file_path = _resolve_frontend_file(frontend_dir, path)
+        if file_path is None:
+            raise HTTPException(status_code=404, detail="Not Found")
+        return FileResponse(file_path)
+
+
+def _setup_static_files(app: FastAPI, config: Config) -> None:
+    """Set up static file serving and bundled frontend routes."""
+    if _is_existing_directory(config.static_files_path):
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(config.static_files_path)),
+            name="static",
+        )
+
+        @app.get("/", tags=["Server Details"])
+        async def root_redirect():
+            """Redirect root endpoint to static files directory."""
+            assert config.static_files_path is not None
+            index_path = config.static_files_path / "index.html"
+            if index_path.exists():
+                return RedirectResponse(url="/static/index.html", status_code=302)
+            return RedirectResponse(url="/static/", status_code=302)
+
         return
 
-    # Mount static files directory
-    app.mount(
-        "/static",
-        StaticFiles(directory=str(config.static_files_path)),
-        name="static",
-    )
+    if config.static_files_path is None:
+        frontend_dir = _get_bundled_frontend_path()
+        if frontend_dir is not None:
+            _setup_bundled_frontend(app, frontend_dir)
+            return
 
-    # Add root redirect to static files
-    @app.get("/", tags=["Server Details"])
-    async def root_redirect():
-        """Redirect root endpoint to static files directory."""
-        # Check if index.html exists in the static directory
-        # We know static_files_path is not None here due to the outer condition
-        assert config.static_files_path is not None
-        index_path = config.static_files_path / "index.html"
-        if index_path.exists():
-            return RedirectResponse(url="/static/index.html", status_code=302)
-        else:
-            return RedirectResponse(url="/static/", status_code=302)
+    app.get("/", tags=["Server Details"])(get_server_info)
 
 
 def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:

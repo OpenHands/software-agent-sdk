@@ -13,6 +13,7 @@ from openhands.agent_server.api import (
     _default_server_tmux_tmpdir,
     _ensure_server_tmux_tmpdir,
     _get_root_path,
+    _resolve_frontend_file,
     api_lifespan,
     create_app,
 )
@@ -258,6 +259,89 @@ class TestRootRedirect:
         # Root should return 404 (no handler defined)
         response = client.get("/")
         assert response.status_code == 200
+
+
+class TestBundledFrontendServing:
+    """Test serving bundled agent-canvas assets from the app root."""
+
+    def test_bundled_frontend_serves_root_assets_and_spa_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        frontend_dir = tmp_path / "frontend"
+        assets_dir = frontend_dir / "assets"
+        assets_dir.mkdir(parents=True)
+        index_content = "<html><body>Agent Canvas</body></html>"
+        asset_content = "console.log('agent-canvas');"
+        (frontend_dir / "index.html").write_text(index_content)
+        (assets_dir / "app.js").write_text(asset_content)
+        monkeypatch.setattr(
+            "openhands.agent_server.api.BUNDLED_FRONTEND_PATH", frontend_dir
+        )
+
+        app = create_app(Config(static_files_path=None))
+        client = TestClient(app)
+
+        root_response = client.get("/")
+        assert root_response.status_code == 200
+        assert root_response.text == index_content
+        assert "text/html" in root_response.headers["content-type"]
+
+        asset_response = client.get("/assets/app.js")
+        assert asset_response.status_code == 200
+        assert asset_response.text == asset_content
+        assert "text/javascript" in asset_response.headers["content-type"]
+
+        fallback_response = client.get("/settings/llm")
+        assert fallback_response.status_code == 200
+        assert fallback_response.text == index_content
+
+    def test_bundled_frontend_preserves_backend_routes(self, tmp_path, monkeypatch):
+        frontend_dir = tmp_path / "frontend"
+        frontend_dir.mkdir()
+        (frontend_dir / "index.html").write_text("<html>Agent Canvas</html>")
+        monkeypatch.setattr(
+            "openhands.agent_server.api.BUNDLED_FRONTEND_PATH", frontend_dir
+        )
+
+        app = create_app(Config(static_files_path=None))
+        client = TestClient(app)
+
+        server_info_response = client.get("/server_info")
+        assert server_info_response.status_code == 200
+        assert server_info_response.headers["content-type"].startswith(
+            "application/json"
+        )
+
+        missing_api_response = client.get("/api/missing")
+        assert missing_api_response.status_code == 404
+        assert missing_api_response.json() == {"detail": "Not Found"}
+
+    def test_configured_static_files_take_precedence_over_bundled_frontend(
+        self, tmp_path, monkeypatch
+    ):
+        frontend_dir = tmp_path / "frontend"
+        frontend_dir.mkdir()
+        (frontend_dir / "index.html").write_text("<html>Agent Canvas</html>")
+        static_dir = tmp_path / "static"
+        static_dir.mkdir()
+        (static_dir / "index.html").write_text("<html>Configured Static</html>")
+        monkeypatch.setattr(
+            "openhands.agent_server.api.BUNDLED_FRONTEND_PATH", frontend_dir
+        )
+
+        app = create_app(Config(static_files_path=static_dir))
+        client = TestClient(app)
+
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code == 302
+        assert response.headers["location"] == "/static/index.html"
+
+    def test_frontend_file_resolution_rejects_directory_traversal(self, tmp_path):
+        frontend_dir = tmp_path / "frontend"
+        frontend_dir.mkdir()
+        (frontend_dir / "index.html").write_text("<html>Agent Canvas</html>")
+
+        assert _resolve_frontend_file(frontend_dir, "../secret.txt") is None
 
 
 class TestServiceParallelization:

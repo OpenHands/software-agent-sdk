@@ -44,5 +44,8 @@ include openhands-agent-server/openhands/agent_server/docker/wallpaper.svg
 # PyInstaller spec
 include openhands-agent-server/openhands/agent_server/agent-server.spec
 
+# Bundled agent-canvas frontend assets
+recursive-include openhands-agent-server/openhands/agent_server/_frontend *
+
 # VSCode extensions
 recursive-include openhands-agent-server/openhands/agent_server/vscode_extensions *
