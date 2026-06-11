@@ -403,9 +403,7 @@ _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
     """Convert remote MCP headers/auth into ACP's header-only representation."""
     raw_headers = spec.get("headers") or {}
-    headers = [
-        HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()
-    ]
+    headers = [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
 
     auth = spec.get("auth")
     has_authorization = any(h.name.lower() == "authorization" for h in headers)
