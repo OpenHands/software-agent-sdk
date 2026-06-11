@@ -1102,7 +1102,7 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
 
 
 def test_acp_resolve_provider_env_from_llm_credentials() -> None:
-    # Deprecated (removed in 1.29.0 with the llm field): still functional for
+    # Deprecated (removed in 1.33.0 with the llm field): still functional for
     # the deprecation window, but warns callers toward the secrets channel.
     settings = ACPAgentSettings(
         acp_server="gemini-cli",
@@ -1153,9 +1153,9 @@ def test_acp_resolve_acp_env_returns_only_user_entries() -> None:
 
 
 def test_acp_create_agent_ignores_llm_credentials() -> None:
-    # llm.api_key/base_url are deprecated (removed in 1.29.0) and no longer
-    # folded into agent_context.secrets: an LLM-profile base_url would leak
-    # into the subprocess and silently re-route its API calls (#3632).
+    # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
+    # longer folded into agent_context.secrets: an LLM-profile base_url would
+    # leak into the subprocess and silently re-route its API calls (#3632).
     # create_agent warns and ignores them; provider credentials ride the
     # conversation secrets channel keyed by the provider's env var name.
     context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
@@ -1170,7 +1170,7 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
         acp_env={"MY_VAR": "v"},
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm credentials"):
+    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
     assert agent.acp_env == {"MY_VAR": "v"}
@@ -1187,7 +1187,7 @@ def test_acp_create_agent_credentials_warn_even_without_context() -> None:
         llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
     )
 
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm credentials"):
+    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
     assert agent.acp_env == {}
@@ -1206,7 +1206,7 @@ def test_acp_create_agent_without_llm_credentials_does_not_warn() -> None:
         warnings.simplefilter("always")
         agent = settings.create_agent()
 
-    assert not [w for w in caught if "llm credentials" in str(w.message)]
+    assert not [w for w in caught if "ACPAgentSettings.llm" in str(w.message)]
     assert agent.agent_context is None
 
 

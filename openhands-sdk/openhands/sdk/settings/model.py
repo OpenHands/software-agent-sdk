@@ -1184,7 +1184,7 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    The :attr:`llm` field is deprecated (removed in 1.29.0). ``ACPAgent``
+    The :attr:`llm` field is deprecated (removed in 1.33.0). ``ACPAgent``
     uses it purely for cost/token attribution, never for LLM requests;
     :attr:`acp_model` is the model identity. Credentials set on it
     (``llm.api_key`` / ``llm.base_url``) are ignored — provider credentials
@@ -1424,7 +1424,7 @@ class ACPAgentSettings(AgentSettingsBase):
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
-            "DEPRECATED (removed in 1.29.0): LLM identity used for cost/token "
+            "DEPRECATED (removed in 1.33.0): LLM identity used for cost/token "
             "attribution. The ACP subprocess makes its own model calls; "
             "``acp_model`` is the model identity. Credentials set here "
             "(``api_key`` / ``base_url``) are ignored — route provider "
@@ -1491,7 +1491,7 @@ class ACPAgentSettings(AgentSettingsBase):
         Custom servers return an empty mapping.
 
         .. deprecated:: 1.28.0
-            Removed in 1.29.0 together with :attr:`llm`. ``create_agent()``
+            Removed in 1.33.0 together with :attr:`llm`. ``create_agent()``
             no longer reads ``llm.api_key`` / ``llm.base_url``; supply
             provider credentials as conversation secrets keyed by
             :attr:`api_key_env_var` (e.g. ``ANTHROPIC_API_KEY``) instead.
@@ -1499,7 +1499,7 @@ class ACPAgentSettings(AgentSettingsBase):
         warn_deprecated(
             "ACPAgentSettings.resolve_provider_env",
             deprecated_in="1.28.0",
-            removed_in="1.29.0",
+            removed_in="1.33.0",
             details=(
                 "Supply ACP provider credentials as conversation secrets "
                 "(agent_context.secrets / StartConversationRequest.secrets, "
@@ -1679,15 +1679,16 @@ class ACPAgentSettings(AgentSettingsBase):
         # a profile base_url into the subprocess (#3632).
         if self.llm.api_key is not None or self.llm.base_url is not None:
             warn_deprecated(
-                "ACPAgentSettings.llm credentials (api_key/base_url)",
+                "ACPAgentSettings.llm",
                 deprecated_in="1.28.0",
-                removed_in="1.29.0",
+                removed_in="1.33.0",
                 details=(
-                    "create_agent() ignores them. Supply ACP provider "
-                    "credentials as conversation secrets (agent_context."
-                    "secrets / StartConversationRequest.secrets, which route "
-                    "through state.secret_registry) keyed by the provider's "
-                    "env var name (e.g. ANTHROPIC_API_KEY)."
+                    "create_agent() ignores its api_key/base_url. Supply ACP "
+                    "provider credentials as conversation secrets "
+                    "(agent_context.secrets / StartConversationRequest."
+                    "secrets, which route through state.secret_registry) "
+                    "keyed by the provider's env var name (e.g. "
+                    "ANTHROPIC_API_KEY); use acp_model for model identity."
                 ),
             )
 
