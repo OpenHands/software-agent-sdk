@@ -311,7 +311,8 @@ _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
 )
 
 # Model IDs accepted by ``@zed-industries/codex-acp``, mirroring the Codex CLI's
-# ``/model`` picker. Format is ``<base-model>/<effort>`` where the trailing tier
+# ``/model`` picker (``session/new`` ``availableModels`` on the pinned CLI).
+# Format is ``<base-model>/<effort>`` where the trailing tier
 # (``low``/``medium``/``high``/``xhigh``) hints the reasoning effort for the turn.
 _CODEX_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="gpt-5.5/low", label="GPT-5.5 (low)"),
@@ -326,14 +327,6 @@ _CODEX_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="gpt-5.4-mini/medium", label="GPT-5.4 Mini (medium)"),
     ACPModelOption(id="gpt-5.4-mini/high", label="GPT-5.4 Mini (high)"),
     ACPModelOption(id="gpt-5.4-mini/xhigh", label="GPT-5.4 Mini (xhigh)"),
-    ACPModelOption(id="gpt-5.3-codex/low", label="GPT-5.3 Codex (low)"),
-    ACPModelOption(id="gpt-5.3-codex/medium", label="GPT-5.3 Codex (medium)"),
-    ACPModelOption(id="gpt-5.3-codex/high", label="GPT-5.3 Codex (high)"),
-    ACPModelOption(id="gpt-5.3-codex/xhigh", label="GPT-5.3 Codex (xhigh)"),
-    ACPModelOption(id="gpt-5.2/low", label="GPT-5.2 (low)"),
-    ACPModelOption(id="gpt-5.2/medium", label="GPT-5.2 (medium)"),
-    ACPModelOption(id="gpt-5.2/high", label="GPT-5.2 (high)"),
-    ACPModelOption(id="gpt-5.2/xhigh", label="GPT-5.2 (xhigh)"),
 )
 
 # Model IDs accepted by ``@google/gemini-cli --acp``. The ``auto-gemini-*``
