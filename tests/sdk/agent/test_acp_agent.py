@@ -6134,9 +6134,8 @@ class TestACPSecretsEnvInjection:
     env so the ACP server (Claude Code, Codex CLI, etc.) can use them. They
     reach the subprocess through ``state.secret_registry``: ``LocalConversation``
     seeds ``agent_context.secrets`` into the registry at init (covering
-    canvas-local, which folds ``llm.api_key`` into ``agent_context.secrets``
-    server-side via ``create_agent`` but never lifts it into ``request.secrets``),
-    and ``_start_acp_server`` injects the registry. ``acp_env`` entries take
+    callers that never lift them into ``request.secrets``), and
+    ``_start_acp_server`` injects the registry. ``acp_env`` entries take
     precedence over registry secrets.
     """
 
