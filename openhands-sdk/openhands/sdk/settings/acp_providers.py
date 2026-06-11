@@ -298,6 +298,8 @@ class ACPProviderInfo:
 # the newest 1M-capable model — keep their labels version-less to match).
 # ``opusplan`` routes planning to Opus and execution to Sonnet.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
+    ACPModelOption(id="claude-fable-5", label="Claude Fable 5"),
+    ACPModelOption(id="claude-opus-4-8", label="Claude Opus 4.8"),
     ACPModelOption(id="claude-opus-4-7", label="Claude Opus 4.7"),
     ACPModelOption(id="claude-opus-4-6", label="Claude Opus 4.6"),
     ACPModelOption(id="opus[1m]", label="Claude Opus (1M)"),
