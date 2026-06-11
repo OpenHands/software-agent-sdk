@@ -104,16 +104,18 @@ def expand_variable_references(
         return match.group(0)
 
     def expand_value(value: Any) -> Any:
-        if isinstance(value, str):
-            return pattern.sub(replace_var, value)
-        if isinstance(value, dict):
-            return {
-                expand_value(k) if isinstance(k, str) else k: expand_value(v)
-                for k, v in value.items()
-            }
-        if isinstance(value, list):
-            return [expand_value(item) for item in value]
-        return value
+        match value:
+            case str():
+                return pattern.sub(replace_var, value)
+            case dict():
+                return {
+                    expand_value(k) if isinstance(k, str) else k: expand_value(v)
+                    for k, v in value.items()
+                }
+            case list():
+                return [expand_value(item) for item in value]
+            case _:
+                return value
 
     return expand_value(data)
 

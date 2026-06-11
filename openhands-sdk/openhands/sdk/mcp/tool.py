@@ -1,7 +1,7 @@
 """Utility functions for MCP integration."""
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 
@@ -13,6 +13,7 @@ from litellm import ChatCompletionToolParam
 from openai.types.responses import FunctionToolParam
 from pydantic import Field, ValidationError
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
@@ -30,39 +31,6 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
-
-
-def expand_secrets_in_data(
-    data: dict[str, Any],
-    get_secret: Callable[[str], str | None],
-) -> dict[str, Any]:
-    """Expand secret/environment variable references in MCP tool action data.
-
-    Supports variable expansion similar to shell and MCP config:
-    - $VAR - Simple variable reference
-    - ${VAR} - Braced variable reference
-    - ${VAR:-default} - With default value
-
-    Args:
-        data: MCP tool action data dictionary.
-        get_secret: Callback to look up a secret by name. Returns value or None.
-
-    Returns:
-        Data dictionary with secret references expanded.
-    """
-    # Use the shared expansion function with runtime tool settings:
-    # - support_unbraced=True (support $VAR syntax like shell/terminal)
-    # - check_env=False (only use secrets, not env vars)
-    result = expand_variable_references(
-        data,
-        get_secret=get_secret,
-        check_env=False,
-        expand_defaults=True,
-        support_unbraced=True,
-    )
-    if not isinstance(result, dict):
-        return data  # Return original if expansion failed
-    return result
 
 
 # Default timeout for MCP tool execution in seconds
@@ -134,15 +102,20 @@ class MCPToolExecutor(ToolExecutor):
         (e.g., $VAR, ${VAR}, ${VAR:-default}) are expanded using the
         conversation's secret registry before calling the MCP server.
         """
-        # Expand secrets in action data if conversation is available
+        # Expand secret references (e.g. $VAR, ${VAR}, ${VAR:-default}) in the
+        # action data, mirroring how terminal commands resolve secrets before
+        # execution. Reuses the same expander as MCP config expansion.
         expanded_action = action
         if conversation is not None:
             try:
                 secret_registry = conversation.state.secret_registry
-                expanded_data = expand_secrets_in_data(
-                    action.data, secret_registry.get_secret_value
+                expanded_data = expand_variable_references(
+                    action.data,
+                    get_secret=secret_registry.get_secret_value,
+                    check_env=False,  # secrets only — never expand host env vars
+                    support_unbraced=True,  # also resolve $VAR like the shell
                 )
-                expanded_action = MCPToolAction(data=expanded_data)
+                expanded_action = action.model_copy(update={"data": expanded_data})
             except Exception as e:
                 logger.warning(f"Failed to expand secrets in MCP tool action: {e}")
                 # Fall back to original action if expansion fails
@@ -176,24 +149,15 @@ class MCPToolExecutor(ToolExecutor):
             return observation
 
         try:
-            from openhands.sdk.llm import TextContent
-
             secret_registry = conversation.state.secret_registry
-            # Mask secrets in all text content blocks
-            masked_content = []
-            for block in observation.content:
-                if isinstance(block, TextContent) and block.text:
-                    masked_text = secret_registry.mask_secrets_in_output(block.text)
-                    masked_content.append(TextContent(text=masked_text))
-                else:
-                    masked_content.append(block)
-
-            # Return new observation with masked content
-            return MCPToolObservation(
-                content=masked_content,
-                is_error=observation.is_error,
-                tool_name=observation.tool_name,
-            )
+            # Mask secrets in text blocks; pass image blocks through untouched.
+            masked_content = [
+                TextContent(text=secret_registry.mask_secrets_in_output(block.text))
+                if isinstance(block, TextContent) and block.text
+                else block
+                for block in observation.content
+            ]
+            return observation.model_copy(update={"content": masked_content})
         except Exception as e:
             logger.warning(f"Failed to mask secrets in MCP observation: {e}")
             return observation
