@@ -22,7 +22,9 @@ import sys
 
 
 def _normalize(value):
-    """Coerce tuples to lists and dataclasses to dicts; recurse."""
+    """Coerce tuples to lists and dataclasses/pydantic models to dicts; recurse."""
+    if hasattr(value, "model_dump"):  # pydantic models (e.g. ACPFileSecretSpec)
+        return _normalize(value.model_dump(mode="json"))
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return _normalize(dataclasses.asdict(value))
     if isinstance(value, dict):

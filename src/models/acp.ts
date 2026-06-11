@@ -34,6 +34,26 @@ export interface ACPModelOption {
 }
 
 /**
+ * Declarative spec for one file-content credential a provider can consume
+ * (e.g. Codex `auth.json`). Mirrors
+ * `openhands.sdk.settings.acp_providers.ACPFileSecretSpec` field-for-field.
+ */
+export interface ACPFileSecretSpec {
+  /** Reserved secret name whose value is the file's content. */
+  readonly secret_name: string;
+  /** Filename the secret is materialised as. */
+  readonly filename: string;
+  /** Env var pointed at the materialised file (or its directory). */
+  readonly env_var: string;
+  /** Per-provider subdirectory the file lives in. */
+  readonly subdir: string;
+  /** Whether `env_var` points at the file itself or its directory. */
+  readonly env_points_to: 'file' | 'dir';
+  /** Companion env vars the server warns about when missing. */
+  readonly warn_if_unset: readonly string[];
+}
+
+/**
  * Immutable metadata record for one built-in ACP provider. Mirrors
  * `openhands.sdk.settings.acp_providers.ACPProviderInfo` field-for-field.
  */
@@ -72,6 +92,15 @@ export interface ACPProviderInfo {
    * or `null` to let the ACP server pick its own default.
    */
   readonly default_model: string | null;
+  /** File-content credentials the agent server can materialise on disk. */
+  readonly file_secrets: readonly ACPFileSecretSpec[];
+  /**
+   * Bare executable name of the provider's pinned CLI, or `null`. The agent
+   * server prefers this binary over the `npx` fallback when it is on PATH.
+   */
+  readonly binary_name: string | null;
+  /** Env var that relocates the provider's data/config directory, or `null`. */
+  readonly data_dir_env_var: string | null;
 }
 
 export const ACP_PROVIDERS: Readonly<Record<ACPProviderKey, ACPProviderInfo>> =

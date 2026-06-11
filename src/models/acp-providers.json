@@ -2,87 +2,161 @@
   "claude-code": {
     "key": "claude-code",
     "display_name": "Claude Code",
-    "default_command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp"],
+    "default_command": ["npx", "-y", "@agentclientprotocol/claude-agent-acp@0.30.0"],
     "api_key_env_var": "ANTHROPIC_API_KEY",
     "base_url_env_var": "ANTHROPIC_BASE_URL",
     "default_session_mode": "bypassPermissions",
     "agent_name_patterns": ["claude-agent"],
     "supports_set_session_model": false,
-    "supports_runtime_model_switch": true,
     "session_meta_key": "claudeCode",
     "available_models": [
-      { "id": "claude-opus-4-7", "label": "Claude Opus 4.7" },
-      { "id": "claude-opus-4-6", "label": "Claude Opus 4.6" },
-      { "id": "opus[1m]", "label": "Claude Opus (1M)" },
-      { "id": "claude-opus-4-5", "label": "Claude Opus 4.5" },
-      { "id": "claude-opus-4-1-20250805", "label": "Claude Opus 4.1" },
-      { "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6" },
-      { "id": "sonnet[1m]", "label": "Claude Sonnet (1M)" },
-      { "id": "claude-sonnet-4-5", "label": "Claude Sonnet 4.5" },
-      { "id": "claude-haiku-4-5", "label": "Claude Haiku 4.5" },
-      { "id": "opusplan", "label": "Opus (plan) + Sonnet (execute)" }
+      {
+        "id": "claude-fable-5",
+        "label": "Claude Fable 5"
+      },
+      {
+        "id": "claude-opus-4-8",
+        "label": "Claude Opus 4.8"
+      },
+      {
+        "id": "opus[1m]",
+        "label": "Claude Opus (1M)"
+      },
+      {
+        "id": "claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6"
+      },
+      {
+        "id": "claude-haiku-4-5",
+        "label": "Claude Haiku 4.5"
+      },
+      {
+        "id": "opusplan",
+        "label": "Opus (plan) + Sonnet (execute)"
+      }
     ],
-    "default_model": "claude-opus-4-7"
+    "default_model": "claude-opus-4-8",
+    "supports_runtime_model_switch": true,
+    "file_secrets": [],
+    "binary_name": "claude-agent-acp",
+    "data_dir_env_var": "CLAUDE_CONFIG_DIR"
   },
   "codex": {
     "key": "codex",
     "display_name": "Codex",
-    "default_command": ["npx", "-y", "@zed-industries/codex-acp"],
+    "default_command": ["npx", "-y", "@zed-industries/codex-acp@0.15.0"],
     "api_key_env_var": "OPENAI_API_KEY",
     "base_url_env_var": "OPENAI_BASE_URL",
     "default_session_mode": "full-access",
     "agent_name_patterns": ["codex-acp"],
     "supports_set_session_model": true,
-    "supports_runtime_model_switch": true,
     "session_meta_key": null,
     "available_models": [
-      { "id": "gpt-5.5/low", "label": "GPT-5.5 (low)" },
-      { "id": "gpt-5.5/medium", "label": "GPT-5.5 (medium)" },
-      { "id": "gpt-5.5/high", "label": "GPT-5.5 (high)" },
-      { "id": "gpt-5.5/xhigh", "label": "GPT-5.5 (xhigh)" },
-      { "id": "gpt-5.4/low", "label": "GPT-5.4 (low)" },
-      { "id": "gpt-5.4/medium", "label": "GPT-5.4 (medium)" },
-      { "id": "gpt-5.4/high", "label": "GPT-5.4 (high)" },
-      { "id": "gpt-5.4/xhigh", "label": "GPT-5.4 (xhigh)" },
-      { "id": "gpt-5.4-mini/low", "label": "GPT-5.4 Mini (low)" },
-      { "id": "gpt-5.4-mini/medium", "label": "GPT-5.4 Mini (medium)" },
-      { "id": "gpt-5.4-mini/high", "label": "GPT-5.4 Mini (high)" },
-      { "id": "gpt-5.4-mini/xhigh", "label": "GPT-5.4 Mini (xhigh)" },
-      { "id": "gpt-5.3-codex/low", "label": "GPT-5.3 Codex (low)" },
-      { "id": "gpt-5.3-codex/medium", "label": "GPT-5.3 Codex (medium)" },
-      { "id": "gpt-5.3-codex/high", "label": "GPT-5.3 Codex (high)" },
-      { "id": "gpt-5.3-codex/xhigh", "label": "GPT-5.3 Codex (xhigh)" },
-      { "id": "gpt-5.2/low", "label": "GPT-5.2 (low)" },
-      { "id": "gpt-5.2/medium", "label": "GPT-5.2 (medium)" },
-      { "id": "gpt-5.2/high", "label": "GPT-5.2 (high)" },
-      { "id": "gpt-5.2/xhigh", "label": "GPT-5.2 (xhigh)" }
+      {
+        "id": "gpt-5.5/low",
+        "label": "GPT-5.5 (low)"
+      },
+      {
+        "id": "gpt-5.5/medium",
+        "label": "GPT-5.5 (medium)"
+      },
+      {
+        "id": "gpt-5.5/high",
+        "label": "GPT-5.5 (high)"
+      },
+      {
+        "id": "gpt-5.5/xhigh",
+        "label": "GPT-5.5 (xhigh)"
+      },
+      {
+        "id": "gpt-5.4-mini/low",
+        "label": "GPT-5.4 Mini (low)"
+      },
+      {
+        "id": "gpt-5.4-mini/medium",
+        "label": "GPT-5.4 Mini (medium)"
+      },
+      {
+        "id": "gpt-5.4-mini/high",
+        "label": "GPT-5.4 Mini (high)"
+      },
+      {
+        "id": "gpt-5.4-mini/xhigh",
+        "label": "GPT-5.4 Mini (xhigh)"
+      }
     ],
-    "default_model": "gpt-5.5/medium"
+    "default_model": "gpt-5.5/medium",
+    "supports_runtime_model_switch": true,
+    "file_secrets": [
+      {
+        "secret_name": "CODEX_AUTH_JSON",
+        "filename": "auth.json",
+        "env_var": "CODEX_HOME",
+        "subdir": "codex",
+        "env_points_to": "dir",
+        "warn_if_unset": []
+      }
+    ],
+    "binary_name": "codex-acp",
+    "data_dir_env_var": "CODEX_HOME"
   },
   "gemini-cli": {
     "key": "gemini-cli",
     "display_name": "Gemini CLI",
-    "default_command": ["npx", "-y", "@google/gemini-cli", "--acp"],
+    "default_command": ["npx", "-y", "@google/gemini-cli@0.38.0", "--acp"],
     "api_key_env_var": "GEMINI_API_KEY",
     "base_url_env_var": "GEMINI_BASE_URL",
     "default_session_mode": "yolo",
     "agent_name_patterns": ["gemini-cli"],
     "supports_set_session_model": true,
-    "supports_runtime_model_switch": true,
     "session_meta_key": null,
     "available_models": [
-      { "id": "auto-gemini-3", "label": "Auto (Gemini 3)" },
-      { "id": "auto-gemini-2.5", "label": "Auto (Gemini 2.5)" },
-      { "id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro (preview)" },
-      { "id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (preview)" },
+      {
+        "id": "auto-gemini-3",
+        "label": "Auto (Gemini 3)"
+      },
+      {
+        "id": "auto-gemini-2.5",
+        "label": "Auto (Gemini 2.5)"
+      },
+      {
+        "id": "gemini-3.1-pro-preview",
+        "label": "Gemini 3.1 Pro (preview)"
+      },
+      {
+        "id": "gemini-3-flash-preview",
+        "label": "Gemini 3 Flash (preview)"
+      },
       {
         "id": "gemini-3.1-flash-lite-preview",
         "label": "Gemini 3.1 Flash Lite (preview)"
       },
-      { "id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro" },
-      { "id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash" },
-      { "id": "gemini-2.5-flash-lite", "label": "Gemini 2.5 Flash Lite" }
+      {
+        "id": "gemini-2.5-pro",
+        "label": "Gemini 2.5 Pro"
+      },
+      {
+        "id": "gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash"
+      },
+      {
+        "id": "gemini-2.5-flash-lite",
+        "label": "Gemini 2.5 Flash Lite"
+      }
     ],
-    "default_model": "auto-gemini-2.5"
+    "default_model": "auto-gemini-2.5",
+    "supports_runtime_model_switch": true,
+    "file_secrets": [
+      {
+        "secret_name": "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        "filename": "gcloud-credentials.json",
+        "env_var": "GOOGLE_APPLICATION_CREDENTIALS",
+        "subdir": "gemini-cli",
+        "env_points_to": "file",
+        "warn_if_unset": ["GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"]
+      }
+    ],
+    "binary_name": "gemini",
+    "data_dir_env_var": "HOME"
   }
 }
