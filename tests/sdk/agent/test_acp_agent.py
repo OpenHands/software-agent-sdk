@@ -33,6 +33,7 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _strip_inherited_npm_env,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -115,6 +116,23 @@ class TestACPAgentInstantiation:
     def test_creates_with_empty_default_tools(self):
         agent = _make_agent()
         assert agent.include_default_tools == []
+
+    def test_strip_inherited_npm_env_keeps_subprocesses_out_of_parent_context(self):
+        env = {
+            "INIT_CWD": "/repo",
+            "npm_config_prefix": "/repo",
+            "npm_package_name": "parent-package",
+            "NPM_CONFIG_PREFIX": "/repo",
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
+
+        _strip_inherited_npm_env(env)
+
+        assert env == {
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
 
     def test_requires_acp_command(self):
         with pytest.raises(Exception):

@@ -127,6 +127,12 @@ _ACP_PROMPT_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 30.0)  # seconds
 # Exception types that indicate transient connection issues worth retrying
 _RETRIABLE_CONNECTION_ERRORS = (OSError, ConnectionError, BrokenPipeError, EOFError)
 
+# ``npm run`` exports package/lifecycle configuration into descendants. ACP
+# providers launched through ``npx`` must not inherit that context, otherwise npm
+# can try to resolve against the parent package instead of the requested one.
+_INHERITED_NPM_ENV_EXACT: frozenset[str] = frozenset({"INIT_CWD"})
+_INHERITED_NPM_ENV_PREFIXES: tuple[str, ...] = ("npm_", "NPM_")
+
 # JSON-RPC error codes from the ACP server that are transient and worth
 # retrying.  These map to server-side failures (HTTP 500 equivalents) where
 # the session state is still valid but the request failed.
@@ -187,6 +193,15 @@ def _fingerprint_session_id(session_id: str | None) -> str:
     if len(session_id) <= _SESSION_ID_LOG_SUFFIX_LEN:
         return "<short>"
     return f"...{session_id[-_SESSION_ID_LOG_SUFFIX_LEN:]}"
+
+
+def _strip_inherited_npm_env(env: dict[str, str]) -> None:
+    """Remove npm lifecycle/config variables inherited from the parent stack."""
+    for key in list(env):
+        if key in _INHERITED_NPM_ENV_EXACT or key.startswith(
+            _INHERITED_NPM_ENV_PREFIXES
+        ):
+            env.pop(key, None)
 
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
@@ -2094,6 +2109,7 @@ class ACPAgent(AgentBase):
         # provider credentials folded in by ACPAgentSettings.create_agent().
         env = default_environment()
         env.update(os.environ)
+        _strip_inherited_npm_env(env)
         if self.acp_env:
             warn_deprecated(
                 "ACPAgent.acp_env",
