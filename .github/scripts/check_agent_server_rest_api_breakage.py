@@ -576,6 +576,7 @@ _EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE = re.compile(
 )
 _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH = "/api/cloud-proxy"
 _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD = "post"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID = "cloud_proxy_api_cloud_proxy_post"
 
 
 def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
@@ -586,6 +587,18 @@ def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
         path == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
         and method == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
         and operation.get("deprecated", False) is False
+    )
+
+
+def _is_accepted_cloud_proxy_path_removal(change: dict) -> bool:
+    """Return True for oasdiff's accepted /api/cloud-proxy path-removal shape."""
+    return (
+        str(change.get("id", "")) == "api-path-removed-without-deprecation"
+        and str(change.get("path", "")) == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
+        and str(change.get("operation", "")).lower()
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
+        and str(change.get("operationId", ""))
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID
     )
 
 
@@ -838,6 +851,16 @@ def main() -> int:
             for operation in removed_operations
             if not _is_accepted_cloud_proxy_removal(operation)
         ]
+        accepted_cloud_proxy_path_removals = [
+            change
+            for change in other_breaking_changes
+            if _is_accepted_cloud_proxy_path_removal(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_accepted_cloud_proxy_path_removal(change)
+        ]
 
         removal_errors = _validate_removed_operations(
             removed_operations,
@@ -853,7 +876,7 @@ def main() -> int:
         for error in removal_errors + property_removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
 
-        if accepted_cloud_proxy_removals:
+        if accepted_cloud_proxy_removals or accepted_cloud_proxy_path_removals:
             print(
                 f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
                 "Accepted removal of POST /api/cloud-proxy. Maintainers "
