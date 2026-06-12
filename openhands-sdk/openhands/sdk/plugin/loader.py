@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.git.utils import redact_url_credentials
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
@@ -77,7 +78,7 @@ def load_plugins(
     all_hooks: list[HookConfig] = []
 
     for spec in plugin_specs:
-        logger.info(f"Loading plugin from {spec.source}")
+        logger.info(f"Loading plugin from {redact_url_credentials(spec.source)}")
 
         # Fetch (downloads if needed, returns cached path)
         path = Plugin.fetch(

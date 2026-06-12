@@ -6,6 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from openhands.sdk.extensions.installation.interface import ExtensionProtocol
+from openhands.sdk.git.utils import redact_url_credentials
 
 
 class InstallationInfo(BaseModel):
@@ -52,12 +53,17 @@ class InstallationInfo(BaseModel):
             install_path: Filesystem path the extension was copied to.
             resolved_ref: Resolved git commit SHA, if applicable.
             repo_path: Subdirectory within a monorepo, if applicable.
+
+        Note:
+            The source URL is redacted to remove any embedded credentials before
+            persistence. Credentials are only needed at fetch time and should not
+            be stored in metadata.
         """
         return InstallationInfo(
             name=extension.name,
             version=extension.version,
             description=extension.description or "",
-            source=source,
+            source=redact_url_credentials(source),
             resolved_ref=resolved_ref,
             repo_path=repo_path,
             install_path=install_path,
