@@ -9,6 +9,7 @@ import frontmatter
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 class PluginSource(BaseModel):
@@ -116,10 +117,22 @@ class ResolvedPluginSource(BaseModel):
     The resolved_ref is the actual commit SHA that was fetched, even if the
     original ref was a branch name like 'main'. This prevents drift when
     branches are updated between pause and resume.
+
+    Security Note:
+        The source URL is redacted when created via from_plugin_source() to
+        prevent credential exposure in persisted state. Any credentials in
+        the original URL (e.g., https://oauth2:TOKEN@host) are replaced with
+        "****" (e.g., https://****@host). This is safe because:
+        1. The plugin is fetched and cached BEFORE this object is created
+        2. The resolved_ref (commit SHA) uniquely identifies the exact version
+        3. Resume operations can re-fetch using the SHA from the local cache
     """
 
     source: str = Field(
-        description="Plugin source: 'github:owner/repo', any git URL, or local path"
+        description=(
+            "Plugin source: 'github:owner/repo', any git URL, or local path. "
+            "Note: Credentials are redacted for security when persisted."
+        )
     )
     resolved_ref: str | None = Field(
         default=None,
@@ -142,9 +155,14 @@ class ResolvedPluginSource(BaseModel):
     def from_plugin_source(
         cls, plugin_source: PluginSource, resolved_ref: str | None
     ) -> ResolvedPluginSource:
-        """Create a ResolvedPluginSource from a PluginSource and resolved ref."""
+        """Create a ResolvedPluginSource from a PluginSource and resolved ref.
+
+        The source URL is automatically redacted to prevent credential exposure
+        in persisted state. This is safe because the plugin should already be
+        fetched and cached before creating the ResolvedPluginSource.
+        """
         return cls(
-            source=plugin_source.source,
+            source=redact_url_credentials(plugin_source.source),
             resolved_ref=resolved_ref,
             repo_path=plugin_source.repo_path,
             original_ref=plugin_source.ref,
@@ -155,6 +173,10 @@ class ResolvedPluginSource(BaseModel):
 
         When loading from persistence, use the resolved_ref to ensure we get
         the exact same version that was originally fetched.
+
+        Note: The source URL may have redacted credentials. This is safe because
+        the plugin should already be in the local cache, and the resolved_ref
+        (commit SHA) allows fetching without re-authenticating.
         """
         return PluginSource(
             source=self.source,
