@@ -178,7 +178,8 @@ class ACPProviderInfo:
     ``session/set_model`` is not the only protocol-level model-selection path:
     current ACP servers may expose ``session/set_config_option`` with
     ``configId="model"`` instead. This field is legacy capability metadata, not
-    the model-selection dispatch gate; use :attr:`model_selection_method` to
+    the model-selection dispatch gate. Deprecated for dispatch decisions:
+    external consumers should migrate to :attr:`model_selection_method` to
     decide which call to issue. claude-agent-acp was ``False`` until 0.30.0 was
     found to silently ignore the session-``_meta`` selection it relied on
     (#3654); its ``_meta`` payload is still sent alongside (see
