@@ -26,7 +26,7 @@ __all__ = [
 
 
 class DateTimeSection:
-    """``<CURRENT_DATETIME>`` -- the (minute-rounded) current time."""
+    """``<CURRENT_DATETIME>`` -- the current time, formatted by the resolver."""
 
     name = "datetime"
     cache_tier = CacheTier.DYNAMIC

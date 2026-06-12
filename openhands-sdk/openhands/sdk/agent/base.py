@@ -8,7 +8,6 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
@@ -52,15 +51,6 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
-
-
-def _round_to_minute(value: datetime | str | None) -> str | None:
-    """Format ``current_datetime`` for the prompt, defensively rounded down to the
-    minute so sub-minute jitter can't fragment the dynamic block (#3606). Strings
-    are pre-formatted and pass through unchanged."""
-    if isinstance(value, datetime):
-        return value.replace(second=0, microsecond=0).isoformat()
-    return value
 
 
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
@@ -526,6 +516,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ``additional_secret_infos`` mirrors ``get_dynamic_context(state)``.
         """
         agent_context = self.agent_context
+        # Mirror get_dynamic_context's temp-context path: with no agent_context but
+        # conversation secrets present, the legacy renderer resolves a default
+        # AgentContext() (which carries a default current_datetime), so its dynamic
+        # block advertises the secrets *and* a <CURRENT_DATETIME>. Resolve the same
+        # default here so the registry reproduces both blocks, not just secrets.
+        if agent_context is None and additional_secret_infos:
+            agent_context = AgentContext()
+
         now: str | None = None
         skill_names: tuple[str, ...] = ()
         secret_names: tuple[str, ...] = ()
@@ -540,7 +538,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 self.llm.model_canonical_name,
                 additional_secret_infos,
             )
-            now = _round_to_minute(agent_context.current_datetime)
+            # Reuse the shared resolver's formatted datetime rather than re-deriving
+            # it: get_system_message_suffix renders this exact string, so the registry
+            # must too (a rounded copy would break byte-for-byte parity for callers
+            # that pass a datetime object instead of a pre-formatted string).
+            now = data.formatted_datetime
             skill_names = tuple(skill.name for skill in agent_context.skills)
             secret_names = tuple(
                 info["name"]
@@ -553,14 +555,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
-        elif additional_secret_infos:
-            # No agent_context, but conversation secrets still feed CUSTOM_SECRETS
-            # (mirrors get_dynamic_context's temp-context path).
-            secret_infos = tuple(
-                (info["name"] or "", info["description"])
-                for info in additional_secret_infos
-            )
-            secret_names = tuple(name for name, _ in secret_infos)
 
         return PromptContext(
             template_kwargs=self._resolved_template_kwargs(),

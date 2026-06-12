@@ -59,11 +59,21 @@ from .test_prompt_snapshot import (
 # are still caught.
 _GAP_AFTER_CLOSE: Final[re.Pattern[str]] = re.compile(r"(</[A-Z_]+>)\n{3,}")
 _GAP_BEFORE_OPEN: Final[re.Pattern[str]] = re.compile(r"\n{3,}(<[A-Z_]+>)")
+# The no-agent_context dynamic path stamps a render-time `datetime.now()` (a default
+# AgentContext()), so the two renderers can't share the exact instant; mask that one
+# line to assert the surrounding blocks byte-for-byte.
+_DATETIME_LINE: Final[re.Pattern[str]] = re.compile(
+    r"The current date and time is: [^\n]+"
+)
 
 
 def _canonical_gaps(text: str) -> str:
     text = _GAP_AFTER_CLOSE.sub(r"\1\n\n", text)
     return _GAP_BEFORE_OPEN.sub(r"\n\n\1", text)
+
+
+def _mask_datetime(text: str) -> str:
+    return _DATETIME_LINE.sub("The current date and time is: <NOW>", text)
 
 
 @pytest.mark.parametrize("cell", MATRIX, ids=[c.id for c in MATRIX])
@@ -312,16 +322,17 @@ def test_registry_dynamic_matches_legacy_with_available_skills() -> None:
     assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
 
 
-def test_build_prompt_context_rounds_datetime_to_minute() -> None:
-    # A datetime object is defensively rounded down to the minute; a pre-formatted
-    # string passes through unchanged (the snapshot matrix path).
+def test_build_prompt_context_formats_datetime_like_legacy() -> None:
+    # ctx.now must match what get_formatted_datetime renders: a datetime object keeps
+    # full ISO precision (NO minute-rounding), a pre-formatted string passes through
+    # unchanged. Rounding here broke byte-for-byte parity for datetime callers (#3683).
     dt = datetime(2025, 1, 1, 12, 34, 56, 789000, tzinfo=UTC)
     agent = Agent(
         llm=LLM(model="claude-sonnet-4-5", usage_id="x"),
         tools=[],
         agent_context=AgentContext(current_datetime=dt),
     )
-    assert agent._build_prompt_context().now == "2025-01-01T12:34:00+00:00"
+    assert agent._build_prompt_context().now == "2025-01-01T12:34:56.789000+00:00"
 
     agent_str = Agent(
         llm=LLM(model="claude-sonnet-4-5", usage_id="x"),
@@ -329,3 +340,43 @@ def test_build_prompt_context_rounds_datetime_to_minute() -> None:
         agent_context=AgentContext(current_datetime="2025-01-01T00:00:30+00:00"),
     )
     assert agent_str._build_prompt_context().now == "2025-01-01T00:00:30+00:00"
+
+
+def test_registry_dynamic_matches_legacy_with_datetime_object() -> None:
+    # End-to-end parity for the datetime-object path the matrix (string datetimes)
+    # never exercises: the registry reproduces dynamic_context byte-for-byte, with the
+    # datetime at full precision (the rounding bug surfaced only for datetime inputs).
+    dt = datetime(2025, 1, 1, 12, 34, 56, 789000, tzinfo=UTC)
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(llm=llm, tools=[], agent_context=AgentContext(current_datetime=dt))
+    ctx = agent._build_prompt_context()
+    registry = build_default_registry().build(ctx).dynamic or ""
+    assert "The current date and time is: 2025-01-01T12:34:56.789000+00:00" in registry
+    assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
+
+
+def test_registry_dynamic_matches_legacy_no_context_secrets(tmp_path: Path) -> None:
+    # No agent_context, but conversation secrets exist: get_dynamic_context builds a
+    # default AgentContext() whose default current_datetime renders <CURRENT_DATETIME>
+    # next to <CUSTOM_SECRETS>. The registry must reproduce BOTH blocks, not just the
+    # secrets one (#3683 QA). The datetime is a render-time `now()` each path stamps
+    # independently, so mask that single line and assert the rest byte-for-byte.
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(llm=llm, tools=[])  # no agent_context
+    state = ConversationState(
+        id=uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    state.secret_registry.update_secrets({"API_KEY": "unused-in-snapshot"})
+    additional = state.secret_registry.get_secret_infos()
+
+    ctx = agent._build_prompt_context(additional_secret_infos=additional)
+    registry = build_default_registry().build(ctx).dynamic or ""
+    legacy = agent.get_dynamic_context(state) or ""
+
+    assert "<CURRENT_DATETIME>" in registry
+    assert "<CUSTOM_SECRETS>" in registry
+    assert _mask_datetime(_canonical_gaps(registry)) == _mask_datetime(
+        _canonical_gaps(legacy)
+    )
