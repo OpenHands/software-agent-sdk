@@ -98,6 +98,31 @@ def _decrypt_mcp_secret_values(
     return config
 
 
+# -- SOUL.md loader -------------------------------------------------------
+# SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
+# it replaces the default identity in the system prompt.
+
+_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
+_DEFAULT_SOUL = (
+    "You are OpenHands agent, a helpful AI assistant that can interact"
+    " with a computer to solve tasks."
+)
+
+
+def _load_soul_md() -> str:
+    """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
+    try:
+        with open(_SOUL_PATH, encoding="utf-8") as f:
+            content = f.read().strip()
+        if content:
+            return content
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.debug("Could not read SOUL.md from %s: %s", _SOUL_PATH, exc)
+    return _DEFAULT_SOUL
+
+
 class AgentBase(DiscriminatedUnionMixin, ABC):
     """Abstract base class for OpenHands agents.
 
@@ -453,6 +478,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         :meth:`_build_prompt_context` so the two cannot drift.
         """
         template_kwargs = dict(self.system_prompt_kwargs)
+
+        # Load SOUL.md identity if not already provided
+        if "soul_content" not in template_kwargs:
+            template_kwargs["soul_content"] = _load_soul_md()
+
         template_kwargs.setdefault(
             "enable_browser",
             any(t.name == "browser_tool_set" for t in self.tools),
