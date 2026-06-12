@@ -126,6 +126,12 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
         ("claude-opus-4-6", True),
+        # claude-fable-5 supports prompt caching but is too new for LiteLLM
+        # metadata, so it must be detected via the local allowlist across the
+        # raw, provider-prefixed, and litellm_proxy-prefixed forms.
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),

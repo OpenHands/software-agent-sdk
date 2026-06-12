@@ -120,9 +120,7 @@ def _supports_reasoning_effort(model: str | None) -> bool:
 
 
 EXTENDED_THINKING_MODELS: list[str] = [
-    # Anthropic model family
-    # We did not include sonnet 3.7 and 4 here as they don't brings
-    # significant performance improvements for agents
+    # Anthropic Claude models with useful agent performance gains.
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
     "claude-haiku-4-5",
@@ -137,7 +135,7 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-3-opus-20240229",
     "claude-sonnet-4",
     "claude-opus-4",
-    # Anthropic Haiku 4.5 variants (dash only; official IDs use hyphens)
+    # Anthropic Claude 4 variants (official IDs use hyphens)
     "claude-haiku-4-5",
     "claude-sonnet-4-5",
     "claude-sonnet-4-6",
@@ -145,7 +143,9 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
-    "claude-sonnet-4-6",
+    # https://www.anthropic.com/news/claude-fable-5
+    # Listed explicitly until LiteLLM metadata recognizes it.
+    "claude-fable-5",
     # Do NOT add Gemini: explicit cache_control markers freeze its cache at the
     # static prefix and disable Google's implicit caching on the growing body
     # (~6-14x cost). Gemini uses implicit prefix caching instead.

@@ -35,10 +35,10 @@ class TestACPProviderInfo:
         assert info.base_url_env_var == "ANTHROPIC_BASE_URL"
         assert info.default_session_mode == "bypassPermissions"
         assert "claude-agent" in info.agent_name_patterns
-        # claude-agent-acp selects its *initial* model via _meta (session_meta_key),
-        # so it does NOT use set_session_model at session creation ...
-        assert info.supports_set_session_model is False
-        # ... but it DOES support session/set_model for mid-conversation switches.
+        # Initial selection rides session/set_model — claude-agent-acp 0.30.0
+        # silently ignores the session-_meta payload (#3654), which is still
+        # sent as best-effort (session_meta_key below).
+        assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "claude-opus-4-8"

@@ -34,6 +34,7 @@ from openhands.sdk.context.prompts.sections.static import (
     RoleSection,
     SecurityRiskAssessmentSection,
     SecuritySection,
+    SoulSection,
 )
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
@@ -97,7 +98,7 @@ def test_default_registry_is_all_static() -> None:
     )
     blocks = build_default_registry().build(ctx)
     assert blocks.dynamic is None
-    assert blocks.static.startswith("You are OpenHands agent")
+    assert blocks.static.startswith("<SOUL>\nYou are OpenHands agent")
     assert "<IMPORTANT>" in blocks.static
 
 
@@ -113,9 +114,22 @@ def _ctx(
 def test_static_text_section_renders_and_is_unguarded() -> None:
     out = RoleSection().render(_ctx())
     assert out is not None
-    assert out.startswith("You are OpenHands agent")
+    assert out.startswith("<ROLE>")
     assert out.endswith("</ROLE>")
     assert RoleSection().guard(_ctx()) is True
+
+
+def test_soul_section_renders_custom_and_defaults() -> None:
+    section = SoulSection()
+    # Always emitted, like the template; falls back to the built-in identity.
+    assert section.guard(_ctx()) is True
+    default = section.render(_ctx())
+    assert default == (
+        "<SOUL>\nYou are OpenHands agent, a helpful AI assistant that can"
+        " interact with a computer to solve tasks.\n</SOUL>"
+    )
+    custom = section.render(_ctx(soul_content="You are a tiny cat agent."))
+    assert custom == "<SOUL>\nYou are a tiny cat agent.\n</SOUL>"
 
 
 def test_refine_swaps_shell_term_on_windows_only() -> None:
