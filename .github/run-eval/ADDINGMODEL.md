@@ -100,6 +100,66 @@ Add only if needed:
 - **`top_p: <value>`** - Nucleus sampling (cannot be used with `temperature` for Claude models)
 - **`litellm_extra_body: {...}`** - Provider-specific parameters (e.g., `{"enable_thinking": True}`)
 
+### Vision and Reasoning Capability Check
+
+Before finalizing the entry, explicitly check both capabilities against
+the **provider's official documentation** (don't rely only on LiteLLM):
+
+1. **Vision (multimodal input)**
+   - Does the model accept image / video input?
+   - **Critical first check — proxy `model_name` alignment.** The eval
+     LiteLLM proxy stores capability metadata (`supports_vision`,
+     `supports_function_calling`, token limits, etc.) under each
+     `model_name` registered in its config. The SDK's lookup
+     (`_get_model_info_from_litellm_proxy`) does an **exact string match**
+     of `model.removeprefix("litellm_proxy/")` against the proxy's
+     `model_name`. If the strings don't match, `supports_vision` is
+     silently ignored and the SDK falls back to LiteLLM's static metadata.
+     So: **use the proxy's exact registered `model_name` in your
+     `llm_config["model"]`**, not a longer provider-prefixed alias, e.g.
+     prefer `litellm_proxy/step-3.7-flash` over
+     `litellm_proxy/openrouter/stepfun/step-3.7-flash` if the proxy entry
+     is registered as `step-3.7-flash`. Ask infra (or check the proxy
+     config) for the canonical `model_name` — and confirm `model_info`
+     has the capability flags you expect.
+   - Cross-check LiteLLM static metadata: in a Python shell, run
+     ```python
+     from litellm import supports_vision
+     supports_vision(model="<litellm_proxy_target_without_litellm_proxy_prefix>")
+     ```
+   - Decision matrix:
+     | Provider docs | Proxy `model_info.supports_vision` | LiteLLM static | Action |
+     |---------------|------------------------------------|----------------|--------|
+     | Vision ✅      | True (and `model_name` matches your config) | any | Do nothing — vision auto-enables via the proxy metadata. |
+     | Vision ✅      | True, but `model_name` does **not** match your config | any | **Fix the model path** in your `llm_config` to match the proxy's `model_name` exactly. Don't add `disable_vision`. |
+     | Vision ✅      | not set / proxy entry has no `model_info` | any | Coordinate with infra to add `supports_vision: true` to the proxy entry (one line of YAML). Vision integration test will skip until that lands — non-blocking. |
+     | Vision ❌      | True | True | Add `"disable_vision": True` (proxy/LiteLLM are wrong). |
+     | Vision ❌      | any | any | Do nothing. |
+   - Note the result in the PR description, including the exact proxy
+     `model_name` your `llm_config["model"]` matches.
+
+2. **Reasoning (thinking / reasoning_effort)**
+   - Does the model expose adjustable reasoning levels or extended thinking?
+   - Cross-check LiteLLM:
+     ```python
+     from litellm import get_supported_openai_params
+     "reasoning_effort" in (get_supported_openai_params(
+         model="<litellm_target>", custom_llm_provider=None) or [])
+     ```
+   - Decision matrix:
+     | Provider style | LiteLLM `reasoning_effort` support | Action |
+     |----------------|-------------------------------------|--------|
+     | OpenAI-style reasoning items (e.g. GPT-5, OpenRouter reasoning levels) | ✅ | Pin `"reasoning_effort": "high"` in `llm_config`. If pinned, remove `temperature` / `top_p` (they'll be auto-stripped). |
+     | OpenAI-style reasoning items, provider has a non-standard reasoning param | ❌ | Pin via provider-specific passthrough: `"litellm_extra_body": {<provider-key>: <value>}` (e.g. `{"reasoning": {"effort": "high"}}` for OpenRouter, `{"enable_thinking": True}` for Qwen). **Confirm which upstream the proxy actually routes to** before choosing the key — the proxy's `litellm_params.model` (e.g. `openai/...` vs `openrouter/...`) decides what extra-body keys the upstream understands. The top-level `reasoning_effort` would otherwise be dropped by `drop_params=True`. |
+     | Anthropic extended thinking (Claude Sonnet 4.5+, Haiku 4.5) | n/a | Add the model identifier to `EXTENDED_THINKING_MODELS` in `model_features.py` (see Step 2). |
+     | Non-reasoning model | n/a | Do nothing. |
+   - Note the result in the PR description (e.g., "Reasoning: OpenRouter exposes high/medium/low; LiteLLM does not yet expose `reasoning_effort`, so opting in via `litellm_extra_body`; condenser thinking-block test will skip — expected for non-Anthropic reasoning models").
+
+The integration runner correctly **skips** vision / extended-thinking tests
+when the SDK can't detect support. A skipped test for one of these reasons
+is **not** a failure of the PR and doesn't need to be fixed in the same PR;
+it usually means LiteLLM metadata needs to be updated upstream.
+
 ### Critical Rules
 
 1. Model ID must match dictionary key

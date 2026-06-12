@@ -41,7 +41,7 @@ if sigalrm := getattr(signal, "SIGALRM", None):
 # SDK-specific parameters that should not be passed to litellm.
 # These parameters are used by the SDK's LLM wrapper but are not part of litellm's API.
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
-SDK_ONLY_PARAMS = {"disable_vision"}
+SDK_ONLY_PARAMS = {"disable_vision", "inline_image_urls"}
 
 
 # Model configurations dictionary
@@ -79,6 +79,10 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/moonshot/kimi-k2.6",
             "temperature": 1.0,
+            # Moonshot's public Kimi API rejects http(s) image URLs and only
+            # accepts base64 ``data:`` URLs. This makes the SDK fetch each
+            # image URL and inline it as base64 before sending. See #3155.
+            "inline_image_urls": True,
         },
     },
     # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
@@ -137,6 +141,14 @@ MODELS = {
             "model": "litellm_proxy/anthropic/claude-opus-4-8",
         },
     },
+    # https://www.anthropic.com/news/claude-fable-5
+    "claude-fable-5": {
+        "id": "claude-fable-5",
+        "display_name": "Claude Fable 5",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-fable-5",
+        },
+    },
     "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
@@ -167,6 +179,14 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/gemini-3.5-flash",
             "temperature": 0.0,
+            # SWE-bench Multimodal runs against this model fail ~97% of
+            # image-bearing instances with an opaque Vertex 500
+            # "Internal error encountered" on the very first LLM call,
+            # while text-only instances complete normally. Fetching the
+            # image client-side and sending it as a base64 ``data:`` URL
+            # bypasses LiteLLM's server-side URL fetch path, which is the
+            # most plausible failure point. See run #26931958101 analysis.
+            "inline_image_urls": True,
         },
     },
     "gpt-5.2": {
@@ -371,6 +391,18 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    # Paid OpenRouter route (no training, smaller 262k context):
+    # https://openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+    # Backed by the `nemotron-3-ultra-550b-a55b-or-paid` model on the LiteLLM proxy.
+    "nemotron-3-ultra-550b-a55b-or-paid": {
+        "id": "nemotron-3-ultra-550b-a55b-or-paid",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B (OpenRouter, paid)",
+        "llm_config": {
+            "model": "litellm_proxy/nemotron-3-ultra-550b-a55b-or-paid",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "converse-nemotron-super-3-120b": {
         "id": "converse-nemotron-super-3-120b",
         "display_name": "NVIDIA Converse Nemotron Super 3 120B",
@@ -386,6 +418,17 @@ MODELS = {
             "model": "litellm_proxy/trinity-large-thinking",
             "temperature": 1.0,
             "top_p": 0.95,
+        },
+    },
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/step-3.7-flash",
+            "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
         },
     },
 }

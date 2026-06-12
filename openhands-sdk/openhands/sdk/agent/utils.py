@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import textwrap
 import types
-from collections.abc import Collection, Sequence
+from collections.abc import Collection
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -24,7 +24,7 @@ from typing import (
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.types import ConversationTokenCallbackType
-from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
@@ -186,13 +186,40 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "command": "terminal",
     "execute": "terminal",
     "execute_bash": "terminal",
+    "git": "terminal",
+    "reset": "terminal",
     "str_replace": "file_editor",
     "str_replace_editor": "file_editor",
 }
 
+# Regex to detect malformed tool names (e.g., "str_replace </parameter"
+# or "str_replace</function>"). These occur when LLMs emit XML/HTML
+# tag fragments in tool names. The leading identifier is extracted and
+# used as the lookup key.
+_MALFORMED_TOOL_NAME_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)")
+
+
+def _extract_tool_name_base(tool_name: str) -> str:
+    """Return the leading identifier of ``tool_name``.
+
+    This is used to recover from malformed tool names like
+    ``"str_replace </parameter"`` or ``"str_replace</function>"`` that LLMs
+    sometimes emit by appending XML/HTML tag fragments. If ``tool_name``
+    has no valid leading identifier, return it unchanged.
+    """
+    match = _MALFORMED_TOOL_NAME_RE.match(tool_name)
+    return match.group(1) if match else tool_name
+
+
+# Terminal aliases that prepend the tool name to the command argument.
+# Unlike 'bash' which passes through the command directly, these tools
+# (e.g., 'git', 'reset') are themselves commands that should be combined
+# with their arguments (e.g., 'git status', 'reset clear').
+_TERMINAL_COMMAND_PREFIX_ALIASES = frozenset({"git", "reset"})
+
 # This fallback is intentionally tiny: it only accepts exact, bare command names
 # that are useful as read-only defaults when some models emit them as tool names.
-_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "ls", "pwd"})
+_SHELL_TOOL_FALLBACK_COMMANDS = frozenset({"find", "git", "ls", "pwd"})
 
 # Typo normalization for common mistakes in security_risk field
 _SECURITY_RISK_TYPOS = {"security_rort", "securtiy_risk", "security_riks"}
@@ -408,9 +435,30 @@ def normalize_tool_call(
     # Only apply aliases for tool names that are not explicitly registered.
     # This prevents hijacking legitimate tools that share names with aliases.
     if tool_name not in available_tools:
-        alias_target = TOOL_NAME_ALIASES.get(tool_name)
-        if alias_target and alias_target in available_tools:
+        # Extract the leading identifier so we can recover from malformed names
+        # like "str_replace </parameter" (the LLM appended an XML fragment).
+        # For clean names like "git" this is a no-op.
+        base_name = _extract_tool_name_base(tool_name)
+        alias_target = TOOL_NAME_ALIASES.get(base_name)
+        if base_name != tool_name and base_name in available_tools:
+            normalized_tool_name = base_name
+        elif alias_target and alias_target in available_tools:
             normalized_tool_name = alias_target
+            # For terminal alias with prefix, combine tool name with command
+            if (
+                alias_target == "terminal"
+                and base_name in _TERMINAL_COMMAND_PREFIX_ALIASES
+            ):
+                original_command = arguments.get("command")
+                normalized_arguments = {
+                    key: value
+                    for key, value in arguments.items()
+                    if key in {"security_risk", "summary"}
+                }
+                if original_command:
+                    normalized_arguments["command"] = f"{base_name} {original_command}"
+                else:
+                    normalized_arguments["command"] = base_name
         elif "terminal" in available_tools:
             terminal_command = _maybe_rewrite_as_terminal_command(
                 tool_name,
@@ -451,7 +499,7 @@ def normalize_tool_call(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -460,7 +508,7 @@ def prepare_llm_messages(
 
 @overload
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -468,19 +516,25 @@ def prepare_llm_messages(
 
 
 def prepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
 ) -> list[Message] | Condensation:
-    """Prepare LLM messages from conversation context.
+    """Prepare LLM messages from a conversation view.
 
     This utility function extracts the common logic for preparing conversation
     context that is shared between agent.step() and ask_agent() methods.
     It handles condensation internally and calls the callback when needed.
 
+    Callers should pass the cached `ConversationState.view`, which is
+    maintained incrementally as events are appended. This avoids paying the
+    O(n) `View.from_events` (with `enforce_properties`) cost on every step.
+    See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+
     Args:
-        events: Sequence of events to prepare messages from
+        view: A `View` of the conversation history. The view is treated as
+            read-only — see `CondenserBase.condense` for the same contract.
         condenser: Optional condenser for handling context window limits
         additional_messages: Optional additional messages to append
         llm: Optional LLM instance from the agent, passed to condenser for
@@ -489,12 +543,7 @@ def prepare_llm_messages(
     Returns:
         List of messages ready for LLM completion, or a Condensation event
         if condensation is needed
-
-    Raises:
-        RuntimeError: If condensation is needed but no callback is provided
     """
-
-    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     # If a condenser is registered, we need to give it an
@@ -574,7 +623,7 @@ def make_llm_completion(
 
 
 async def aprepare_llm_messages(
-    events: Sequence[Event],
+    view: View,
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     llm: LLM | None = None,
@@ -584,7 +633,6 @@ async def aprepare_llm_messages(
     Calls ``condenser.acondense()`` so that condensers backed by an LLM can
     use async completions without blocking the event loop.
     """
-    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     if condenser is not None:

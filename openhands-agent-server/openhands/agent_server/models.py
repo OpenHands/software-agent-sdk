@@ -34,6 +34,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -241,6 +242,15 @@ class ConversationInfo(_ConversationInfoBase):
     agent: AgentBase = Field(
         ...,
         description="The agent running in the conversation.",
+    )
+    client_tools: list[ClientToolSpec] = Field(
+        default_factory=list,
+        description=(
+            "Client-defined tool specs registered for this conversation. "
+            "Surfaced so that a client re-attaching by conversation id can "
+            "register the dynamic ClientAction_* action types before syncing "
+            "persisted events, avoiding 'Unknown kind' deserialization errors."
+        ),
     )
 
 

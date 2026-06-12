@@ -279,3 +279,32 @@ class TestGetSuffixLengthForTokenReduction:
 
         # Suffix + prefix should equal total length
         assert suffix_length + prefix_length == len(events)
+
+    def test_base_events_are_included_for_prefix_token_counting(self, mock_llm: LLM):
+        """Token reduction should count suffixes in the context of kept events."""
+        base_events = [
+            message_event("system-like prefix"),
+            message_event("kept user request"),
+        ]
+        events = [
+            message_event("A" * 40),  # 40 chars -> 10 tokens
+            message_event("B" * 40),  # 40 chars -> 10 tokens
+            message_event("C" * 40),  # 40 chars -> 10 tokens
+        ]
+
+        suffix_length = get_suffix_length_for_token_reduction(
+            events,
+            mock_llm,
+            token_reduction=10,
+            base_events=base_events,
+        )
+
+        assert suffix_length == 1
+        first_counted_messages = mock_llm.get_token_count.call_args_list[0].args[0]  # type: ignore
+        counted_text = "\n".join(
+            content.text
+            for message in first_counted_messages
+            for content in message.content
+        )
+        assert "system-like prefix" in counted_text
+        assert "kept user request" in counted_text

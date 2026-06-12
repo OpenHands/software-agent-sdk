@@ -40,7 +40,7 @@ from openhands.sdk.skills import (
 )
 from openhands.sdk.skills.skill import (
     DEFAULT_MARKETPLACE_PATH,
-    PUBLIC_SKILLS_BRANCH,
+    PUBLIC_SKILLS_REF,
     PUBLIC_SKILLS_REPO,
     _invalidate_public_skills_cache,
     load_skills_from_dir,
@@ -119,18 +119,20 @@ def load_org_skills_from_url(
     """
     all_skills: list[Skill] = []
 
-    # Determine the temporary directory for cloning
+    # Determine a unique temporary directory for cloning. Two repos can share
+    # the same org_name (e.g. {login}/.openhands and {login}/.agents), and
+    # concurrent conversations may clone the same org, so the directory must be
+    # unique per call rather than derived solely from org_name.
     if working_dir:
         base_dir = Path(working_dir) if isinstance(working_dir, str) else working_dir
-        temp_dir = base_dir / f"_org_skills_{org_name}"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = Path(
+            tempfile.mkdtemp(prefix=f"_org_skills_{org_name}_", dir=base_dir)
+        )
     else:
-        temp_dir = Path(tempfile.gettempdir()) / f"openhands_org_skills_{org_name}"
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"openhands_org_skills_{org_name}_"))
 
     try:
-        # Clean up any existing temp directory
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
-
         # Clone the organization repository (shallow clone for efficiency)
         logger.info(f"Cloning organization skills repository for {org_name}")
         try:
@@ -294,8 +296,7 @@ def load_all_skills(
     load_project: bool = True,
     load_org: bool = True,
     project_dir: str | None = None,
-    org_repo_url: str | None = None,
-    org_name: str | None = None,
+    org_repos: list[tuple[str, str]] | None = None,
     sandbox_exposed_urls: list[ExposedUrlData] | None = None,
     marketplace_path: str | None = DEFAULT_MARKETPLACE_PATH,
 ) -> SkillLoadResult:
@@ -315,8 +316,8 @@ def load_all_skills(
         load_project: Whether to load project skills from workspace.
         load_org: Whether to load organization-level skills.
         project_dir: Workspace directory path for project skills.
-        org_repo_url: Pre-authenticated Git URL for org skills.
-        org_name: Organization name for org skills.
+        org_repos: Pre-authenticated (Git URL, org name) pairs for org skills.
+            All repos are loaded and merged into the single org tier.
         sandbox_exposed_urls: List of exposed URLs from sandbox.
         marketplace_path: Relative marketplace JSON path for public skills.
             Pass None to load all public skills without marketplace filtering.
@@ -347,17 +348,27 @@ def load_all_skills(
     sources["sdk_base"] = len(sdk_base)
     skill_lists.append(list(sdk_base.values()))
 
-    # 4. Load organization skills
+    # 4. Load organization skills (one or more repos merged into a single tier;
+    # later repos override earlier ones on name collision).
     org_skills: list[Skill] = []
-    if load_org and org_repo_url and org_name:
-        try:
-            org_skills = load_org_skills_from_url(
-                org_repo_url=org_repo_url,
-                org_name=org_name,
-            )
-            logger.info(f"Loaded {len(org_skills)} organization skills")
-        except Exception as e:
-            logger.warning(f"Failed to load organization skills: {e}")
+    if load_org and org_repos:
+        per_repo_skills: list[list[Skill]] = []
+        for org_repo_url, org_name in org_repos:
+            try:
+                per_repo_skills.append(
+                    load_org_skills_from_url(
+                        org_repo_url=org_repo_url,
+                        org_name=org_name,
+                    )
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load organization skills for {org_name}: {e}"
+                )
+        org_skills = merge_skills(per_repo_skills)
+        # Always log the count (including 0) so a failed/empty org load is
+        # visible when org loading was requested.
+        logger.info(f"Loaded {len(org_skills)} organization skills")
     sources["org"] = len(org_skills)
     skill_lists.append(org_skills)
 
@@ -391,7 +402,7 @@ def sync_public_skills() -> tuple[bool, str]:
     try:
         cache_dir = get_skills_cache_dir()
         result = update_skills_repository(
-            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
+            PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
         )
 
         if result:
@@ -634,7 +645,7 @@ def _fetch_catalog_entries(marketplace_path: str) -> list[_CatalogEntry]:
     """
     cache_dir = get_skills_cache_dir()
     repo_path = update_skills_repository(
-        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_BRANCH, cache_dir
+        PUBLIC_SKILLS_REPO, PUBLIC_SKILLS_REF, cache_dir
     )
 
     if repo_path is None:

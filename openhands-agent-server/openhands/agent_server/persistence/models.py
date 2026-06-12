@@ -34,16 +34,23 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 class SettingsUpdatePayload(TypedDict, total=False):
     """Typed payload for PersistedSettings.update() method.
 
-    The ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
+    All three ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
     objects merge recursively, and a ``None`` value *inside a nested map*
     deletes that entry (the "unset" primitive) — e.g. send
     ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
     whole map. A ``None`` on a top-level *field* is not treated as delete; it
     flows to validation as before.
+
+    ``misc_settings_diff`` is deep-merged into the persisted ``misc_settings``
+    block. The agent-server treats ``misc_settings`` as opaque
+    frontend-owned data (it persists and merges, but does not interpret), so
+    any shape the client chooses is valid; lists are replaced wholesale by
+    the deep-merge.
     """
 
     agent_settings_diff: dict[str, Any]
     conversation_settings_diff: dict[str, Any]
+    misc_settings_diff: dict[str, Any]
     active_profile: str | None
 
 
@@ -97,7 +104,7 @@ def _deep_merge(
     return result
 
 
-PERSISTED_SETTINGS_SCHEMA_VERSION = 1
+PERSISTED_SETTINGS_SCHEMA_VERSION = 2
 
 
 class PersistedSettings(BaseModel):
@@ -109,6 +116,12 @@ class PersistedSettings(BaseModel):
 
     The ``active_profile`` field tracks which LLM profile was last activated,
     allowing frontends to display which profile is currently in use.
+
+    The ``misc_settings`` field is an opaque dict the agent-server persists
+    on behalf of the frontend. The agent-server never reads its contents and
+    has no schema for it; clients are free to store any JSON-serializable
+    structure they need (e.g. app/UI preferences, analytics consent, git
+    identity used for in-conversation commits, etc.).
     """
 
     schema_version: int = Field(
@@ -123,6 +136,14 @@ class PersistedSettings(BaseModel):
     active_profile: str | None = Field(
         default=None,
         description="Name of the currently active LLM profile.",
+    )
+    misc_settings: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Opaque dict the agent-server persists on behalf of the frontend. "
+            "Updated through misc_settings_diff (deep-merged); contents are "
+            "never read or validated by the agent-server."
+        ),
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -173,7 +194,7 @@ class PersistedSettings(BaseModel):
         agent_update = payload.get("agent_settings_diff")
         conv_update = payload.get("conversation_settings_diff")
 
-        # Phase 1: Validate both updates before any mutations
+        # Phase 1: Validate all updates before any mutations
         new_agent: AgentSettingsConfig | None = None
         new_conv: ConversationSettings | None = None
         agent_merged: dict | None = None
@@ -232,11 +253,23 @@ class PersistedSettings(BaseModel):
                         f"Failed to update conversation settings: {type(e).__name__}"
                     ) from None
 
+            # ``misc_settings`` is opaque: deep-merge without schema
+            # validation. The agent-server doesn't interpret what's inside,
+            # and ``misc_settings`` is not a secret container — the merged
+            # dict is therefore stored directly without the post-commit
+            # clear-down used by ``agent_settings`` / ``conversation_settings``.
+            misc_update = payload.get("misc_settings_diff")
+            new_misc: dict[str, Any] | None = None
+            if isinstance(misc_update, dict):
+                new_misc = _deep_merge(self.misc_settings, misc_update)
+
             # Phase 2: Apply validated changes atomically
             if new_agent is not None:
                 self.agent_settings = new_agent
             if new_conv is not None:
                 self.conversation_settings = new_conv
+            if new_misc is not None:
+                self.misc_settings = new_misc
 
             # Update active_profile if explicitly provided (including None to clear)
             if "active_profile" in payload:
@@ -252,7 +285,14 @@ class PersistedSettings(BaseModel):
     def from_persisted(
         cls, data: Any, *, context: dict[str, Any] | None = None
     ) -> PersistedSettings:
-        """Load persisted settings, applying top-level and nested migrations."""
+        """Load persisted settings.
+
+        Schema-version history:
+
+        - **v1**: ``agent_settings`` + ``conversation_settings`` plus
+          ``active_profile``.
+        - **v2** (current): adds the opaque ``misc_settings`` container.
+        """
         if not isinstance(data, dict):
             return cls.model_validate(data, context=context)
 
@@ -266,6 +306,7 @@ class PersistedSettings(BaseModel):
                 f"{version} is newer than supported version "
                 f"{PERSISTED_SETTINGS_SCHEMA_VERSION}"
             )
+
         payload["schema_version"] = PERSISTED_SETTINGS_SCHEMA_VERSION
         return cls.model_validate(payload, context=context)
 

@@ -1,7 +1,7 @@
 import re
 import uuid
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -43,6 +43,65 @@ ConversationTags = Annotated[dict[str, str], BeforeValidator(_validate_tags)]
 
 Keys must be lowercase alphanumeric. Values are arbitrary strings up to 256 chars.
 """
+
+type TraceMetadataValue = (
+    str | bool | int | float | list[str] | list[bool] | list[int] | list[float]
+)
+
+
+def _validate_observability_metadata(
+    v: Any,
+) -> dict[str, TraceMetadataValue]:
+    if v is None:
+        return {}
+    if not isinstance(v, dict):
+        raise ValueError("Observability metadata must be a dictionary")
+    for key, value in v.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("Observability metadata keys must be non-empty strings")
+        if isinstance(value, str | bool | int | float):
+            continue
+        if isinstance(value, list):
+            if all(isinstance(item, str) for item in value):
+                continue
+            if all(isinstance(item, bool) for item in value):
+                continue
+            if all(
+                isinstance(item, int) and not isinstance(item, bool) for item in value
+            ):
+                continue
+            if all(isinstance(item, float) for item in value):
+                continue
+        raise ValueError(
+            f"Observability metadata value for '{key}' must be a scalar "
+            "or a homogeneous sequence of strings, booleans, integers, or floats "
+            "(mixed numeric types such as [1, 1.5] are not supported by OpenTelemetry)"
+        )
+    return v
+
+
+ConversationObservabilityMetadata = Annotated[
+    dict[str, TraceMetadataValue],
+    BeforeValidator(_validate_observability_metadata),
+]
+"""Validated dict of Laminar/OTel trace metadata for a conversation."""
+
+
+def _validate_observability_tags(v: Any) -> list[str]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError("Observability tags must be a list")
+    if not all(isinstance(tag, str) and tag for tag in v):
+        raise ValueError("Observability tags must be non-empty strings")
+    return v
+
+
+ConversationObservabilityTags = Annotated[
+    list[str],
+    BeforeValidator(_validate_observability_tags),
+]
+"""Validated list of Laminar/OTel span tags for a conversation."""
 
 
 class StuckDetectionThresholds(BaseModel):

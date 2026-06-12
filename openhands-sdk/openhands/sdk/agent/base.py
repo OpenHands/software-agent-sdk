@@ -25,6 +25,7 @@ from pydantic import (
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
@@ -95,6 +96,31 @@ def _decrypt_mcp_secret_values(
                 for name, value in mapping.items()
             }
     return config
+
+
+# -- SOUL.md loader -------------------------------------------------------
+# SOUL.md is the agent's identity file (~/.openhands/SOUL.md).  When present
+# it replaces the default identity in the system prompt.
+
+_SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
+_DEFAULT_SOUL = (
+    "You are OpenHands agent, a helpful AI assistant that can interact"
+    " with a computer to solve tasks."
+)
+
+
+def _load_soul_md() -> str:
+    """Load ``~/.openhands/SOUL.md``, falling back to the built-in default."""
+    try:
+        with open(_SOUL_PATH, encoding="utf-8") as f:
+            content = f.read().strip()
+        if content:
+            return content
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        logger.debug("Could not read SOUL.md from %s: %s", _SOUL_PATH, exc)
+    return _DEFAULT_SOUL
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -439,13 +465,28 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.system_prompt is not None:
             return self.system_prompt
 
+        return render_template(
+            prompt_dir=self.prompt_dir,
+            template_name=self.system_prompt_filename,
+            **self._resolved_template_kwargs(),
+        )
+
+    def _resolved_template_kwargs(self) -> dict[str, object]:
+        """Resolve the system-prompt template kwargs.
+
+        Shared by :pyattr:`static_system_message` and
+        :meth:`_build_prompt_context` so the two cannot drift.
+        """
         template_kwargs = dict(self.system_prompt_kwargs)
-        # Auto-detect browser tools from the tool spec list
+
+        # Load SOUL.md identity if not already provided
+        if "soul_content" not in template_kwargs:
+            template_kwargs["soul_content"] = _load_soul_md()
+
         template_kwargs.setdefault(
             "enable_browser",
             any(t.name == "browser_tool_set" for t in self.tools),
         )
-        # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
         template_kwargs.setdefault("model_name", self.llm.model)
         if (
@@ -459,10 +500,37 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
                 template_kwargs["model_variant"] = spec.variant
-        return render_template(
-            prompt_dir=self.prompt_dir,
-            template_name=self.system_prompt_filename,
-            **template_kwargs,
+        return template_kwargs
+
+    def _build_prompt_context(self) -> PromptContext:
+        """Frozen :class:`PromptContext` snapshot for this agent.
+
+        ``template_kwargs`` is resolved by the shared
+        :meth:`_resolved_template_kwargs`; the other fields snapshot
+        per-conversation signals.
+        """
+        agent_context = self.agent_context
+        if agent_context is not None:
+            now = agent_context.get_formatted_datetime()
+            skill_names = tuple(skill.name for skill in agent_context.skills)
+            secret_names = tuple(
+                info["name"]
+                for info in agent_context.get_secret_infos()
+                if info["name"] is not None
+            )
+        else:
+            now = None
+            skill_names = ()
+            secret_names = ()
+
+        return PromptContext(
+            template_kwargs=self._resolved_template_kwargs(),
+            tool_names=tuple(t.name for t in self.tools),
+            platform=Platform.current(),
+            working_dir=None,
+            now=now,
+            skill_names=skill_names,
+            secret_names=secret_names,
         )
 
     @property

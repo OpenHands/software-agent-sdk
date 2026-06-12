@@ -106,6 +106,23 @@ class TaskManager:
         # when the parent persists, otherwise a temporary directory.
         self._persistence_dir: Path | None = None
 
+    def attach_parent(self, conversation: LocalConversation) -> None:
+        """Attach the parent conversation used to create sub-agent tasks.
+
+        Idempotent: if a parent conversation is already attached, subsequent
+        calls with the same conversation have no effect. Calls with a different
+        conversation are also ignored, but log a warning to surface potential
+        programming errors where two subsystems try to register different parents.
+        """
+        if (
+            self._parent_conversation is not None
+            and self._parent_conversation is not conversation
+        ):
+            logger.warning(
+                "attach_parent called with a different conversation; ignoring."
+            )
+        self._ensure_parent(conversation)
+
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
             self._parent_conversation = conversation

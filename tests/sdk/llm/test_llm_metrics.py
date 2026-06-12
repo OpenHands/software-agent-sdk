@@ -3,7 +3,13 @@
 import pytest
 from pydantic import ValidationError
 
-from openhands.sdk.llm.utils.metrics import Cost, Metrics, ResponseLatency, TokenUsage
+from openhands.sdk.llm.utils.metrics import (
+    Cost,
+    Metrics,
+    MetricsSnapshot,
+    ResponseLatency,
+    TokenUsage,
+)
 
 
 def test_cost_creation_valid():
@@ -824,3 +830,68 @@ def test_metrics_diff_current_only_not_none():
     assert diff.accumulated_token_usage.completion_tokens == 8
     assert diff.accumulated_token_usage.cache_read_tokens == 2
     assert diff.accumulated_token_usage.cache_write_tokens == 1
+
+
+@pytest.mark.parametrize(
+    "prompt_tokens, cache_read_tokens, expected",
+    [
+        # litellm/OpenAI convention: prompt_tokens already includes cached reads.
+        (100, 10, 0.10),
+        (100, 0, 0.0),
+        # cache_read == prompt -> prompt is the denominator.
+        (50, 50, 1.0),
+        # ACP convention: input excludes cached reads, so they are disjoint and
+        # the denominator is prompt + cache_read.
+        (10, 90, 0.90),
+        (0, 50, 1.0),  # zero prompt, all cache -> 100% hit (not None)
+        # Nothing to measure -> undefined.
+        (0, 0, None),
+    ],
+)
+def test_cache_hit_rate_conventions(prompt_tokens, cache_read_tokens, expected):
+    """cache_hit_rate handles both provider conventions and zero input."""
+    snapshot = MetricsSnapshot(
+        accumulated_token_usage=TokenUsage(
+            prompt_tokens=prompt_tokens, cache_read_tokens=cache_read_tokens
+        )
+    )
+    if expected is None:
+        assert snapshot.cache_hit_rate is None
+    else:
+        assert snapshot.cache_hit_rate == pytest.approx(expected)
+
+
+def test_cache_hit_rate_reflects_accumulated_usage():
+    """Metrics.cache_hit_rate derives from accumulated usage across calls."""
+    metrics = Metrics()
+    metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=10,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        context_window=4096,
+        response_id="r1",
+    )
+    metrics.add_token_usage(
+        prompt_tokens=100,
+        completion_tokens=10,
+        cache_read_tokens=40,
+        cache_write_tokens=0,
+        context_window=4096,
+        response_id="r2",
+    )
+    # accumulated prompt=200, cache_read=40 -> 40 / 200
+    assert metrics.cache_hit_rate == pytest.approx(0.20)
+
+
+def test_cache_hit_rate_none_without_usage():
+    """No usage yet -> undefined rather than a misleading 0% or a crash."""
+    assert MetricsSnapshot(accumulated_token_usage=None).cache_hit_rate is None
+    assert Metrics().cache_hit_rate is None  # fresh metrics are all-zeros
+
+
+def test_cache_hit_rate_is_not_serialized():
+    """Derived rate stays out of the serialized schema (no public-API change)."""
+    snapshot = Metrics().get_snapshot()
+    assert "cache_hit_rate" not in snapshot.model_dump()
+    assert "cache_hit_rate" not in MetricsSnapshot.model_json_schema()["properties"]

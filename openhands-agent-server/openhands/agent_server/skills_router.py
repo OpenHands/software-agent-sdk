@@ -102,8 +102,17 @@ class SkillsRequest(BaseModel):
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
     )
+    org_configs: list[OrgConfig] | None = Field(
+        default=None,
+        description="Organization/user skill repositories to load concurrently",
+    )
     org_config: OrgConfig | None = Field(
-        default=None, description="Organization skills configuration"
+        default=None,
+        deprecated=True,
+        description=(
+            "Deprecated since v1.28.0 and scheduled for removal in v1.33.0. "
+            "Single organization skills configuration; prefer org_configs."
+        ),
     )
     sandbox_config: SandboxConfig | None = Field(
         default=None, description="Sandbox skills configuration"
@@ -268,11 +277,13 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
             for url in request.sandbox_config.exposed_urls
         ]
 
-    org_repo_url = None
-    org_name = None
-    if request.org_config:
-        org_repo_url = request.org_config.org_repo_url
-        org_name = request.org_config.org_name
+    # Prefer the list form; fall back to the deprecated single org_config so
+    # older app-servers keep working.
+    org_repos: list[tuple[str, str]] = []
+    if request.org_configs:
+        org_repos = [(c.org_repo_url, c.org_name) for c in request.org_configs]
+    elif "org_config" in request.model_fields_set and request.org_config:
+        org_repos = [(request.org_config.org_repo_url, request.org_config.org_name)]
 
     # Call the service
     result = load_all_skills(
@@ -281,8 +292,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         load_project=request.load_project,
         load_org=request.load_org,
         project_dir=request.project_dir,
-        org_repo_url=org_repo_url,
-        org_name=org_name,
+        org_repos=org_repos,
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
     )

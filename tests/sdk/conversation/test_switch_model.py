@@ -618,3 +618,55 @@ def test_switch_llm_tool_during_arun_does_not_deadlock(profile_store, tmp_path):
     assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
     # The switch took effect: the agent now carries the 'fast' profile's model.
     assert conv.agent.llm.model == "fast-model"
+
+
+def test_switch_llm_to_subscription_profile_disables_condenser(
+    monkeypatch, empty_profile_store
+):
+    import openhands.sdk.conversation.impl.local_conversation as local_conversation
+
+    condenser = LLMSummarizingCondenser(
+        llm=_make_llm("condenser-model", "condenser"),
+        max_size=100,
+        keep_first=5,
+    )
+    conv = LocalConversation(
+        agent=Agent(
+            llm=_make_llm("default-model", "test-llm"),
+            tools=[],
+            condenser=condenser,
+        ),
+        workspace=Path.cwd(),
+    )
+    assert conv.agent.condenser is condenser
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        runtime = llm.model_copy()
+        if llm.auth_type == "subscription":
+            runtime._is_subscription = True
+        return runtime
+
+    monkeypatch.setattr(
+        local_conversation,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    conv.switch_llm(
+        LLM(
+            model="gpt-5.2-codex",
+            usage_id="profile:codex",
+            auth_type="subscription",
+            subscription_vendor="openai",
+        )
+    )
+
+    assert conv.agent.llm.is_subscription
+    assert conv.agent.condenser is None
+    assert conv.state.agent.condenser is None
+
+    conv.switch_llm(_make_llm("regular-model", "regular"))
+
+    assert conv.agent.llm.model == "regular-model"
+    assert conv.agent.condenser is condenser
+    assert conv.state.agent.condenser is condenser

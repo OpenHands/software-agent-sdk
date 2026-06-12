@@ -13,6 +13,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import httpx
@@ -190,7 +191,6 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse
         from openhands.sdk.llm.message import Message
-        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 
         # Create a minimal ModelResponse with a single assistant message
         litellm_msg = LiteLLMMessage.model_validate(
@@ -209,17 +209,21 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         # Convert to OpenHands Message
         message = Message.from_llm_chat_message(litellm_msg)
 
-        # Create metrics snapshot
-        metrics_snapshot = MetricsSnapshot(
-            model_name="test-model",
-            accumulated_cost=0.0,
-            max_budget_per_task=None,
-            accumulated_token_usage=None,
+        self.metrics.add_token_usage(
+            prompt_tokens=7,
+            completion_tokens=5,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            context_window=8192,
+            response_id="test-resp",
+            reasoning_tokens=0,
         )
 
         # Return LLMResponse as expected by the agent
         return LLMResponse(
-            message=message, metrics=metrics_snapshot, raw_response=raw_response
+            message=message,
+            metrics=self.metrics.get_snapshot(),
+            raw_response=raw_response,
         )
 
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
@@ -579,6 +583,240 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
         shutil.rmtree(cwd_conversations)
+
+
+def test_openai_chat_completions_gateway_over_real_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, patched_llm
+):
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+    )
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    profiles_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    store.save(
+        "smoke",
+        LLM(model="gpt-4o-mini", api_key=SecretStr("test")),
+        include_secrets=True,
+    )
+
+    with patch(
+        "openhands.agent_server.openai.service.LLMProfileStore",
+        lambda: LLMProfileStore(base_dir=profiles_dir),
+    ):
+        with live_server_env(tmp_path, monkeypatch) as env:
+            with httpx.Client() as client:
+                models_response = client.get(f"{env['host']}/v1/models", timeout=2.0)
+                assert models_response.status_code == 200
+                assert models_response.json()["data"] == [
+                    {
+                        "id": "openhands_smoke",
+                        "object": "model",
+                        "created": 0,
+                        "owned_by": "openhands",
+                    }
+                ]
+
+                response = client.post(
+                    f"{env['host']}/v1/chat/completions",
+                    json={
+                        "model": "openhands_smoke",
+                        "messages": [
+                            {"role": "system", "content": "Answer briefly."},
+                            {"role": "user", "content": "Say hello."},
+                        ],
+                    },
+                    timeout=10.0,
+                )
+                assert response.status_code == 200
+                body = response.json()
+                assert body["object"] == "chat.completion"
+                assert body["model"] == "openhands_smoke"
+                assert body["choices"][0]["message"] == {
+                    "role": "assistant",
+                    "content": "Hello from patched LLM",
+                }
+                assert body["usage"] == {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 5,
+                    "total_tokens": 12,
+                }
+                conversation_id = response.headers["X-OpenHands-ServerConversation-ID"]
+                UUID(conversation_id)
+                persisted_response = client.get(
+                    f"{env['host']}/api/conversations/{conversation_id}", timeout=2.0
+                )
+                assert persisted_response.status_code == 200
+                assert persisted_response.json()["workspace"]["working_dir"] == str(
+                    env["workspace_path"]
+                )
+
+                reused_response = client.post(
+                    f"{env['host']}/v1/chat/completions",
+                    headers={"X-OpenHands-ServerConversation-ID": conversation_id},
+                    json={
+                        "model": "openhands_smoke",
+                        "messages": [
+                            {"role": "user", "content": "Say hello again."},
+                        ],
+                    },
+                    timeout=10.0,
+                )
+                assert reused_response.status_code == 200
+                assert (
+                    reused_response.headers["X-OpenHands-ServerConversation-ID"]
+                    == conversation_id
+                )
+                assert reused_response.json()["choices"][0]["message"] == {
+                    "role": "assistant",
+                    "content": "Hello from patched LLM",
+                }
+
+                from openai import OpenAI
+
+                openai_client = OpenAI(
+                    api_key="unused",
+                    base_url=f"{env['host']}/v1",
+                    timeout=10,
+                )
+                stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[
+                        {"role": "developer", "content": "Answer tersely."},
+                        {"role": "user", "content": "Say hello as a stream."},
+                    ],
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    user="compat-test-user",
+                )
+                chunks = list(stream)
+                streamed_text = "".join(
+                    chunk.choices[0].delta.content or ""
+                    for chunk in chunks
+                    if chunk.choices
+                )
+                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+                assert streamed_text == "Hello from patched LLM"
+                assert usage_chunks[-1].prompt_tokens == 7
+                assert usage_chunks[-1].completion_tokens == 5
+                assert usage_chunks[-1].total_tokens == 12
+
+                stream = openai_client.chat.completions.create(
+                    model="openhands_smoke",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Say hello as a default stream.",
+                        },
+                    ],
+                    stream=True,
+                )
+                chunks = list(stream)
+                streamed_text = "".join(
+                    chunk.choices[0].delta.content or ""
+                    for chunk in chunks
+                    if chunk.choices
+                )
+                usage_chunks = [chunk.usage for chunk in chunks if chunk.usage]
+                assert streamed_text == "Hello from patched LLM"
+                assert usage_chunks == []
+
+
+def test_openai_gateway_replays_frozen_llm_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import asyncio
+
+    from openai import OpenAI
+
+    from openhands.agent_server import (
+        config as config_module,
+        conversation_service as service_module,
+    )
+    from openhands.agent_server.models import StartConversationRequest
+    from openhands.sdk import Message, TextContent
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.testing import TestLLM
+    from openhands.sdk.workspace import LocalWorkspace
+
+    monkeypatch.setattr(config_module, "_default_config", None)
+    monkeypatch.setattr(service_module, "_conversation_service", None)
+    monkeypatch.delenv("OH_WEBHOOKS_0_BASE_URL", raising=False)
+
+    fixtures_dir = Path(__file__).parents[1] / "fixtures" / "openai_gateway"
+    fixtures = [
+        json.loads((fixtures_dir / "openai_nano_completion.json").read_text()),
+        json.loads((fixtures_dir / "litellm_haiku_completion.json").read_text()),
+    ]
+
+    profiles_dir = tmp_path / "profiles"
+    store = LLMProfileStore(base_dir=profiles_dir)
+    for fixture in fixtures:
+        store.save(
+            fixture["profile_name"],
+            LLM(model=fixture["backing_model"], api_key=SecretStr("unused")),
+            include_secrets=True,
+        )
+
+    async def start_conversation_with_test_llm(conversation_service, llm: TestLLM):
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4o-mini", api_key=SecretStr("unused")),
+                tools=[],
+            ),
+            workspace=LocalWorkspace(working_dir=str(tmp_path / "workspace")),
+            autotitle=False,
+        )
+        info, _ = await conversation_service.start_conversation(request)
+        event_service = await conversation_service.get_event_service(info.id)
+        assert event_service is not None
+        event_service.get_conversation().switch_llm(llm)
+        return info.id
+
+    with patch(
+        "openhands.agent_server.openai.service.LLMProfileStore",
+        lambda: LLMProfileStore(base_dir=profiles_dir),
+    ):
+        with live_server_env(tmp_path, monkeypatch) as env:
+            for fixture in fixtures:
+                expected_content = fixture["response"]["choices"][0]["message"][
+                    "content"
+                ]
+                llm = TestLLM.from_messages(
+                    [
+                        Message(
+                            role="assistant",
+                            content=[TextContent(text=expected_content)],
+                        )
+                    ],
+                    model=fixture["backing_model"],
+                    usage_id=f"frozen-{fixture['profile_name']}",
+                )
+                conversation_id = asyncio.run(
+                    start_conversation_with_test_llm(env["conversation_service"], llm)
+                )
+                client = OpenAI(
+                    api_key="unused",
+                    base_url=f"{env['host']}/v1",
+                    default_headers={
+                        "X-OpenHands-ServerConversation-ID": str(conversation_id)
+                    },
+                    timeout=10,
+                )
+                completion = client.chat.completions.create(
+                    model=fixture["gateway_model"],
+                    messages=fixture["messages"],
+                )
+
+                assert completion.model == fixture["gateway_model"]
+                assert completion.choices[0].message.content == expected_content
+                assert llm.call_count == 1
 
 
 @pytest.mark.skipif(
