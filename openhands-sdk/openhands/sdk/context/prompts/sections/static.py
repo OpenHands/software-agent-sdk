@@ -11,6 +11,7 @@ for every block here (the dynamic tier is ported separately).
 # ruff: noqa: E501
 
 import re
+from typing import ClassVar
 
 from openhands.sdk.context.prompts.section import (
     CacheTier,
@@ -35,6 +36,7 @@ __all__ = [
     "SecurityRiskAssessmentSection",
     "SecuritySection",
     "SelfDocumentationSection",
+    "SoulSection",
     "TroubleshootingSection",
     "VersionControlSection",
 ]
@@ -73,11 +75,22 @@ class _StaticTextSection:
         return self.body
 
 
+class SoulSection(_StaticTextSection):
+    name = "soul"
+
+    _DEFAULT_SOUL = (
+        "You are OpenHands agent, a helpful AI assistant that can interact"
+        " with a computer to solve tasks."
+    )
+
+    def render(self, ctx: PromptContext) -> str | None:
+        soul = str(ctx.template_kwargs.get("soul_content") or self._DEFAULT_SOUL)
+        return f"<SOUL>\n{soul}\n</SOUL>"
+
+
 class RoleSection(_StaticTextSection):
     name = "role"
     body = """\
-You are OpenHands agent, a helpful AI assistant that can interact with a computer to solve tasks.
-
 <ROLE>
 * Your primary role is to assist users by executing commands, modifying code, and solving technical problems effectively. You should be thorough, methodical, and prioritize quality over speed.
 * If the user asks a question, like "why is X happening", don't try to fix the problem. Just give an answer to the question.
@@ -369,19 +382,25 @@ class ProcessManagementSection(_StaticTextSection):
 </PROCESS_MANAGEMENT>"""
 
 
-# Model-specific <IMPORTANT> bodies, keyed by the family/variant that
-# ``get_model_prompt_spec`` resolves. Ported from ``model_specific/*.j2``.
-_IMPORTANT_BY_FAMILY: dict[str, str] = {
-    "anthropic_claude": """\
+class ModelSpecificSection:
+    """``<IMPORTANT>`` -- selects the family + variant guidance for the model."""
+
+    name = "model_specific"
+    cache_tier = CacheTier.STATIC
+
+    # <IMPORTANT> bodies keyed by the family/variant that ``get_model_prompt_spec``
+    # resolves. Ported from ``model_specific/*.j2``.
+    _IMPORTANT_BY_FAMILY: ClassVar[dict[str, str]] = {
+        "anthropic_claude": """\
 * Try to follow the instructions exactly as given - don't make extra or fewer actions if not asked.
 * Avoid unnecessary defensive programming; do not add redundant fallbacks or default values — fail fast instead of masking misconfigurations.
 * When backward compatibility expectations are unclear, confirm with the user before making changes that could break existing behavior.""",
-    "google_gemini": """\
+        "google_gemini": """\
 * Avoid being too proactive. Fulfill the user's request thoroughly: if they ask questions/investigations, answer them; if they ask for implementations, provide them. But do not take extra steps beyond what is requested.""",
-}
+    }
 
-_IMPORTANT_BY_VARIANT: dict[str, str] = {
-    "gpt-5": """\
+    _IMPORTANT_BY_VARIANT: ClassVar[dict[str, str]] = {
+        "gpt-5": """\
 ## Communicate with the user
 
 * Stream your thinking and responses while staying concise; surface key assumptions and environment prerequisites explicitly.
@@ -400,17 +419,10 @@ To reply in an existing inline thread, use the REST API:
   - body: `{ "body": "...", "in_reply_to": <comment_id> }`
 
 This creates a proper reply attached to the original inline comment thread.""",
-    "gpt-5-codex": """\
+        "gpt-5-codex": """\
 * Stream your thinking and responses while staying concise; surface key assumptions and environment prerequisites explicitly.
 * You have access to external resources and should actively use available tools to try accessing them first, rather than claiming you can’t access something without making an attempt.""",
-}
-
-
-class ModelSpecificSection:
-    """``<IMPORTANT>`` -- selects the family + variant guidance for the model."""
-
-    name = "model_specific"
-    cache_tier = CacheTier.STATIC
+    }
 
     def guard(self, ctx: PromptContext) -> bool:
         return bool(ctx.model_family)
@@ -419,8 +431,8 @@ class ModelSpecificSection:
         family = ctx.model_family or ""
         variant = str(ctx.template_kwargs.get("model_variant") or "")
         body = (
-            _IMPORTANT_BY_FAMILY.get(family, "")
-            + _IMPORTANT_BY_VARIANT.get(variant, "")
+            self._IMPORTANT_BY_FAMILY.get(family, "")
+            + self._IMPORTANT_BY_VARIANT.get(variant, "")
         ).strip()
         if not body:
             return None
