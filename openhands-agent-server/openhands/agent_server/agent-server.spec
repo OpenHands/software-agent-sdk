@@ -8,6 +8,7 @@ import os
 import site
 import sys
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_submodules,
     collect_data_files,
     copy_metadata,
@@ -16,6 +17,58 @@ from PyInstaller.utils.hooks import (
 # GNU strip on Windows PE files (notably python3XX.dll) can corrupt the binary
 # and cause LoadLibrary to fail at runtime with "Invalid access to memory location".
 IS_WINDOWS = sys.platform == "win32"
+
+# Optional Vertex AI bundle. google-cloud-aiplatform is an opt-in extra
+# (`openhands-sdk[vertex]`) and is NOT bundled in the default agent-server
+# build. To produce a binary that supports `vertex_ai/*` partner models
+# (MiniMax, Qwen, Kimi MaaS endpoints):
+#
+#   - Docker:    docker build --build-arg ENABLE_VERTEX=1 ...
+#   - From src:  uv sync --frozen --dev --no-editable --extra boto3 --extra vertex
+#                uv run pyinstaller .../agent-server.spec
+#
+# When `vertexai` is importable we use collect_all(...) for the Vertex SDK
+# and its google.cloud.* namespace siblings: the imports happen inside
+# function bodies AND traverse PEP-420 google.cloud namespace packages, so
+# collect_submodules alone misses everything below the namespace root.
+# collect_all walks the actual installed dirs.
+import importlib.util as _vertex_importlib_util
+
+_VERTEX_AVAILABLE = _vertex_importlib_util.find_spec("vertexai") is not None
+
+_vertex_pkgs = (
+    "vertexai",
+    "google.cloud.aiplatform",
+    "google.cloud.aiplatform_v1",
+    "google.cloud.aiplatform_v1beta1",
+    "google.cloud.bigquery",
+    "google.cloud.storage",
+    "google.cloud.resourcemanager",
+    "google.api_core",
+    "google.auth",
+    "google.rpc",
+    "google.genai",
+    "proto",
+    "grpc_status",
+)
+_vertex_datas = []
+_vertex_binaries = []
+_vertex_hiddenimports = []
+if _VERTEX_AVAILABLE:
+    for _pkg in _vertex_pkgs:
+        _d, _b, _h = collect_all(_pkg)
+        _vertex_datas += _d
+        _vertex_binaries += _b
+        _vertex_hiddenimports += _h
+    # google.rpc.status_pb2 is a gRPC proto stub imported dynamically; only pin
+    # it when the SDK is actually present.
+    _vertex_hiddenimports.append("google.rpc.status_pb2")
+else:
+    print(
+        "[agent-server.spec] vertexai not installed; "
+        "skipping Vertex AI bundle collection. "
+        "Install openhands-sdk[vertex] before building to include it."
+    )
 
 # Get the project root directory (current working directory when running PyInstaller)
 project_root = Path.cwd()
@@ -64,7 +117,10 @@ def get_fakeredis_data():
 a = Analysis(
     [ENTRY],
     pathex=PATHEX,
-    binaries=[],
+    binaries=[
+        # Vertex AI SDK binaries (collected via collect_all above)
+        *_vertex_binaries,
+    ],
     datas=[
         # Third-party packages that ship data
         *collect_data_files("tiktoken"),
@@ -99,6 +155,9 @@ a = Analysis(
         *copy_metadata("openhands-workspace"),
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
+
+        # Vertex AI SDK datas (collected via collect_all above)
+        *_vertex_datas,
     ],
     hiddenimports=[
         # Pull all OpenHands modules from the namespace (PEP 420 safe once pathex is correct)
@@ -117,6 +176,10 @@ a = Analysis(
         # rich._unicode_data.unicodeX_Y_Z is imported dynamically based on
         # unicodedata.unidata_version (e.g. unicode17_0_0 on Python 3.13).
         *collect_submodules("rich"),
+
+        # Vertex AI SDK hidden imports (collected via collect_all above; empty
+        # if openhands-sdk[vertex] is not installed in the build env).
+        *_vertex_hiddenimports,
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",
