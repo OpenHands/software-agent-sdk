@@ -7,6 +7,13 @@ reproduces ``AgentBase.static_system_message``. The dynamic-tier sections
 """
 
 from openhands.sdk.context.prompts.registry import PromptRegistry
+from openhands.sdk.context.prompts.sections.dynamic import (
+    AvailableSkillsSection,
+    CustomSecretsSection,
+    CustomSuffixSection,
+    DateTimeSection,
+    RepoContextSection,
+)
 from openhands.sdk.context.prompts.sections.static import (
     BrowserSection,
     CodeQualitySection,
@@ -51,4 +58,10 @@ def build_default_registry() -> PromptRegistry:
     r.register(TroubleshootingSection())
     r.register(ProcessManagementSection())
     r.register(ModelSpecificSection())  # guard: model_family resolved
+    # dynamic tier -- ported from system_message_suffix.j2 (#3610)
+    r.register(DateTimeSection())
+    r.register(RepoContextSection())  # guard: gated repo skills present
+    r.register(AvailableSkillsSection())  # guard: available_skills_prompt
+    r.register(CustomSuffixSection())  # guard: system_message_suffix
+    r.register(CustomSecretsSection())  # guard: secret_infos present
     return r

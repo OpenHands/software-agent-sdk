@@ -9,12 +9,24 @@ single-blank policy is the only normalized difference.
 
 import re
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final
+from uuid import uuid4
 
 import pytest
 
+from openhands.sdk.agent import Agent
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts.default_registry import build_default_registry
 from openhands.sdk.context.prompts.section import Platform, PromptContext
+from openhands.sdk.context.prompts.sections.dynamic import (
+    AvailableSkillsSection,
+    CustomSecretsSection,
+    CustomSuffixSection,
+    DateTimeSection,
+    RepoContextSection,
+)
 from openhands.sdk.context.prompts.sections.static import (
     BrowserSection,
     EfficiencySection,
@@ -23,17 +35,34 @@ from openhands.sdk.context.prompts.sections.static import (
     SecurityRiskAssessmentSection,
     SecuritySection,
 )
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.llm import LLM
+from openhands.sdk.skills import KeywordTrigger, Skill
+from openhands.sdk.workspace import LocalWorkspace
 
-from .test_prompt_snapshot import MATRIX, PLATFORM_CELL, Cell, _build_agent
+from .test_prompt_snapshot import (
+    DYNAMIC_CONTEXT,
+    FAMILY_MODELS,
+    MATRIX,
+    PLATFORM_CELL,
+    Cell,
+    _build_agent,
+)
 
 
-# Collapse only inter-section gaps: a closing tag, 3+ newlines, an opening tag.
-# Within-body blank runs aren't preceded by `</TAG>`, so they're untouched.
-_GUARDED_GAP: Final[re.Pattern[str]] = re.compile(r"(</[A-Z_]+>)\n{3,}(<[A-Z_]+>)")
+# The registry joins sections with one blank line; the legacy templates leave 2-5
+# from un-trimmed `{% if %}`/`{% for %}` tags. Collapse runs of 3+ newlines that
+# adjoin a tag (closing tag before, or opening tag after) -- i.e. the inter-section
+# gaps. Within-section runs touch no tag (the SRA tiers, REPO_CONTEXT's `[BEGIN`
+# loop), so they survive; the dynamic custom-suffix gaps adjoin exactly one tag and
+# are still caught.
+_GAP_AFTER_CLOSE: Final[re.Pattern[str]] = re.compile(r"(</[A-Z_]+>)\n{3,}")
+_GAP_BEFORE_OPEN: Final[re.Pattern[str]] = re.compile(r"\n{3,}(<[A-Z_]+>)")
 
 
 def _canonical_gaps(text: str) -> str:
-    return _GUARDED_GAP.sub(r"\1\n\n\2", text)
+    text = _GAP_AFTER_CLOSE.sub(r"\1\n\n", text)
+    return _GAP_BEFORE_OPEN.sub(r"\n\n\1", text)
 
 
 @pytest.mark.parametrize("cell", MATRIX, ids=[c.id for c in MATRIX])
@@ -58,7 +87,8 @@ def test_registry_static_matches_legacy_windows(
 
 
 def test_default_registry_is_all_static() -> None:
-    # No dynamic-tier sections are registered yet, so the dynamic block is empty.
+    # With no dynamic data in the context, every dynamic section guards off, so the
+    # dynamic block is empty.
     ctx = _ctx(
         security_policy_filename="security_policy.j2",
         llm_security_analyzer=True,
@@ -140,3 +170,148 @@ def test_model_specific_omitted_without_matching_body() -> None:
     assert section.guard(_ctx()) is False  # no model family resolved
     # Family resolved but no model_specific body -> nothing to add.
     assert section.render(_ctx(model_family="meta_llama")) is None
+
+
+# --- dynamic tier: byte-for-byte vs the legacy suffix renderer -------------------
+
+
+@pytest.mark.parametrize("cell", MATRIX, ids=[c.id for c in MATRIX])
+def test_registry_dynamic_matches_legacy(cell: Cell) -> None:
+    agent = _build_agent(cell)
+    ctx = agent._build_prompt_context()
+    registry = build_default_registry().build(ctx).dynamic or ""
+    assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
+
+
+def test_registry_dynamic_matches_legacy_with_secret_registry(tmp_path: Path) -> None:
+    # get_dynamic_context(state) merges secrets from state.secret_registry -- the
+    # <CUSTOM_SECRETS> path the bare dynamic_context property does not exercise.
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(llm=llm, tools=[], agent_context=DYNAMIC_CONTEXT)
+    state = ConversationState(
+        id=uuid4(),
+        agent=agent,
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+    )
+    state.secret_registry.update_secrets({"GITHUB_TOKEN": "unused-in-snapshot"})
+
+    additional = state.secret_registry.get_secret_infos()
+    ctx = agent._build_prompt_context(additional_secret_infos=additional)
+    registry = build_default_registry().build(ctx).dynamic or ""
+    legacy = agent.get_dynamic_context(state) or ""
+    assert _canonical_gaps(registry) == _canonical_gaps(legacy)
+
+
+# --- dynamic tier: per-section unit tests ---------------------------------------
+
+
+def test_datetime_section() -> None:
+    section = DateTimeSection()
+    assert section.guard(PromptContext(now="2025-01-01T00:00:00+00:00")) is True
+    assert section.guard(PromptContext()) is False
+    assert section.render(PromptContext(now="2025-01-01T00:00:00+00:00")) == (
+        "<CURRENT_DATETIME>\n"
+        "The current date and time is: 2025-01-01T00:00:00+00:00\n"
+        "</CURRENT_DATETIME>"
+    )
+
+
+def test_repo_context_section() -> None:
+    section = RepoContextSection()
+    assert section.guard(PromptContext()) is False
+    ctx = PromptContext(repo_skills=(("claude", "Anthropic-only repo guidance."),))
+    out = section.render(ctx) or ""
+    assert out.startswith("<REPO_CONTEXT>") and out.endswith("</REPO_CONTEXT>")
+    assert "<UNTRUSTED_CONTENT>" in out
+    assert "[BEGIN context from [claude]]" in out
+    assert "Anthropic-only repo guidance." in out
+
+
+def test_available_skills_section() -> None:
+    section = AvailableSkillsSection()
+    assert section.guard(PromptContext()) is False
+    ctx = PromptContext(
+        available_skills_prompt="<available_skills>X</available_skills>"
+    )
+    out = section.render(ctx) or ""
+    assert out.startswith("<SKILLS>") and out.endswith("</SKILLS>")
+    assert "invoke_skill" in out
+    assert "<available_skills>X</available_skills>" in out
+
+
+def test_custom_suffix_section() -> None:
+    section = CustomSuffixSection()
+    assert section.guard(PromptContext()) is False
+    assert section.guard(PromptContext(custom_suffix="   ")) is False
+    ctx = PromptContext(custom_suffix="Follow the repository's coding conventions.")
+    assert section.render(ctx) == "Follow the repository's coding conventions."
+
+
+def test_custom_secrets_section() -> None:
+    section = CustomSecretsSection()
+    assert section.guard(PromptContext()) is False
+    out = section.render(PromptContext(secret_infos=(("GITHUB_TOKEN", None),))) or ""
+    assert out.startswith("<CUSTOM_SECRETS>") and out.endswith("</CUSTOM_SECRETS>")
+    assert "* **$GITHUB_TOKEN**" in out
+    described = (
+        section.render(PromptContext(secret_infos=(("API_KEY", "prod key"),))) or ""
+    )
+    assert "* **$API_KEY** - prod key" in described
+
+
+def test_dynamic_sections_render_into_dynamic_block() -> None:
+    ctx = PromptContext(
+        now="2025-01-01T00:00:00+00:00",
+        custom_suffix="Follow conventions.",
+        secret_infos=(("GITHUB_TOKEN", None),),
+    )
+    blocks = build_default_registry().build(ctx)
+    assert "<CURRENT_DATETIME>" in (blocks.dynamic or "")
+    assert "<CUSTOM_SECRETS>" in (blocks.dynamic or "")
+    assert "Follow conventions." in (blocks.dynamic or "")
+    assert "<CURRENT_DATETIME>" not in blocks.static
+
+
+def test_registry_dynamic_matches_legacy_with_available_skills() -> None:
+    # Triggered skills land in <available_skills>/<SKILLS> -- the section the matrix
+    # (legacy trigger=None skills -> REPO_CONTEXT) does not cover. Mirrors the
+    # test_agent_context block assertions, asserted against registry output.
+    agent_context = AgentContext(
+        skills=[
+            Skill(
+                name="pdf-tools",
+                content="Extract text from PDF files using pdftotext.",
+                description="Extract text from PDF files.",
+                source="pdf-tools.md",
+                trigger=KeywordTrigger(keywords=["pdf", "extract"]),
+            ),
+        ],
+        current_datetime="2025-01-01T00:00:00+00:00",
+    )
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(llm=llm, tools=[], agent_context=agent_context)
+    ctx = agent._build_prompt_context()
+    registry = build_default_registry().build(ctx).dynamic or ""
+    assert "<SKILLS>" in registry
+    assert "<name>pdf-tools</name>" in registry
+    assert "<location>" not in registry  # invoke_skill is the only entry point
+    assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
+
+
+def test_build_prompt_context_rounds_datetime_to_minute() -> None:
+    # A datetime object is defensively rounded down to the minute; a pre-formatted
+    # string passes through unchanged (the snapshot matrix path).
+    dt = datetime(2025, 1, 1, 12, 34, 56, 789000, tzinfo=UTC)
+    agent = Agent(
+        llm=LLM(model="claude-sonnet-4-5", usage_id="x"),
+        tools=[],
+        agent_context=AgentContext(current_datetime=dt),
+    )
+    assert agent._build_prompt_context().now == "2025-01-01T12:34:00+00:00"
+
+    agent_str = Agent(
+        llm=LLM(model="claude-sonnet-4-5", usage_id="x"),
+        tools=[],
+        agent_context=AgentContext(current_datetime="2025-01-01T00:00:30+00:00"),
+    )
+    assert agent_str._build_prompt_context().now == "2025-01-01T00:00:30+00:00"

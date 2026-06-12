@@ -8,6 +8,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
@@ -51,6 +52,15 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+
+
+def _round_to_minute(value: datetime | str | None) -> str | None:
+    """Format ``current_datetime`` for the prompt, defensively rounded down to the
+    minute so sub-minute jitter can't fragment the dynamic block (#3606). Strings
+    are pre-formatted and pass through unchanged."""
+    if isinstance(value, datetime):
+        return value.replace(second=0, microsecond=0).isoformat()
+    return value
 
 
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
@@ -472,26 +482,55 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_variant"] = spec.variant
         return template_kwargs
 
-    def _build_prompt_context(self) -> PromptContext:
+    def _build_prompt_context(
+        self,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> PromptContext:
         """Frozen :class:`PromptContext` snapshot for this agent.
 
         ``template_kwargs`` is resolved by the shared
         :meth:`_resolved_template_kwargs`; the other fields snapshot
-        per-conversation signals.
+        per-conversation signals. The dynamic-tier fields reuse
+        ``AgentContext._resolve_dynamic_data`` so skills are model-gated and
+        secrets merged exactly as ``get_system_message_suffix`` does;
+        ``additional_secret_infos`` mirrors ``get_dynamic_context(state)``.
         """
         agent_context = self.agent_context
+        now: str | None = None
+        skill_names: tuple[str, ...] = ()
+        secret_names: tuple[str, ...] = ()
+        repo_skills: tuple[tuple[str, str], ...] = ()
+        available_skills_prompt: str | None = None
+        custom_suffix: str | None = None
+        secret_infos: tuple[tuple[str, str | None], ...] = ()
+
         if agent_context is not None:
-            now = agent_context.get_formatted_datetime()
+            data = agent_context._resolve_dynamic_data(
+                self.llm.model,
+                self.llm.model_canonical_name,
+                additional_secret_infos,
+            )
+            now = _round_to_minute(agent_context.current_datetime)
             skill_names = tuple(skill.name for skill in agent_context.skills)
             secret_names = tuple(
                 info["name"]
                 for info in agent_context.get_secret_infos()
                 if info["name"] is not None
             )
-        else:
-            now = None
-            skill_names = ()
-            secret_names = ()
+            repo_skills = tuple((s.name, s.content) for s in data.repo_skills)
+            available_skills_prompt = data.available_skills_prompt or None
+            custom_suffix = agent_context.system_message_suffix or None
+            secret_infos = tuple(
+                (info["name"] or "", info["description"]) for info in data.secret_infos
+            )
+        elif additional_secret_infos:
+            # No agent_context, but conversation secrets still feed CUSTOM_SECRETS
+            # (mirrors get_dynamic_context's temp-context path).
+            secret_infos = tuple(
+                (info["name"] or "", info["description"])
+                for info in additional_secret_infos
+            )
+            secret_names = tuple(name for name, _ in secret_infos)
 
         return PromptContext(
             template_kwargs=self._resolved_template_kwargs(),
@@ -501,6 +540,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             now=now,
             skill_names=skill_names,
             secret_names=secret_names,
+            repo_skills=repo_skills,
+            available_skills_prompt=available_skills_prompt,
+            custom_suffix=custom_suffix,
+            secret_infos=secret_infos,
         )
 
     @property

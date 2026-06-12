@@ -6,6 +6,13 @@ unit-tests in isolation. The static tier (ported from ``system_prompt.j2``) live
 in :mod:`.static`.
 """
 
+from openhands.sdk.context.prompts.sections.dynamic import (
+    AvailableSkillsSection,
+    CustomSecretsSection,
+    CustomSuffixSection,
+    DateTimeSection,
+    RepoContextSection,
+)
 from openhands.sdk.context.prompts.sections.static import (
     BrowserSection,
     CodeQualitySection,
@@ -28,8 +35,12 @@ from openhands.sdk.context.prompts.sections.static import (
 
 
 __all__ = [
+    "AvailableSkillsSection",
     "BrowserSection",
     "CodeQualitySection",
+    "CustomSecretsSection",
+    "CustomSuffixSection",
+    "DateTimeSection",
     "EfficiencySection",
     "EnvironmentSetupSection",
     "ExternalServicesSection",
@@ -39,6 +50,7 @@ __all__ = [
     "ProblemSolvingSection",
     "ProcessManagementSection",
     "PullRequestsSection",
+    "RepoContextSection",
     "RoleSection",
     "SecurityRiskAssessmentSection",
     "SecuritySection",
