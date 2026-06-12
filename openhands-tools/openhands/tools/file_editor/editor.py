@@ -2,7 +2,6 @@ import base64
 import mimetypes
 import os
 import re
-import shutil
 import tempfile
 from pathlib import Path
 from typing import get_args
@@ -463,11 +462,48 @@ class FileEditor:
         """
         self.validate_file(path)
         try:
-            # Use open with encoding instead of path.write_text
-            with open(path, "w", encoding=encoding) as f:
-                f.write(file_text)
+            self._atomic_write(path, file_text, encoding)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
+
+    def _atomic_write(self, path: Path, file_text: str, encoding: str) -> None:
+        """Write file_text to path atomically, never leaving a truncated file.
+
+        The content is written to a temporary file in the same directory and then
+        moved into place with os.replace, so a failed write can never destroy the
+        original file. If the file's detected encoding cannot represent the new
+        content, fall back to UTF-8 so an edit may add characters (arrows, emoji,
+        CJK, ...) the original single-byte encoding lacks, instead of failing and
+        truncating the file.
+        """
+        write_encoding = encoding
+        try:
+            file_text.encode(encoding)
+        except UnicodeEncodeError:
+            write_encoding = self._encoding_manager.default_encoding
+            if encoding.lower().replace("_", "-") not in ("utf-8", "utf8"):
+                logger.warning(
+                    f"Detected encoding '{encoding}' cannot represent the new "
+                    f"content for {path}; writing as '{write_encoding}' instead."
+                )
+
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        os.close(fd)
+        try:
+            # Preserve the original file's permission bits when it already exists.
+            if path.exists():
+                os.chmod(tmp_name, os.stat(path).st_mode & 0o7777)
+            with open(tmp_name, "w", encoding=write_encoding) as f:
+                f.write(file_text)
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     @with_encoding
     def insert(
@@ -501,33 +537,31 @@ class FileEditor:
 
         new_str_lines = new_str.split("\n")
 
-        # Create temporary file for the new content
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding=encoding, delete=False
-        ) as temp_file:
-            # Copy lines before insert point and save them for history
-            history_lines = []
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i > insert_line:
-                        break
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Build the new content in memory, then write it atomically. Routing the
+        # write through write_file reuses the same atomic, encoding-safe path as
+        # every other edit (no truncation, UTF-8 fallback for new characters).
+        new_lines: list[str] = []
+        history_lines: list[str] = []
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i > insert_line:
+                    break
+                new_lines.append(line)
+                history_lines.append(line)
 
-            # Insert new content
-            for line in new_str_lines:
-                temp_file.write(line + "\n")
+        # Insert new content
+        for line in new_str_lines:
+            new_lines.append(line + "\n")
 
-            # Copy remaining lines and save them for history
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i <= insert_line:
-                        continue
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Copy remaining lines and save them for history
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i <= insert_line:
+                    continue
+                new_lines.append(line)
+                history_lines.append(line)
 
-        # Move temporary file to original location
-        shutil.move(temp_file.name, path)
+        self.write_file(path, "".join(new_lines))
 
         # Read just the snippet range
         start_line = max(0, insert_line - SNIPPET_CONTEXT_WINDOW)

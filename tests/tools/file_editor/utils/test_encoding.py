@@ -367,6 +367,73 @@ def test_insert_non_utf8_file(temp_non_utf8_file):
         pytest.fail("File was not saved with the correct encoding")
 
 
+def test_str_replace_unencodable_char_preserves_file_and_upgrades_to_utf8(
+    temp_non_utf8_file,
+):
+    """Regression: editing a non-UTF-8 file with a character that encoding cannot
+    represent (e.g. an arrow) must NOT truncate/destroy the file. It should be
+    written as UTF-8 instead."""
+    result = file_editor(
+        command="str_replace",
+        path=str(temp_non_utf8_file),
+        old_str="numbers = [1, 2, 3, 4, 5]",
+        new_str="numbers = [1, 2, 3, 4, 5]  # status \u2192 done",
+    )
+
+    data = temp_non_utf8_file.read_bytes()
+    assert len(data) > 0, "file was truncated/destroyed by a failed write"
+    text = data.decode("utf-8")  # file must now be valid UTF-8
+    assert "\u2192" in text
+    # Original (previously cp1251) content is preserved.
+    assert "Привет, мир!" in text
+    assert result.text is not None and "\u2192" in result.text
+
+
+def test_insert_unencodable_char_preserves_file_and_upgrades_to_utf8(
+    temp_non_utf8_file,
+):
+    """Regression: inserting a character the file encoding cannot represent must
+    not destroy the file and must succeed by upgrading to UTF-8."""
+    result = file_editor(
+        command="insert",
+        path=str(temp_non_utf8_file),
+        insert_line=4,
+        new_str="arrow = '\u2192'",
+    )
+
+    data = temp_non_utf8_file.read_bytes()
+    assert len(data) > 0
+    text = data.decode("utf-8")
+    assert "\u2192" in text
+    assert "Привет, мир!" in text
+    assert result.text is not None and "\u2192" in result.text
+
+
+def test_write_failure_leaves_original_file_intact(temp_non_utf8_file, monkeypatch):
+    """Regression: a failure during the write must leave the original file
+    untouched (atomic write) and not leave a stray temp file behind."""
+    before = temp_non_utf8_file.read_bytes()
+
+    def boom(src, dst):
+        raise OSError("simulated os.replace failure")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    result = file_editor(
+        command="str_replace",
+        path=str(temp_non_utf8_file),
+        old_str="numbers = [1, 2, 3, 4, 5]",
+        new_str="numbers = [9, 9, 9]",
+    )
+
+    assert result.is_error is True
+    assert temp_non_utf8_file.read_bytes() == before
+    leftovers = list(
+        temp_non_utf8_file.parent.glob(f".{temp_non_utf8_file.name}.*.tmp")
+    )
+    assert leftovers == [], f"stray temp files left behind: {leftovers}"
+
+
 def test_create_non_utf8_file():
     """Test creating a new file with non-UTF-8 content."""
     # Create a temporary path
