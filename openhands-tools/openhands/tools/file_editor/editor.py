@@ -3,6 +3,8 @@ import mimetypes
 import os
 import re
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
@@ -40,6 +42,15 @@ logger = get_logger(__name__)
 
 # Supported image extensions for viewing as base64-encoded content
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def _is_encodable(text: str, encoding: str) -> bool:
+    """Return True if text can be encoded with the given encoding."""
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 class FileEditor:
@@ -478,34 +489,29 @@ class FileEditor:
         UTF-8.
         """
         default = self._encoding_manager.default_encoding
-        tmp_path: Path | None = None
-        try:
-            try:
-                tmp_path = self._write_temp_file(path, file_text, encoding)
-            except UnicodeEncodeError:
-                if encoding == default:
-                    raise
-                logger.warning(
-                    f"Detected encoding '{encoding}' cannot represent the new "
-                    f"content for {path}; writing as '{default}' instead."
-                )
-                tmp_path = self._write_temp_file(path, file_text, default)
+        if encoding != default and not _is_encodable(file_text, encoding):
+            logger.warning(
+                f"Detected encoding '{encoding}' cannot represent the new content "
+                f"for {path}; writing as '{default}' instead."
+            )
+            encoding = default
 
+        with self._temp_file(path, file_text, encoding) as tmp_path:
             # Preserve the original file's permission bits when it already exists.
             if path.exists():
                 os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
             Path.replace(tmp_path, path)
-        except BaseException:
-            if tmp_path is not None:
-                tmp_path.unlink(missing_ok=True)
-            raise
 
-    def _write_temp_file(self, path: Path, file_text: str, encoding: str) -> Path:
-        """Write file_text to a fresh temp file beside path and return its Path.
+    @contextmanager
+    def _temp_file(
+        self, path: Path, file_text: str, encoding: str
+    ) -> Iterator[Path]:
+        """Write file_text to a fresh temp file beside path and yield its Path.
 
-        On any failure the temp file is closed and then removed before the error is
-        re-raised, so a failed encode leaves no stray file behind. The unlink runs
-        after the file is closed because Windows cannot delete an open file.
+        The temp file is removed on any failure (write, chmod or replace), so the
+        original file is never destroyed and no stray temp file is left behind. The
+        unlink runs after the file is closed because Windows cannot delete an open
+        file.
         """
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
@@ -519,10 +525,10 @@ class FileEditor:
         try:
             with tmp:
                 tmp.write(file_text)
+            yield tmp_path
         except BaseException:
             tmp_path.unlink(missing_ok=True)
             raise
-        return tmp_path
 
     @with_encoding
     def insert(
