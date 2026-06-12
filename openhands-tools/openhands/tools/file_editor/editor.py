@@ -503,23 +503,25 @@ class FileEditor:
     def _write_temp_file(self, path: Path, file_text: str, encoding: str) -> Path:
         """Write file_text to a fresh temp file beside path and return its Path.
 
-        On any failure the partially written temp file is removed before the error
-        is re-raised, so a failed encode never leaves a stray file behind.
+        On any failure the temp file is closed and then removed before the error is
+        re-raised, so a failed encode leaves no stray file behind. The unlink runs
+        after the file is closed because Windows cannot delete an open file.
         """
-        with tempfile.NamedTemporaryFile(
+        tmp = tempfile.NamedTemporaryFile(
             mode="w",
             dir=path.parent,
             prefix=f".{path.name}.",
             suffix=".tmp",
             encoding=encoding,
             delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
-            try:
+        )
+        tmp_path = Path(tmp.name)
+        try:
+            with tmp:
                 tmp.write(file_text)
-            except BaseException:
-                tmp_path.unlink(missing_ok=True)
-                raise
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
         return tmp_path
 
     @with_encoding
