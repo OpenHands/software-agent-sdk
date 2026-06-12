@@ -19,7 +19,6 @@ from starlette.requests import Request
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -317,7 +316,6 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
-    api_router.include_router(cloud_proxy_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
@@ -508,8 +506,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Log 5xx errors at error level. HTTPException is intentionally
         # raised flow control — the route picked this status and detail
         # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips (e.g. a 502 from
-        # /api/cloud-proxy when the cloud is unreachable) look
+        # `exc.detail` and makes routine upstream blips look
         # indistinguishable from a process crash. Unhandled exceptions
         # still get a full traceback via _unhandled_exception_handler
         # above. Include the traceback only when DEBUG is on, as an
