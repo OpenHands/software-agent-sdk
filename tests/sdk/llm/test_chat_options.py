@@ -1,7 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.options.chat_options import select_chat_options
 
 
@@ -18,7 +19,7 @@ class DummyLLM:
     litellm_extra_body: dict[str, Any] | None = None
     # Align with LLM default; only emitted for models that support it
     prompt_cache_retention: str | None = "24h"
-    _prompt_cache_key: str | None = None
+    _call_context: LLMCallContext = field(default_factory=LLMCallContext)
     openrouter_site_url: str = ""
     openrouter_app_name: str = ""
 
@@ -198,7 +199,7 @@ def test_extended_thinking_budget_clamped_below_max_tokens():
 def test_chat_options_forwards_prompt_cache_key_when_set():
     """Regression test for #2904."""
     llm = LLM(model="gpt-4o")
-    llm._prompt_cache_key = "conv-abc123"
+    llm._call_context = LLMCallContext(prompt_cache_key="conv-abc123")
     assert (
         select_chat_options(llm, user_kwargs={}, has_tools=True).get("prompt_cache_key")
         == "conv-abc123"

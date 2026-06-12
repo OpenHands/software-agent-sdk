@@ -8,6 +8,7 @@ import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 import httpx  # noqa: F401
@@ -192,6 +193,27 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 )
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
+
+@dataclass(frozen=True)
+class LLMCallContext:
+    """Per-conversation state threaded through the completion call chain.
+
+    The primary path threads this explicitly:
+    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
+    → ``select_chat_options(call_context=...)``.
+
+    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
+    (via ``_bind_conversation_context``) for callers that don't thread
+    context explicitly (e.g. the condenser's dedicated LLM).  The
+    PrivateAttr is:
+    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
+    * shallow-copied by ``model_copy()`` (sub-agent),
+    * never serialised into user-visible config.
+    """
+
+    prompt_cache_key: str | None = None
+    session_id: str | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -522,7 +544,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
-    _prompt_cache_key: str | None = PrivateAttr(default=None)
+    _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
     _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
@@ -941,6 +963,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -956,7 +979,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         formatted_messages = self.format_messages_for_llm(messages)
         return self._finalize_completion_params(
-            formatted_messages, tools, add_security_risk_prediction, kwargs
+            formatted_messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     async def _aprepare_completion_params(
@@ -965,6 +992,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -980,7 +1008,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         formatted_messages = await self.aformat_messages_for_llm(messages)
         return self._finalize_completion_params(
-            formatted_messages, tools, add_security_risk_prediction, kwargs
+            formatted_messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     def _finalize_completion_params(
@@ -989,6 +1021,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1038,7 +1071,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
         has_tools_flag = bool(cc_tools) and use_native_fc
         # Behavior-preserving: delegate to select_chat_options
-        call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
+        call_kwargs = select_chat_options(
+            self, kwargs, has_tools=has_tools_flag, call_context=call_context
+        )
 
         # 3a) joint input/output budget clamp (e.g. Bedrock-Anthropic)
         call_kwargs = self._clamp_max_tokens_for_joint_budget(
@@ -1081,6 +1116,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1103,6 +1139,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store,
             add_security_risk_prediction,
             kwargs,
+            call_context=call_context,
         )
 
     async def _aprepare_responses_params(
@@ -1113,6 +1150,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1134,6 +1172,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store,
             add_security_risk_prediction,
             kwargs,
+            call_context=call_context,
         )
 
     def _finalize_responses_params(
@@ -1145,6 +1184,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1175,7 +1215,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Normalize/override Responses kwargs consistently
         call_kwargs = select_responses_options(
-            self, kwargs, include=include, store=store
+            self, kwargs, include=include, store=store, call_context=call_context
         )
 
         # Request context for telemetry (always include context_window for metrics)
@@ -1251,6 +1291,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -1308,7 +1349,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = self._prepare_completion_params(
-            messages, tools, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1357,6 +1402,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1371,6 +1417,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`completion`.
@@ -1399,7 +1446,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = await self._aprepare_completion_params(
-            messages, tools, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1451,6 +1502,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1467,6 +1519,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
@@ -1510,7 +1563,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = self._prepare_responses_params(
-            messages, tools, include, store, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1601,6 +1660,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1617,6 +1677,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`responses`.
@@ -1646,7 +1707,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = await self._aprepare_responses_params(
-            messages, tools, include, store, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1741,6 +1808,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )

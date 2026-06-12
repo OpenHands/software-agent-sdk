@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from abc import abstractmethod
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import (
     Field,
@@ -14,6 +17,10 @@ from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.deprecation import warn_deprecated
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 logger = get_logger(__name__)
@@ -55,6 +62,7 @@ class RouterLLM(LLM):
         return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -95,6 +103,7 @@ class RouterLLM(LLM):
             tools=tools,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
+            call_context=call_context,
             **kwargs,
         )
 

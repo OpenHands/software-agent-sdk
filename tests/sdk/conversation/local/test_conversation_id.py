@@ -83,4 +83,4 @@ def test_conversation_pins_llm_prompt_cache_key_to_id():
     """Regression test for #2904."""
     agent = ConversationIdDummyAgent()
     conversation = Conversation(agent=agent)
-    assert agent.llm._prompt_cache_key == str(conversation.id)
+    assert agent.llm._call_context.prompt_cache_key == str(conversation.id)

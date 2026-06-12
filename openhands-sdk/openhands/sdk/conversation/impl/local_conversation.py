@@ -47,6 +47,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -151,6 +152,7 @@ class LocalConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        prompt_cache_key: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -197,6 +199,9 @@ class LocalConversation(BaseConversation):
                   tool; the executor returns an acknowledgment and the real
                   execution is expected to be handled by a callback/consumer
                   (e.g. a frontend) observing the emitted ActionEvent.
+            prompt_cache_key: Override for the prompt-cache shard key. Defaults
+                to the conversation's own ID. Sub-conversations set this to
+                the parent's ID to share the same cache shard.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -204,6 +209,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -264,7 +270,7 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
-        self._pin_prompt_cache_key()
+        self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -492,11 +498,11 @@ class LocalConversation(BaseConversation):
         """
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
-        # its own object graph. Required because __init__ mutates
-        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
-        # agent would clobber the source conversation's cache key.
-        # Round-trip via JSON avoids thread-lock pickling issues with
-        # model_copy(deep=True).
+        # its own object graph. Required because __init__ binds
+        # per-conversation call context on the LLM (#2917, #3443): a
+        # shared/aliased agent would clobber the source conversation's
+        # context. Round-trip via JSON avoids thread-lock pickling issues
+        # with model_copy(deep=True).
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
@@ -810,7 +816,9 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
-                self._pin_session_affinity_header(llm)
+                # Rebinds the primary LLM (harmless, same values) and
+                # binds any additional LLMs (e.g. condenser).
+                self._bind_conversation_context(llm)
 
             self._agent_ready = True
 
@@ -824,27 +832,32 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
-    def _pin_prompt_cache_key(self) -> None:
-        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
-        # Skip if a key is already set: sub-agent LLMs inherit the parent's
-        # via model_copy, and overwriting would put each sub-agent on its own
-        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
-        if self.agent.llm._prompt_cache_key is None:
-            self.agent.llm._prompt_cache_key = str(self._state.id)
+    def get_llm_call_context(self) -> LLMCallContext:
+        """Build an :class:`LLMCallContext` for this conversation.
 
-    def _pin_session_affinity_header(self, llm: LLM) -> None:
-        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
-
-        Note: if a caller passes ``extra_headers`` as a kwarg directly to
-        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
-        entirely — the same limitation that affects OpenRouter headers.
+        The ``prompt_cache_key`` uses the override supplied at construction
+        (for sub-agent cache-shard sharing) or defaults to the conversation's
+        own ID.  ``session_id`` is always the conversation's ID.
         """
-        existing = llm.extra_headers or {}
-        if "x-litellm-session-id" not in existing:
-            llm.extra_headers = {
-                "x-litellm-session-id": str(self._state.id),
-                **existing,
-            }
+        conv_id = str(self._state.id)
+        return LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+        )
+
+    def _bind_conversation_context(self, llm: LLM) -> None:
+        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
+
+        This sets the LLM's ``_call_context`` so that callers who don't
+        thread an explicit ``call_context`` through the completion call
+        (e.g. the condenser's dedicated LLM) still get correct per-
+        conversation state.  The primary agent completion path threads
+        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
+        → ``llm.completion(call_context=...)``.
+
+        See #3443 for background.
+        """
+        llm._call_context = self.get_llm_call_context()
 
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
@@ -875,8 +888,7 @@ class LocalConversation(BaseConversation):
         with lock:
             self.agent = self.agent.model_copy(update={"llm": new_llm})
             self._state.agent = self.agent
-            self._pin_prompt_cache_key()
-            self._pin_session_affinity_header(new_llm)
+            self._bind_conversation_context(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.

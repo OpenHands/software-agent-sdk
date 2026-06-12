@@ -77,6 +77,7 @@ from openhands.sdk.tool import (
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
@@ -584,6 +585,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
+        # Build per-conversation context once and thread it through all
+        # LLM calls in this step (avoids shared mutable state on the LLM).
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
@@ -608,6 +613,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
+                call_context=call_context,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -725,6 +731,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = await aprepare_llm_messages(
@@ -748,6 +756,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
+                call_context=call_context,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")

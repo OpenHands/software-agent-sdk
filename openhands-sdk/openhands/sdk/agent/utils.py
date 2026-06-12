@@ -31,6 +31,7 @@ from openhands.sdk.tool import Action, ToolDefinition
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.llm.streaming import AnyTokenCallbackType
 
 
@@ -575,6 +576,7 @@ def make_llm_completion(
     messages: list[Message],
     tools: list[ToolDefinition] | None = None,
     on_token: ConversationTokenCallbackType | None = None,
+    call_context: LLMCallContext | None = None,
 ) -> LLMResponse:
     """Make an LLM completion call with the provided messages and tools.
 
@@ -583,6 +585,7 @@ def make_llm_completion(
         messages: The messages to send to the LLM
         tools: Optional list of tools to provide to the LLM
         on_token: Optional callback for streaming token updates
+        call_context: Per-conversation context for cache/session affinity.
 
     Returns:
         LLMResponse from the LLM completion call
@@ -607,6 +610,7 @@ def make_llm_completion(
             store=False,
             add_security_risk_prediction=True,
             on_token=on_token,
+            call_context=call_context,
         )
     else:
         return llm.completion(
@@ -614,6 +618,7 @@ def make_llm_completion(
             tools=tools or [],
             add_security_risk_prediction=True,
             on_token=on_token,
+            call_context=call_context,
         )
 
 
@@ -657,6 +662,7 @@ async def amake_llm_completion(
     messages: list[Message],
     tools: list[ToolDefinition] | None = None,
     on_token: AnyTokenCallbackType | None = None,
+    call_context: LLMCallContext | None = None,
 ) -> LLMResponse:
     """Async variant of :func:`make_llm_completion`."""
     if llm.uses_responses_api():
@@ -667,6 +673,7 @@ async def amake_llm_completion(
             store=False,
             add_security_risk_prediction=True,
             on_token=on_token,
+            call_context=call_context,
         )
     else:
         return await llm.acompletion(
@@ -674,4 +681,5 @@ async def amake_llm_completion(
             tools=tools or [],
             add_security_risk_prediction=True,
             on_token=on_token,
+            call_context=call_context,
         )
