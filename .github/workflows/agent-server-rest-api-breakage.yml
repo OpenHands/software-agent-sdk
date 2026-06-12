@@ -30,8 +30,7 @@ jobs:
 
             - name: Install oasdiff
               run: |
-                  OASDIFF_VERSION=1.18.6
-                  curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | version="${OASDIFF_VERSION}" sh
+                  curl -L https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin
                   oasdiff --version
 
             - name: Run agent server REST API breakage check
