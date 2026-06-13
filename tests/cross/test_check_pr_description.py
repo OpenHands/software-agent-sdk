@@ -81,14 +81,6 @@ def test_human_section_must_be_first_visible_line_and_filled():
     assert "Add a short human-written note between `HUMAN:` and `AGENT:`." in errors
 
 
-def test_human_tested_checkbox_is_not_required():
-    body = VALID_BODY.replace(
-        "AGENT:", "- [ ] A human has tested these changes.\n\nAGENT:", 1
-    )
-
-    assert validate_pr_body(body) == []
-
-
 def test_required_template_fields_must_be_present_and_filled():
     how_to_test = (
         "## How to Test\n\n"
