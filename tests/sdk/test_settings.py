@@ -886,6 +886,31 @@ def test_acp_create_agent_uses_server_default_command(
         "@agentclientprotocol/claude-agent-acp@0.30.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
+    # The authoritative provider key is carried onto the agent.
+    assert agent.acp_server == "claude-code"
+
+
+def test_acp_create_agent_carries_provider_key() -> None:
+    """``create_agent`` stamps the provider key onto the agent for every choice.
+
+    ``acp_command`` does not reliably reverse-map to a provider, so the key must
+    ride the agent (and thus ``ConversationInfo.agent``) for consumers to resolve
+    a brand label / model list. Custom carries through verbatim; an agent built
+    directly (not from settings) defaults to ``None``; and the key survives a
+    serialization round-trip through the ``AgentBase`` discriminated union.
+    """
+    for server in ("claude-code", "codex", "gemini-cli", "custom"):
+        kwargs: dict[str, Any] = {"acp_server": server}
+        if server == "custom":
+            kwargs["acp_command"] = ["my-acp"]
+        agent = ACPAgentSettings(**kwargs).create_agent()
+        assert agent.acp_server == server
+
+    assert ACPAgent(acp_command=["x"]).acp_server is None
+
+    agent = ACPAgentSettings(acp_server="gemini-cli").create_agent()
+    reloaded = ACPAgent.model_validate_json(agent.model_dump_json())
+    assert reloaded.acp_server == "gemini-cli"
 
 
 def test_acp_resolve_command_for_known_servers(
