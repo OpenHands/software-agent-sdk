@@ -6,10 +6,11 @@ import json
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TypeGuard
+from typing import Any, TypeGuard
 
 from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
@@ -27,6 +28,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -47,6 +49,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
+from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -126,6 +129,7 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    _subscription_disabled_condenser: Any | None
 
     def __init__(
         self,
@@ -151,6 +155,8 @@ class LocalConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -192,11 +198,14 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            user_id: Optional user ID to associate with observability traces
             client_tools: Optional list of client-defined tool specs. Each spec
                   is registered and injected into the agent so it can call the
                   tool; the executor returns an acknowledgment and the real
                   execution is expected to be handled by a callback/consumer
                   (e.g. a frontend) observing the emitted ActionEvent.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -213,6 +222,7 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
+        self._subscription_disabled_condenser = None
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -372,7 +382,13 @@ class LocalConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         atexit.register(self.close)
-        self._start_observability_span(str(desired_id), user_id=user_id)
+        self._start_observability_span(
+            str(desired_id),
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
         self.delete_on_close = delete_on_close
 
     def _recover_persisted_client_tools(
@@ -846,6 +862,34 @@ class LocalConversation(BaseConversation):
                 **existing,
             }
 
+    def _condenser_for_switched_llm(
+        self,
+        current_llm: LLM,
+        new_llm: LLM,
+    ) -> CondenserBase | None:
+        condenser = self.agent.condenser
+        if not isinstance(condenser, LLMSummarizingCondenser):
+            return condenser
+
+        current_config = current_llm.model_dump(
+            mode="json",
+            context={"expose_secrets": True},
+            exclude={"usage_id"},
+        )
+        condenser_config = condenser.llm.model_dump(
+            mode="json",
+            context={"expose_secrets": True},
+            exclude={"usage_id"},
+        )
+        if condenser_config != current_config:
+            return condenser
+
+        condenser_llm = new_llm.model_copy(
+            update={"usage_id": condenser.llm.usage_id},
+        )
+        condenser_llm.reset_metrics()
+        return condenser.model_copy(update={"llm": condenser_llm})
+
     def switch_llm(self, llm: LLM) -> None:
         """Swap the agent's LLM to the given object.
 
@@ -860,7 +904,7 @@ class LocalConversation(BaseConversation):
         try:
             new_llm = self.llm_registry.get(llm.usage_id)
         except KeyError:
-            new_llm = llm
+            new_llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(new_llm)
         # A switch_llm tool runs on a worker thread while run()/arun() holds the
         # state lock across the agent step on another thread, blocked awaiting
@@ -873,7 +917,23 @@ class LocalConversation(BaseConversation):
         skip_lock = self._step_holds_state_lock and not self._state.owned()
         lock = contextlib.nullcontext() if skip_lock else self._state
         with lock:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            update: dict[str, object] = {"llm": new_llm}
+            if new_llm.is_subscription:
+                if self.agent.condenser is not None:
+                    self._subscription_disabled_condenser = self.agent.condenser
+                update["condenser"] = None
+            elif (
+                self.agent.condenser is None
+                and self._subscription_disabled_condenser is not None
+            ):
+                update["condenser"] = self._subscription_disabled_condenser
+                self._subscription_disabled_condenser = None
+            else:
+                update["condenser"] = self._condenser_for_switched_llm(
+                    self.agent.llm,
+                    new_llm,
+                )
+            self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
             self._pin_session_affinity_header(new_llm)

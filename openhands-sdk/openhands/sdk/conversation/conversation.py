@@ -9,6 +9,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -83,6 +84,8 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -109,6 +112,8 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -135,6 +140,8 @@ class Conversation:
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -190,6 +197,8 @@ class Conversation:
                 tags=effective_tags if effective_tags else None,
                 user_id=user_id,
                 client_tools=client_tools,
+                observability_metadata=observability_metadata,
+                observability_tags=observability_tags,
             )
 
         return LocalConversation(
@@ -210,4 +219,6 @@ class Conversation:
             tags=tags,
             user_id=user_id,
             client_tools=client_tools,
+            observability_metadata=observability_metadata,
+            observability_tags=observability_tags,
         )

@@ -7130,6 +7130,39 @@ class TestMcpConfigToAcpServers:
             ("Authorization", "Bearer y")
         ]
 
+    def test_http_auth_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer token-y")
+        ]
+
+    def test_http_auth_does_not_override_authorization_header(self):
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "headers": {"authorization": "Bearer explicit"},
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("authorization", "Bearer explicit")
+        ]
+
     def test_sse_gated_on_capability(self):
         from acp.schema import SseMcpServer
 

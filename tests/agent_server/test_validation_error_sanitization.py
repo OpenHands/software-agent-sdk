@@ -165,6 +165,20 @@ class TestSanitizeValidationErrors:
         assert inp["x_session_id"] == "<redacted>"
         assert inp["name"] == "safe_value"
 
+    def test_stringifies_value_error_context(self):
+        """ValueError in ctx should not break JSONResponse rendering."""
+        errors = [
+            {
+                "type": "value_error",
+                "loc": ["body", "observability_metadata"],
+                "msg": "Value error, bad metadata",
+                "input": {"nested": {"bad": True}},
+                "ctx": {"error": ValueError("bad metadata")},
+            }
+        ]
+        result = _sanitize_validation_errors(errors)
+        assert result[0]["ctx"]["error"] == "bad metadata"
+
     def test_empty_errors_list(self):
         """An empty error list should return an empty list."""
         assert _sanitize_validation_errors([]) == []

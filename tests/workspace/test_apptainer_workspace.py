@@ -22,7 +22,9 @@ def mock_apptainer_workspace(tmp_path):
     ):
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
 
-        def _create_workspace(*, enable_gpu: bool = False):
+        def _create_workspace(
+            *, enable_gpu: bool = False, extra_bind_mounts: list[str] | None = None
+        ):
             with (
                 patch.object(ApptainerWorkspace, "_start_container"),
                 patch.object(ApptainerWorkspace, "_wait_for_health"),
@@ -32,6 +34,7 @@ def mock_apptainer_workspace(tmp_path):
                     host_port=8000,
                     detach_logs=False,
                     enable_gpu=enable_gpu,
+                    extra_bind_mounts=extra_bind_mounts or [],
                 )
 
             return workspace, mock_exec
@@ -81,6 +84,30 @@ def test_apptainer_workspace_gpu_passthrough_flag(
     assert run_cmd[:2] == ["apptainer", "run"]
     assert ("--nv" in run_cmd) is enable_gpu
     assert workspace._sif_path in run_cmd
+
+    workspace._process = None
+    workspace._instance_name = None
+
+
+def test_apptainer_workspace_extra_bind_mounts(mock_apptainer_workspace, monkeypatch):
+    """Test that explicit and environment-provided bind mounts reach Apptainer."""
+    monkeypatch.setenv("OPENHANDS_APPTAINER_EXTRA_BINDS", "/env/src:/env/dst:ro")
+    workspace, _ = mock_apptainer_workspace(
+        extra_bind_mounts=["/host/tokenizer:/host/tokenizer:ro"]
+    )
+
+    fake_process = Mock(stdout=None)
+    with patch(
+        "openhands.workspace.apptainer.workspace.subprocess.Popen",
+        return_value=fake_process,
+    ) as mock_popen:
+        workspace._start_container()
+
+    run_cmd = mock_popen.call_args.args[0]
+
+    assert "--bind" in run_cmd
+    assert "/host/tokenizer:/host/tokenizer:ro" in run_cmd
+    assert "/env/src:/env/dst:ro" in run_cmd
 
     workspace._process = None
     workspace._instance_name = None

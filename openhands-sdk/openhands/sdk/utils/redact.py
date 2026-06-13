@@ -138,6 +138,34 @@ def http_error_log_content(response: httpx.Response) -> str | dict:
         return f"<non-JSON response body omitted ({body_len} chars)>"
 
 
+def redact_url_credentials(url: str) -> str:
+    """Redact credentials embedded in a URL (e.g. https://user:token@host).
+
+    Replaces the ``user:password`` or bare-token portion before the ``@`` with
+    ``****`` so the URL is safe for logs, error messages, and persisted state.
+    SSH URLs (``git@host``) and credential-free URLs are returned unchanged.
+
+    Args:
+        url: A URL that may contain embedded credentials.
+
+    Returns:
+        URL with the credential portion replaced by ``****``, or the original
+        URL if no embedded credentials are found.
+
+    Examples:
+        >>> redact_url_credentials("https://oauth2:SECRET@gitlab.com/repo.git")
+        'https://****@gitlab.com/repo.git'
+        >>> redact_url_credentials("https://github.com/owner/repo.git")
+        'https://github.com/owner/repo.git'
+        >>> redact_url_credentials("git@github.com:owner/repo.git")
+        'git@github.com:owner/repo.git'
+    """
+    match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
+    if match:
+        return f"{match.group(1)}****@{match.group(3)}"
+    return url
+
+
 def redact_url_params(url: str) -> str:
     """Redact sensitive query parameter values from a URL string.
 

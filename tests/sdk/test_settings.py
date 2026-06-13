@@ -211,6 +211,20 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
 
 
+def test_conversation_settings_validates_observability_metadata() -> None:
+    settings = ConversationSettings(observability_metadata={"repo": "OpenHands/sdk"})
+    assert settings.observability_metadata == {"repo": "OpenHands/sdk"}
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata={"": "missing-key"})
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata=[])  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_tags=[1, 2])  # type: ignore[list-item]
+
+
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(
         max_iterations=42,
@@ -1708,3 +1722,279 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
     assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
     assert agent.agent_kind == "acp"
+
+
+def test_llm_subscription_fields_roundtrip() -> None:
+    settings = validate_agent_settings(
+        {
+            "llm": {
+                "model": "gpt-5.2-codex",
+                "auth_type": "subscription",
+                "subscription_vendor": "openai",
+            }
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.llm.auth_type == "subscription"
+    assert settings.llm.subscription_vendor == "openai"
+    dumped = settings.model_dump(mode="json", exclude_none=True)
+    assert dumped["llm"]["auth_type"] == "subscription"
+    assert dumped["llm"]["subscription_vendor"] == "openai"
+    assert "api_key" not in dumped["llm"]
+
+
+def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    original_llm = LLM(
+        model="gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm = LLM(model="openai/gpt-5.2-codex")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm is original_llm
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    agent = OpenHandsAgentSettings(llm=original_llm).create_agent()
+
+    assert agent.llm is runtime_llm
+    assert agent.llm.is_subscription is True
+
+
+def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.from_persisted(
+        {
+            "model": "gpt-5.2-codex",
+            "auth_type": "subscription",
+            "subscription_vendor": "openai",
+            "schema_version": 1,
+        }
+    )
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        assert llm.model == "gpt-5.2-codex"
+        return runtime_llm
+
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
+    monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.load_from_env()
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+
+    class UnexpectedAuth:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("runtime subscription LLM should not be rehydrated")
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
+    runtime_llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm._is_subscription = True
+
+    assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+@pytest.mark.asyncio
+async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        async def refresh_if_needed(self):
+            return credentials
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("async transport must not sync-refresh credentials")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+
+    api_key, extra_headers = await llm._aget_litellm_auth_values()
+    assert api_key == "access-token"
+    assert extra_headers["chatgpt-account-id"] == "account-id"
+    assert llm.extra_headers is None
+
+
+def test_sync_subscription_api_key_uses_valid_runtime_credentials(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("valid runtime credentials should not sync-refresh")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+    llm._subscription_credentials = credentials
+
+    api_key, extra_headers = llm._get_litellm_auth_values()
+    assert api_key == "access-token"
+    assert extra_headers["chatgpt-account-id"] == "account-id"
+    assert llm.extra_headers is None
+
+
+def test_openai_subscription_create_llm_serializes_subscription_auth(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+    monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
+
+    llm = OpenAISubscriptionAuth().create_llm(
+        model="gpt-5.2-codex",
+        credentials=OAuthCredentials(
+            vendor="openai",
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_at=4_102_444_800_000,
+        ),
+        usage_id="profile:test",
+    )
+
+    assert llm.auth_type == "subscription"
+    assert llm.subscription_vendor == "openai"
+    assert llm.api_key is None
+    assert llm.to_persisted()["auth_type"] == "subscription"
+    assert llm.to_persisted()["subscription_vendor"] == "openai"
+    assert "api_key" not in llm.to_persisted(context={"expose_secrets": "plaintext"})
+    assert "base_url" not in llm.to_persisted()
+
+
+def test_create_subscription_llm_from_config_preserves_non_auth_options(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    captured: dict[str, object] = {}
+
+    class FakeAuth:
+        def refresh_if_needed_sync(self):
+            return OAuthCredentials(
+                vendor="openai",
+                access_token="access-token",
+                refresh_token="refresh-token",
+                expires_at=4_102_444_800_000,
+            )
+
+        def create_llm(self, **kwargs):
+            captured.update(kwargs)
+            return LLM(
+                model=f"openai/{kwargs['model']}",
+                auth_type="subscription",
+                subscription_vendor="openai",
+                usage_id=kwargs["usage_id"],
+                timeout=kwargs["timeout"],
+            )
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    source = LLM(
+        model="gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+        usage_id="profile:test",
+        timeout=123,
+    )
+
+    runtime = openai_auth.create_subscription_llm_from_config(source)
+
+    assert runtime.usage_id == "profile:test"
+    assert runtime.timeout == 123
+    assert captured["usage_id"] == "profile:test"
+    assert captured["timeout"] == 123
+    assert "api_key" not in captured
+    assert "base_url" not in captured

@@ -36,6 +36,10 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilityTags,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.openhands_provider import (
@@ -783,6 +787,16 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Repository selected for the conversation.",
     )
+    observability_metadata: ConversationObservabilityMetadata | None = Field(
+        default=None,
+        exclude=True,
+        description="Trace-level metadata for observability backends.",
+    )
+    observability_tags: ConversationObservabilityTags | None = Field(
+        default=None,
+        exclude=True,
+        description="Tags for the conversation root observability span.",
+    )
 
     # --- persisted fields ---------------------------------------------------
     max_iterations: int = Field(
@@ -903,6 +917,10 @@ class ConversationSettings(BaseModel):
             payload.setdefault("plugins", self.plugins)
         if self.hook_config is not None:
             payload.setdefault("hook_config", self.hook_config)
+        if self.observability_metadata is not None:
+            payload.setdefault("observability_metadata", self.observability_metadata)
+        if self.observability_tags is not None:
+            payload.setdefault("observability_tags", self.observability_tags)
 
         # --- persisted defaults ---------------------------------------------
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())
@@ -1100,6 +1118,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent = settings.create_agent()
         """
         from openhands.sdk.agent import Agent
+        from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
@@ -1112,13 +1131,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
+        llm = create_subscription_llm_from_config(self.llm)
+        condenser = None if llm.is_subscription else self.build_condenser(llm)
         return Agent(
-            llm=self.llm,
+            llm=llm,
             tools=self.tools,
             mcp_config=mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
-            condenser=self.build_condenser(self.llm),
+            condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,
         )

@@ -329,31 +329,42 @@ async def _request_device_code() -> DeviceCode:
     )
 
 
+async def _poll_device_code_once(device_code: DeviceCode) -> dict[str, Any] | None:
+    """Poll once for an OpenAI device login result.
+
+    Returns ``None`` while authorization is still pending.
+    """
+    async with AsyncClient() as client:
+        response = await client.post(
+            f"{ISSUER}/api/accounts/deviceauth/token",
+            json={
+                "device_auth_id": device_code.device_auth_id,
+                "user_code": device_code.user_code,
+            },
+            headers={"Content-Type": "application/json"},
+        )
+
+    if response.is_success:
+        return response.json()
+
+    if response.status_code in (403, 404):
+        return None
+
+    raise RuntimeError(f"Device auth failed with status {response.status_code}")
+
+
 async def _poll_device_code(device_code: DeviceCode) -> dict[str, Any]:
     """Poll until OpenAI issues an authorization code for a device login."""
     deadline = time.monotonic() + DEVICE_CODE_TIMEOUT_SECONDS
 
-    async with AsyncClient() as client:
-        while time.monotonic() < deadline:
-            response = await client.post(
-                f"{ISSUER}/api/accounts/deviceauth/token",
-                json={
-                    "device_auth_id": device_code.device_auth_id,
-                    "user_code": device_code.user_code,
-                },
-                headers={"Content-Type": "application/json"},
-            )
+    while time.monotonic() < deadline:
+        token_response = await _poll_device_code_once(device_code)
+        if token_response is not None:
+            return token_response
 
-            if response.is_success:
-                return response.json()
-
-            if response.status_code in (403, 404):
-                await asyncio.sleep(
-                    min(device_code.interval, max(0, deadline - time.monotonic()))
-                )
-                continue
-
-            raise RuntimeError(f"Device auth failed with status {response.status_code}")
+        await asyncio.sleep(
+            min(device_code.interval, max(0, deadline - time.monotonic()))
+        )
 
     raise RuntimeError("Device auth timed out after 15 minutes")
 
@@ -362,6 +373,23 @@ async def _refresh_access_token(refresh_token: str) -> dict[str, Any]:
     """Refresh the access token using a refresh token."""
     async with AsyncClient() as client:
         response = await client.post(
+            f"{ISSUER}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": CLIENT_ID,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if not response.is_success:
+            raise RuntimeError(f"Token refresh failed: {response.status_code}")
+        return response.json()
+
+
+def _refresh_access_token_sync(refresh_token: str) -> dict[str, Any]:
+    """Synchronously refresh the access token using a refresh token."""
+    with Client() as client:
+        response = client.post(
             f"{ISSUER}/oauth/token",
             data={
                 "grant_type": "refresh_token",
@@ -480,6 +508,24 @@ class OpenAISubscriptionAuth:
             expires_in=tokens.get("expires_in", 3600),
         )
         return updated
+
+    def refresh_if_needed_sync(self) -> OAuthCredentials | None:
+        """Synchronously refresh credentials if they are expired."""
+        creds = self.get_credentials()
+        if creds is None:
+            return None
+
+        if not creds.is_expired():
+            return creds
+
+        logger.info("Refreshing OpenAI access token")
+        tokens = _refresh_access_token_sync(creds.refresh_token)
+        return self._credential_store.update_tokens(
+            vendor=self.vendor,
+            access_token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            expires_in=tokens.get("expires_in", 3600),
+        )
 
     async def login(
         self,
@@ -623,6 +669,22 @@ class OpenAISubscriptionAuth:
         finally:
             await runner.cleanup()
 
+    async def start_device_login(self) -> DeviceCode:
+        """Start a device-code OAuth login flow without polling."""
+        return await _request_device_code()
+
+    async def poll_device_login(
+        self, device_code: DeviceCode, *, persist: bool = True
+    ) -> OAuthCredentials | None:
+        """Poll once for a device-code OAuth login result.
+
+        Returns ``None`` while authorization is still pending.
+        """
+        code_response = await _poll_device_code_once(device_code)
+        if code_response is None:
+            return None
+        return await self._complete_device_login(code_response, persist=persist)
+
     async def _login_with_device_code(self) -> OAuthCredentials:
         """Perform device-code OAuth login flow."""
         device_code = await _request_device_code()
@@ -640,6 +702,15 @@ class OpenAISubscriptionAuth:
         )
 
         code_response = await _poll_device_code(device_code)
+        return await self._complete_device_login(code_response)
+
+    async def _complete_device_login(
+        self, code_response: dict[str, Any], *, persist: bool = True
+    ) -> OAuthCredentials:
+        """Exchange a completed device auth response.
+
+        Optionally persists credentials after the exchange succeeds.
+        """
         try:
             authorization_code = code_response["authorization_code"]
             code_verifier = code_response["code_verifier"]
@@ -659,9 +730,18 @@ class OpenAISubscriptionAuth:
             refresh_token=tokens["refresh_token"],
             expires_at=expires_at,
         )
-        self._credential_store.save(credentials)
+        if persist:
+            self.save_credentials(credentials)
         logger.info("OpenAI device-code login successful")
         return credentials
+
+    def save_credentials(self, credentials: OAuthCredentials) -> None:
+        """Persist OpenAI subscription credentials."""
+        self._credential_store.save(credentials)
+
+    def extract_chatgpt_account_id(self, credentials: OAuthCredentials) -> str | None:
+        """Return the ChatGPT account id for request headers, if present."""
+        return _extract_chatgpt_account_id(credentials.access_token)
 
     def logout(self) -> bool:
         """Remove stored credentials.
@@ -733,12 +813,14 @@ class OpenAISubscriptionAuth:
         llm = LLM(
             model=f"openai/{model}",
             base_url=CODEX_API_ENDPOINT.rsplit("/", 1)[0],
-            api_key=creds.access_token,
+            api_key=None,
             extra_headers=extra_headers,
             litellm_extra_body=extra_body,
             temperature=None,
             max_output_tokens=None,
             stream=True,
+            auth_type="subscription",
+            subscription_vendor="openai",
             **llm_kwargs,
         )
         llm._is_subscription = True
@@ -746,6 +828,10 @@ class OpenAISubscriptionAuth:
         llm.max_output_tokens = None
         llm._effective_max_output_tokens = None
         llm.temperature = None
+        llm.auth_type = "subscription"
+        llm.subscription_vendor = "openai"
+        llm._subscription_credential_store = self._credential_store
+        llm._subscription_credentials = creds
         return llm
 
 
@@ -807,6 +893,50 @@ async def subscription_login_async(
     # Perform login
     creds = await auth.login(open_browser=open_browser, auth_method=auth_method)
     return auth.create_llm(model=model, credentials=creds, **llm_kwargs)
+
+
+def create_subscription_llm_from_config(llm: LLM) -> LLM:
+    """Create a runtime subscription LLM from a serialized LLM config."""
+    if getattr(llm, "auth_type", "api_key") != "subscription":
+        return llm
+    if llm.is_subscription:
+        return llm
+
+    vendor = llm.subscription_vendor or "openai"
+    if vendor != "openai":
+        raise ValueError(f"Unsupported subscription vendor: {vendor}")
+
+    model = llm.model
+    if model.startswith("openai/"):
+        model = model.removeprefix("openai/")
+
+    auth = OpenAISubscriptionAuth()
+    credentials = auth.refresh_if_needed_sync()
+    if credentials is None:
+        raise ValueError("OpenAI subscription login is required")
+
+    llm_kwargs = llm.model_dump(
+        exclude_none=True,
+        exclude_defaults=True,
+        exclude={
+            "model",
+            "api_key",
+            "base_url",
+            "auth_type",
+            "subscription_vendor",
+            "extra_headers",
+            "max_output_tokens",
+            "stream",
+            "temperature",
+        },
+    )
+    llm_kwargs["usage_id"] = llm.usage_id
+
+    return auth.create_llm(
+        model=model,
+        credentials=credentials,
+        **llm_kwargs,
+    )
 
 
 def subscription_login(

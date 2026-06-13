@@ -400,6 +400,10 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
         error = dict(error)  # shallow copy so we don't mutate the original
         if "input" in error:
             error["input"] = sanitize_dict(error["input"])
+        if isinstance(error.get("ctx"), dict) and isinstance(
+            error["ctx"].get("error"), Exception
+        ):
+            error["ctx"] = {**error["ctx"], "error": str(error["ctx"]["error"])}
         sanitized.append(error)
     return sanitized
 

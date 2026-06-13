@@ -204,7 +204,10 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     llm = auth.create_llm(model="gpt-5.2-codex")
 
     assert llm.model == "openai/gpt-5.2-codex"
-    assert llm.api_key is not None
+    assert llm.api_key is None
+    assert llm._get_litellm_api_key_value() == "test_access_token"
+    assert llm.auth_type == "subscription"
+    assert llm.subscription_vendor == "openai"
     assert llm.extra_headers is not None
     # Uses codex_cli_rs to match official Codex CLI for compatibility
     assert llm.extra_headers.get("originator") == "codex_cli_rs"

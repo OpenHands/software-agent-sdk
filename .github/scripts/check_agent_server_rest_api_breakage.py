@@ -574,6 +574,33 @@ _RESPONSE_ENUM_VALUE_ADDED_IDS = frozenset(
 _EXTENSIBLE_DISCRIMINATOR_PROPERTY_RE = re.compile(
     r"HookConfig\b.*\bhooks/items/type\b"
 )
+_ACCEPTED_CLOUD_PROXY_PATH_REMOVAL_ID = "api-path-removed-without-deprecation"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_PATH = "/api/cloud-proxy"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD = "post"
+_ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID = "cloud_proxy_api_cloud_proxy_post"
+
+
+def _is_accepted_cloud_proxy_removal(operation: dict) -> bool:
+    """Return True for the accepted /api/cloud-proxy removal from PR #3326."""
+    path = str(operation.get("path", ""))
+    method = str(operation.get("method", "")).lower()
+    return (
+        path == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
+        and method == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
+        and operation.get("deprecated", False) is False
+    )
+
+
+def _is_accepted_cloud_proxy_path_removal(change: dict) -> bool:
+    """Return True for oasdiff's accepted /api/cloud-proxy path-removal shape."""
+    return (
+        str(change.get("id", "")) == _ACCEPTED_CLOUD_PROXY_PATH_REMOVAL_ID
+        and str(change.get("path", "")) == _ACCEPTED_CLOUD_PROXY_REMOVAL_PATH
+        and str(change.get("operation", "")).lower()
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_METHOD
+        and str(change.get("operationId", ""))
+        == _ACCEPTED_CLOUD_PROXY_REMOVAL_OPERATION_ID
+    )
 
 
 def _is_additive_discriminator_enum_value(change: dict) -> bool:
@@ -815,6 +842,26 @@ def main() -> int:
             for change in other_breaking_changes
             if not _is_union_type_change_artifact(change)
         ]
+        accepted_cloud_proxy_removals = [
+            operation
+            for operation in removed_operations
+            if _is_accepted_cloud_proxy_removal(operation)
+        ]
+        removed_operations = [
+            operation
+            for operation in removed_operations
+            if not _is_accepted_cloud_proxy_removal(operation)
+        ]
+        accepted_cloud_proxy_path_removals = [
+            change
+            for change in other_breaking_changes
+            if _is_accepted_cloud_proxy_path_removal(change)
+        ]
+        other_breaking_changes = [
+            change
+            for change in other_breaking_changes
+            if not _is_accepted_cloud_proxy_path_removal(change)
+        ]
 
         removal_errors = _validate_removed_operations(
             removed_operations,
@@ -829,6 +876,14 @@ def main() -> int:
 
         for error in removal_errors + property_removal_errors:
             print(f"::error title={PYPI_DISTRIBUTION} REST API::{error}")
+
+        if accepted_cloud_proxy_removals or accepted_cloud_proxy_path_removals:
+            print(
+                f"\n::notice title={PYPI_DISTRIBUTION} REST API::"
+                "Accepted removal of POST /api/cloud-proxy. Maintainers "
+                "explicitly accepted this REST break in PR #3326, and that PR "
+                "is labeled release-note-required."
+            )
 
         if additive_response_oneof:
             print(
@@ -881,7 +936,8 @@ def main() -> int:
             print(
                 "Breaking changes are limited to previously-deprecated operations "
                 "or properties whose scheduled removal versions have been reached, "
-                "and/or additive response oneOf expansions."
+                "the accepted POST /api/cloud-proxy removal, and/or additive "
+                "response oneOf expansions."
             )
         else:
             return 1

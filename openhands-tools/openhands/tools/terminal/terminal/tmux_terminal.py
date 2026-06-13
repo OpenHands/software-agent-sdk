@@ -67,6 +67,10 @@ class TmuxTerminal(TerminalInterface):
             return
 
         env = sanitized_env()
+        # Disable interactive pagers (git, man, systemctl, ...) so commands that
+        # auto-launch `less` on a TTY don't capture the pane and wedge the session.
+        env.setdefault("GIT_PAGER", "cat")
+        env.setdefault("PAGER", "cat")
         # Use a dedicated socket to isolate OpenHands sessions from the user's tmux
         self.server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         _shell_command = "/bin/bash"

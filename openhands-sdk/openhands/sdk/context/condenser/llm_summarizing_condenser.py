@@ -105,6 +105,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         if self.max_tokens and agent_llm:
             total_tokens = get_total_token_count(view.events, agent_llm)
             if total_tokens > self.max_tokens:
+                logger.info(
+                    "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
+                    "events=%d",
+                    total_tokens,
+                    self.max_tokens,
+                    len(view),
+                )
                 reasons.add(Reason.TOKENS)
 
         # Reason 3: View exceeds maximum size in number of events.
@@ -122,12 +129,17 @@ class LLMSummarizingCondenser(RollingCondenser):
         if reasons == set():
             return None
 
-        # If the reasons are for resource constraints, we can treat it as a soft
-        # requirement. We want to condense when we can, but there's still space in the
-        # context window or we'd also see Reason.REQUEST. That means we can delay the
-        # condensation if there isn't one available (based on the view's manipulation
-        # indices).
-        resource_reasons = {Reason.TOKENS, Reason.EVENTS}
+        # Token pressure is a hard requirement in benchmark runs that use a fixed
+        # local model context: sending the next request can fail before the recovery
+        # path has a chance to run. Treat event-count pressure as soft because that
+        # threshold is only a history-management heuristic.
+        if Reason.TOKENS in reasons:
+            return CondensationRequirement.HARD
+
+        # If the remaining reasons are for resource constraints, we can treat them as
+        # a soft requirement. We want to condense when we can, but there's still space
+        # in the context window or we'd also see Reason.REQUEST.
+        resource_reasons = {Reason.EVENTS}
         if reasons.issubset(resource_reasons):
             return CondensationRequirement.SOFT
 
@@ -244,6 +256,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                     events=view.events[self.keep_first :],
                     llm=agent_llm,
                     token_reduction=tokens_to_reduce,
+                    base_events=view.events[: self.keep_first],
                 )
             )
 

@@ -415,6 +415,26 @@ def _extract_session_models(
 _ACPMcpServer = HttpMcpServer | SseMcpServer | McpServerStdio
 
 
+def _remote_mcp_headers(spec: dict[str, Any], name: str) -> list[HttpHeader]:
+    """Convert remote MCP headers/auth into ACP's header-only representation."""
+    raw_headers = spec.get("headers") or {}
+    headers = [HttpHeader(name=str(k), value=str(v)) for k, v in raw_headers.items()]
+
+    auth = spec.get("auth")
+    has_authorization = any(h.name.lower() == "authorization" for h in headers)
+    if auth and not has_authorization:
+        if isinstance(auth, str) and auth != "oauth":
+            headers.append(HttpHeader(name="Authorization", value=f"Bearer {auth}"))
+        else:
+            logger.warning(
+                "ACP MCP server %r uses unsupported remote MCP auth type %r; "
+                "only explicit headers or string bearer tokens can be forwarded",
+                name,
+                type(auth).__name__,
+            )
+    return headers
+
+
 def _mcp_config_to_acp_servers(
     mcp_config: dict[str, Any],
     mcp_capabilities: Any,
@@ -442,7 +462,9 @@ def _mcp_config_to_acp_servers(
     A remote server whose transport the ACP server does not advertise is dropped
     with a warning rather than failing init — one misconfigured server should
     not sink the whole conversation.  ``env`` / ``headers`` maps are converted
-    to the protocol's ``[{name, value}]`` list form; their values were already
+    to the protocol's ``[{name, value}]`` list form; string ``auth`` values are
+    forwarded as bearer ``Authorization`` headers when no explicit
+    ``Authorization`` header is already present.  Their values were already
     decrypted by :class:`AgentBase`'s ``mcp_config`` validator.
     """
     servers = mcp_config.get("mcpServers")
@@ -471,10 +493,7 @@ def _mcp_config_to_acp_servers(
                 )
             )
         elif url:
-            headers = [
-                HttpHeader(name=str(k), value=str(v))
-                for k, v in (spec.get("headers") or {}).items()
-            ]
+            headers = _remote_mcp_headers(spec, str(name))
             is_sse = str(spec.get("transport") or "http").lower() == "sse"
             if not (sse_ok if is_sse else http_ok):
                 logger.warning(

@@ -239,6 +239,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             label="API Key",
         ),
     )
+    auth_type: Literal["api_key", "subscription"] = Field(
+        default="api_key",
+        description="Authentication mode for the LLM.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="Authentication",
+        ),
+    )
+    subscription_vendor: Literal["openai"] | None = Field(
+        default=None,
+        description="Subscription provider for subscription-backed LLM access.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="Subscription provider",
+            depends_on=("auth_type",),
+        ),
+    )
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
@@ -521,6 +538,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _chat_template_tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
+    _subscription_credential_store: Any = PrivateAttr(default=None)
+    _subscription_credentials: Any = PrivateAttr(default=None)
     _litellm_provider: str | None = PrivateAttr(default=None)
     _prompt_cache_key: str | None = PrivateAttr(default=None)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
@@ -594,10 +613,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Tokenizer
         if self.custom_tokenizer:
-            self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
-            self._chat_template_tokenizer = self._load_required_chat_template_tokenizer(
+            self._chat_template_tokenizer = self._load_chat_template_tokenizer(
                 self.custom_tokenizer
             )
+            if self._chat_template_tokenizer is None:
+                try:
+                    self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
+                except Exception:
+                    logger.debug(
+                        "Unable to load LiteLLM tokenizer for %s",
+                        self.custom_tokenizer,
+                        exc_info=True,
+                    )
+                    self._tokenizer = None
 
         # Capabilities + model info
         self._init_model_info_and_caps()
@@ -740,11 +768,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         When an LLM is copied (e.g., to create a condenser LLM from an agent LLM),
         Pydantic's model_copy() does a shallow copy of private attributes by default,
         causing the original and copied LLM to share the same Metrics object.
-        This method allows the registry to fix this by resetting metrics to None,
-        which will be lazily recreated when accessed.
+        This method allows the registry to fix this by creating fresh metrics and
+        telemetry immediately, so the copied LLM is ready for the next completion
+        call even if callers do not access ``metrics``/``telemetry`` first.
         """
-        self._metrics = None
-        self._telemetry = None
+        self._metrics = Metrics(model_name=self.model)
+        self._telemetry = Telemetry(
+            model_name=self.model,
+            log_enabled=self.log_completions,
+            log_dir=self.log_completions_folder if self.log_completions else None,
+            input_cost_per_token=self.input_cost_per_token,
+            output_cost_per_token=self.output_cost_per_token,
+            metrics=self._metrics,
+        )
 
     def _handle_error(
         self,
@@ -848,17 +884,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         instructions: str | None,
         resp_tools: list[Any] | None,
         final_kwargs: dict[str, Any],
+        auth_values: tuple[str | None, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Build the shared kwargs dict for litellm_responses / litellm_aresponses."""
         typed_input: ResponseInputParam | str = (
             cast(ResponseInputParam, input_items) if input_items else ""
         )
+        api_key_value, subscription_headers = (
+            auth_values if auth_values is not None else self._get_litellm_auth_values()
+        )
+        if subscription_headers:
+            final_kwargs = {
+                **final_kwargs,
+                "extra_headers": {
+                    **(final_kwargs.get("extra_headers") or {}),
+                    **subscription_headers,
+                },
+            }
         return {
             **self._litellm_call_kwargs(),
             "input": typed_input,
             "instructions": instructions,
             "tools": resp_tools,
-            "api_key": self._get_litellm_api_key_value(),
+            "api_key": api_key_value,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
@@ -1050,11 +1098,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        assert self._telemetry is not None
+        telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
-        if self._telemetry.log_enabled:
+        if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
                     "messages": formatted_messages[:],  # already simple dicts
@@ -1181,11 +1229,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         # Always pass context_window so metrics are tracked even when
         # logging is disabled.
-        assert self._telemetry is not None
+        telemetry = self.telemetry
         telemetry_ctx: dict[str, Any] = {
             "context_window": self.effective_max_input_tokens or 0
         }
-        if self._telemetry.log_enabled:
+        if telemetry.log_enabled:
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
@@ -1659,8 +1707,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning)
+                    auth_values = await self._aget_litellm_auth_values()
                     litellm_kwargs = self._build_responses_call_kwargs(
-                        input_items, instructions, resp_tools, final_kwargs
+                        input_items,
+                        instructions,
+                        resp_tools,
+                        final_kwargs,
+                        auth_values=auth_values,
                     )
                     ret = await litellm_aresponses(**litellm_kwargs)
 
@@ -1772,19 +1825,79 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         return self._infer_litellm_provider()
 
-    def _get_litellm_api_key_value(self) -> str | None:
-        api_key_value: str | None = None
-        if self.api_key:
-            assert isinstance(self.api_key, SecretStr)
-            api_key_value = self.api_key.get_secret_value()
+    def _subscription_headers_from_credentials(
+        self, auth: Any, credentials: Any
+    ) -> dict[str, str]:
+        account_id = auth.extract_chatgpt_account_id(credentials)
+        if not account_id:
+            return {}
+        return {"chatgpt-account-id": account_id}
 
+    def _subscription_api_key_from_credentials(self, credentials: Any) -> str:
+        return credentials.access_token
+
+    def _normalize_litellm_api_key_value(self, api_key_value: str | None) -> str | None:
         # LiteLLM treats api_key for Bedrock as an AWS bearer token.
         # Passing a non-Bedrock key (e.g. OpenAI/Anthropic) can cause Bedrock
         # to reject the request with an "Invalid API Key format" error.
         # For IAM/SigV4 auth (the default Bedrock path), do not forward api_key.
         if api_key_value is not None and self._infer_litellm_provider() == "bedrock":
             return None
+        return api_key_value
 
+    def _get_litellm_auth_values(self) -> tuple[str | None, dict[str, str]]:
+        api_key_value: str | None = None
+        extra_headers: dict[str, str] = {}
+        if self.is_subscription:
+            from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+            auth = OpenAISubscriptionAuth(
+                credential_store=self._subscription_credential_store
+            )
+            credentials = self._subscription_credentials
+            if credentials is None or credentials.is_expired():
+                credentials = auth.refresh_if_needed_sync()
+            if credentials is None:
+                credentials = self._subscription_credentials
+            if credentials is None:
+                raise ValueError("OpenAI subscription login is required")
+            api_key_value = self._subscription_api_key_from_credentials(credentials)
+            extra_headers = self._subscription_headers_from_credentials(
+                auth, credentials
+            )
+        elif self.api_key:
+            assert isinstance(self.api_key, SecretStr)
+            api_key_value = self.api_key.get_secret_value()
+
+        return self._normalize_litellm_api_key_value(api_key_value), extra_headers
+
+    def _get_litellm_api_key_value(self) -> str | None:
+        api_key_value, _ = self._get_litellm_auth_values()
+        return api_key_value
+
+    async def _aget_litellm_auth_values(self) -> tuple[str | None, dict[str, str]]:
+        if not self.is_subscription:
+            return self._get_litellm_auth_values()
+
+        from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+        auth = OpenAISubscriptionAuth(
+            credential_store=self._subscription_credential_store
+        )
+        credentials = await auth.refresh_if_needed()
+        if credentials is None:
+            credentials = self._subscription_credentials
+        if credentials is None:
+            raise ValueError("OpenAI subscription login is required")
+        api_key_value = self._normalize_litellm_api_key_value(
+            self._subscription_api_key_from_credentials(credentials)
+        )
+        return api_key_value, self._subscription_headers_from_credentials(
+            auth, credentials
+        )
+
+    async def _aget_litellm_api_key_value(self) -> str | None:
+        api_key_value, _ = await self._aget_litellm_auth_values()
         return api_key_value
 
     @contextmanager
@@ -1822,6 +1935,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         *,
         messages: list[dict[str, Any]],
         enable_streaming: bool,
+        auth_values: tuple[str | None, dict[str, str]] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         """Build the keyword arguments for a litellm (a)completion call."""
@@ -1830,9 +1944,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # not silently discarded by litellm's streaming handler.
         if enable_streaming:
             kwargs.setdefault("stream_options", {"include_usage": True})
+        api_key_value, subscription_headers = (
+            auth_values if auth_values is not None else self._get_litellm_auth_values()
+        )
+        if subscription_headers:
+            kwargs["extra_headers"] = {
+                **(kwargs.get("extra_headers") or {}),
+                **subscription_headers,
+            }
         return {
             **self._litellm_call_kwargs(),
-            "api_key": self._get_litellm_api_key_value(),
+            "api_key": api_key_value,
             "api_version": self.api_version,
             "timeout": self.timeout,
             "drop_params": self.drop_params,
@@ -1878,10 +2000,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> ModelResponse:
         """Async variant of :meth:`_transport_call`."""
+        auth_values = await self._aget_litellm_auth_values()
         with self._transport_ctx():
             ret = await litellm_acompletion(
                 **self._prepare_transport_kwargs(
-                    messages=messages, enable_streaming=enable_streaming, **kwargs
+                    messages=messages,
+                    enable_streaming=enable_streaming,
+                    auth_values=auth_values,
+                    **kwargs,
                 )
             )
             if enable_streaming and on_token is not None:
@@ -2476,15 +2602,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if tokenizer is None or not hasattr(tokenizer, "apply_chat_template"):
             return None
 
-        template_messages = self._messages_for_chat_template(formatted_messages)
-        kwargs: dict[str, Any] = {
-            "tokenize": True,
-            "add_generation_prompt": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
-        return self._count_tokenized_output(tokenized, tokenizer)
+        try:
+            template_messages = self._messages_for_chat_template(formatted_messages)
+            kwargs: dict[str, Any] = {
+                "tokenize": True,
+                "add_generation_prompt": True,
+            }
+            if tools:
+                kwargs["tools"] = tools
+            tokenized = tokenizer.apply_chat_template(template_messages, **kwargs)
+            return self._count_tokenized_output(tokenized, tokenizer)
+        except Exception:
+            logger.warning(
+                "Chat-template token counting failed for %d messages and %d tools; "
+                "falling back to LiteLLM",
+                len(formatted_messages),
+                len(tools or []),
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _count_tokenized_output(tokenized: Any, tokenizer: Any) -> int:
@@ -2518,59 +2654,58 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         template_messages = copy.deepcopy(messages)
         for message in template_messages:
             content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            text_parts: list[str] = []
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "text":
-                    text_parts = []
-                    break
-                text_parts.append(str(block.get("text", "")))
-            if text_parts:
-                message["content"] = "".join(text_parts)
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "text":
+                        text_parts = []
+                        break
+                    text_parts.append(str(block.get("text", "")))
+                if text_parts:
+                    message["content"] = "".join(text_parts)
+
+            for tool_call in message.get("tool_calls") or []:
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                arguments = function.get("arguments")
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed_arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed_arguments, dict):
+                    function["arguments"] = parsed_arguments
         return template_messages
 
     @staticmethod
-    def _load_required_chat_template_tokenizer(identifier: str) -> Any:
+    def _load_chat_template_tokenizer(identifier: str) -> Any | None:
         try:
             transformers = importlib.import_module("transformers")
-        except ModuleNotFoundError as exc:
-            raise ModuleNotFoundError(
-                "LLM custom_tokenizer requires the `transformers` package so token "
-                "counts use the model chat template. Install `transformers` or "
-                "remove custom_tokenizer."
-            ) from exc
-        except Exception as exc:
-            raise RuntimeError(
-                "Unable to import `transformers` for custom_tokenizer chat-template "
-                "token counting."
-            ) from exc
+        except ModuleNotFoundError:
+            return None
+        except Exception:
+            logger.debug("Unable to import transformers", exc_info=True)
+            return None
 
         auto_tokenizer = getattr(transformers, "AutoTokenizer", None)
         if auto_tokenizer is None:
-            raise RuntimeError(
-                "`transformers.AutoTokenizer` is required for custom_tokenizer "
-                "chat-template token counting."
-            )
+            return None
 
         try:
             tokenizer = auto_tokenizer.from_pretrained(identifier)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Unable to load chat-template tokenizer for {identifier!r}."
-            ) from exc
+        except Exception:
+            logger.debug(
+                "Unable to load chat-template tokenizer for %s",
+                identifier,
+                exc_info=True,
+            )
+            return None
 
-        if not hasattr(tokenizer, "apply_chat_template"):
-            raise ValueError(
-                f"Tokenizer {identifier!r} does not support apply_chat_template; "
-                "custom_tokenizer requires chat-template token counting."
-            )
-        if not getattr(tokenizer, "chat_template", None):
-            raise ValueError(
-                f"Tokenizer {identifier!r} does not define a chat template; "
-                "custom_tokenizer requires chat-template token counting."
-            )
-        return tokenizer
+        if hasattr(tokenizer, "apply_chat_template"):
+            return tokenizer
+        return None
 
     @classmethod
     def from_persisted(cls, data: Any, *, context: dict[str, Any] | None = None) -> LLM:
@@ -2591,11 +2726,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         payload.pop("schema_version", None)
         payload = canonicalize_openhands_llm_payload(payload)
-        return cls.model_validate(payload, context=context)
+        llm = cls.model_validate(payload, context=context)
+        if llm.auth_type == "subscription":
+            from openhands.sdk.llm.auth.openai import (
+                create_subscription_llm_from_config,
+            )
+
+            return create_subscription_llm_from_config(llm)
+        return llm
 
     def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""
         data = self.model_dump(mode="json", exclude_none=True, context=context)
+        if data.get("auth_type") == "subscription":
+            data.pop("api_key", None)
+            data.pop("base_url", None)
+            data.pop("extra_headers", None)
         data["schema_version"] = LLM_PROFILE_SCHEMA_VERSION
         return data
 
@@ -2673,7 +2819,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             v = _cast_value(value, fields[field_name])
             if v is not None:
                 data[field_name] = v
-        return cls(**data)
+        llm = cls(**data)
+        if llm.auth_type == "subscription":
+            from openhands.sdk.llm.auth.openai import (
+                create_subscription_llm_from_config,
+            )
+
+            return create_subscription_llm_from_config(llm)
+        return llm
 
     @classmethod
     def subscription_login(
