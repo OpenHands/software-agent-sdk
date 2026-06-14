@@ -112,6 +112,8 @@ class LocalConversation(BaseConversation):
     _on_event: ConversationCallbackType
     _on_token: ConversationTokenCallbackType | None
     max_iteration_per_run: int
+    max_cost_per_run: float | None
+    max_input_tokens_per_run: int | None
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
@@ -142,6 +144,8 @@ class LocalConversation(BaseConversation):
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_cost_per_run: float | None = None,
+        max_input_tokens_per_run: int | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -180,7 +184,17 @@ class LocalConversation(BaseConversation):
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             hook_config: Optional hook configuration to auto-wire session hooks.
                 If plugins are loaded, their hooks are combined with this config.
-            max_iteration_per_run: Maximum number of iterations per run
+            max_iteration_per_run: Maximum number of iterations per run.
+            max_cost_per_run: Optional per-run cap on accumulated LLM cost,
+                in USD. When the agent loop observes a run cost greater than
+                or equal to this value, the conversation enters the ERROR
+                status and emits a ``MaxCostExceeded`` ``ConversationErrorEvent``.
+                ``None`` disables the cap.
+            max_input_tokens_per_run: Optional per-run cap on accumulated LLM
+                input tokens (``prompt_tokens`` only — completion and reasoning
+                tokens are excluded). On hit the conversation enters ERROR and
+                emits a ``MaxInputTokensExceeded`` event. ``None`` disables
+                the cap.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -328,6 +342,12 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
+        if max_cost_per_run is not None and max_cost_per_run <= 0:
+            raise ValueError("max_cost_per_run must be positive when set")
+        if max_input_tokens_per_run is not None and max_input_tokens_per_run <= 0:
+            raise ValueError("max_input_tokens_per_run must be positive when set")
+        self.max_cost_per_run = max_cost_per_run
+        self.max_input_tokens_per_run = max_input_tokens_per_run
 
         # Initialize stuck detector
         if stuck_detection:
@@ -449,6 +469,77 @@ class LocalConversation(BaseConversation):
     def conversation_stats(self):
         return self._state.stats
 
+    def _check_run_budgets(self) -> tuple[str, str] | None:
+        """Return ``(code, message)`` if a per-run budget is exceeded.
+
+        Compares the conversation's accumulated cost and input-token usage
+        against the configured ``max_cost_per_run`` and
+        ``max_input_tokens_per_run`` limits. Returns ``None`` when both
+        limits are unset or neither has been reached yet.
+
+        Cost is taken from
+        :py:meth:`ConversationStats.get_combined_metrics`, which sums
+        usage across every LLM registered on this conversation (agent,
+        condenser, critic, …). Input tokens are summed from the same
+        combined metrics' ``accumulated_token_usage.prompt_tokens``.
+        Cache-write tokens are *not* included because they are already a
+        component of ``prompt_tokens`` for providers that report them
+        separately, and including them would double-count caching writes.
+        """
+        if self.max_cost_per_run is None and self.max_input_tokens_per_run is None:
+            return None
+
+        metrics = self._state.stats.get_combined_metrics()
+
+        if (
+            self.max_cost_per_run is not None
+            and metrics.accumulated_cost >= self.max_cost_per_run
+        ):
+            return (
+                "MaxCostExceeded",
+                (
+                    f"Agent reached maximum cost per run "
+                    f"(${metrics.accumulated_cost:.2f} >= "
+                    f"${self.max_cost_per_run:.2f})."
+                ),
+            )
+
+        if self.max_input_tokens_per_run is not None:
+            prompt_tokens = (
+                metrics.accumulated_token_usage.prompt_tokens
+                if metrics.accumulated_token_usage is not None
+                else 0
+            )
+            if prompt_tokens >= self.max_input_tokens_per_run:
+                return (
+                    "MaxInputTokensExceeded",
+                    (
+                        f"Agent reached maximum input tokens per run "
+                        f"({prompt_tokens} >= {self.max_input_tokens_per_run})."
+                    ),
+                )
+
+        return None
+
+    def _emit_run_budget_exceeded(self, code: str, error_msg: str) -> None:
+        """Set ERROR status and emit a ConversationErrorEvent for a budget hit.
+
+        No-op when the conversation already finished on this iteration so a
+        successful tail-call is preserved (mirrors how
+        ``MaxIterationsReached`` is handled).
+        """
+        if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+            return
+        logger.error(error_msg)
+        self._state.execution_status = ConversationExecutionStatus.ERROR
+        self._on_event(
+            ConversationErrorEvent(
+                source="environment",
+                code=code,
+                detail=error_msg,
+            )
+        )
+
     @property
     def stuck_detector(self) -> StuckDetector | None:
         """Get the stuck detector instance if enabled."""
@@ -540,6 +631,8 @@ class LocalConversation(BaseConversation):
                 persistence_dir=fork_persistence,
                 conversation_id=fork_id,
                 max_iteration_per_run=self.max_iteration_per_run,
+                max_cost_per_run=self.max_cost_per_run,
+                max_input_tokens_per_run=self.max_input_tokens_per_run,
                 stuck_detection=self._stuck_detector is not None,
                 visualizer=type(self._visualizer) if self._visualizer else None,
                 delete_on_close=self.delete_on_close,
@@ -1212,6 +1305,11 @@ class LocalConversation(BaseConversation):
                     ):
                         break
 
+                    budget_hit = self._check_run_budgets()
+                    if budget_hit is not None:
+                        self._emit_run_budget_exceeded(*budget_hit)
+                        break
+
                     if iteration >= self.max_iteration_per_run:
                         # If the agent finished on this final iteration,
                         # preserve the FINISHED status rather than
@@ -1449,6 +1547,11 @@ class LocalConversation(BaseConversation):
                         ):
                             break
 
+                        budget_hit = self._check_run_budgets()
+                        if budget_hit is not None:
+                            self._emit_run_budget_exceeded(*budget_hit)
+                            break
+
                         if iteration >= self.max_iteration_per_run:
                             if (
                                 self._state.execution_status
@@ -1615,6 +1718,11 @@ class LocalConversation(BaseConversation):
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
+                        break
+
+                    budget_hit = self._check_run_budgets()
+                    if budget_hit is not None:
+                        self._emit_run_budget_exceeded(*budget_hit)
                         break
 
                     if iteration >= self.max_iteration_per_run:

@@ -72,6 +72,8 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_cost_per_run: float | None = None,
+        max_input_tokens_per_run: int | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -128,6 +130,8 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_cost_per_run: float | None = None,
+        max_input_tokens_per_run: int | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -153,6 +157,17 @@ class Conversation:
             if persistence_dir is not None:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
+                )
+            # max_cost_per_run / max_input_tokens_per_run are enforced inside
+            # the LocalConversation loop, which only exists on the agent
+            # server. Until the server's StartConversationRequest accepts
+            # these fields, surface a clear error instead of silently
+            # ignoring the cap.
+            if max_cost_per_run is not None or max_input_tokens_per_run is not None:
+                raise NotImplementedError(
+                    "max_cost_per_run and max_input_tokens_per_run are not "
+                    "yet supported for RemoteConversation. Track the agent "
+                    "server follow-up via the SDK-1 PR description."
                 )
 
             # Build effective tags by merging multiple sources:
@@ -209,6 +224,8 @@ class Conversation:
             token_callbacks=token_callbacks,
             hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
+            max_cost_per_run=max_cost_per_run,
+            max_input_tokens_per_run=max_input_tokens_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,
