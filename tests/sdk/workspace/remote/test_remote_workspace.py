@@ -102,7 +102,9 @@ def test_execute_method():
     result = workspace._execute(test_generator())
 
     assert result == "test_result"
-    mock_client.request.assert_called_once_with(method="GET", url="http://test.com")
+    mock_client.request.assert_called_once_with(
+        method="GET", url="http://test.com", headers={}
+    )
 
 
 @patch("openhands.sdk.workspace.remote.base.RemoteWorkspace._execute")
@@ -289,8 +291,12 @@ def test_execute_generator_completion():
 
     assert result == "final_result"
     assert mock_client.request.call_count == 2
-    mock_client.request.assert_any_call(method="GET", url="http://test1.com")
-    mock_client.request.assert_any_call(method="POST", url="http://test2.com")
+    mock_client.request.assert_any_call(
+        method="GET", url="http://test1.com", headers={}
+    )
+    mock_client.request.assert_any_call(
+        method="POST", url="http://test2.com", headers={}
+    )
 
 
 @patch("openhands.sdk.workspace.remote.base.urlopen")

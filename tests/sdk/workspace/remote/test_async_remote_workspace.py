@@ -99,7 +99,9 @@ async def test_async_execute_method():
     result = await workspace._execute(test_generator())
 
     assert result == "test_result"
-    mock_client.request.assert_called_once_with(method="GET", url="http://test.com")
+    mock_client.request.assert_called_once_with(
+        method="GET", url="http://test.com", headers={}
+    )
 
 
 @pytest.mark.asyncio
@@ -300,8 +302,12 @@ async def test_async_execute_generator_completion():
 
     assert result == "final_result"
     assert mock_client.request.call_count == 2
-    mock_client.request.assert_any_call(method="GET", url="http://test1.com")
-    mock_client.request.assert_any_call(method="POST", url="http://test2.com")
+    mock_client.request.assert_any_call(
+        method="GET", url="http://test1.com", headers={}
+    )
+    mock_client.request.assert_any_call(
+        method="POST", url="http://test2.com", headers={}
+    )
 
 
 @pytest.mark.asyncio
@@ -328,9 +334,15 @@ async def test_async_execute_multiple_yields():
 
     assert result == "complex_result"
     assert mock_client.request.call_count == 3
-    mock_client.request.assert_any_call(method="POST", url="http://start.com")
-    mock_client.request.assert_any_call(method="GET", url="http://poll.com")
-    mock_client.request.assert_any_call(method="GET", url="http://result.com")
+    mock_client.request.assert_any_call(
+        method="POST", url="http://start.com", headers={}
+    )
+    mock_client.request.assert_any_call(
+        method="GET", url="http://poll.com", headers={}
+    )
+    mock_client.request.assert_any_call(
+        method="GET", url="http://result.com", headers={}
+    )
 
 
 @pytest.mark.asyncio
