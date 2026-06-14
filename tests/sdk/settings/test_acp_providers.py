@@ -84,6 +84,15 @@ class TestACPProviderInfo:
         # Gemini CLI has no dedicated config-dir var, so only HOME relocates it.
         assert info.data_dir_env_var == "HOME"
 
+    def test_gemini_flash_lite_id_is_not_suffixed_preview(self):
+        """gemini-cli 0.45.x serves ``gemini-3.1-flash-lite`` (no ``-preview``).
+
+        The suffixed id was not an accepted model and would 404 if selected.
+        """
+        ids = {m.id for m in ACP_PROVIDERS["gemini-cli"].available_models}
+        assert "gemini-3.1-flash-lite" in ids
+        assert "gemini-3.1-flash-lite-preview" not in ids
+
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
         with pytest.raises((AttributeError, TypeError)):

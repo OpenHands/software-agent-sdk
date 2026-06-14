@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -681,6 +682,93 @@ def _extract_token_usage(
         tc = quota.get("token_count", {})
         return (tc.get("input_tokens", 0), tc.get("output_tokens", 0), 0, 0, 0)
     return (0, 0, 0, 0, 0)
+
+
+def _extract_effective_model(response: Any) -> str | None:
+    """The model the ACP server actually ran this turn, or ``None``.
+
+    gemini-cli reports the *resolved* model under
+    ``_meta.quota.model_usage[].model`` — which can differ from the requested
+    ``acp_model`` (it upgrades ``*-flash`` ids to the account's default flash).
+    Returns the last named entry (the model that produced an auto-routed
+    prompt's final answer). ``None`` for claude-agent-acp / codex-acp, which
+    report usage without a model name.
+    """
+    if response is None:
+        return None
+    meta = getattr(response, "field_meta", None)
+    if not isinstance(meta, dict):
+        return None
+    quota = meta.get("quota")
+    if not isinstance(quota, dict):
+        return None
+    model_usage = quota.get("model_usage")
+    if not isinstance(model_usage, list):
+        return None
+    for entry in reversed(model_usage):
+        if isinstance(entry, dict):
+            model = entry.get("model")
+            if isinstance(model, str) and model:
+                return model
+    return None
+
+
+# A model gemini-cli resolved on its own surfaces as an unserved-model error
+# whose wording depends on the auth path:
+#   * Vertex/Google direct (vertex-ai auth):
+#       Publisher Model `projects/<p>/.../models/<m>` was not found or your
+#       project does not have access to it.
+#   * LiteLLM proxy (gateway auth, the containerized path):
+#       litellm.BadRequestError: You passed in model=<m>. There are no healthy
+#       deployments for this model ...
+# In both, the failing ``<m>`` is often NOT the requested ``acp_model`` because
+# gemini-cli upgrades ``*-flash`` ids to the account's default flash, so the raw
+# error is opaque about why the chosen model was never used.
+_MODEL_ACCESS_ERROR_MARKERS = (
+    "was not found or your project does not have access",  # Vertex/Google direct
+    "no healthy deployments for this model",  # LiteLLM proxy/gateway
+)
+# Model id the runtime actually sent: Vertex publisher path, then LiteLLM
+# ``model=``. The ``model=`` capture keeps internal dots (``gemini-2.5-flash``);
+# a trailing sentence ``.``/``,`` is stripped by the caller.
+_TRIED_MODEL_RES = (
+    re.compile(r"models/([^`'\"\s)]+)"),
+    re.compile(r"\bmodel=([^\s'\")]+)"),
+)
+
+
+def _maybe_model_access_hint(error_str: str, requested_model: str | None) -> str | None:
+    """Return an actionable hint for a Gemini "model not served" error.
+
+    ``None`` when the error isn't that case, so callers can append it only when
+    it adds signal. Covers both the direct-Vertex 404 and the LiteLLM-proxy
+    "no healthy deployments" error. The hint names the model the runtime
+    actually tried and, when it differs from ``requested_model``, explains the
+    silent substitution and points at a remedy.
+    """
+    low = error_str.lower()
+    if not any(marker in low for marker in _MODEL_ACCESS_ERROR_MARKERS):
+        return None
+    tried = None
+    for pattern in _TRIED_MODEL_RES:
+        match = pattern.search(error_str)
+        if match:
+            tried = match.group(1).rstrip(".,")
+            break
+    parts = []
+    if tried and requested_model and tried != requested_model:
+        parts.append(
+            f"the runtime ran model {tried!r}, not the requested "
+            f"{requested_model!r} — gemini-cli resolves '*-flash' ids to the "
+            f"account's current default flash"
+        )
+    elif tried:
+        parts.append(f"model {tried!r} is not served by this project/account")
+    parts.append(
+        "select an acp_model this project serves (e.g. a pinned non-flash id "
+        "like 'gemini-2.5-pro') or enable access to the resolved model"
+    )
+    return "Hint: " + "; ".join(parts) + "."
 
 
 def _estimate_cost_from_tokens(
@@ -2839,6 +2927,10 @@ class ACPAgent(AgentBase):
             elapsed=elapsed,
             usage_update=usage_update,
         )
+        # Now that the server has run a turn, reconcile the model we *report* as
+        # active with the one it actually ran — set_session_model is best-effort
+        # and the server may have resolved a different model.
+        self._reconcile_effective_model(response)
 
         # Tool cards were already streamed live from
         # _OpenHandsACPBridge.session_update: one early ``started`` event per
@@ -2888,6 +2980,38 @@ class ACPAgent(AgentBase):
         )
         state.execution_status = ConversationExecutionStatus.FINISHED
 
+    def _reconcile_effective_model(self, response: PromptResponse | None) -> None:
+        """Point ``_current_model_id`` at the model the server actually ran.
+
+        ``set_session_model`` is best-effort with no protocol readback, so the
+        SDK can over-report: ``init_state`` surfaces the requested ``acp_model``
+        even when the server ran a different one (gemini-cli upgrades ``*-flash``
+        ids). The prompt response's usage metadata is the first reliable signal;
+        use it so ``ConversationInfo`` is honest, and warn on divergence from an
+        explicitly pinned (non-``auto``) request. No-op for claude-agent-acp /
+        codex-acp (no per-turn model reported).
+        """
+        effective = _extract_effective_model(response)
+        if not effective or effective == self._current_model_id:
+            return
+        # ``auto*`` aliases are *meant* to resolve to a concrete model, so a
+        # divergence there is expected routing, not a substitution to flag.
+        requested = self.acp_model
+        if (
+            requested
+            and requested != effective
+            and not requested.lower().startswith("auto")
+        ):
+            logger.warning(
+                "ACP runtime ran model %r, not the requested %r — the server "
+                "resolved its own model (e.g. gemini-cli upgrades '*-flash' ids "
+                "to the account's current default flash). Reporting the model "
+                "that actually ran.",
+                effective,
+                requested,
+            )
+        self._current_model_id = effective
+
     def _emit_turn_timeout(
         self,
         elapsed: float,
@@ -2931,6 +3055,14 @@ class ACPAgent(AgentBase):
         """Error path for non-timeout exceptions raised out of the prompt."""
         logger.error("ACP prompt failed: %s", exc, exc_info=True)
         error_str = str(exc)
+        # A Gemini/Vertex "model not served" 404 is opaque: the failing model is
+        # often one the runtime resolved on its own (e.g. flash upgraded to the
+        # account's default), not the one requested. Append an actionable hint
+        # so the surfaced error explains the substitution instead of just 404ing.
+        hint = _maybe_model_access_hint(error_str, self.acp_model)
+        if hint:
+            logger.warning("ACP prompt failed on an unserved model. %s", hint)
+            error_str = f"{error_str} ({hint})"
         # Close any tool cards left in flight before surfacing the error.
         self._cancel_inflight_tool_calls()
         # Emit error as an agent message (preserved for consumers that
@@ -2940,7 +3072,7 @@ class ACPAgent(AgentBase):
                 source="agent",
                 llm_message=Message(
                     role="assistant",
-                    content=[TextContent(text=f"ACP error: {exc}")],
+                    content=[TextContent(text=f"ACP error: {error_str}")],
                 ),
             )
         )

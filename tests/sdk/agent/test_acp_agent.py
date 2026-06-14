@@ -23,10 +23,12 @@ from openhands.sdk.agent.acp_agent import (
     _codex_auth_file,
     _codex_base_url_overrides,
     _estimate_cost_from_tokens,
+    _extract_effective_model,
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
     _mask_json_value,
+    _maybe_model_access_hint,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
     _OpenHandsACPBridge,
@@ -5048,6 +5050,230 @@ class TestExtractTokenUsage:
         response.usage = None
         response.field_meta = {"quota": {}}
         assert _extract_token_usage(response) == (0, 0, 0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# _extract_effective_model
+# ---------------------------------------------------------------------------
+
+
+class TestExtractEffectiveModel:
+    """gemini-cli reports the *resolved* model under _meta.quota.model_usage."""
+
+    def test_single_usage_entry(self):
+        response = MagicMock()
+        response.field_meta = {
+            "quota": {
+                "model_usage": [
+                    {"model": "gemini-3-flash", "token_count": {"input_tokens": 10}}
+                ]
+            }
+        }
+        assert _extract_effective_model(response) == "gemini-3-flash"
+
+    def test_last_named_entry_wins(self):
+        """Auto-routed multi-turn prompt: the final answer's model is reported."""
+        response = MagicMock()
+        response.field_meta = {
+            "quota": {
+                "model_usage": [
+                    {"model": "gemini-2.5-pro"},
+                    {"model": "gemini-3-flash"},
+                ]
+            }
+        }
+        assert _extract_effective_model(response) == "gemini-3-flash"
+
+    def test_skips_entries_without_a_model(self):
+        response = MagicMock()
+        response.field_meta = {
+            "quota": {"model_usage": [{"model": "gemini-2.5-pro"}, {"token_count": {}}]}
+        }
+        assert _extract_effective_model(response) == "gemini-2.5-pro"
+
+    def test_none_response(self):
+        assert _extract_effective_model(None) is None
+
+    def test_no_meta(self):
+        response = MagicMock()
+        response.field_meta = None
+        assert _extract_effective_model(response) is None
+
+    def test_no_model_usage(self):
+        """claude-agent-acp / codex-acp: usage carries no model name."""
+        response = MagicMock()
+        response.field_meta = {"quota": {"token_count": {"input_tokens": 5}}}
+        assert _extract_effective_model(response) is None
+
+    def test_empty_model_usage_list(self):
+        response = MagicMock()
+        response.field_meta = {"quota": {"model_usage": []}}
+        assert _extract_effective_model(response) is None
+
+
+# ---------------------------------------------------------------------------
+# _maybe_model_access_hint
+# ---------------------------------------------------------------------------
+
+
+_VERTEX_404 = (
+    "Publisher Model `projects/p/locations/us-central1/publishers/google/"
+    "models/gemini-3-flash` was not found or your project does not have "
+    "access to it."
+)
+
+# LiteLLM proxy (gateway auth, the containerized path) — observed verbatim
+# driving real gemini-cli 0.45.1 through the eval proxy.
+_LITELLM_NO_DEPLOYMENT = (
+    "litellm.BadRequestError: You passed in model=gemini-3-flash. There are no "
+    "healthy deployments for this model"
+)
+
+
+class TestMaybeModelAccessHint:
+    def test_names_substitution_when_requested_differs(self):
+        hint = _maybe_model_access_hint(_VERTEX_404, "gemini-2.5-flash")
+        assert hint is not None
+        assert "gemini-3-flash" in hint
+        assert "gemini-2.5-flash" in hint
+        assert "gemini-2.5-pro" in hint  # the suggested remedy
+
+    def test_handles_no_requested_model(self):
+        hint = _maybe_model_access_hint(_VERTEX_404, None)
+        assert hint is not None
+        assert "gemini-3-flash" in hint
+        assert "not served" in hint
+
+    def test_litellm_no_healthy_deployments_is_covered(self):
+        """The proxy/gateway path surfaces LiteLLM's wording, not Vertex's."""
+        hint = _maybe_model_access_hint(_LITELLM_NO_DEPLOYMENT, "gemini-2.5-flash")
+        assert hint is not None
+        assert "gemini-3-flash" in hint  # parsed from ``model=``
+        assert "gemini-2.5-flash" in hint
+        assert "not the requested" in hint
+
+    def test_litellm_model_id_keeps_internal_dots(self):
+        """``model=gemini-2.5-flash.`` must parse to the full dotted id."""
+        err = (
+            "litellm.BadRequestError: You passed in model=gemini-2.5-flash. "
+            "There are no healthy deployments for this model"
+        )
+        hint = _maybe_model_access_hint(err, "gemini-2.5-flash-lite")
+        assert hint is not None
+        assert "'gemini-2.5-flash'" in hint  # not truncated to 'gemini-2'
+
+    def test_returns_none_for_unrelated_error(self):
+        assert _maybe_model_access_hint("connection reset by peer", "x") is None
+
+    def test_no_substitution_phrasing_when_tried_equals_requested(self):
+        hint = _maybe_model_access_hint(_VERTEX_404, "gemini-3-flash")
+        assert hint is not None
+        # When the requested model is exactly the unserved one, don't claim a
+        # substitution happened.
+        assert "not the requested" not in hint
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_effective_model
+# ---------------------------------------------------------------------------
+
+
+def _response_with_effective_model(model: str) -> MagicMock:
+    response = MagicMock()
+    response.field_meta = {"quota": {"model_usage": [{"model": model}]}}
+    return response
+
+
+class TestReconcileEffectiveModel:
+    def test_updates_current_model_to_what_ran(self, caplog):
+        agent = _make_agent(acp_model="gemini-2.5-flash")
+        agent._current_model_id = "gemini-2.5-flash"
+        with caplog.at_level("WARNING"):
+            agent._reconcile_effective_model(
+                _response_with_effective_model("gemini-3-flash")
+            )
+        assert agent._current_model_id == "gemini-3-flash"
+        # Divergence from an explicitly pinned model is warned about.
+        assert any("ran model 'gemini-3-flash'" in r.message for r in caplog.records)
+
+    def test_no_warning_for_auto_alias(self, caplog):
+        """auto* aliases are meant to resolve to a concrete model."""
+        agent = _make_agent(acp_model="auto-gemini-2.5")
+        agent._current_model_id = "auto-gemini-2.5"
+        with caplog.at_level("WARNING"):
+            agent._reconcile_effective_model(
+                _response_with_effective_model("gemini-2.5-pro")
+            )
+        assert agent._current_model_id == "gemini-2.5-pro"
+        assert not caplog.records
+
+    def test_no_warning_when_effective_matches_request(self, caplog):
+        agent = _make_agent(acp_model="gemini-2.5-pro")
+        agent._current_model_id = "auto"  # server's pre-set default
+        with caplog.at_level("WARNING"):
+            agent._reconcile_effective_model(
+                _response_with_effective_model("gemini-2.5-pro")
+            )
+        assert agent._current_model_id == "gemini-2.5-pro"
+        assert not caplog.records
+
+    def test_noop_without_model_usage(self):
+        agent = _make_agent(acp_model="claude-opus-4-6")
+        agent._current_model_id = "claude-opus-4-6"
+        response = MagicMock()
+        response.field_meta = None
+        agent._reconcile_effective_model(response)
+        assert agent._current_model_id == "claude-opus-4-6"
+
+    def test_noop_when_already_current(self, caplog):
+        agent = _make_agent(acp_model="gemini-2.5-flash")
+        agent._current_model_id = "gemini-3-flash"
+        with caplog.at_level("WARNING"):
+            agent._reconcile_effective_model(
+                _response_with_effective_model("gemini-3-flash")
+            )
+        assert agent._current_model_id == "gemini-3-flash"
+        assert not caplog.records
+
+
+# ---------------------------------------------------------------------------
+# _emit_turn_error model-access hint wiring
+# ---------------------------------------------------------------------------
+
+
+class TestEmitTurnErrorModelHint:
+    def test_vertex_404_gets_actionable_hint(self):
+        agent = _make_agent(acp_model="gemini-2.5-flash")
+        agent._client = _OpenHandsACPBridge()  # on_event=None → cancel is a no-op
+        state = MagicMock()
+        emitted: list = []
+
+        agent._emit_turn_error(RuntimeError(_VERTEX_404), state, emitted.append)
+
+        msgs = [e for e in emitted if isinstance(e, MessageEvent)]
+        errs = [e for e in emitted if isinstance(e, ConversationErrorEvent)]
+        assert len(msgs) == 1 and len(errs) == 1
+        text = msgs[0].llm_message.content[0]
+        assert isinstance(text, TextContent)
+        assert "Hint:" in text.text
+        assert "gemini-2.5-flash" in text.text
+        assert "Hint:" in errs[0].detail
+        assert errs[0].code == "ACPPromptError"
+        assert state.execution_status == ConversationExecutionStatus.ERROR
+
+    def test_unrelated_error_has_no_hint(self):
+        agent = _make_agent(acp_model="gemini-2.5-flash")
+        agent._client = _OpenHandsACPBridge()
+        state = MagicMock()
+        emitted: list = []
+
+        agent._emit_turn_error(RuntimeError("boom"), state, emitted.append)
+
+        msgs = [e for e in emitted if isinstance(e, MessageEvent)]
+        assert len(msgs) == 1
+        text = msgs[0].llm_message.content[0]
+        assert isinstance(text, TextContent)
+        assert "Hint:" not in text.text
 
 
 # ---------------------------------------------------------------------------

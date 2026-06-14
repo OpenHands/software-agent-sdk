@@ -326,14 +326,30 @@ _CODEX_MODELS: tuple[ACPModelOption, ...] = (
 # Model IDs accepted by ``@google/gemini-cli --acp``. The ``auto-gemini-*``
 # entries delegate version selection to the CLI's router; the explicit
 # ``gemini-3.1-*`` / ``gemini-2.5-*`` entries pin to a specific snapshot.
+#
+# These are picker *suggestions*, not authoritative selections. gemini-cli
+# stores whatever ``set_session_model`` id we send but resolves the model again
+# at generation time (``resolveModel`` in the CLI). Two consequences worth
+# knowing when picking an ``acp_model``:
+#   * Any ``*-flash`` id is silently upgraded to the account's *current default*
+#     flash when the account has flash-GA access — e.g. on gemini-cli 0.45.x a
+#     request for ``gemini-2.5-flash`` runs ``gemini-3-flash``. So a flash id is
+#     NOT a stable "this exact model will run" guarantee, and on Vertex projects
+#     that don't serve the upgraded flash it 404s mid-prompt. Prefer a pinned
+#     non-flash id (``gemini-2.5-pro``) or an ``auto-*`` alias when you need a
+#     model a given project is known to serve.
+#   * The set the CLI advertises via ``new_session`` is account/version-gated,
+#     so the live ``available_models`` reported by the server (surfaced on
+#     ``ConversationInfo``) is the real source of truth — this list is only the
+#     pre-session default for the picker.
 _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="auto-gemini-3", label="Auto (Gemini 3)"),
     ACPModelOption(id="auto-gemini-2.5", label="Auto (Gemini 2.5)"),
     ACPModelOption(id="gemini-3.1-pro-preview", label="Gemini 3.1 Pro (preview)"),
     ACPModelOption(id="gemini-3-flash-preview", label="Gemini 3 Flash (preview)"),
-    ACPModelOption(
-        id="gemini-3.1-flash-lite-preview", label="Gemini 3.1 Flash Lite (preview)"
-    ),
+    # gemini-cli 0.45.x serves this lite snapshot without the ``-preview``
+    # suffix; the suffixed id is not an accepted model and would 404.
+    ACPModelOption(id="gemini-3.1-flash-lite", label="Gemini 3.1 Flash Lite"),
     ACPModelOption(id="gemini-2.5-pro", label="Gemini 2.5 Pro"),
     ACPModelOption(id="gemini-2.5-flash", label="Gemini 2.5 Flash"),
     ACPModelOption(id="gemini-2.5-flash-lite", label="Gemini 2.5 Flash Lite"),
