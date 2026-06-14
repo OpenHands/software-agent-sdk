@@ -1610,6 +1610,46 @@ def test_max_output_tokens_uses_actual_value_when_available(mock_get_model_info)
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_capped_when_model_info_exceeds_default_cap(
+    mock_get_model_info,
+):
+    """High LiteLLM max_output_tokens metadata is capped for custom gateways."""
+    from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+    mock_get_model_info.return_value = {
+        "max_tokens": 262144,
+        "max_output_tokens": 131072,
+        "max_input_tokens": 262144,
+    }
+
+    llm = LLM(
+        model="moonshot/kimi-k2.5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        base_url="https://qianfan.example.com/v1",
+    )
+
+    assert llm.max_output_tokens is None
+    assert llm.effective_max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS_CAP
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_max_output_tokens_not_capped_without_custom_base_url(mock_get_model_info):
+    """Direct API (no base_url) keeps litellm's real max_output_tokens."""
+    mock_get_model_info.return_value = {
+        "max_output_tokens": 64000,
+        "max_tokens": 64000,
+        "max_input_tokens": 200000,
+    }
+    llm = LLM(
+        model="claude-opus-4-5",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+    )
+    assert llm.effective_max_output_tokens == 64000
+
+
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
 def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
     """Test that small max_tokens fallback is not unnecessarily capped."""
     from openhands.sdk.llm.llm import DEFAULT_MAX_OUTPUT_TOKENS_CAP
@@ -1633,8 +1673,15 @@ def test_max_output_tokens_small_max_tokens_not_capped(mock_get_model_info):
     assert llm.effective_max_output_tokens < DEFAULT_MAX_OUTPUT_TOKENS_CAP
 
 
-def test_explicit_max_output_tokens_not_overridden():
+@patch("openhands.sdk.llm.llm.get_litellm_model_info")
+def test_explicit_max_output_tokens_not_overridden(mock_get_model_info):
     """Test that explicitly set max_output_tokens is respected."""
+    mock_get_model_info.return_value = {
+        "max_tokens": 262144,
+        "max_output_tokens": 131072,
+        "max_input_tokens": 262144,
+    }
+
     llm = LLM(
         model="gpt-4o",
         api_key=SecretStr("test-key"),
@@ -1668,7 +1715,7 @@ def test_max_output_tokens_capped_when_equal_to_context_window(
     )
 
     assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 262144 // 2
+    assert llm.effective_max_output_tokens == 131072
     assert llm.max_input_tokens is None
     assert llm.effective_max_input_tokens == 262144
 
@@ -1683,8 +1730,8 @@ def test_max_output_tokens_capped_when_equal_to_max_tokens(
     max_input_tokens. The guard should still fire.
     """
     mock_get_model_info.return_value = {
-        "max_output_tokens": 131072,
-        "max_tokens": 131072,
+        "max_output_tokens": 16384,
+        "max_tokens": 16384,
         "max_input_tokens": None,
     }
 
@@ -1695,7 +1742,7 @@ def test_max_output_tokens_capped_when_equal_to_max_tokens(
     )
 
     assert llm.max_output_tokens is None
-    assert llm.effective_max_output_tokens == 131072 // 2
+    assert llm.effective_max_output_tokens == 16384 // 2
 
 
 @patch("openhands.sdk.llm.llm.get_litellm_model_info")
