@@ -1,3 +1,4 @@
+import json
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +16,7 @@ from openhands.sdk.subagent.registry import (
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.tools.preset import register_builtins_agents
 from openhands.tools.task.manager import (
+    _INDEX_FILENAME,
     Task,
     TaskManager,
     TaskStatus,
@@ -942,3 +944,99 @@ class TestTaskManagerPersistence:
         conv_persistence = conv.state.persistence_dir
         assert conv_persistence is not None
         assert str(conv_persistence).startswith(str(manager._persistence_dir))
+
+
+class TestTaskIndexPersistence:
+    """Cross-process resume: the task_id->conversation_id index is persisted under
+    the parent conversation's dir and rehydrated by a fresh TaskManager."""
+
+    def _parent(self, persist, work, conversation_id):
+        agent = Agent(llm=_make_llm(), tools=[])
+        return LocalConversation(
+            agent=agent,
+            workspace=str(work),
+            visualizer=None,
+            delete_on_close=False,
+            persistence_dir=str(persist),
+            conversation_id=conversation_id,
+        )
+
+    def test_index_written_when_parent_persists(self, tmp_path):
+        register_builtins_agents()
+        persist, work = tmp_path / "p", tmp_path / "w"
+        persist.mkdir()
+        work.mkdir()
+        m = TaskManager()
+        m._ensure_parent(self._parent(persist, work, uuid.uuid4()))
+        task = m._create_task(subagent_type="general-purpose", description=None)
+
+        assert m._persists is True
+        assert m._index_path is not None and m._index_path.name == _INDEX_FILENAME
+        assert m._index_path.exists()
+        entries = json.loads(m._index_path.read_text())
+        assert any(e["id"] == task.id for e in entries)
+
+    def test_no_index_when_parent_not_persisting(self, tmp_path):
+        register_builtins_agents()
+        agent = Agent(llm=_make_llm(), tools=[])
+        parent = LocalConversation(
+            agent=agent, workspace=str(tmp_path), visualizer=None, delete_on_close=False
+        )
+        m = TaskManager()
+        m._ensure_parent(parent)
+        m._create_task(subagent_type="general-purpose", description=None)
+        assert m._persists is False
+        assert m._index_path is None
+
+    def test_resume_across_fresh_manager(self, tmp_path):
+        """A new TaskManager (simulating a process restart) rehydrates the index
+        from the same parent dir and can resume a prior task."""
+        register_builtins_agents()
+        persist, work = tmp_path / "p", tmp_path / "w"
+        persist.mkdir()
+        work.mkdir()
+        pcid = uuid.uuid4()  # parent conversation id is stable across restart
+
+        m1 = TaskManager()
+        m1._ensure_parent(self._parent(persist, work, pcid))
+        task = m1._create_task(subagent_type="general-purpose", description=None)
+        tid, cid = task.id, task.conversation_id
+        m1._evict_task(task)
+
+        m2 = TaskManager()
+        m2._ensure_parent(self._parent(persist, work, pcid))
+        assert tid in m2._tasks  # rehydrated from disk
+        resumed = m2._resume_task(resume=tid, subagent_type="general-purpose")
+        assert resumed.id == tid
+        assert resumed.conversation_id == cid
+        assert resumed.conversation is not None
+        assert resumed.conversation.state.id == cid
+
+    def test_evicted_status_persisted(self, tmp_path):
+        register_builtins_agents()
+        persist, work = tmp_path / "p", tmp_path / "w"
+        persist.mkdir()
+        work.mkdir()
+        m = TaskManager()
+        m._ensure_parent(self._parent(persist, work, uuid.uuid4()))
+        task = m._create_task(subagent_type="general-purpose", description=None)
+        task.set_result("done")
+        m._evict_task(task)
+        entries = json.loads(m._index_path.read_text())
+        entry = next(e for e in entries if e["id"] == task.id)
+        assert entry["status"] == TaskStatus.COMPLETED.value
+
+    def test_load_index_tolerates_corrupt_file(self, tmp_path):
+        register_builtins_agents()
+        persist, work = tmp_path / "p", tmp_path / "w"
+        persist.mkdir()
+        work.mkdir()
+        pcid = uuid.uuid4()
+        m1 = TaskManager()
+        m1._ensure_parent(self._parent(persist, work, pcid))
+        m1._create_task(subagent_type="general-purpose", description=None)
+        # Corrupt the index, then load from a fresh manager — must not raise.
+        m1._index_path.write_text("{not valid json")
+        m2 = TaskManager()
+        m2._ensure_parent(self._parent(persist, work, pcid))  # _load_index runs here
+        assert m2._tasks == {}
