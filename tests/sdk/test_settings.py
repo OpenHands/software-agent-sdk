@@ -69,6 +69,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "oracle_llm_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }
@@ -85,6 +86,9 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
     assert (
         general_fields["enable_switch_llm_tool"].prominence is SettingProminence.MINOR
     )
+    assert general_fields["oracle_llm_profile"].value_type == "string"
+    assert general_fields["oracle_llm_profile"].default is None
+    assert general_fields["oracle_llm_profile"].prominence is SettingProminence.MINOR
     assert general_fields["tool_concurrency_limit"].value_type == "integer"
     assert general_fields["tool_concurrency_limit"].default == 1
     assert (
@@ -342,6 +346,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "oracle_llm_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }
