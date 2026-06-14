@@ -4155,6 +4155,9 @@ class TestClientForkTextRouting:
 # ---------------------------------------------------------------------------
 
 
+_CHATGPT_AUTH_JSON = '{"tokens": {"id_token": "x", "access_token": "y"}}'
+
+
 class TestSelectAuthMethod:
     """Test auto-detection of ACP auth method from env vars."""
 
@@ -4189,7 +4192,7 @@ class TestSelectAuthMethod:
         ]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
@@ -4218,7 +4221,7 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "chatgpt"
@@ -4288,7 +4291,7 @@ class TestSelectAuthMethod:
         even though ~/.codex/auth.json does not exist."""
         codex_home = tmp_path / "conv" / "acp" / "codex"
         codex_home.mkdir(parents=True)
-        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        (codex_home / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
         methods = [self._make_auth_method("chatgpt")]
         empty_home = tmp_path / "home"
         empty_home.mkdir()
@@ -4322,6 +4325,44 @@ class TestSelectAuthMethod:
             assert _codex_auth_file({}) == home / ".codex" / "auth.json"
         ch = tmp_path / "ch"
         assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- apikey-format auth.json must not be treated as chatgpt (#3627) -----
+
+    def test_apikey_format_auth_file_falls_back_to_api_key(self, tmp_path):
+        """Codex rewrites $CODEX_HOME/auth.json with {"auth_mode": "apikey", ...}
+        during apikey-mode sessions. On a restart, that file must NOT be picked
+        as ``chatgpt`` or codex-acp hangs on browser-based OAuth (issue #3627).
+        """
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            '{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test"}',
+            encoding="utf-8",
+        )
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_malformed_auth_file_falls_back_to_api_key(self, tmp_path):
+        """A non-JSON / unreadable auth.json must not trip chatgpt selection."""
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text("not-json{", encoding="utf-8")
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
 
     # -- Gemini Vertex AI service-account detection (issue #1020) ----------
 

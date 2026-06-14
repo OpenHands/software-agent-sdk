@@ -284,6 +284,27 @@ def _codex_auth_file(env: dict[str, str]) -> Path:
     return Path.home() / _CHATGPT_AUTH_PATH
 
 
+def _codex_auth_file_is_chatgpt(env: dict[str, str]) -> bool:
+    """Return True only if ``auth.json`` is in ChatGPT-subscription format.
+
+    Codex itself rewrites ``$CODEX_HOME/auth.json`` during apikey-mode sessions
+    with ``{"auth_mode": "apikey", "OPENAI_API_KEY": "..."}``. That file's mere
+    presence used to make :func:`_select_auth_method` prefer ``chatgpt`` on a
+    restart, after which ``conn.authenticate("chatgpt")`` hung indefinitely
+    waiting for browser-based OAuth (issue #3627). The ChatGPT token blob is
+    keyed by ``tokens``; require that key before claiming the file is usable
+    for the ``chatgpt`` auth method.
+    """
+    path = _codex_auth_file(env)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "tokens" in data
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -308,7 +329,7 @@ def _select_auth_method(
     method_ids = {m.id for m in auth_methods}
     # Prefer file-backed subscription / service-account logins when their
     # credential file is present.
-    if "chatgpt" in method_ids and _codex_auth_file(env).is_file():
+    if "chatgpt" in method_ids and _codex_auth_file_is_chatgpt(env):
         return "chatgpt"
     gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
     if "vertex-ai" in method_ids and gac and Path(gac).is_file():
