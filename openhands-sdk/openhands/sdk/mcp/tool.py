@@ -227,6 +227,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         cls,
         mcp_tool: mcp.types.Tool,
         mcp_client: MCPClient,
+        timeout: float | None = None,
     ) -> Sequence["MCPToolDefinition"]:
         try:
             annotations = (
@@ -237,13 +238,20 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 else None
             )
 
+            executor_timeout = (
+                timeout if timeout is not None else MCP_TOOL_TIMEOUT_SECONDS
+            )
             tool_instance = cls(
                 description=mcp_tool.description or "No description provided",
                 action_type=MCPToolAction,
                 observation_type=MCPToolObservation,
                 annotations=annotations,
                 meta=mcp_tool.meta,
-                executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                executor=MCPToolExecutor(
+                    tool_name=mcp_tool.name,
+                    client=mcp_client,
+                    timeout=executor_timeout,
+                ),
                 # pass-through fields (enabled by **extra in Tool.create)
                 mcp_tool=mcp_tool,
             )
