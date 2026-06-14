@@ -37,6 +37,11 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
+from openhands.agent_server.init_router import (
+    InitService,
+    init_router,
+    require_initialized,
+)
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
@@ -123,7 +128,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
 
-        service = get_default_conversation_service()
+        config: Config = api.state.config
+        deferred = config.deferred_init
         vscode_service = get_vscode_service()
         desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
@@ -184,13 +190,50 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 f"Server initialization failed with {len(exceptions)} exception(s)"
             ) from exceptions[0]
 
-        # Mark initialization as complete - now the /ready endpoint will return 200
-        # and Kubernetes readiness probes will pass
+        async def stop_stateless_services():
+            async def stop_vscode_service():
+                if vscode_service is not None:
+                    await vscode_service.stop()
+
+            async def stop_desktop_service():
+                if desktop_service is not None:
+                    await desktop_service.stop()
+
+            async def stop_tool_preload_service():
+                if tool_preload_service is not None:
+                    await tool_preload_service.stop()
+
+            await asyncio.gather(
+                stop_vscode_service(),
+                stop_desktop_service(),
+                stop_tool_preload_service(),
+                return_exceptions=True,
+            )
+
+        # In deferred-init mode the conversation service is *not* entered
+        # here — that happens later, when POST /api/init delivers the runtime
+        # config. We still mark the /ready endpoint as ready so a warm-pool
+        # orchestrator can tell the pod has finished booting and is
+        # available to receive its /api/init payload.
+        if deferred:
+            init_service = InitService(api, base_config=config)
+            api.state.init_service = init_service
+            mark_initialization_complete()
+            logger.info("Server started in deferred-init mode; awaiting POST /api/init")
+            try:
+                yield
+            finally:
+                await init_service.teardown()
+                await stop_stateless_services()
+            return
+
+        # Non-deferred (legacy) path: build and enter the conversation
+        # service as part of the lifespan, exactly as before.
+        service = get_default_conversation_service()
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
         async with service:
-            # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
 
             config = api.state.config
@@ -214,26 +257,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     with suppress(asyncio.CancelledError):
                         await retention_task
 
-                # Define async functions for stopping each service
-                async def stop_vscode_service():
-                    if vscode_service is not None:
-                        await vscode_service.stop()
-
-                async def stop_desktop_service():
-                    if desktop_service is not None:
-                        await desktop_service.stop()
-
-                async def stop_tool_preload_service():
-                    if tool_preload_service is not None:
-                        await tool_preload_service.stop()
-
-                # Stop all services concurrently
-                await asyncio.gather(
-                    stop_vscode_service(),
-                    stop_desktop_service(),
-                    stop_tool_preload_service(),
-                    return_exceptions=True,
-                )
+                await stop_stateless_services()
     finally:
         if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
             tmux_tmpdir
@@ -293,12 +317,24 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     """
     app.include_router(server_details_router)
 
+    # The /api/init endpoint bypasses both the session-key auth and the
+    # dormant gate. It has its own X-Init-API-Key auth. When
+    # ``deferred_init`` is False the endpoints are still mounted but return
+    # 404 because no InitService is registered on app.state — see
+    # ``get_init_service``.
+    init_api_router = APIRouter(prefix="/api")
+    init_api_router.include_router(init_router)
+    app.include_router(init_api_router)
+
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
     dependencies = []
     if config.session_api_keys:
         dependencies.append(Depends(create_session_api_key_dependency(config)))
+    # Dormant gate: when ``deferred_init`` is True this 503s every /api/*
+    # route until POST /api/init completes. No-op for non-deferred deployments.
+    dependencies.append(Depends(require_initialized))
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
