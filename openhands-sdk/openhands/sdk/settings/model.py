@@ -1323,8 +1323,8 @@ class ACPAgentSettings(AgentSettingsBase):
         default=None,
         description=(
             "Model identifier for the ACP server to use (e.g. "
-            "``'claude-opus-4-6'``). claude-agent-acp receives it via session "
-            "_meta; codex-acp and gemini-cli via ``set_session_model``. "
+            "``'claude-opus-4-6'``). Providers apply it through their "
+            "configured ACP model-selection method. "
             "Leave blank to let the server pick its default."
         ),
         json_schema_extra={

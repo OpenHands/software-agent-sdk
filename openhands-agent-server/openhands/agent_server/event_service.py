@@ -1081,8 +1081,8 @@ class EventService:
     async def switch_acp_model(self, model: str) -> None:
         """Switch the model on a running ACP conversation, mid-conversation.
 
-        Runs the (blocking) protocol-level ``session/set_model`` round-trip in a
-        worker thread, then mirrors the new model into ``meta.json`` so the
+        Runs the blocking provider model-selection round-trip in a worker
+        thread, then mirrors the new model into ``meta.json`` so the
         switch survives an agent-server restart: ``start()`` rebuilds the agent
         from ``self.stored.agent`` and ``ConversationState.create()`` copies
         that over the persisted base_state.json on resume. Only ``acp_model``

@@ -156,7 +156,7 @@ def test_cold_read_falls_back_to_acp_model_override():
 
 def test_live_agent_does_not_fall_back_to_unapplied_override():
     """Live initialized agent whose override was NOT applied (e.g. a resume whose
-    ``set_session_model`` the server rejected): ``current_model_id`` is the
+    model-selection call the server rejected): ``current_model_id`` is the
     authoritative ``None`` and must NOT fall back to ``acp_model`` — that would
     re-assert an override the live session isn't running.
     """

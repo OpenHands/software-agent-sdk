@@ -1181,7 +1181,7 @@ def test_switch_acp_model_uninitialized_returns_409(
 def test_switch_acp_model_protocol_error_returns_400(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
-    """A rejected ACP ``session/set_model`` call maps to 400, not 500.
+    """A rejected ACP model-selection call maps to 400, not 500.
 
     ``ACPAgent.set_acp_model`` translates ``acp.exceptions.RequestError`` (e.g.
     method-not-found on a custom server, or an invalid model id) into a
@@ -1190,7 +1190,7 @@ def test_switch_acp_model_protocol_error_returns_400(
     """
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.switch_acp_model.side_effect = ValueError(
-        "ACP server rejected set_session_model(model='bogus'): method not found"
+        "ACP server rejected model switch to 'bogus': method not found"
     )
 
     client.app.dependency_overrides[get_conversation_service] = (
@@ -1211,13 +1211,13 @@ def test_switch_acp_model_timeout_returns_504(
 ):
     """A TimeoutError (wedged/slow ACP server) maps to 504, not 500.
 
-    ``ACPAgent.set_acp_model`` bounds the ``session/set_model`` round-trip with
-    ``acp_prompt_timeout``; an expired call raises ``TimeoutError``, which the
-    route surfaces as a Gateway Timeout rather than an opaque 500.
+    ``ACPAgent.set_acp_model`` bounds the provider model-selection round-trip
+    with ``acp_prompt_timeout``; an expired call raises ``TimeoutError``, which
+    the route surfaces as a Gateway Timeout rather than an opaque 500.
     """
     mock_conversation_service.get_event_service.return_value = mock_event_service
     mock_event_service.switch_acp_model.side_effect = TimeoutError(
-        "ACP server did not answer set_session_model within 600s"
+        "ACP server did not answer model switch within 600s"
     )
 
     client.app.dependency_overrides[get_conversation_service] = (

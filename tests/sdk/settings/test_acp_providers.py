@@ -35,11 +35,12 @@ class TestACPProviderInfo:
         assert info.base_url_env_var == "ANTHROPIC_BASE_URL"
         assert info.default_session_mode == "bypassPermissions"
         assert "claude-agent" in info.agent_name_patterns
-        # Initial selection rides session/set_model — claude-agent-acp 0.30.0
-        # silently ignores the session-_meta payload (#3654), which is still
-        # sent as best-effort (session_meta_key below).
+        # claude-agent-acp 0.30.0 silently ignores the session-_meta payload
+        # (#3654), which is still sent as best-effort (session_meta_key below).
+        # The authoritative path is session/set_config_option configId="model".
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
+        assert info.model_selection_method == "set_config_option"
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "claude-opus-4-8"
         assert any(m.id == "claude-opus-4-8" for m in info.available_models)
@@ -56,8 +57,9 @@ class TestACPProviderInfo:
         assert info.base_url_env_var == "OPENAI_BASE_URL"
         assert info.default_session_mode == "full-access"
         assert "codex-acp" in info.agent_name_patterns
-        assert info.supports_set_session_model is True
+        assert info.supports_set_session_model is False
         assert info.supports_runtime_model_switch is True
+        assert info.model_selection_method == "set_config_option"
         assert info.session_meta_key is None
         assert info.default_model == "gpt-5.5/medium"
         assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
@@ -75,6 +77,7 @@ class TestACPProviderInfo:
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
+        assert info.model_selection_method == "set_session_model"
         assert info.session_meta_key is None
         assert info.default_model == "auto-gemini-2.5"
         assert any(m.id == "auto-gemini-2.5" for m in info.available_models)

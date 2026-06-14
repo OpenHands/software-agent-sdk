@@ -416,9 +416,10 @@ async def switch_conversation_acp_model(
 ) -> Success:
     """Switch the model of a running ACP conversation, mid-conversation.
 
-    Issues a protocol-level ``session/set_model`` call to the ACP subprocess
-    so the new model applies to subsequent turns without losing context. Only
-    valid for ACP conversations whose provider supports runtime switching.
+    Issues the provider's protocol-level model-selection call to the ACP
+    subprocess so the new model applies to subsequent turns without losing
+    context. Only valid for ACP conversations whose provider supports runtime
+    switching.
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -431,9 +432,9 @@ async def switch_conversation_acp_model(
             detail=str(e),
         )
     except TimeoutError as e:
-        # The bounded session/set_model round-trip expired. The ACP server is
-        # wedged/slow rather than rejecting the request, so surface a 504
-        # instead of an opaque 500.
+        # The bounded model-selection round-trip expired. The ACP server is
+        # wedged/slow rather than rejecting the request, so surface a 504 instead
+        # of an opaque 500.
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=str(e),

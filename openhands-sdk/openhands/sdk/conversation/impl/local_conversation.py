@@ -964,7 +964,7 @@ class LocalConversation(BaseConversation):
         """Switch the model on a running ACP conversation (mid-conversation).
 
         Unlike :meth:`switch_llm`, which swaps OpenHands' own LLM object, this
-        issues a protocol-level ``session/set_model`` call to the ACP
+        issues the provider's protocol-level model-selection call to the ACP
         subprocess so the new model applies to subsequent turns of the *same*
         session, preserving conversation context. ``switch_llm`` would not
         affect an ACP conversation, since the subprocess owns its own model.
