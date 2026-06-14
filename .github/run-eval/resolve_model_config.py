@@ -431,7 +431,79 @@ MODELS = {
             "retry_max_wait": 120,
         },
     },
+    # Intelligent per-instance routing.
+    #
+    # This is NOT a single model. The ``llm_config`` here is an
+    # ``intelligent-router-v0`` payload understood by ``benchmarks.utils.llm_config``
+    # (added in OpenHands/benchmarks#742). When the benchmark loads this config
+    # via ``--llm-config-path``, each instance is classified once by
+    # ``classifier_model_id`` and the agent conversation is routed to the matching
+    # tier model.
+    #
+    # Default routing table (matches the iter5 classifier prompt and
+    # OpenHands/benchmarks sample config):
+    #   Frontend                    -> kimi-k2.6
+    #   Issue Resolution (other)    -> minimax-m2.7
+    #   Greenfield / Testing /
+    #     Information Gathering     -> gpt-5.5
+    #
+    # Each tier sub-model is independently validated by the recursive preflight
+    # in ``check_model`` below; the slug-derivation step in
+    # ``OpenHands/evaluation/eval-job/scripts/build_matrix.py`` falls back to
+    # the entry's ``id`` because there is no top-level ``model`` field.
+    "router-classified-3tier": {
+        "id": "router-classified-3tier",
+        "display_name": "Router (3-tier, classifier=minimax-m2.7)",
+        "llm_config": {
+            "kind": "intelligent-router-v0",
+            "classifier_model_id": "minimax-m2.7",
+            "fallback_model_id": "gpt-5.5",
+            "tiers": {
+                "kimi-k2.6": {
+                    "model": "litellm_proxy/moonshot/kimi-k2.6",
+                    "temperature": 1.0,
+                    # See ``kimi-k2.6`` entry above for why this is needed.
+                    "inline_image_urls": True,
+                },
+                "minimax-m2.7": {
+                    "model": "litellm_proxy/minimax/MiniMax-M2.7",
+                    "temperature": 1.0,
+                    "top_p": 0.95,
+                },
+                "gpt-5.5": {
+                    "model": "litellm_proxy/openai/gpt-5.5",
+                    "reasoning_effort": "high",
+                },
+            },
+            "routing": {
+                "Frontend": "kimi-k2.6",
+                "Issue Resolution (other)": "minimax-m2.7",
+                "Greenfield": "gpt-5.5",
+                "Testing": "gpt-5.5",
+                "Information Gathering": "gpt-5.5",
+            },
+            "vision_capable_model_ids": ["kimi-k2.6", "gpt-5.5"],
+        },
+    },
 }
+
+
+# Discriminator string used by ``benchmarks.utils.intelligent_routing`` to tag
+# router configs. Keep in sync with that module.
+ROUTER_CONFIG_KIND = "intelligent-router-v0"
+
+
+def is_router_config(llm_config: dict[str, Any]) -> bool:
+    """Return True if ``llm_config`` is an intelligent-router-v0 payload.
+
+    Router payloads have no top-level ``model`` field; instead they carry a
+    ``kind`` discriminator and a ``tiers`` map of model_id -> per-tier llm_config.
+    """
+    return (
+        isinstance(llm_config, dict)
+        and llm_config.get("kind") == ROUTER_CONFIG_KIND
+        and isinstance(llm_config.get("tiers"), dict)
+    )
 
 
 def error_exit(msg: str, exit_code: int = 1) -> None:
@@ -479,6 +551,11 @@ def check_model(
 ) -> tuple[bool, str]:
     """Check a single model with a simple completion request using litellm.
 
+    Router entries (``llm_config.kind == "intelligent-router-v0"``) have no
+    single downstream model. For those we recurse into each tier sub-model
+    and report aggregate success/failure; this catches per-tier configuration
+    or proxy-provisioning issues before the actual eval run.
+
     Args:
         model_config: Model configuration dict with 'llm_config' key
         api_key: API key for authentication
@@ -491,8 +568,13 @@ def check_model(
     import litellm
 
     llm_config = model_config.get("llm_config", {})
+    display_name = model_config.get("display_name", llm_config.get("model", "unknown"))
+
+    # Router entries: recursively validate each tier sub-model.
+    if is_router_config(llm_config):
+        return _check_router_tiers(model_config, api_key, base_url, timeout)
+
     model_name = llm_config.get("model", "unknown")
-    display_name = model_config.get("display_name", model_name)
 
     try:
         # Build kwargs from llm_config, excluding 'model' and SDK-specific params
@@ -554,6 +636,47 @@ def check_model(
 
 # Alias for backward compatibility with tests
 test_model = check_model
+
+
+def _check_router_tiers(
+    model_config: dict[str, Any],
+    api_key: str,
+    base_url: str,
+    timeout: int,
+) -> tuple[bool, str]:
+    """Recursively validate every tier sub-model of a router entry.
+
+    Aggregates per-tier results into a single (success, multi-line message)
+    return value so that the surrounding ``run_preflight_check`` loop can keep
+    its one-line-per-entry output format.
+    """
+    llm_config = model_config["llm_config"]
+    display_name = model_config.get("display_name", "router")
+    tiers = llm_config.get("tiers", {})
+
+    if not tiers:
+        return False, f"✗ {display_name}: router has no tiers to validate"
+
+    lines = [f"  {display_name}: validating {len(tiers)} tier model(s)..."]
+    all_ok = True
+    for tier_id, tier_cfg in tiers.items():
+        sub_config = {
+            "id": tier_id,
+            "display_name": f"{display_name} :: {tier_id}",
+            "llm_config": tier_cfg,
+        }
+        ok, sub_message = check_model(sub_config, api_key, base_url, timeout)
+        lines.append(f"    {sub_message}")
+        if not ok:
+            all_ok = False
+
+    summary = (
+        f"✓ {display_name}: OK ({len(tiers)} tier(s))"
+        if all_ok
+        else f"✗ {display_name}: one or more tiers failed"
+    )
+    lines.append(summary)
+    return all_ok, "\n".join(lines)
 
 
 def _check_proxy_reachable(
