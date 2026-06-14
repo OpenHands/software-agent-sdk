@@ -13,6 +13,7 @@ from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
+from openhands.sdk.security.supply_chain import SupplyChainSecurityAnalyzer
 
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "GraySwanAnalyzer",
     "PatternSecurityAnalyzer",
     "PolicyRailSecurityAnalyzer",
+    "SupplyChainSecurityAnalyzer",
     "EnsembleSecurityAnalyzer",
     "ConfirmationPolicyBase",
     "AlwaysConfirm",
