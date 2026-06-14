@@ -21,6 +21,13 @@ def _load_prod_module():
 _prod = _load_prod_module()
 validate_pr_body = _prod.validate_pr_body
 body_from_event = _prod.body_from_event
+is_dependabot_pr = _prod.is_dependabot_pr
+
+
+DEPENDBOT_BODY = """## Bump some-dependency from 1.0.0 to 2.0.0
+
+Bumps [some-dependency](https://github.com/example/some-dependency) from 1.0.0 to 2.0.0.
+"""
 
 
 VALID_BODY = """<!-- Keep this PR as draft until it is ready for review. -->
@@ -121,3 +128,42 @@ def test_body_from_event_reads_pull_request_body(tmp_path: Path):
     event_path.write_text(json.dumps({"pull_request": {"body": VALID_BODY}}))
 
     assert body_from_event(event_path) == VALID_BODY
+
+
+def test_is_dependabot_pr_returns_true_for_dependabot_pr(tmp_path: Path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "body": DEPENDBOT_BODY,
+                    "user": {"login": "dependabot[bot]"},
+                }
+            }
+        )
+    )
+
+    assert is_dependabot_pr(event_path) is True
+
+
+def test_is_dependabot_pr_returns_false_for_regular_pr(tmp_path: Path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(
+        json.dumps({"pull_request": {"body": VALID_BODY, "user": {"login": "octocat"}}})
+    )
+
+    assert is_dependabot_pr(event_path) is False
+
+
+def test_is_dependabot_pr_returns_false_for_missing_user(tmp_path: Path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({"pull_request": {"body": DEPENDBOT_BODY}}))
+
+    assert is_dependabot_pr(event_path) is False
+
+
+def test_is_dependabot_pr_returns_false_for_invalid_json(tmp_path: Path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text("not valid json")
+
+    assert is_dependabot_pr(event_path) is False

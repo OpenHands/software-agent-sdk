@@ -118,6 +118,20 @@ def body_from_event(event_path: Path) -> str:
     return body if isinstance(body, str) else ""
 
 
+def is_dependabot_pr(event_path: Path) -> bool:
+    """Check if the PR is created by Dependabot."""
+    try:
+        payload = json.loads(event_path.read_text())
+        pull_request = payload.get("pull_request")
+        if not isinstance(pull_request, dict):
+            return False
+        user = pull_request.get("user", {})
+        login = user.get("login", "")
+        return login == "dependabot[bot]"
+    except (json.JSONDecodeError, OSError):
+        return False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -141,6 +155,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    # Skip validation for Dependabot PRs
+    if args.event_path is not None and is_dependabot_pr(args.event_path):
+        print("Skipping PR description validation for Dependabot PR.")
+        return 0
+
     if args.body_file is not None:
         body = args.body_file.read_text()
     elif args.event_path is not None:
