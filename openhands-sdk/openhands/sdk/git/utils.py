@@ -61,13 +61,14 @@ def run_git_command(
         if result.returncode != 0:
             # Redact credentials from command for logging and error messages
             cmd_str = _redact_args_for_logging(args)
+            redacted_args = [redact_url_credentials(a) for a in args]
             error_msg = f"Git command failed: {cmd_str}"
             logger.error(
                 f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
             )
             raise GitCommandError(
                 message=error_msg,
-                command=args,
+                command=redacted_args,
                 exit_code=result.returncode,
                 stderr=result.stderr.strip(),
             )
@@ -77,11 +78,12 @@ def run_git_command(
 
     except subprocess.TimeoutExpired as e:
         cmd_str = _redact_args_for_logging(args)
+        redacted_args = [redact_url_credentials(a) for a in args]
         error_msg = f"Git command timed out: {cmd_str}"
         logger.error(error_msg)
         raise GitCommandError(
             message=error_msg,
-            command=args,
+            command=redacted_args,
             exit_code=-1,
             stderr="Command timed out",
         ) from e
