@@ -26,6 +26,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "tools",
     "skills",
     "max_iteration_per_run",
+    "max_budget_per_run",
     "hooks",
     "profile_store_dir",
     "mcp_servers",
@@ -141,6 +142,18 @@ def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     return None
 
 
+def _extract_max_budget_per_run(fm: dict[str, object]) -> float | None:
+    """Extract the per-run cost budget (USD) from a frontmatter file."""
+    raw = fm.get("max_budget_per_run")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        return float(raw)
+    return None
+
+
 def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
     # Parse hooks configuration
     hooks_raw = fm.get("hooks")
@@ -220,6 +233,12 @@ class AgentDefinition(BaseModel):
         default=None,
         description="Maximum iterations per run. "
         "It must be strictly positive, or None for default.",
+        gt=0,
+    )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="Maximum accumulated cost (USD) per run for this sub-agent. "
+        "Must be strictly positive, or None for no budget.",
         gt=0,
     )
     mcp_servers: dict[str, Any] | None = Field(
@@ -310,6 +329,7 @@ class AgentDefinition(BaseModel):
         skills: list[str] = _extract_skills(fm)
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        max_budget_per_run: float | None = _extract_max_budget_per_run(fm)
         mcp_servers: dict[str, Any] | None = _extract_mcp_servers(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
@@ -330,6 +350,7 @@ class AgentDefinition(BaseModel):
             skills=skills,
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             mcp_servers=mcp_servers,
             hooks=hooks,
             profile_store_dir=profile_store_dir,

@@ -801,3 +801,27 @@ class TestAgentDefinitionCondenser:
         agent_md = tmp_path / "a.md"
         agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
         assert "condenser" not in AgentDefinition.load(agent_md).metadata
+
+
+class TestAgentDefinitionMaxBudget:
+    """Tests for the max_budget_per_run frontmatter field."""
+
+    def test_absent_is_none(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run is None
+
+    def test_numeric_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 2.5\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run == 2.5
+
+    def test_string_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text('---\nname: a\nmax_budget_per_run: "1.0"\n---\n\nPrompt.\n')
+        assert AgentDefinition.load(md).max_budget_per_run == 1.0
+
+    def test_not_in_metadata(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
+        assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
