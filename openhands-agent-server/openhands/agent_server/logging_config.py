@@ -5,7 +5,7 @@ from typing import Any
 
 from pythonjsonlogger.json import JsonFormatter
 
-from openhands.sdk.logger import ENV_JSON, ENV_LOG_LEVEL, IN_CI
+from openhands.sdk.logger import ENV_JSON, ENV_JSON_LEVEL_KEY, ENV_LOG_LEVEL, IN_CI
 
 
 class UvicornAccessJsonFormatter(JsonFormatter):
@@ -85,6 +85,7 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
         config["formatters"]["access_json"] = {
             "()": UvicornAccessJsonFormatter,
             "fmt": "%(asctime)s %(levelname)s %(name)s %(message)s",
+            "rename_fields": {"levelname": ENV_JSON_LEVEL_KEY},
         }
 
         # Define handler for access logs
