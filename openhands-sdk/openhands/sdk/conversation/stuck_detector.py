@@ -62,10 +62,35 @@ class StuckDetector:
     def is_stuck(self) -> bool:
         """Check if the agent is currently stuck.
 
-        Note: To avoid materializing potentially large file-backed event histories,
-        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events are analyzed.
-        If a user message exists within this window, only events after it are checked.
-        Otherwise, all events in the window are analyzed.
+        Thin compatibility wrapper around :py:meth:`detect_stuck_reason`.
+        Prefer ``detect_stuck_reason()`` in new code so the *kind* of stuck
+        pattern is available for telemetry and retry decisions.
+        """
+        return self.detect_stuck_reason() is not None
+
+    def detect_stuck_reason(self) -> str | None:
+        """Return a short reason code if the agent is stuck, else ``None``.
+
+        Reason codes (machine-readable, append-only):
+
+        - ``"repeating_action_observation"`` — same action with the same
+          observation repeating N+ times.
+        - ``"repeating_action_error"`` — same action producing the same
+          error N+ times.
+        - ``"monologue"`` — agent emits repeated messages without any
+          user input.
+        - ``"alternating_action_observation"`` — two action/observation
+          cycles alternating in a tight loop.
+        - ``"context_window_error_loop"`` — repeated context-window
+          errors despite condensation.
+
+        These are stable identifiers eval harnesses, dashboards and retry
+        loops can branch on without parsing free-form log messages.
+
+        Note: To avoid materializing potentially large file-backed event
+        histories, only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
+        events are analyzed. If a user message exists within this window,
+        only events after it are checked.
         """
         events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
 
@@ -88,7 +113,7 @@ class StuckDetector:
             self.monologue_threshold,
         )
         if len(events) < min_threshold:
-            return False
+            return None
 
         logger.debug(f"Checking for stuck patterns in {len(events)} events")
         logger.debug(
@@ -115,27 +140,27 @@ class StuckDetector:
         # Check all stuck patterns
         # scenario 1: same action, same observation
         if self._is_stuck_repeating_action_observation(last_actions, last_observations):
-            return True
+            return "repeating_action_observation"
 
         # scenario 2: same action, errors
         if self._is_stuck_repeating_action_error(last_actions, last_observations):
-            return True
+            return "repeating_action_error"
 
         # scenario 3: monologue
         if self._is_stuck_monologue(events):
-            return True
+            return "monologue"
 
         # scenario 4: action, observation alternating pattern
         if len(events) >= self.alternating_pattern_threshold:
             if self._is_stuck_alternating_action_observation(events):
-                return True
+                return "alternating_action_observation"
 
         # scenario 5: context window error loop
         if len(events) >= 10:
             if self._is_stuck_context_window_error(events):
-                return True
+                return "context_window_error_loop"
 
-        return False
+        return None
 
     def _is_stuck_repeating_action_observation(
         self, last_actions: list[Event], last_observations: list[Event]
