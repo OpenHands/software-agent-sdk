@@ -38,6 +38,7 @@ from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
+from openhands.agent_server.mcp_oauth_router import mcp_oauth_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
@@ -313,6 +314,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(mcp_router)
+    api_router.include_router(mcp_oauth_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
