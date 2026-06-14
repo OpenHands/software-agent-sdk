@@ -10,6 +10,7 @@ a temporary directory, ensuring the state can be restored
 if the task is resumed for further work later.
 """
 
+import json
 import shutil
 import tempfile
 import threading
@@ -19,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from openhands.sdk import Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -43,6 +44,7 @@ ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
 logger = get_logger(__name__)
 
 _SUBAGENTS_DIR: Final[str] = "subagents"
+_INDEX_FILENAME: Final[str] = "task_index.json"
 
 
 class TaskStatus(StrEnum):
@@ -134,6 +136,57 @@ class TaskManager:
                 self._persistence_dir = Path(
                     tempfile.mkdtemp(prefix="openhands_tasks_")
                 )
+            # Rehydrate prior tasks so resume works across a process restart.
+            self._load_index()
+
+    @property
+    def _index_path(self) -> Path | None:
+        """Path to the persisted task index, or None when the parent conversation
+        does not persist (the index would not survive a restart anyway). Derived
+        the same way as close(), so there is no separate state to keep in sync."""
+        parent = self._parent_conversation
+        if self._persistence_dir is None or parent is None:
+            return None
+        if parent.state.persistence_dir is None:
+            return None
+        return self._persistence_dir / _INDEX_FILENAME
+
+    def _save_index(self) -> None:
+        """Persist the task_id -> conversation_id index so resume survives a
+        process restart. No-op when the parent does not persist."""
+        index_path = self._index_path
+        if index_path is None:
+            return
+        with self._tasks_lock:
+            payload = [task.model_dump(mode="json") for task in self._tasks.values()]
+        tmp_path = index_path.parent / f"{index_path.name}.tmp"
+        try:
+            tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+            tmp_path.replace(index_path)  # atomic on the same filesystem
+        except OSError as e:
+            logger.warning(f"Failed to persist task index: {e}")
+
+    def _load_index(self) -> None:
+        """Rehydrate the task index from disk. Conversations are reconstructed
+        lazily on resume; entries load with conversation=None. Tolerates a
+        missing or unreadable index."""
+        index_path = self._index_path
+        if index_path is None or not index_path.exists():
+            return
+        try:
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning(f"Failed to read task index, ignoring: {e}")
+            return
+        with self._tasks_lock:
+            for entry in payload:
+                try:
+                    task = Task.model_validate(entry)
+                except ValidationError as e:
+                    logger.warning(f"Skipping invalid task index entry: {e}")
+                    continue
+                # Do not clobber a live in-memory task with a disk snapshot.
+                self._tasks.setdefault(task.id, task)
 
     @property
     def parent_conversation(self) -> LocalConversation:
@@ -157,6 +210,8 @@ class TaskManager:
             task.conversation.close()
         with self._tasks_lock:
             self._tasks[task.id] = task.model_copy(update={"conversation": None})
+        # Persist the final status (completed/error) for cross-process visibility.
+        self._save_index()
 
     def start_task(
         self,
@@ -229,8 +284,10 @@ class TaskManager:
                     "status": TaskStatus.RUNNING,
                 }
             )
+            task = self._tasks[resume]
 
-            return self._tasks[resume]
+        self._save_index()
+        return task
 
     def _create_task(
         self,
@@ -269,13 +326,16 @@ class TaskManager:
                 factory.definition.get_confirmation_policy(),
             )
 
-            self._tasks[task_id] = Task(
+            task = Task(
                 id=task_id,
                 conversation_id=conversation_id,
                 conversation=sub_conversation,
                 status=TaskStatus.RUNNING,
             )
-            return self._tasks[task_id]
+            self._tasks[task_id] = task
+
+        self._save_index()
+        return task
 
     def _get_conversation(
         self,
