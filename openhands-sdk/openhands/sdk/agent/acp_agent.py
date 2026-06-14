@@ -1270,6 +1270,20 @@ class ACPAgent(AgentBase):
             " ['npx', '-y', '@agentclientprotocol/claude-agent-acp']"
         ),
     )
+    acp_server: str | None = Field(
+        default=None,
+        description=(
+            "Provider registry key identifying which ACP CLI this agent runs "
+            "('claude-code', 'codex', 'gemini-cli', or 'custom'); None when the "
+            "agent is built directly rather than via ACPAgentSettings. Set by "
+            "ACPAgentSettings.create_agent() from ACPAgentSettings.acp_server so "
+            "the authoritative key survives onto the agent — and thus onto "
+            "ConversationInfo.agent — because the launch command in acp_command "
+            "does not reliably reverse-map to a provider. Informational only: "
+            "consumers use it to resolve a provider brand label / model list; "
+            "the subprocess is still launched from acp_command."
+        ),
+    )
     acp_args: list[str] = Field(
         default_factory=list,
         description="Additional arguments for the ACP server command",

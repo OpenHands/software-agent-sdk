@@ -1724,6 +1724,11 @@ class ACPAgentSettings(AgentSettingsBase):
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
+            # Carry the authoritative provider key onto the agent: acp_command
+            # alone does not reliably reverse-map to a provider, so consumers
+            # (e.g. the conversation UI resolving a brand label / model list)
+            # read it from ConversationInfo.agent.acp_server.
+            acp_server=self.acp_server,
             acp_args=list(self.acp_args),
             # Pass acp_env directly rather than via resolve_acp_env() so the
             # deprecation warning is not emitted twice on the create_agent path:
