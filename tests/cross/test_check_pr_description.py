@@ -30,8 +30,6 @@ HUMAN:
 I reviewed the agent's changes and confirmed they do what the PR says.
 The implementation is small and the validation output matches the goal.
 
-- [x] A human has tested these changes.
-
 AGENT:
 
 ---
@@ -80,19 +78,7 @@ def test_human_section_must_be_first_visible_line_and_filled():
     errors = validate_pr_body(body)
 
     assert "The first visible line of the PR description must be `HUMAN:`." in errors
-    assert (
-        "Add a short human-written note between `HUMAN:` and the human-tested checkbox."
-        in errors
-    )
-
-
-def test_human_tested_checkbox_must_be_checked():
-    body = VALID_BODY.replace("- [x] A human has tested", "- [ ] A human has tested")
-
-    assert (
-        "A human must check `A human has tested these changes.` before review."
-        in validate_pr_body(body)
-    )
+    assert "Add a short human-written note between `HUMAN:` and `AGENT:`." in errors
 
 
 def test_required_template_fields_must_be_present_and_filled():
