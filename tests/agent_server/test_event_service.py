@@ -3071,3 +3071,262 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+class TestEventServiceNoOpPauseInterruptDoesNotStrandSendMessage:
+    """Regression for All-Hands-AI/OpenHands#14698.
+
+    ``EventService.pause()`` and ``EventService.interrupt()`` historically
+    bumped ``_explicit_interrupt_generation`` unconditionally before
+    delegating to ``LocalConversation``. On a ``FINISHED`` conversation
+    both delegations are no-ops, so the bump left a phantom stop-intent
+    that the next ``send_message(run=True)`` then honoured at its
+    post-persist generation guard and silently skipped ``run()`` - the
+    exact "stuck conversation" symptom in issue #14698.
+
+    The fix only bumps the counter when the call will actually change
+    execution state. Same precedent as the existing ``internal_acp_rerun``
+    gate inside ``interrupt()``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pause_on_finished_does_not_bump_generation(self, event_service):
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.FINISHED),
+        ):
+            await event_service.pause()
+
+        assert event_service._explicit_interrupt_generation == before, (
+            "pause() on FINISHED must not bump explicit_interrupt_generation (#14698)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_interrupt_on_finished_does_not_bump_generation(self, event_service):
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.FINISHED),
+        ):
+            await event_service.interrupt()
+
+        assert event_service._explicit_interrupt_generation == before, (
+            "interrupt() on FINISHED must not bump "
+            "explicit_interrupt_generation (#14698)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_pause_on_paused_does_not_bump_generation(self, event_service):
+        """``LocalConversation.pause()`` early-returns on PAUSED, so the
+        EventService-level call is a no-op too."""
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.PAUSED),
+        ):
+            await event_service.pause()
+
+        assert event_service._explicit_interrupt_generation == before
+
+    @pytest.mark.asyncio
+    async def test_pause_on_running_still_bumps_generation(self, event_service):
+        """The fix must not regress the working case: a pause while
+        RUNNING is a real user-stop-intent and MUST bump the counter."""
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.RUNNING),
+        ):
+            await event_service.pause()
+
+        assert event_service._explicit_interrupt_generation == before + 1
+
+    @pytest.mark.asyncio
+    async def test_pause_on_idle_still_bumps_generation(self, event_service):
+        """``LocalConversation.pause()`` transitions IDLE -> PAUSED, so a
+        pause-on-IDLE is a real state change and must bump."""
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.IDLE),
+        ):
+            await event_service.pause()
+
+        assert event_service._explicit_interrupt_generation == before + 1
+
+    @pytest.mark.asyncio
+    async def test_interrupt_on_running_still_bumps_generation(self, event_service):
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.RUNNING),
+        ):
+            await event_service.interrupt()
+
+        assert event_service._explicit_interrupt_generation == before + 1
+
+    @pytest.mark.asyncio
+    async def test_interrupt_on_finished_with_live_arun_task_still_bumps(
+        self, event_service
+    ):
+        """Covers the wait_for_pending drain tail at the end of
+        ``_run_and_publish``: ``arun()`` has set ``FINISHED`` and returned,
+        but the underlying ``LocalConversation`` arun task is still alive.
+        An interrupt landing then DOES cancel the live task, so the bump
+        must fire even though status reads FINISHED. Status alone is not
+        a complete predicate for "interrupt will do something"; the live
+        arun-task disjunct closes that gap.
+        """
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+
+        loop = asyncio.get_running_loop()
+        # Task is "live" at the moment the gate decision is taken, then
+        # completes cleanly so the post-decision wait_for inside
+        # interrupt() returns without raising.
+        live_task = loop.create_task(asyncio.sleep(0.05))
+        event_service._conversation._arun_task = live_task
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.FINISHED),
+        ):
+            await event_service.interrupt()
+
+        assert event_service._explicit_interrupt_generation == before + 1, (
+            "interrupt() on FINISHED with a live _arun_task must bump "
+            "(async cleanup tail) - the live-arun-task disjunct."
+        )
+
+    @pytest.mark.asyncio
+    async def test_interrupt_with_internal_acp_rerun_still_skips_bump(
+        self, event_service
+    ):
+        """The existing ``internal_acp_rerun=True`` gate must still apply
+        unchanged: an ACP-internal rerun is, by design, not a user-stop
+        intent and must never bump regardless of status."""
+        event_service._conversation = MagicMock()
+        event_service._publish_state_update = AsyncMock()
+        before = event_service._explicit_interrupt_generation
+
+        with patch.object(
+            EventService,
+            "_peek_execution_status",
+            MagicMock(return_value=ConversationExecutionStatus.RUNNING),
+        ):
+            await event_service.interrupt(internal_acp_rerun=True)
+
+        assert event_service._explicit_interrupt_generation == before, (
+            "internal_acp_rerun=True must continue to skip the bump on "
+            "every status (existing precedent at L1034)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_concurrent_no_op_pause_during_send_message_does_not_strand(
+        self, event_service
+    ):
+        """End-to-end regression for #14698.
+
+        The strand condition requires the pause/interrupt to land DURING
+        the in-flight ``await loop.run_in_executor(None, ..._conversation
+        .send_message, ...)``: ``send_message`` snapshots the generation
+        BEFORE the await and re-checks it AFTER. If the bump happens in
+        that window AND the underlying call was a no-op (because status
+        is not RUNNING/IDLE), the silent early-return fires for no
+        legitimate reason.
+
+        This test simulates that race: a slow persist gives an external
+        ``POST /pause`` time to land while the user message is still
+        being written.
+        """
+        persist_started = threading.Event()
+        pause_completed = threading.Event()
+
+        def slow_persist(_msg):
+            # Signal that the in-flight await is now in progress, then
+            # block until the concurrent pause has finished so the race
+            # window is deterministic.
+            persist_started.set()
+            assert pause_completed.wait(timeout=5.0), (
+                "concurrent pause did not complete within 5s"
+            )
+
+        conv = MagicMock()
+        conv.send_message = slow_persist
+        event_service._conversation = conv
+        event_service._publish_state_update = AsyncMock()
+
+        async def fire_pause_during_persist():
+            # Wait for the in-flight persist to start (poll the
+            # cross-thread Event from the asyncio loop).
+            while not persist_started.is_set():
+                await asyncio.sleep(0.001)
+            # External POST /pause hits while the conversation is
+            # FINISHED. With the fix, this MUST NOT bump the generation.
+            with patch.object(
+                EventService,
+                "_peek_execution_status",
+                MagicMock(return_value=ConversationExecutionStatus.FINISHED),
+            ):
+                await event_service.pause()
+            pause_completed.set()
+
+        run_calls: list[dict] = []
+
+        async def fake_run(self, **kwargs):  # noqa: ARG001
+            run_calls.append(kwargs)
+
+        pause_task = asyncio.create_task(fire_pause_during_persist())
+
+        try:
+            with (
+                patch.object(EventService, "run", fake_run),
+                patch.object(
+                    EventService,
+                    "_mark_running_acp_prompt_superseded",
+                    AsyncMock(return_value=(False, False)),
+                ),
+            ):
+                await event_service.send_message(
+                    Message(
+                        role="user",
+                        content=[TextContent(text="follow-up")],
+                    ),
+                    run=True,
+                )
+        finally:
+            await pause_task
+
+        assert len(run_calls) == 1, (
+            "send_message(run=True) must call run() even when a no-op "
+            "external pause lands during the in-flight await. The "
+            "phantom bump must not strand the conversation (#14698). "
+            f"Actual run() call count: {len(run_calls)}"
+        )

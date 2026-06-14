@@ -386,6 +386,11 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_execution_status_sync)
 
+    def _peek_execution_status(self) -> ConversationExecutionStatus:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        return self._conversation._state.execution_status
+
     def _mark_error_status_sync(self) -> None:
         """Force the conversation into ERROR status (idempotent backstop).
 
@@ -1015,12 +1020,22 @@ class EventService:
 
     async def pause(self):
         if self._conversation:
-            self._explicit_interrupt_generation += 1
+            # User said stop: clear pending re-run intents regardless of
+            # whether the call is a no-op.
             self._rerun_requested = False
             self._acp_internal_rerun_requested = False
+            # Only bump the stop-intent counter when pause will actually
+            # change execution state. LocalConversation.pause() transitions
+            # only on RUNNING/IDLE and never cancels a task, so status
+            # alone is the correct gate here (see #14698).
+            status = self._peek_execution_status()
+            if status in (
+                ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.IDLE,
+            ):
+                self._explicit_interrupt_generation += 1
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.pause)
-            # Publish state update after pause to ensure stats are updated
             await self._publish_state_update()
 
     async def interrupt(self, *, internal_acp_rerun: bool = False):
@@ -1032,9 +1047,26 @@ class EventService:
         """
         if self._conversation:
             if not internal_acp_rerun:
-                self._explicit_interrupt_generation += 1
+                # External interrupt: user said stop.
                 self._rerun_requested = False
                 self._acp_internal_rerun_requested = False
+                # Only bump the stop-intent counter when interrupt will
+                # actually change execution state. Prefer in-memory task
+                # state first so the hot /interrupt path does not need to
+                # enter ConversationState's persistence-aware context while
+                # a run is active.
+                live_run_task = self._run_task is not None and not self._run_task.done()
+                arun_task = getattr(self._conversation, "_arun_task", None)
+                live_arun_task = arun_task is not None and not arun_task.done()
+                should_bump = live_run_task or live_arun_task
+                if not should_bump:
+                    status = self._peek_execution_status()
+                    should_bump = status in (
+                        ConversationExecutionStatus.RUNNING,
+                        ConversationExecutionStatus.IDLE,
+                    )
+                if should_bump:
+                    self._explicit_interrupt_generation += 1
             self._conversation.interrupt()
             # Wait for the run task to finish so we can publish the final
             # state update (PAUSED + InterruptEvent) cleanly. The shield keeps
