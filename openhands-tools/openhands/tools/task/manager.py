@@ -107,8 +107,6 @@ class TaskManager:
         # Set once in _ensure_parent: uses the parent's subagents dir
         # when the parent persists, otherwise a temporary directory.
         self._persistence_dir: Path | None = None
-        # True only when the parent persists (the task index is durable then).
-        self._persists: bool = False
 
     def attach_parent(self, conversation: LocalConversation) -> None:
         """Attach the parent conversation used to create sub-agent tasks.
@@ -134,21 +132,24 @@ class TaskManager:
             if parent_persistence_dir is not None:
                 self._persistence_dir = Path(parent_persistence_dir) / _SUBAGENTS_DIR
                 self._persistence_dir.mkdir(parents=True, exist_ok=True)
-                self._persists = True
             else:
                 self._persistence_dir = Path(
                     tempfile.mkdtemp(prefix="openhands_tasks_")
                 )
-                self._persists = False
             # Rehydrate prior tasks so resume works across a process restart.
             self._load_index()
 
     @property
     def _index_path(self) -> Path | None:
-        """Path to the persisted task index, or None when not persisting."""
-        if self._persists and self._persistence_dir is not None:
-            return self._persistence_dir / _INDEX_FILENAME
-        return None
+        """Path to the persisted task index, or None when the parent conversation
+        does not persist (the index would not survive a restart anyway). Derived
+        the same way as close(), so there is no separate state to keep in sync."""
+        parent = self._parent_conversation
+        if self._persistence_dir is None or parent is None:
+            return None
+        if parent.state.persistence_dir is None:
+            return None
+        return self._persistence_dir / _INDEX_FILENAME
 
     def _save_index(self) -> None:
         """Persist the task_id -> conversation_id index so resume survives a

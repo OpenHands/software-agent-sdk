@@ -970,7 +970,6 @@ class TestTaskIndexPersistence:
         m._ensure_parent(self._parent(persist, work, uuid.uuid4()))
         task = m._create_task(subagent_type="general-purpose", description=None)
 
-        assert m._persists is True
         index_path = m._index_path
         assert index_path is not None and index_path.name == _INDEX_FILENAME
         assert index_path.exists()
@@ -986,7 +985,6 @@ class TestTaskIndexPersistence:
         m = TaskManager()
         m._ensure_parent(parent)
         m._create_task(subagent_type="general-purpose", description=None)
-        assert m._persists is False
         assert m._index_path is None
 
     def test_resume_across_fresh_manager(self, tmp_path):
