@@ -920,9 +920,11 @@ def test_update_agent_settings_null_unsets_optional_field() -> None:
             }
         }
     )
+    assert isinstance(settings.agent_settings, ACPAgentSettings)
     assert settings.agent_settings.acp_model == "claude-opus-4-8"
 
     settings.update({"agent_settings_diff": {"acp_model": None}})
+    assert isinstance(settings.agent_settings, ACPAgentSettings)
     assert settings.agent_settings.acp_model is None
 
 
@@ -1014,22 +1016,21 @@ def test_patch_settings_unset_then_add_acp_env_key(
     assert set(response.json()["agent_settings"]["acp_env"]) == {"OLD", "NEW"}
 
 
-def test_patch_settings_null_on_acp_env_field_itself_is_rejected(
+def test_patch_settings_null_on_acp_env_field_resets_to_default(
     client_with_settings, temp_persistence_dir
 ):
-    """A ``null`` on the ``acp_env`` *field* (not an entry) is not an unset —
-    it flows to validation. ``acp_env`` is a non-optional dict, so it 422s
-    rather than wiping the map; clients clear a map by sending ``{}``."""
+    """A ``null`` on the ``acp_env`` field itself resets it to its default ``{}``
+    (RFC 7386 semantics via apply_agent_settings_diff). This is a change from the
+    old _deep_merge behavior where top-level null would flow to validation and 422."""
     _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
 
     response = client_with_settings.patch(
         "/api/settings",
         json={"agent_settings_diff": {"acp_env": None}},
     )
-    assert response.status_code == 422
-    # The pre-existing value is untouched (atomic validate-then-apply).
+    assert response.status_code == 200
     after = client_with_settings.get("/api/settings").json()
-    assert set(after["agent_settings"]["acp_env"]) == {"KEEP_ME"}
+    assert after["agent_settings"]["acp_env"] == {}
 
 
 def test_patch_settings_null_on_scalar_field_fails_loudly(client_with_settings):
