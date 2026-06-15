@@ -105,6 +105,23 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
+def _set_active_profile_if_matches(
+    request: Request, old_name: str, new_name: str | None
+) -> bool:
+    config = get_config(request)
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    if settings.active_profile != old_name:
+        return False
+
+    def update_active(settings: PersistedSettings) -> PersistedSettings:
+        settings.active_profile = new_name
+        return settings
+
+    settings_store.update(update_active)
+    return True
+
+
 @profiles_router.get("", response_model=ProfileListResponse)
 async def list_profiles(request: Request) -> ProfileListResponse:
     """List all saved LLM profiles.
@@ -207,11 +224,15 @@ async def save_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(name: ProfileName) -> ProfileMutationResponse:
+async def delete_profile(
+    request: Request, name: ProfileName
+) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent)."""
     store = LLMProfileStore()
     with _store_errors():
         store.delete(name)
+    if _set_active_profile_if_matches(request, name, None):
+        logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -245,21 +266,10 @@ async def rename_profile(
             detail=f"Profile '{body.new_name}' already exists",
         )
 
-    # Update active_profile if the renamed profile was the active one
-    if name != body.new_name:
-        config = get_config(request)
-        settings_store = get_settings_store(config)
-        settings = settings_store.load() or PersistedSettings()
-
-        if settings.active_profile == name:
-            new_name = body.new_name
-
-            def update_active(s: PersistedSettings) -> PersistedSettings:
-                s.active_profile = new_name
-                return s
-
-            settings_store.update(update_active)
-            logger.info(f"Updated active_profile from '{name}' to '{new_name}'")
+    if name != body.new_name and _set_active_profile_if_matches(
+        request, name, body.new_name
+    ):
+        logger.info(f"Updated active_profile from '{name}' to '{body.new_name}'")
 
     if name == body.new_name:
         message = f"Profile '{name}' unchanged (same name)"

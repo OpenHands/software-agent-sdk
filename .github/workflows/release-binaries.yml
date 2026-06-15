@@ -38,13 +38,16 @@ jobs:
         steps:
             - id: resolve
               shell: bash
+              env:
+                  GITHUB_EVENT_RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+                  INPUTS_RELEASE_TAG: ${{ inputs.release_tag }}
               run: |
                   set -euo pipefail
                   if [[ "${{ github.event_name }}" == "release" ]]; then
-                      TAG="${{ github.event.release.tag_name }}"
+                      TAG="$GITHUB_EVENT_RELEASE_TAG_NAME"
                       VERSION="${TAG#v}"
                   elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-                      TAG="${{ inputs.release_tag }}"
+                      TAG="$INPUTS_RELEASE_TAG"
                       VERSION="${TAG#v}"
                   elif [[ "${{ github.event_name }}" == "push" ]]; then
                       TAG=""

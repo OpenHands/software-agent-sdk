@@ -541,3 +541,87 @@ def test_execution_status_finished_on_final_iteration():
     assert len(max_iter_errors) == 0, (
         "Expected no MaxIterationsReached error when agent finishes on final iteration"
     )
+
+
+def test_execution_status_error_on_max_budget(tmp_path):
+    """Run halts with ERROR + MaxBudgetReached when the cost budget is exceeded,
+    even before the iteration cap is reached."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    tool_call_message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[
+            MessageToolCall(
+                id="call_1",
+                name="test_tool",
+                arguments='{"command": "test_command"}',
+                origin="completion",
+            )
+        ],
+    )
+    llm = TestLLM.from_messages([tool_call_message] * 5)
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    # High iteration cap so the BUDGET is what stops the run.
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+        max_iteration_per_run=10,
+        max_budget_per_run=1.0,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    # Pre-seed spend over the budget (TestLLM accrues no real cost).
+    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
+        accumulated_cost=5.0
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    budget_errors = [e for e in error_events if e.code == "MaxBudgetReached"]
+    assert len(budget_errors) == 1
+    assert "maximum budget limit" in budget_errors[0].detail
+    # Budget stopped it, not the iteration cap.
+    assert not any(e.code == "MaxIterationsReached" for e in error_events)
+
+
+def test_finished_preserved_even_when_over_budget(tmp_path):
+    """A run that finishes is kept FINISHED even if it is over budget."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    # Text-only response -> agent finishes on the first iteration.
+    finish_message = Message(
+        role="assistant", content=[TextContent(text="Task completed")]
+    )
+    llm = TestLLM.from_messages([finish_message])
+    agent = Agent(llm=llm, tools=[])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+        max_iteration_per_run=10,
+        max_budget_per_run=1.0,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+    conversation.send_message(Message(role="user", content=[TextContent(text="Do it")]))
+    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
+        accumulated_cost=5.0
+    )
+    conversation.run()
+
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert not any(e.code == "MaxBudgetReached" for e in error_events)

@@ -288,7 +288,7 @@ def test_observe_calls_use_span_with_owner_root_span_on_sync():
             # Force-enable observability for the duration of this call.
             lam._observability_enabled = True
             # Stub the lmnr-level ``observe`` so the wrapper just calls through.
-            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
 
                 @lam.observe(name="conversation.send_message")
                 def send_message(self, msg: str) -> str:
@@ -323,7 +323,7 @@ def test_observe_with_owner_root_span_preserves_wrapped_exceptions():
 
         with patch.object(Laminar, "use_span", side_effect=fake_use_span):
             lam._observability_enabled = True
-            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
 
                 @lam.observe(name="conversation.run")
                 def run(self) -> None:
@@ -356,7 +356,7 @@ def test_observe_calls_use_span_with_owner_root_span_on_async():
 
         with patch.object(Laminar, "use_span", side_effect=fake_use_span):
             lam._observability_enabled = True
-            with patch("lmnr.observe", lambda **kw: (lambda f: f)):
+            with patch("lmnr.observe", lambda **kw: lambda f: f):
 
                 @lam.observe(name="conversation.run")
                 async def run(self) -> str:
@@ -438,6 +438,30 @@ def test_root_span_skips_user_id_when_none():
         os.environ.pop("LMNR_PROJECT_API_KEY", None)
 
 
+def test_root_span_sets_attributes():
+    """RootSpan must attach provided attributes to the underlying span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        with patch.object(Laminar, "start_span", return_value=mock_span):
+            lam._observability_enabled = True
+            root = lam.RootSpan(
+                "conversation",
+                attributes={"conversation.tags.automationid": "auto-1"},
+            )
+            assert root.span is mock_span
+            mock_span.set_attribute.assert_called_once_with(
+                "conversation.tags.automationid", "auto-1"
+            )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
 def test_two_concurrent_conversations_do_not_collide():
     """Each conversation must own its own root span (no global stack).
 
@@ -498,35 +522,43 @@ def contextlib_compat():
     return contextlib.contextmanager
 
 
-def test_deprecated_shims_emit_warnings():
-    """The legacy global-stack API must emit DeprecationWarning so external
-    callers (none found in the org-wide audit, but still) are alerted before
-    the 1.27.0 removal.
+def test_root_span_sets_trace_metadata_and_tags():
+    from openhands.sdk.observability.laminar import RootSpan
 
-    We patch ``_current_version`` to ``1.22.0`` because the helper only emits
-    warnings once the running SDK has reached the ``deprecated_in`` version
-    (so during 1.21.x development the warnings are silent; they activate the
-    moment 1.22.0 ships).
-    """
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+
+        RootSpan(
+            "conversation",
+            session_id="session-1",
+            metadata={"repo_name": "OpenHands/software-agent-sdk"},
+            tags=["repo:OpenHands/software-agent-sdk"],
+        )
+
+        mock_laminar.start_span.assert_called_once_with("conversation")
+        mock_laminar.use_span.assert_called_once_with(
+            fake_span,
+            record_exception=False,
+            set_status_on_exception=False,
+        )
+        mock_laminar.set_trace_session_id.assert_called_once_with("session-1")
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"repo_name": "OpenHands/software-agent-sdk"}
+        )
+        mock_laminar.set_span_tags.assert_called_once_with(
+            ["repo:OpenHands/software-agent-sdk"]
+        )
+
+
+def test_deprecated_shims_are_removed():
+    """The legacy global-stack API (deprecated 1.22.0) was removed in 1.27.0."""
     from openhands.sdk.observability import laminar as lam
 
-    # Force observability off so the shim's start_root_span returns None and
-    # we don't reach into a real Laminar SDK.
-    with (
-        patch.object(lam, "should_enable_observability", return_value=False),
-        patch(
-            "openhands.sdk.utils.deprecation._current_version",
-            return_value="1.22.0",
-        ),
-    ):
-        with pytest.warns(DeprecationWarning, match="start_active_span"):
-            lam.start_active_span("conversation", session_id="sid")
-        with pytest.warns(DeprecationWarning, match="end_active_span"):
-            lam.end_active_span()
-        with pytest.warns(DeprecationWarning, match="SpanManager.start_active_span"):
-            lam.SpanManager().start_active_span("conversation")
-        with pytest.warns(DeprecationWarning, match="SpanManager.end_active_span"):
-            lam.SpanManager().end_active_span()
+    assert not hasattr(lam, "start_active_span")
+    assert not hasattr(lam, "end_active_span")
+    assert not hasattr(lam, "SpanManager")
 
 
 def test_async_agent_and_conversation_paths_are_observed():

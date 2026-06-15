@@ -502,8 +502,11 @@ class TestWebhookSubscriberPostEvents:
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # patch("asyncio.sleep") replaces the global, so background tasks
+        # leaked from prior tests (e.g. other subscribers' flush timers) can
+        # also append entries. Filter to the retry_delay we care about.
+        retry_sleeps = [d for d in sleep_calls if d == webhook_spec.retry_delay]
+        assert len(retry_sleeps) == 2  # Sleep between retries
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -547,7 +550,11 @@ class TestWebhookSubscriberPostEvents:
 
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2
+        # patch("asyncio.sleep") replaces the global, so background tasks
+        # leaked from prior tests (e.g. other subscribers' flush timers) can
+        # also append entries. Filter to the retry_delay we care about.
+        retry_sleeps = [d for d in sleep_calls if d == webhook_spec.retry_delay]
+        assert len(retry_sleeps) == 2
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2

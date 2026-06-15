@@ -36,8 +36,15 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    ConversationObservabilityTags,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.openhands_provider import (
+    canonicalize_openhands_llm_payload,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -551,7 +558,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 3
+AGENT_SETTINGS_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -698,6 +705,15 @@ def _migrate_agent_settings_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_agent_settings_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(payload)
+    llm = migrated.get("llm")
+    if isinstance(llm, dict):
+        migrated["llm"] = canonicalize_openhands_llm_payload(llm)
+    migrated["schema_version"] = 4
+    return migrated
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -710,6 +726,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_agent_settings_v0_to_v1,
     1: _migrate_agent_settings_v1_to_v2,
     2: _migrate_agent_settings_v2_to_v3,
+    3: _migrate_agent_settings_v3_to_v4,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -769,6 +786,16 @@ class ConversationSettings(BaseModel):
         default=None,
         exclude=True,
         description="Repository selected for the conversation.",
+    )
+    observability_metadata: ConversationObservabilityMetadata | None = Field(
+        default=None,
+        exclude=True,
+        description="Trace-level metadata for observability backends.",
+    )
+    observability_tags: ConversationObservabilityTags | None = Field(
+        default=None,
+        exclude=True,
+        description="Tags for the conversation root observability span.",
     )
 
     # --- persisted fields ---------------------------------------------------
@@ -890,6 +917,10 @@ class ConversationSettings(BaseModel):
             payload.setdefault("plugins", self.plugins)
         if self.hook_config is not None:
             payload.setdefault("hook_config", self.hook_config)
+        if self.observability_metadata is not None:
+            payload.setdefault("observability_metadata", self.observability_metadata)
+        if self.observability_tags is not None:
+            payload.setdefault("observability_tags", self.observability_tags)
 
         # --- persisted defaults ---------------------------------------------
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())
@@ -1087,6 +1118,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent = settings.create_agent()
         """
         from openhands.sdk.agent import Agent
+        from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
@@ -1099,13 +1131,15 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
+        llm = create_subscription_llm_from_config(self.llm)
+        condenser = None if llm.is_subscription else self.build_condenser(llm)
         return Agent(
-            llm=self.llm,
+            llm=llm,
             tools=self.tools,
             mcp_config=mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
-            condenser=self.build_condenser(self.llm),
+            condenser=condenser,
             critic=self.build_critic(),
             tool_concurrency_limit=self.tool_concurrency_limit,
         )
@@ -1171,9 +1205,13 @@ class ACPAgentSettings(AgentSettingsBase):
     tools, MCP, and (primary) LLM calls; those fields from
     :class:`OpenHandsAgentSettings` do not apply here.
 
-    The :attr:`llm` field is kept (optional) so that cost/token metrics
-    can be attributed to a real model — ``ACPAgent`` uses this purely for
-    bookkeeping and pricing lookups, not for making LLM requests.
+    The :attr:`llm` field is deprecated (removed in 1.33.0). ``ACPAgent``
+    uses it purely for cost/token attribution, never for LLM requests;
+    :attr:`acp_model` is the model identity. Credentials set on it
+    (``llm.api_key`` / ``llm.base_url``) are ignored — provider credentials
+    ride the conversation secrets channel (``request.secrets`` /
+    ``agent_context.secrets`` → ``state.secret_registry``) keyed by the
+    provider's env var name (:attr:`api_key_env_var`).
     """
 
     agent_kind: Literal["acp"] = Field(
@@ -1407,9 +1445,14 @@ class ACPAgentSettings(AgentSettingsBase):
     llm: LLM = Field(
         default_factory=_default_llm_settings,
         description=(
-            "LLM identity used for cost/token attribution. The ACP subprocess "
-            "makes its own model calls; this field is kept so metrics and "
-            "pricing lookups can point at a real model id."
+            "DEPRECATED (removed in 1.33.0): LLM identity used for cost/token "
+            "attribution. The ACP subprocess makes its own model calls; "
+            "``acp_model`` is the model identity. Credentials set here "
+            "(``api_key`` / ``base_url``) are ignored — route provider "
+            "credentials through the conversation secrets channel "
+            "(agent_context.secrets / StartConversationRequest.secrets, which "
+            "route through state.secret_registry), keyed by the provider's "
+            "env var name."
         ),
         json_schema_extra={
             SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
@@ -1428,8 +1471,9 @@ class ACPAgentSettings(AgentSettingsBase):
             "``LocalConversation`` seeds ``agent_context.secrets`` into the "
             "registry at conversation init (below ``request.secrets``), so "
             "callers that build the request outside Python (e.g. canvas-local) "
-            "are covered too, not just the ``create_request`` path. "
-            "``create_agent`` also folds provider credentials into these secrets."
+            "are covered too, not just the ``create_request`` path. Provider "
+            "credentials belong here (or in ``request.secrets``) keyed by the "
+            "provider's env var name."
         ),
     )
 
@@ -1466,7 +1510,24 @@ class ACPAgentSettings(AgentSettingsBase):
         provider-specific env var names. This helper translates the generic
         :attr:`llm` settings into that provider-native subprocess environment.
         Custom servers return an empty mapping.
+
+        .. deprecated:: 1.28.0
+            Removed in 1.33.0 together with :attr:`llm`. ``create_agent()``
+            no longer reads ``llm.api_key`` / ``llm.base_url``; supply
+            provider credentials as conversation secrets keyed by
+            :attr:`api_key_env_var` (e.g. ``ANTHROPIC_API_KEY``) instead.
         """
+        warn_deprecated(
+            "ACPAgentSettings.resolve_provider_env",
+            deprecated_in="1.28.0",
+            removed_in="1.33.0",
+            details=(
+                "Supply ACP provider credentials as conversation secrets "
+                "(agent_context.secrets / StartConversationRequest.secrets, "
+                "which route through state.secret_registry) keyed by the "
+                "provider's env var name instead of ACPAgentSettings.llm."
+            ),
+        )
         env: dict[str, str] = {}
 
         api_key = self.llm.api_key
@@ -1493,11 +1554,11 @@ class ACPAgentSettings(AgentSettingsBase):
 
         Only the explicit :attr:`acp_env` entries — the user-facing
         arbitrary-env-var input that becomes ``ACPAgent.acp_env``. Provider
-        credentials are **no longer** folded in here; :meth:`create_agent`
-        routes them through :attr:`agent_context` secrets →
-        ``state.secret_registry`` instead (the canonical, cipher-protected
-        channel the regular agent uses). At spawn time ``ACPAgent`` injects
-        ``acp_env`` and the registry secrets into the subprocess env.
+        credentials are **not** folded in here; they ride the conversation
+        secrets channel → ``state.secret_registry`` (the canonical,
+        cipher-protected channel the regular agent uses). At spawn time
+        ``ACPAgent`` injects ``acp_env`` and the registry secrets into the
+        subprocess env.
 
         .. deprecated:: 1.24.0
             :attr:`acp_env` is deprecated and will be removed in 1.29.0. Pass
@@ -1620,42 +1681,36 @@ class ACPAgentSettings(AgentSettingsBase):
         which maps :attr:`acp_server` to a default when no explicit
         :attr:`acp_command` is set.
 
-        Provider credentials (``llm.api_key`` → :attr:`api_key_env_var`,
-        ``llm.base_url`` → :attr:`base_url_env_var`) are folded into
-        :attr:`agent_context` secrets rather than ``acp_env``. They then ride
-        the canonical ``agent_context.secrets`` → ``create_request`` →
-        ``request.secrets`` → ``state.secret_registry`` channel (encrypted
-        across the conversation-start boundary), exactly like the regular
-        agent's credentials, and reach the subprocess from the registry.
-        ``acp_env`` carries only the user's explicit arbitrary env vars.
+        Credentials on :attr:`llm` (``api_key`` / ``base_url``) are ignored:
+        provider credentials ride the conversation secrets channel
+        (``agent_context.secrets`` / ``StartConversationRequest.secrets``,
+        which route through ``state.secret_registry``) keyed by the
+        provider's env var name (:attr:`api_key_env_var`), exactly like the
+        regular agent's credentials, and reach the subprocess from the
+        registry. ``acp_env`` carries only the user's explicit arbitrary
+        env vars (deprecated).
         """
         from openhands.sdk.agent import ACPAgent
-        from openhands.sdk.secret import StaticSecret
 
-        # Fold provider creds into agent_context.secrets (not acp_env): on
-        # acp_env they would be dropped to ``**********`` by stores that dump
-        # agent_settings without cipher context; on agent_context.secrets they
-        # ride the StoredConversation.secrets + agent-server Cipher boundary.
-        # Wrap as StaticSecret (a SecretSource) so they validate when
-        # create_request lifts agent_context.secrets into request.secrets
-        # (typed dict[str, SecretSource]).
-        provider_secrets: dict[str, StaticSecret] = {
-            name: StaticSecret(value=SecretStr(value))
-            for name, value in self.resolve_provider_env().items()
-        }
-        agent_context = self.agent_context
-        if provider_secrets:
-            existing = (
-                dict(agent_context.secrets)
-                if agent_context is not None and agent_context.secrets
-                else {}
-            )
-            # Explicit context secrets win over provider-derived ones.
-            merged_secrets = {**provider_secrets, **existing}
-            agent_context = (
-                agent_context.model_copy(update={"secrets": merged_secrets})
-                if agent_context is not None
-                else AgentContext(current_datetime=None, secrets=merged_secrets)
+        # llm.api_key/base_url used to be folded into agent_context.secrets
+        # here. Both production clients route credentials via request.secrets
+        # already (canvas never sends llm; OpenHands strips the credentials
+        # before create_agent), so the fold only fired for direct-SDK callers
+        # — warn them toward the secrets channel instead of silently leaking
+        # a profile base_url into the subprocess (#3632).
+        if self.llm.api_key is not None or self.llm.base_url is not None:
+            warn_deprecated(
+                "ACPAgentSettings.llm",
+                deprecated_in="1.28.0",
+                removed_in="1.33.0",
+                details=(
+                    "create_agent() ignores its api_key/base_url. Supply ACP "
+                    "provider credentials as conversation secrets "
+                    "(agent_context.secrets / StartConversationRequest."
+                    "secrets, which route through state.secret_registry) "
+                    "keyed by the provider's env var name (e.g. "
+                    "ANTHROPIC_API_KEY); use acp_model for model identity."
+                ),
             )
 
         # Bypass ``_serialize_mcp_config``: the subprocess needs real
@@ -1681,7 +1736,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_prompt_timeout=self.acp_prompt_timeout,
             acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
-            agent_context=agent_context,
+            agent_context=self.agent_context,
             mcp_config=mcp_config,
         )
 

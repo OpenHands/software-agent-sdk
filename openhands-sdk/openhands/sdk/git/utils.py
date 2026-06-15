@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,21 @@ logger = logging.getLogger(__name__)
 # Git empty tree hash - this is a well-known constant in git
 # representing the hash of an empty tree object
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _redact_args_for_logging(args: list[str]) -> str:
+    """Redact credentials from git command arguments for safe logging.
+
+    Joins command args with shlex.join and redacts any URLs containing credentials.
+
+    Args:
+        args: List of command arguments.
+
+    Returns:
+        A string representation of the command with credentials redacted.
+    """
+    redacted_args = [redact_url_credentials(arg) for arg in args]
+    return shlex.join(redacted_args)
 
 
 def run_git_command(
@@ -43,7 +59,8 @@ def run_git_command(
         )
 
         if result.returncode != 0:
-            cmd_str = shlex.join(args)
+            # Redact credentials from command for logging and error messages
+            cmd_str = _redact_args_for_logging(args)
             error_msg = f"Git command failed: {cmd_str}"
             logger.error(
                 f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
@@ -55,11 +72,11 @@ def run_git_command(
                 stderr=result.stderr.strip(),
             )
 
-        logger.debug(f"Git command succeeded: {shlex.join(args)}")
+        logger.debug(f"Git command succeeded: {_redact_args_for_logging(args)}")
         return result.stdout.strip()
 
     except subprocess.TimeoutExpired as e:
-        cmd_str = shlex.join(args)
+        cmd_str = _redact_args_for_logging(args)
         error_msg = f"Git command timed out: {cmd_str}"
         logger.error(error_msg)
         raise GitCommandError(

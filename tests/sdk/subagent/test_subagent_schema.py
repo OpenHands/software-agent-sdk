@@ -766,3 +766,62 @@ System prompt.
         server = agent.mcp_servers["static-server"]
         assert server["command"] == "uvx"
         assert server["args"] == ["mcp-server-fetch"]
+
+
+class TestAgentDefinitionCondenser:
+    """Tests for the condenser frontmatter field."""
+
+    def test_condenser_absent_is_none(self, tmp_path: Path):
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(agent_md).condenser is None
+
+    def test_condenser_none_disables(self, tmp_path: Path):
+        from openhands.sdk.context.condenser import NoOpCondenser
+
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
+        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
+
+    def test_condenser_false_disables(self, tmp_path: Path):
+        from openhands.sdk.context.condenser import NoOpCondenser
+
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: false\n---\n\nPrompt.\n")
+        assert isinstance(AgentDefinition.load(agent_md).condenser, NoOpCondenser)
+
+    def test_condenser_invalid_string_raises(self, tmp_path: Path):
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: bogus\n---\n\nPrompt.\n")
+        with pytest.raises(ValueError, match="Invalid condenser value"):
+            AgentDefinition.load(agent_md)
+
+    def test_condenser_not_in_metadata(self, tmp_path: Path):
+        """condenser is a known field, not leaked into metadata extras."""
+        agent_md = tmp_path / "a.md"
+        agent_md.write_text("---\nname: a\ncondenser: none\n---\n\nPrompt.\n")
+        assert "condenser" not in AgentDefinition.load(agent_md).metadata
+
+
+class TestAgentDefinitionMaxBudget:
+    """Tests for the max_budget_per_run frontmatter field."""
+
+    def test_absent_is_none(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run is None
+
+    def test_numeric_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 2.5\n---\n\nPrompt.\n")
+        assert AgentDefinition.load(md).max_budget_per_run == 2.5
+
+    def test_string_value(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text('---\nname: a\nmax_budget_per_run: "1.0"\n---\n\nPrompt.\n')
+        assert AgentDefinition.load(md).max_budget_per_run == 1.0
+
+    def test_not_in_metadata(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
+        assert "max_budget_per_run" not in AgentDefinition.load(md).metadata

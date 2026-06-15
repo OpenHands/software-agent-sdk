@@ -241,6 +241,29 @@ def test_delete_profile_idempotent(client):
     assert body["name"] == "nonexistent"
 
 
+def test_delete_active_profile_clears_active_profile(client, store):
+    """Deleting the active profile clears active_profile in settings."""
+    llm = LLM(model="gpt-4o")
+    store.save("active-profile", llm)
+    store.save("other-profile", llm)
+    activate_response = client.post("/api/profiles/active-profile/activate")
+    assert activate_response.status_code == 200
+    assert client.get("/api/settings").json()["active_profile"] == "active-profile"
+
+    response = client.delete("/api/profiles/active-profile")
+
+    assert response.status_code == 200
+    settings_response = client.get("/api/settings")
+    assert settings_response.status_code == 200
+    assert settings_response.json()["active_profile"] is None
+
+    profiles_response = client.get("/api/profiles")
+    assert profiles_response.status_code == 200
+    body = profiles_response.json()
+    assert body["active_profile"] is None
+    assert {profile["name"] for profile in body["profiles"]} == {"other-profile"}
+
+
 # ── Rename Profile ─────────────────────────────────────────────────────────
 
 
@@ -1115,4 +1138,6 @@ def test_list_profiles_no_auto_create_after_deleting_active_profile(client, stor
     response = client.get("/api/profiles")
 
     assert response.status_code == 200
-    assert response.json()["profiles"] == []
+    body = response.json()
+    assert body["profiles"] == []
+    assert body["active_profile"] is None

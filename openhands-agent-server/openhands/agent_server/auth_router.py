@@ -23,12 +23,10 @@ from openhands.agent_server.dependencies import WORKSPACE_SESSION_COOKIE_NAME
 
 auth_router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# Cookie lifetime in seconds. Short enough that a stolen cookie isn't a
-# long-lived credential; long enough that a user previewing artifacts in
-# canvas isn't constantly re-authing. The cookie auto-renews on every call
-# to POST /api/auth/workspace-session, which the canvas frontend can do on
-# load.
-_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 8  # 8 hours
+# Cookie lifetime in seconds. Set to effectively "never expire" — browsers
+# (per RFC 6265bis, e.g. Chrome) clamp Max-Age to ~400 days regardless of
+# the value sent, so this is the longest persistence the spec allows.
+_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365 * 10  # 10 years
 
 # Path scope: only sent on workspace-router URLs. Other /api/* endpoints
 # never see the cookie.

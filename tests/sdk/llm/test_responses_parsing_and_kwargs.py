@@ -117,6 +117,33 @@ def test_normalize_responses_kwargs_encrypted_reasoning_disabled():
     assert "text.output_text" in out["include"]
 
 
+def test_responses_reasoning_options_not_sent_for_non_reasoning_model():
+    llm = LLM(
+        model="openai/gpt-4o-mini",
+        reasoning_effort="high",
+        reasoning_summary="detailed",
+    )
+
+    out = select_responses_options(
+        llm,
+        {},
+        include=["message.output_text.logprobs"],
+        store=None,
+    )
+
+    assert "reasoning" not in out
+    assert out["include"] == ["message.output_text.logprobs"]
+
+
+def test_responses_encrypted_reasoning_not_added_for_non_reasoning_model():
+    llm = LLM(model="openai/gpt-4o-mini")
+
+    out = select_responses_options(llm, {}, include=None, store=False)
+
+    assert "include" not in out
+    assert "reasoning" not in out
+
+
 @patch("openhands.sdk.llm.llm.litellm_responses")
 def test_llm_responses_end_to_end(mock_responses_call):
     # Configure LLM
@@ -311,8 +338,9 @@ def test_responses_retries_without_caching_on_prompt_cache_too_small(mock_respon
 
     # Pick a model that supports prompt caching so is_caching_prompt_active()
     # is True and the retry branch is reachable on the responses() path.
+    # (Gemini no longer uses explicit caching, so use an Anthropic model here.)
     llm = LLM(
-        model="gemini-3-flash",
+        model="claude-sonnet-4-20250514",
         api_key=SecretStr("test_key"),
         usage_id="test-llm",
         caching_prompt=True,
@@ -390,8 +418,10 @@ async def test_aresponses_retries_without_caching_on_prompt_cache_too_small(
     )
     mock_aresponses.side_effect = [cache_error, success_resp]
 
+    # Anthropic model so is_caching_prompt_active() is True (Gemini no longer
+    # uses explicit caching); mirrors the sync test above.
     llm = LLM(
-        model="gemini-3-flash",
+        model="claude-sonnet-4-20250514",
         api_key=SecretStr("test_key"),
         usage_id="test-llm",
         caching_prompt=True,

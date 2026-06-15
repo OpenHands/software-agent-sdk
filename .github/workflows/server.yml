@@ -351,6 +351,8 @@ jobs:
 
             - name: Prepare build context and metadata
               id: prep
+              env:
+                  GITHUB_REF: ${{ github.ref }}
               run: |
                   uv sync --frozen
 
@@ -358,7 +360,7 @@ jobs:
                   # build.py now handles architecture tagging internally via --arch flag
                   # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
                   BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch ${{ matrix.arch }}"
-                  if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+                  if [[ "$GITHUB_REF" == refs/tags/* ]]; then
                       BUILD_CMD="$BUILD_CMD --versioned-tag"
                   fi
                   eval "$BUILD_CMD"
@@ -403,37 +405,54 @@ jobs:
 
             - name: Cleanup build context
               if: always()
+              env:
+                  BUILD_CONTEXT: ${{ steps.prep.outputs.build_context }}
               run: |
-                  if [ -n "${{ steps.prep.outputs.build_context }}" ] && [ -d "${{ steps.prep.outputs.build_context }}" ]; then
-                      echo "Cleaning up build context: ${{ steps.prep.outputs.build_context }}"
-                      rm -rf "${{ steps.prep.outputs.build_context }}"
+                  if [ -n "$BUILD_CONTEXT" ] && [ -d "$BUILD_CONTEXT" ]; then
+                      echo "Cleaning up build context: $BUILD_CONTEXT"
+                      rm -rf "$BUILD_CONTEXT"
                   fi
 
             - name: Summary (${{ matrix.variant }}-${{ matrix.arch }}) - outputs
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  BUILD_DIGEST: ${{ steps.build.outputs.digest }}
               run: |
-                  echo "Image: ${{ env.IMAGE }}"
-                  echo "Variant: ${{ env.VARIANT }}"
-                  echo "Architecture: ${{ env.ARCH }}"
-                  echo "Platform: ${{ env.PLATFORM }}"
-                  echo "Short SHA: ${{ steps.prep.outputs.short_sha }}"
-                  echo "Tags: ${{ steps.prep.outputs.tags }}"
-                  echo "Build digest: ${{ steps.build.outputs.digest }}"
+                  echo "Image: $IMAGE"
+                  echo "Variant: $VARIANT"
+                  echo "Architecture: $ARCH"
+                  echo "Platform: $PLATFORM"
+                  echo "Short SHA: $SHORT_SHA"
+                  echo "Tags: $TAGS"
+                  echo "Build digest: $BUILD_DIGEST"
 
             - name: Save build info for consolidation
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  VERSIONED_TAGS_CSV: ${{ steps.prep.outputs.versioned_tags_csv }}
               run: |
                   mkdir -p build-info
-                  cat > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json" << EOF
-                  {
-                    "variant": "${{ matrix.variant }}",
-                    "arch": "${{ matrix.arch }}",
-                    "base_image": "${{ matrix.base_image }}",
-                    "image": "${{ env.IMAGE }}",
-                    "short_sha": "${{ steps.prep.outputs.short_sha }}",
-                    "tags": "${{ steps.prep.outputs.tags }}",
-                    "versioned_tags_csv": "${{ steps.prep.outputs.versioned_tags_csv }}",
-                    "platform": "${{ env.PLATFORM }}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg arch "$ARCH" \
+                    --arg base_image "$BASE_IMAGE" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg tags "$TAGS" \
+                    --arg versioned_tags_csv "$VERSIONED_TAGS_CSV" \
+                    --arg platform "$PLATFORM" \
+                    '{
+                      variant: $variant,
+                      arch: $arch,
+                      base_image: $base_image,
+                      image: $image,
+                      short_sha: $short_sha,
+                      tags: $tags,
+                      versioned_tags_csv: $versioned_tags_csv,
+                      platform: $platform
+                    }' > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json"
 
             - name: Upload build info artifact
               uses: actions/upload-artifact@v7
@@ -485,9 +504,11 @@ jobs:
 
             - name: Create and push multi-arch manifest for ${{ matrix.variant }}
               id: create_manifest
+              env:
+                  GIT_REF: ${{ github.ref }}
+                  SHORT_SHA: ${{ steps.get_sha.outputs.short_sha }}
+                  VARIANT: ${{ matrix.variant }}
               run: |
-                  SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
-                  VARIANT=${{ matrix.variant }}
                   AMD64_TAGS_CSV=$(jq -r '.tags' build-info/${VARIANT}-amd64.json)
                   declare -A SEEN_MANIFEST_TAGS=()
                   MANIFEST_TAGS=()
@@ -529,7 +550,7 @@ jobs:
                   done
 
                   # Preserve the latest-<variant> alias used by the workspace defaults.
-                  if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+                  if [ "$GIT_REF" == "refs/heads/main" ]; then
                       LATEST_TAG="latest-${VARIANT}"
                       create_manifest "$LATEST_TAG" "main-${VARIANT}"
                       MANIFEST_TAGS+=("$LATEST_TAG")
@@ -539,14 +560,17 @@ jobs:
 
                   # Save manifest info for consolidation
                   mkdir -p manifest-info
-                  cat > "manifest-info/${VARIANT}.json" << EOF
-                  {
-                    "variant": "${VARIANT}",
-                    "image": "${IMAGE}",
-                    "short_sha": "${SHORT_SHA}",
-                    "manifest_tag": "${MANIFEST_TAG_CSV}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg manifest_tag "$MANIFEST_TAG_CSV" \
+                    '{
+                      variant: $variant,
+                      image: $image,
+                      short_sha: $short_sha,
+                      manifest_tag: $manifest_tag
+                    }' > "manifest-info/${VARIANT}.json"
 
             - name: Upload manifest info artifact
               uses: actions/upload-artifact@v7
@@ -731,13 +755,15 @@ jobs:
         steps:
             - name: Generate PR description from build summary
               id: generate_description
+              env:
+                  BUILD_SUMMARY_JSON: ${{ needs.consolidate-build-info.outputs.build_summary }}
               run: |
                   echo "Event: ${{ github.event_name }}"
                   echo "PR number: ${{ github.event.number }}"
                   echo "Run attempt: ${{ github.run_attempt }}"
 
                   # Parse the build summary JSON
-                  BUILD_SUMMARY='${{ needs.consolidate-build-info.outputs.build_summary }}'
+                  BUILD_SUMMARY="$BUILD_SUMMARY_JSON"
                   echo "Build summary received:"
                   echo "$BUILD_SUMMARY" | jq .
 

@@ -206,6 +206,7 @@ def agent_definition_to_factory(
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
+        from openhands.sdk.context.condenser import default_condenser
         from openhands.sdk.tool.registry import list_registered_tools
         from openhands.sdk.tool.spec import Tool
 
@@ -253,11 +254,22 @@ def agent_definition_to_factory(
         if agent_def.mcp_servers:
             mcp_config = {"mcpServers": agent_def.mcp_servers}
 
+        # Sub-agents get a summarizing condenser by default (parity with the
+        # top-level agent) so deep runs auto-compact instead of erroring on context
+        # overflow. The condenser LLM needs a distinct usage_id or its tokens get
+        # deduped out of conversation stats. A NoOpCondenser disables condensation.
+        condenser = (
+            agent_def.condenser
+            if agent_def.condenser is not None
+            else default_condenser(llm.model_copy(update={"usage_id": "condenser"}))
+        )
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
             mcp_config=mcp_config,
+            condenser=condenser,
         )
 
     return _factory

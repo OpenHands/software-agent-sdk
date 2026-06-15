@@ -13,7 +13,6 @@ from .acp_providers import (
     get_acp_provider,
 )
 from .api_models import (
-    AppPreferences,
     SecretCreateRequest,
     SecretItemResponse,
     SecretsListResponse,
@@ -88,7 +87,6 @@ __all__ = [
     "ACPFileSecretSpec",
     "ACPModelOption",
     "ACPProviderInfo",
-    "AppPreferences",
     "build_session_model_meta",
     "default_acp_file_secrets",
     "AGENT_SETTINGS_SCHEMA_VERSION",

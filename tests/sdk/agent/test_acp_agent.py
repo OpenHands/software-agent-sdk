@@ -33,6 +33,7 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _strip_inherited_npm_env,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
@@ -115,6 +116,23 @@ class TestACPAgentInstantiation:
     def test_creates_with_empty_default_tools(self):
         agent = _make_agent()
         assert agent.include_default_tools == []
+
+    def test_strip_inherited_npm_env_keeps_subprocesses_out_of_parent_context(self):
+        env = {
+            "INIT_CWD": "/repo",
+            "npm_config_prefix": "/repo",
+            "npm_package_name": "parent-package",
+            "NPM_CONFIG_PREFIX": "/repo",
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
+
+        _strip_inherited_npm_env(env)
+
+        assert env == {
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
 
     def test_requires_acp_command(self):
         with pytest.raises(Exception):
@@ -4421,21 +4439,22 @@ class TestMaybeSetSessionModel:
         assert applied is True
 
     @pytest.mark.asyncio
-    async def test_meta_key_provider_skips_protocol_override_at_init(self):
-        # claude-agent-acp selects its *initial* model via session _meta, so the
-        # one-shot init set_session_model call is skipped (even though the
-        # provider now supports the protocol call for runtime switches).
+    async def test_claude_agent_uses_protocol_model_override(self):
+        # claude-agent-acp 0.30.0 silently ignores the session-_meta model
+        # selection (#3654), so the init path pushes the model via the same
+        # one-shot set_session_model call as codex/gemini.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn,
             "claude-agent-acp",
             "session-1",
-            "claude-opus-4-6",
+            "claude-opus-4-8",
         )
-        conn.set_session_model.assert_not_called()
-        # Not applied *via this call* — claude rode the model in via _meta on
-        # new_session, which the caller accounts for separately.
-        assert applied is False
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="claude-opus-4-8",
+            session_id="session-1",
+        )
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
@@ -4445,14 +4464,34 @@ class TestMaybeSetSessionModel:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_does_not_apply_override_at_init(self):
-        # An unknown/custom server gets neither _meta nor the protocol call on a
-        # fresh session, so the override never reaches the server.
+    async def test_unknown_provider_uses_set_config_option_fallback(self):
+        # An unknown/custom server now tries set_config_option as a fallback
+        # for model selection, which is a standard ACP method.
         conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "devin-cli", "session-1", "kimi-k2-6"
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="session-1",
+        )
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_set_config_option_failure_is_tolerated(self):
+        # If set_config_option fails for an unknown provider, we log a warning
+        # but don't break session creation.
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
         applied = await _maybe_set_session_model(
             conn, "some-custom-acp", "session-1", "whatever"
         )
         conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once()
         assert applied is False
 
 
@@ -4461,11 +4500,8 @@ class TestReapplySessionModelOnResume:
 
     @pytest.mark.asyncio
     async def test_claude_reapplies_persisted_model_on_resume(self):
-        # claude selects its initial model via _meta (supports_set_session_model
-        # =False) but DOES support set_session_model for runtime switches.
-        # load_session() carries no _meta, so on resume the persisted model must
-        # be reapplied via the runtime-switch gate — _maybe_set_session_model
-        # would skip it.
+        # load_session() carries no model selection, so on resume the persisted
+        # model must be reapplied via the runtime-switch gate.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
             conn, "claude-agent-acp", "sess-1", "claude-haiku-4-5-20251001"
@@ -4496,17 +4532,18 @@ class TestReapplySessionModelOnResume:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_attempts_reapply(self):
-        # provider=None (custom server) is allowed to attempt the switch by
-        # set_acp_model, and such switches are persisted as authoritative — so
-        # resume must mirror that and attempt the reapply too (otherwise the
-        # resumed session would silently revert to the server default).
+    async def test_unknown_provider_attempts_reapply_via_set_config_option(self):
+        # provider=None (custom server) now attempts reapply via set_config_option
+        # as a fallback, which is a standard ACP method.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever"
+            conn, "devin-cli", "sess-1", "kimi-k2-6"
         )
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="whatever", session_id="sess-1"
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="sess-1",
         )
         assert applied is True
 
@@ -4543,13 +4580,13 @@ class TestReapplySessionModelOnResume:
         # the call, or invalid model id) must not break resume — mirrors the
         # load_session fallback. The error is logged, not raised.
         conn = AsyncMock()
-        conn.set_session_model.side_effect = ACPRequestError(
+        conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         applied = await _reapply_session_model_on_resume(
             conn, "some-custom-acp", "sess-1", "whatever"
         )
-        conn.set_session_model.assert_awaited_once()
+        conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
         assert applied is False
@@ -5932,10 +5969,8 @@ class TestACPSessionIdPersistence:
             "acp_session_id": "stored-sess",
             "acp_session_cwd": str(tmp_path),
         }
-        # Name the server "codex-acp" so _maybe_set_session_model routes
-        # acp_model through conn.set_session_model (claude-acp uses _meta,
-        # which only applies on new_session and so wouldn't exercise the
-        # protocol-level override on the resume path).
+        # Named "codex-acp"; any built-in provider routes acp_model through
+        # conn.set_session_model on this path.
         conn = self._make_conn()
         conn.initialize.return_value.agent_info.name = "codex-acp"
         conn.initialize.return_value.auth_methods = []
@@ -5968,13 +6003,10 @@ class TestACPSessionIdPersistence:
         models.available_models = entries
         return models
 
-    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
-        self, tmp_path
-    ):
+    def test_unknown_provider_applies_override_via_set_config_option(self, tmp_path):
         """Fresh session on an unknown/custom provider with ``acp_model`` set:
-        the override is never pushed to the server (no ``_meta``, no protocol
-        call), so ``current_model_id`` must reflect what the server reported —
-        not the override the live session isn't actually running.
+        the override is pushed via ``set_config_option`` (not ``set_session_model``),
+        so ``current_model_id`` must reflect the applied override.
         """
         agent = _make_agent(acp_model="caller-model")
         state = _make_state(tmp_path)
@@ -5982,15 +6014,18 @@ class TestACPSessionIdPersistence:
         new_response.session_id = "fresh-sess"
         new_response.models = self._models_block("server-model", ["server-model"])
         conn = self._make_conn()
+        conn.set_config_option = AsyncMock()
         conn.initialize.return_value.agent_info.name = "some-custom-acp"
         conn.initialize.return_value.auth_methods = []
         conn.new_session = AsyncMock(return_value=new_response)
 
         self._patched_start_acp_server(agent, state, conn=conn)
 
-        # Unknown provider => the override never reached the server.
         conn.set_session_model.assert_not_awaited()
-        assert agent.current_model_id == "server-model"
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
 
     def test_known_provider_surfaces_applied_override(self, tmp_path):
         """Fresh session on a provider that applies the override via the
@@ -6117,9 +6152,8 @@ class TestACPSecretsEnvInjection:
     env so the ACP server (Claude Code, Codex CLI, etc.) can use them. They
     reach the subprocess through ``state.secret_registry``: ``LocalConversation``
     seeds ``agent_context.secrets`` into the registry at init (covering
-    canvas-local, which folds ``llm.api_key`` into ``agent_context.secrets``
-    server-side via ``create_agent`` but never lifts it into ``request.secrets``),
-    and ``_start_acp_server`` injects the registry. ``acp_env`` entries take
+    callers that never lift them into ``request.secrets``), and
+    ``_start_acp_server`` injects the registry. ``acp_env`` entries take
     precedence over registry secrets.
     """
 
@@ -6585,15 +6619,16 @@ class TestACPSecretRegistryEnvInjection:
 
 
 class TestACPEnvConflictSuppression:
-    """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
+    """An active CLAUDE_CODE_OAUTH_TOKEN must not coexist with API-key env vars.
 
-    When CLAUDE_CONFIG_DIR is present in the subprocess environment the agent
-    uses a credential file for OAuth.  If ANTHROPIC_API_KEY or
-    ANTHROPIC_BASE_URL are also present they redirect requests to a proxy that
-    does not support OAuth bearer tokens, breaking auth silently.
+    When CLAUDE_CODE_OAUTH_TOKEN is present the subprocess authenticates with
+    that bearer against api.anthropic.com.  A co-present ANTHROPIC_API_KEY would
+    take precedence (bypassing the subscription) and an ANTHROPIC_BASE_URL would
+    route the bearer to a proxy that rejects it, breaking auth silently.
 
     _start_acp_server must strip the conflicting vars regardless of where they
     came from: acp_env, os.environ, secret_registry, or agent_context.secrets.
+    The strip is keyed on the token, not on CLAUDE_CONFIG_DIR (#3588).
     """
 
     @staticmethod
@@ -6677,25 +6712,25 @@ class TestACPEnvConflictSuppression:
 
         return captured
 
-    def test_claude_config_dir_suppresses_api_key_from_acp_env(self, tmp_path):
-        """ANTHROPIC_API_KEY from acp_env is stripped when CLAUDE_CONFIG_DIR present."""
+    def test_oauth_token_suppresses_api_key_from_acp_env(self, tmp_path):
+        """ANTHROPIC_API_KEY from acp_env is stripped when the OAuth token is set."""
         agent = _make_agent(
             acp_env={
-                "CLAUDE_CONFIG_DIR": "/tmp/claude-creds",
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
                 "ANTHROPIC_API_KEY": "sk-conflict",
                 "ANTHROPIC_BASE_URL": "https://proxy.example.com",
             }
         )
         env = self._run_start_capturing_env(agent, tmp_path)
 
-        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-creds"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-tok"
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_claude_config_dir_suppresses_api_key_from_os_environ(self, tmp_path):
+    def test_oauth_token_suppresses_api_key_from_os_environ(self, tmp_path):
         """ANTHROPIC_API_KEY leaking in from os.environ is stripped too."""
         agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+            acp_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
         )
         env = self._run_start_capturing_env(
             agent,
@@ -6706,46 +6741,45 @@ class TestACPEnvConflictSuppression:
             },
         )
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_claude_config_dir_suppresses_api_key_from_registry(self, tmp_path):
-        """ANTHROPIC_API_KEY injected via secret_registry is stripped too.
+    def test_oauth_token_suppresses_api_key_from_registry(self, tmp_path):
+        """The token + conflicting vars all injected via secret_registry.
 
         This is the channel provider creds now travel on (folded into
         ``agent_context.secrets`` by ``create_agent`` → lifted into the
         registry by ``create_request``).
         """
-        agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
-        )
+        agent = _make_agent()
         env = self._run_start_capturing_env(
             agent,
             tmp_path,
             registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-from-registry",
                 "ANTHROPIC_API_KEY": "sk-from-registry",
                 "ANTHROPIC_BASE_URL": "https://proxy.example.com",
             },
         )
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-from-registry"
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
-        """ANTHROPIC_API_KEY drained from agent_context.secrets is stripped too.
+    def test_oauth_token_suppresses_api_key_from_secrets(self, tmp_path):
+        """Conflicting vars drained from agent_context.secrets are stripped too.
 
         Covers the canvas-local channel: provider creds folded into
         ``agent_context.secrets`` reach env via the drain, and must still be
-        stripped when CLAUDE_CONFIG_DIR is active.
+        stripped when the OAuth token is active.
         """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
+            acp_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
             agent_context=AgentContext(
                 secrets={
                     "ANTHROPIC_API_KEY": StaticSecret(
@@ -6760,19 +6794,35 @@ class TestACPEnvConflictSuppression:
         with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
             env = self._run_start_capturing_env(agent, tmp_path)
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_no_suppression_without_claude_config_dir(self, tmp_path):
-        """Without CLAUDE_CONFIG_DIR, ANTHROPIC_API_KEY passes through unchanged."""
+    def test_no_suppression_without_oauth_token(self, tmp_path):
+        """Without the OAuth token, ANTHROPIC_API_KEY passes through unchanged."""
         agent = _make_agent(
             acp_env={"ANTHROPIC_API_KEY": "sk-valid"},
         )
         env = self._run_start_capturing_env(agent, tmp_path)
 
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
-        assert "CLAUDE_CONFIG_DIR" not in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_config_dir_alone_does_not_suppress_api_key(self, tmp_path):
+        """Regression (#3588): CLAUDE_CONFIG_DIR without the OAuth token must NOT
+        strip ANTHROPIC_API_KEY. The config dir is a location lever (data-dir
+        isolation), orthogonal to auth mode — keying the strip on it used to
+        delete a working API key during isolation."""
+        agent = _make_agent(
+            acp_env={
+                "CLAUDE_CONFIG_DIR": "/tmp/claude-isolated",
+                "ANTHROPIC_API_KEY": "sk-valid",
+            }
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-isolated"
+        assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
 
 
 class TestACPAgentCurrentModelIdProperty:
@@ -6975,11 +7025,12 @@ class TestACPAgentAvailableModelsProperty:
 
 
 class TestACPAgentSupportsRuntimeModelSwitch:
-    """``supports_runtime_model_switch`` mirrors ``set_acp_model``'s gate.
+    """``supports_runtime_model_switch`` gates the live-switch picker.
 
-    It refuses only for a *known* provider that declares no support, attempts
-    optimistically for unknown/custom servers, and is ``False`` before a
-    session exists.
+    ``True`` only for known providers that declare ``session/set_model`` support.
+    Unknown/custom providers use ``set_config_option`` for initial model selection
+    but that is a generic config write, not a guaranteed live-switch primitive,
+    so the picker is hidden for them. ``False`` before a session exists.
     """
 
     def test_false_before_session(self):
@@ -6994,13 +7045,13 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._agent_name = "codex-acp"
         assert agent.supports_runtime_model_switch is True
 
-    def test_optimistic_true_for_unknown_provider(self):
-        # Mirrors set_acp_model, which attempts the call for unknown/custom
-        # servers rather than refusing — so the picker isn't needlessly hidden.
+    def test_false_for_unknown_provider(self):
+        # Unknown/custom providers use set_config_option for initial model
+        # selection only; the live-switch picker is hidden for them.
         agent = _make_agent()
         agent._session_id = "sess-1"
         agent._agent_name = "some-third-party-acp-server"
-        assert agent.supports_runtime_model_switch is True
+        assert agent.supports_runtime_model_switch is False
 
     def test_false_for_known_unsupported_provider(self, monkeypatch):
         # A known provider that declares no support is the one case we refuse.
@@ -7077,6 +7128,39 @@ class TestMcpConfigToAcpServers:
         assert out[0].url == "https://h/mcp"
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("Authorization", "Bearer y")
+        ]
+
+    def test_http_auth_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer token-y")
+        ]
+
+    def test_http_auth_does_not_override_authorization_header(self):
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "headers": {"authorization": "Bearer explicit"},
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("authorization", "Bearer explicit")
         ]
 
     def test_sse_gated_on_capability(self):
@@ -7650,13 +7734,15 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    # --- Claude carve-out: must not knock out an active API key --------------
+    # --- Claude: isolation applies under either auth mode (#3588) ------------
 
-    def test_claude_skips_when_api_key_active(self, tmp_path):
+    def test_claude_isolates_under_api_key(self, tmp_path):
         from openhands.sdk.secret import StaticSecret
 
         agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
         state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
         state.secret_registry.update_secrets(
             {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-live"))}
         )
@@ -7664,9 +7750,10 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(
                 agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
             )
-        # Setting CLAUDE_CONFIG_DIR would trip _ENV_CONFLICT_MAP and strip the
-        # key, so isolation is skipped and the working key survives.
-        assert "CLAUDE_CONFIG_DIR" not in env
+        # #3588: the conflict strip is keyed on CLAUDE_CODE_OAUTH_TOKEN, not on
+        # CLAUDE_CONFIG_DIR, so relocating the data dir no longer strips a working
+        # API key — API-key Claude gets the same per-conversation isolation.
+        assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
         assert env["ANTHROPIC_API_KEY"] == "sk-live"
 
     def test_claude_isolates_under_oauth_token(self, tmp_path):

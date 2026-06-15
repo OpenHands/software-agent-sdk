@@ -122,6 +122,39 @@ def _get_base_ref() -> str | None:
     return base_ref or None
 
 
+def _has_package_source_changes(repo_root: str, base_ref: str) -> bool:
+    """Return True when package source changed since base_ref, or if diffing fails."""
+
+    changed_files: list[str] | None = None
+    for candidate in _git_ref_candidates(base_ref):
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{candidate}...HEAD"],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            changed_files = result.stdout.splitlines()
+            break
+
+    if changed_files is None:
+        print(
+            f"::warning title=API breakage::Unable to diff against {base_ref}; "
+            "running breakage checks"
+        )
+        return True
+
+    package_prefixes = tuple(f"{cfg.source_dir}/" for cfg in PACKAGES)
+    package_pyprojects = {f"{cfg.source_dir}/pyproject.toml" for cfg in PACKAGES}
+    for changed_file in changed_files:
+        if changed_file in package_pyprojects or changed_file.startswith(
+            package_prefixes
+        ):
+            return True
+    return False
+
+
 def read_version_from_pyproject(path: str) -> str:
     """Read the version string from a pyproject.toml file."""
     with open(path, "rb") as f:
@@ -1355,13 +1388,20 @@ def main() -> int:
     """Main entry point for API breakage detection."""
     repo_root = os.getcwd()
     rc = _check_acp_version_bump(repo_root)
+    base_ref = _get_base_ref()
+    if base_ref and not _has_package_source_changes(repo_root, base_ref):
+        print(
+            "::notice title=API breakage::No package source changes since "
+            f"{base_ref}; skipping SDK API breakage checks"
+        )
+        _write_field_default_change_report([], field_default_changes_since_base=[])
+        return rc
 
     ensure_griffe()
     import griffe
 
     field_default_changes: list[FieldDefaultChange] = []
     field_default_changes_since_base: list[FieldDefaultChange] | None = []
-    base_ref = _get_base_ref()
     for cfg in PACKAGES:
         print(f"\n{'=' * 60}")
         print(f"Checking {cfg.distribution} ({cfg.package})")

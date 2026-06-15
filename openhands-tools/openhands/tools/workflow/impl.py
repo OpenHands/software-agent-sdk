@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 _MAX_SCRIPT_CHARS = 20_000
 _MAX_REDUCE_INPUT_CHARS = 12_000
+_TRUNCATION_MARKER = "\n... [truncated workflow intermediate results]"
 _WORKFLOW_TIMEOUT_SECONDS = 3600.0  # 1 hour; prevents indefinitely hung workflows
 _UNSAFE_CALLS = frozenset(
     {
@@ -187,6 +188,40 @@ class WorkflowContext:
             )
         return [str(result) for result in results]
 
+    async def pipeline(
+        self,
+        items: Sequence[Any],
+        *stages: Callable[[Any], Any],
+    ) -> list[Any]:
+        """Run each item through all stages independently, with no barrier between
+        stages: a fast item can reach a later stage while a slow item is still in an
+        earlier one. The first stage receives the original item; each later stage
+        receives the previous stage's result. Stages may be sync or async. A stage
+        that raises drops that item to ``None`` and skips its remaining stages; other
+        items are unaffected.
+
+        Concurrency is bounded by the agent calls inside stages (which acquire the
+        shared semaphore), so pipeline adds no barrier of its own. Do not have a
+        stage re-acquire the semaphore directly; call ``run_agent``/``map_agents``.
+        """
+        if not stages:
+            raise ValueError("pipeline requires at least one stage")
+
+        async def run_chain(index: int, item: Any) -> Any:
+            value: Any = item
+            try:
+                for stage in stages:
+                    result = stage(value)
+                    value = await result if inspect.isawaitable(result) else result
+                return value
+            except Exception as exc:
+                logger.warning("pipeline: item %d failed: %s", index + 1, exc)
+                return None
+
+        return list(
+            await asyncio.gather(*(run_chain(i, item) for i, item in enumerate(items)))
+        )
+
     async def reduce_agent(
         self,
         items: Any,
@@ -248,18 +283,60 @@ def _render_template(
 
 
 def _format_value(value: Any) -> str:
-    if isinstance(value, str):
-        text = value
-    else:
-        text = jsonlib.dumps(value, indent=2, default=str)
+    """Serialize reduce input for the reducer prompt, bounded by
+    ``_MAX_REDUCE_INPUT_CHARS``. For lists/dicts, drop whole trailing elements
+    (keeping valid JSON) and report how many were omitted, instead of slicing
+    mid-token; everything else falls back to character truncation."""
+    if isinstance(value, (list, dict)):
+        return _truncate_structured(value)
+    text = value if isinstance(value, str) else jsonlib.dumps(value, default=str)
+    return _truncate_text(text)
+
+
+def _truncate_text(text: str) -> str:
     if len(text) <= _MAX_REDUCE_INPUT_CHARS:
         return text
-    # Character-boundary truncation can split mid-token in JSON; element-boundary
-    # truncation for list/dict inputs would be cleaner but is deferred post-MVP.
-    return (
-        text[:_MAX_REDUCE_INPUT_CHARS]
-        + "\n... [truncated workflow intermediate results]"
-    )
+    return text[:_MAX_REDUCE_INPUT_CHARS] + _TRUNCATION_MARKER
+
+
+def _truncate_structured(value: list | dict) -> str:
+    """Keep as many leading elements as fit, dropping whole elements so the JSON
+    stays valid. Always keeps at least one element; a single oversized element is
+    char-truncated as a last resort."""
+    full = jsonlib.dumps(value, indent=2, default=str)
+    if len(full) <= _MAX_REDUCE_INPUT_CHARS:
+        return full
+
+    is_dict = isinstance(value, dict)
+    items = list(value.items()) if is_dict else list(value)
+    total = len(items)
+
+    def render(kept: list) -> str:
+        body = jsonlib.dumps(dict(kept) if is_dict else kept, indent=2, default=str)
+        dropped = total - len(kept)
+        if not dropped:
+            return body
+        return (
+            f"{body}\n... [{dropped} of {total} items omitted to fit the "
+            "reduce input limit]"
+        )
+
+    # Greedy fill by per-element estimate, then correct against the actual
+    # combined serialization (which is larger than the sum of parts) so the
+    # result fits without slicing mid-token.
+    kept: list = []
+    used = 0
+    for item in items:
+        chunk = jsonlib.dumps(dict([item]) if is_dict else item, default=str)
+        if kept and used + len(chunk) > _MAX_REDUCE_INPUT_CHARS:
+            break
+        kept.append(item)
+        used += len(chunk)
+    while len(kept) > 1 and len(render(kept)) > _MAX_REDUCE_INPUT_CHARS:
+        kept.pop()
+
+    # Safety net: a single oversized element can still exceed the budget.
+    return _truncate_text(render(kept))
 
 
 def validate_workflow_script(script: str) -> None:

@@ -357,6 +357,58 @@ class TestLoadAllSkills:
             assert len(shared_skills) == 1
             assert shared_skills[0].content == "project"
 
+    def test_load_all_skills_loops_and_merges_multiple_org_repos(self):
+        """Every org repo is loaded (in order) and merged into the org source."""
+        with patch(self._PATCH_TARGET, return_value={}):
+            with patch(
+                "openhands.agent_server.skills_service.load_org_skills_from_url",
+                side_effect=[
+                    [Skill(name="org_a", content="a", trigger=None)],
+                    [Skill(name="org_b", content="b", trigger=None)],
+                ],
+            ) as mock_org:
+                result = load_all_skills(
+                    load_public=False,
+                    load_user=False,
+                    load_project=False,
+                    load_org=True,
+                    org_repos=[
+                        ("https://git/hieptl/.openhands", "hieptl"),
+                        ("https://git/hieptl/.agents", "hieptl"),
+                    ],
+                )
+
+        assert result.sources["org"] == 2
+        assert [c.kwargs["org_repo_url"] for c in mock_org.call_args_list] == [
+            "https://git/hieptl/.openhands",
+            "https://git/hieptl/.agents",
+        ]
+
+    def test_load_all_skills_org_merge_precedence(self):
+        """A skill in multiple org repos resolves to the later repo's version."""
+        with patch(self._PATCH_TARGET, return_value={}):
+            with patch(
+                "openhands.agent_server.skills_service.load_org_skills_from_url",
+                side_effect=[
+                    [Skill(name="shared", content="openhands", trigger=None)],
+                    [Skill(name="shared", content="agents", trigger=None)],
+                ],
+            ):
+                result = load_all_skills(
+                    load_public=False,
+                    load_user=False,
+                    load_project=False,
+                    load_org=True,
+                    org_repos=[
+                        ("https://git/hieptl/.openhands", "hieptl"),
+                        ("https://git/hieptl/.agents", "hieptl"),
+                    ],
+                )
+
+        shared = [s for s in result.skills if s.name == "shared"]
+        assert len(shared) == 1
+        assert shared[0].content == "agents"
+
 
 class TestSyncPublicSkills:
     """Tests for sync_public_skills function."""

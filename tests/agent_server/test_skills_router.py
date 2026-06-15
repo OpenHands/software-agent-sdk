@@ -83,8 +83,8 @@ class TestGetSkillsEndpoint:
             assert call_kwargs["project_dir"] == "/workspace/myproject"
             assert call_kwargs["load_project"] is True
 
-    def test_get_skills_with_org_config(self, client):
-        """Test skills request with organization configuration."""
+    def test_get_skills_legacy_org_config_supported(self, client):
+        """A deprecated single org_config is normalized to a one-entry org_repos."""
         with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
             mock_load.return_value = SkillLoadResult(skills=[], sources={})
 
@@ -103,9 +103,42 @@ class TestGetSkillsEndpoint:
 
             assert response.status_code == 200
             mock_load.assert_called_once()
-            call_kwargs = mock_load.call_args[1]
-            assert call_kwargs["org_repo_url"] == "https://github.com/myorg/.openhands"
-            assert call_kwargs["org_name"] == "myorg"
+            assert mock_load.call_args[1]["org_repos"] == [
+                ("https://github.com/myorg/.openhands", "myorg")
+            ]
+
+    def test_get_skills_with_org_configs_list(self, client):
+        """Multiple org_configs are forwarded as an ordered list of (url, name)."""
+        with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
+            mock_load.return_value = SkillLoadResult(skills=[], sources={})
+
+            response = client.post(
+                "/api/skills",
+                json={
+                    "load_org": True,
+                    "org_configs": [
+                        {
+                            "repository": "hieptl/.openhands",
+                            "provider": "github",
+                            "org_repo_url": "https://github.com/hieptl/.openhands",
+                            "org_name": "hieptl",
+                        },
+                        {
+                            "repository": "hieptl/.agents",
+                            "provider": "github",
+                            "org_repo_url": "https://github.com/hieptl/.agents",
+                            "org_name": "hieptl",
+                        },
+                    ],
+                },
+            )
+
+            assert response.status_code == 200
+            mock_load.assert_called_once()
+            assert mock_load.call_args[1]["org_repos"] == [
+                ("https://github.com/hieptl/.openhands", "hieptl"),
+                ("https://github.com/hieptl/.agents", "hieptl"),
+            ]
 
     def test_get_skills_with_sandbox_config(self, client):
         """Test skills request with sandbox configuration."""

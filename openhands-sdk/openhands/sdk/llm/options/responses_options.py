@@ -45,6 +45,8 @@ def select_responses_options(
     else:
         out.setdefault("store", False)
 
+    model_features = get_features(llm._model_name_for_capabilities())
+
     # Include encrypted reasoning only when the user enables it on the LLM,
     # and only for stateless calls (store=False). Respect user choice.
     # Note: include and reasoning are not supported in subscription mode
@@ -52,15 +54,19 @@ def select_responses_options(
     # these parameters are present).
     if not llm.is_subscription:
         include_list = list(include) if include is not None else []
+        supports_reasoning = model_features.supports_reasoning_effort
 
-        if not out.get("store", False) and llm.enable_encrypted_reasoning:
+        if (
+            not out.get("store", False)
+            and llm.enable_encrypted_reasoning
+            and supports_reasoning
+        ):
             if "reasoning.encrypted_content" not in include_list:
                 include_list.append("reasoning.encrypted_content")
         if include_list:
             out["include"] = include_list
 
-        # Include reasoning effort only if explicitly set
-        if llm.reasoning_effort:
+        if llm.reasoning_effort and supports_reasoning:
             out["reasoning"] = {"effort": llm.reasoning_effort}
             # Optionally include summary if explicitly set (requires verified org)
             if llm.reasoning_summary:
@@ -70,7 +76,7 @@ def select_responses_options(
     # Note: prompt_cache_retention is not supported in subscription mode
     if (
         not llm.is_subscription
-        and get_features(llm.model).supports_prompt_cache_retention
+        and model_features.supports_prompt_cache_retention
         and llm.prompt_cache_retention
     ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention

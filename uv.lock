@@ -2458,13 +2458,14 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.26.0"
+version = "1.28.0"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
     { name = "docker" },
     { name = "fastapi" },
+    { name = "openai" },
     { name = "openhands-sdk" },
     { name = "pydantic" },
     { name = "sqlalchemy" },
@@ -2479,6 +2480,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
     { name = "docker", specifier = ">=7.1,<8" },
     { name = "fastapi", specifier = ">=0.104" },
+    { name = "openai", specifier = ">=2.33.0,<3" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2" },
     { name = "sqlalchemy", specifier = ">=2" },
@@ -2489,7 +2491,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.26.0"
+version = "1.28.0"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2527,7 +2529,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.27.0" },
     { name = "joserfc", specifier = ">=1.0.0" },
     { name = "litellm", specifier = ">=1.84.1" },
-    { name = "lmnr", specifier = ">=0.7.47" },
+    { name = "lmnr", specifier = ">=0.7.47,<0.7.53" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
@@ -2541,7 +2543,7 @@ provides-extras = ["boto3"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.26.0"
+version = "1.28.0"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "binaryornot" },
@@ -2572,7 +2574,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.26.0"
+version = "1.28.0"
 source = { editable = "openhands-workspace" }
 dependencies = [
     { name = "openhands-agent-server" },

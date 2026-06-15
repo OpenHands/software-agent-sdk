@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from dataclasses import dataclass
 from typing import cast
@@ -15,6 +16,7 @@ from openhands.tools.workflow import (
     WorkflowScriptError,
 )
 from openhands.tools.workflow.impl import (
+    _MAX_REDUCE_INPUT_CHARS,
     _format_exception,
     _format_value,
     execute_workflow_script,
@@ -402,3 +404,127 @@ async def main(wf):
 """
     execute_workflow_script(script, context)
     assert manager.peak_active <= context_cap
+
+
+def test_pipeline_returns_results_in_item_order() -> None:
+    ctx = _context(_FakeTaskManager())
+
+    async def stage(value: str) -> str:
+        return value + "!"
+
+    result = asyncio.run(ctx.pipeline(["a", "b", "c"], stage))
+    assert result == ["a!", "b!", "c!"]
+
+
+def test_pipeline_has_no_barrier_between_stages() -> None:
+    """A fast item reaches a later stage while a slow item is still in stage 1."""
+    ctx = _context(_FakeTaskManager())
+    order: list[str] = []
+
+    async def stage1(item: str) -> str:
+        if item == "slow":
+            await asyncio.sleep(0.05)
+            order.append("slow:s1:end")
+        else:
+            order.append(f"{item}:s1")
+        return item
+
+    async def stage2(item: str) -> str:
+        order.append(f"{item}:s2")
+        return item
+
+    result = asyncio.run(ctx.pipeline(["slow", "fast"], stage1, stage2))
+    assert result == ["slow", "fast"]  # order preserved despite race
+    # fast reached stage 2 before slow finished stage 1 -> no barrier
+    assert order.index("fast:s2") < order.index("slow:s1:end")
+
+
+def test_pipeline_stage_failure_drops_item_to_none() -> None:
+    ctx = _context(_FakeTaskManager())
+
+    async def stage(item: str) -> str:
+        if item == "bad":
+            raise RuntimeError("boom")
+        return item.upper()
+
+    result = asyncio.run(ctx.pipeline(["ok", "bad", "ok2"], stage))
+    assert result == ["OK", None, "OK2"]
+
+
+def test_pipeline_supports_sync_and_async_stages() -> None:
+    ctx = _context(_FakeTaskManager())
+
+    def sync_stage(value: str) -> str:
+        return value + "!"
+
+    async def async_stage(value: str) -> str:
+        return value.upper()
+
+    result = asyncio.run(ctx.pipeline(["a"], sync_stage, async_stage))
+    assert result == ["A!"]
+
+
+def test_pipeline_requires_at_least_one_stage() -> None:
+    ctx = _context(_FakeTaskManager())
+    with pytest.raises(ValueError, match="at least one stage"):
+        asyncio.run(ctx.pipeline(["a"]))
+
+
+def test_pipeline_reachable_from_generated_script() -> None:
+    manager = _FakeTaskManager()
+    ctx = _context(manager)
+    script = """
+async def main(wf):
+    async def review(item):
+        return await wf.run_agent(f"review {item}")
+
+    async def verify(prev):
+        return await wf.run_agent(f"verify {prev}")
+
+    return await wf.pipeline(["x", "y"], review, verify)
+"""
+    result = execute_workflow_script(script, ctx)
+    assert result == [
+        "result:verify result:review x",
+        "result:verify result:review y",
+    ]
+
+
+def test_format_value_small_passthrough() -> None:
+    value = ["a", "b", "c"]
+    assert _format_value(value) == json.dumps(value, indent=2, default=str)
+
+
+def test_format_value_large_list_drops_whole_elements() -> None:
+    """Over-limit lists drop whole trailing elements and stay valid JSON, instead
+    of slicing mid-token."""
+    value = [f"finding {i}: " + "x" * 500 for i in range(60)]
+    out = _format_value(value)
+    assert "items omitted to fit" in out
+    assert len(out) <= _MAX_REDUCE_INPUT_CHARS + 80
+    head = out.split("\n... [")[0]
+    parsed = json.loads(head)  # must be valid JSON (the whole point)
+    assert parsed == value[: len(parsed)]  # leading elements kept, in order
+    assert 0 < len(parsed) < len(value)
+
+
+def test_format_value_large_dict_drops_whole_keys() -> None:
+    value = {f"k{i}": "y" * 500 for i in range(60)}
+    out = _format_value(value)
+    assert "items omitted to fit" in out
+    parsed = json.loads(out.split("\n... [")[0])
+    assert isinstance(parsed, dict)
+    assert 0 < len(parsed) < len(value)
+
+
+def test_format_value_single_oversized_element_char_truncated() -> None:
+    """A single element bigger than the budget falls back to char truncation."""
+    out = _format_value(["z" * (_MAX_REDUCE_INPUT_CHARS + 5000)])
+    assert out.endswith("[truncated workflow intermediate results]")
+    assert len(out) <= _MAX_REDUCE_INPUT_CHARS + 60
+
+
+def test_format_value_long_string_char_truncated() -> None:
+    out = _format_value("q" * (_MAX_REDUCE_INPUT_CHARS + 100))
+    assert out.endswith("[truncated workflow intermediate results]")
+    assert len(out) <= _MAX_REDUCE_INPUT_CHARS + 60

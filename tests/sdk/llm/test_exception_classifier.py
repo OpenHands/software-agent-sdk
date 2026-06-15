@@ -2,6 +2,7 @@ from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     ContextWindowExceededError,
+    InternalServerError,
 )
 
 from openhands.sdk.llm.exceptions import (
@@ -81,6 +82,20 @@ def test_looks_like_malformed_conversation_history_error_moonshot():
         ),
         MODEL,
         PROVIDER,
+    )
+
+    assert looks_like_malformed_conversation_history_error(error) is True
+    assert is_context_window_exceeded(error) is False
+
+
+def test_looks_like_malformed_conversation_history_error_openai_tool_json_parse():
+    error = InternalServerError(
+        (
+            "OpenAIException - Failed to parse tool call arguments as JSON: "
+            "[json.exception.parse_error.101] parse error at line 1, column 113"
+        ),
+        PROVIDER,
+        MODEL,
     )
 
     assert looks_like_malformed_conversation_history_error(error) is True

@@ -610,9 +610,7 @@ def test_condensation_requirement_returns_none(
 @pytest.mark.parametrize(
     "reasons",
     [
-        {Reason.TOKENS},
         {Reason.EVENTS},
-        {Reason.TOKENS, Reason.EVENTS},
     ],
 )
 def test_condensation_requirement_returns_soft(
@@ -631,6 +629,28 @@ def test_condensation_requirement_returns_soft(
     ):
         result = condenser.condensation_requirement(view)
         assert result == CondensationRequirement.SOFT
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.TOKENS},
+        {Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_hard_for_token_pressure(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Token pressure should trigger before the next LLM request can overflow."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.HARD
 
 
 @pytest.mark.parametrize(
@@ -800,3 +820,54 @@ def test_minimum_progress_threshold_met(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
+
+
+def test_generate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """LLM failures in _generate_condensation raise NoCondensationAvailableException."""  # noqa: E501
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.completion).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        condenser.get_condensation(view)
+
+
+@pytest.mark.asyncio
+async def test_agenerate_condensation_wraps_llm_errors(mock_llm: LLM) -> None:
+    """Async variant: LLM failures surface as NoCondensationAvailableException."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    cast(MagicMock, mock_llm.acompletion).side_effect = RuntimeError("boom")
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    with pytest.raises(NoCondensationAvailableException, match="boom"):
+        await condenser.aget_condensation(view)
+
+
+def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
+    """A summarizer LLM failure during condense() triggers hard_context_reset."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Force a HARD condensation requirement via a CondensationRequest
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # First call (get_condensation path) fails; second call
+    # (hard_context_reset path) succeeds.
+    success_response = cast(Any, mock_llm).completion.return_value
+    cast(MagicMock, mock_llm.completion).side_effect = [
+        RuntimeError("context window exceeded"),
+        success_response,
+    ]
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "Summary of forgotten events"
+    assert cast(MagicMock, mock_llm.completion).call_count == 2
