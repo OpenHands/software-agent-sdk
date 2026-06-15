@@ -544,17 +544,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # that pass a datetime object instead of a pre-formatted string).
             now = data.formatted_datetime
             skill_names = tuple(skill.name for skill in agent_context.skills)
-            secret_names = tuple(
-                info["name"]
-                for info in agent_context.get_secret_infos()
-                if info["name"] is not None
-            )
             repo_skills = tuple((s.name, s.content) for s in data.repo_skills)
             available_skills_prompt = data.available_skills_prompt or None
             custom_suffix = agent_context.system_message_suffix or None
             secret_infos = tuple(
                 (info["name"] or "", info["description"]) for info in data.secret_infos
             )
+            # Derive names from the resolver's merged secret_infos instead of a
+            # second get_secret_infos() walk; this now includes registry-provided
+            # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
+            secret_names = tuple(name for name, _ in secret_infos if name)
 
         return PromptContext(
             template_kwargs=self._resolved_template_kwargs(),
