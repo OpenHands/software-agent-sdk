@@ -1606,6 +1606,56 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
 
 
+def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    settings = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config)
+
+    blob = settings.model_dump_json()
+    assert "sk-mcp-secret" not in blob
+    assert "tok-mcp-secret" not in blob
+
+    exposed = settings.model_dump(context={"expose_secrets": True})
+    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
+    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
+    # create_agent must hand the subprocess real env/headers (the field serializer
+    # redacts mcp_config for transit/storage only).
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
+
+    assert isinstance(agent, ACPAgent)
+    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+    assert (
+        agent.mcp_config["mcpServers"]["leaky"]["headers"]["Authorization"]
+        == "Bearer tok-mcp-secret"
+    )
+
+
 # ---------------------------------------------------------------------------
 # AgentSettingsBase — shared interface
 # ---------------------------------------------------------------------------
