@@ -105,3 +105,26 @@ def test_bash_tool_to_openai_tool():
         assert openai_tool["function"]["name"] == "terminal"
         assert "description" in openai_tool["function"]
         assert "parameters" in openai_tool["function"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for "commands" (plural) → "command" alias (google/gemma-4 mismatch)
+# ---------------------------------------------------------------------------
+
+
+def test_terminal_action_commands_alias_remapped():
+    """'commands' (plural) is silently remapped to 'command' (google/gemma-4)."""
+    action = TerminalAction.model_validate({"commands": "git remote -v"})
+    assert action.command == "git remote -v"
+
+
+def test_terminal_action_command_canonical_unchanged():
+    """'command' (singular, canonical) continues to work normally."""
+    action = TerminalAction.model_validate({"command": "echo hi"})
+    assert action.command == "echo hi"
+
+
+def test_terminal_action_command_takes_precedence_over_commands():
+    """When both keys are present, 'command' wins and 'commands' is ignored."""
+    action = TerminalAction.model_validate({"command": "echo hi", "commands": "echo ignored"})
+    assert action.command == "echo hi"
