@@ -29,8 +29,11 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Install oasdiff
+              # Pin the version so install.sh skips its GitHub API "latest release"
+              # lookup, which intermittently hits the 60/hr unauthenticated rate
+              # limit on shared runners and fails the whole check. Bump as needed.
               run: |
-                  curl -L https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin
+                  curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | version=1.19.1 sh -s -- -b /usr/local/bin
                   oasdiff --version
 
             - name: Run agent server REST API breakage check
