@@ -79,6 +79,12 @@ Available `wf` methods:
   max_concurrency=None, description=None)`
 - `await wf.reduce_agent(items, prompt, subagent_type="general-purpose",
   description=None)`
+- `await wf.pipeline(items, *stages)` — run each item through all stages with no
+  barrier between stages (a fast item reaches a later stage while a slow item is
+  still in an earlier one). The first stage gets the item; each later stage gets
+  the previous result. Stages may be sync or async. A stage that raises drops that
+  item to `None`. Prefer this over chained `map_agents` calls when per-item stages
+  are independent, since `map_agents` fully drains each stage before the next.
 - `wf.flatten(values)` — flatten one level of nesting (not recursive)
 
 `subagent_type` must be a sub-agent type registered in the parent application.

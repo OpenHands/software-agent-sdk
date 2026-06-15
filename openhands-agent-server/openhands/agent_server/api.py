@@ -556,7 +556,11 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app, config)
     _setup_static_files(app, config)
-    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
+    app.add_middleware(
+        CORSDispatcher,
+        allow_origins=config.allow_cors_origins,
+        allow_origin_regex=config.allow_cors_origin_regex,
+    )
     _add_exception_handlers(app)
 
     return app

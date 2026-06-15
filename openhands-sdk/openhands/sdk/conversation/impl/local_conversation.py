@@ -157,6 +157,9 @@ class LocalConversation(BaseConversation):
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
+        # Appended at the end (not grouped with max_iteration_per_run) to avoid
+        # shifting the position of any existing positional argument.
+        max_budget_per_run: float | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -328,6 +331,8 @@ class LocalConversation(BaseConversation):
         )
 
         self.max_iteration_per_run = max_iteration_per_run
+        # Hard cost ceiling (USD) for a run; None disables the budget check.
+        self.max_budget_per_run = max_budget_per_run
 
         # Initialize stuck detector
         if stuck_detection:
@@ -448,6 +453,30 @@ class LocalConversation(BaseConversation):
     @property
     def conversation_stats(self):
         return self._state.stats
+
+    def _budget_exceeded_detail(self) -> str | None:
+        """Error detail if the run has hit its cost budget, else None.
+
+        Bounds total spend across all of the run's LLMs (agent, condenser, ...),
+        complementing the iteration cap which only bounds step count.
+        """
+        if self.max_budget_per_run is None:
+            return None
+        spent = self.conversation_stats.get_combined_metrics().accumulated_cost
+        if spent < self.max_budget_per_run:
+            return None
+        return (
+            f"Agent reached maximum budget limit "
+            f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
+        )
+
+    def _emit_run_limit_error(self, code: str, detail: str) -> None:
+        """Mark the run failed with a run-limit ConversationErrorEvent."""
+        logger.error(detail)
+        self._state.execution_status = ConversationExecutionStatus.ERROR
+        self._on_event(
+            ConversationErrorEvent(source="environment", code=code, detail=detail)
+        )
 
     @property
     def stuck_detector(self) -> StuckDetector | None:
@@ -1212,6 +1241,14 @@ class LocalConversation(BaseConversation):
                     ):
                         break
 
+                    budget_detail = self._budget_exceeded_detail()
+                    if budget_detail and (
+                        self._state.execution_status
+                        != ConversationExecutionStatus.FINISHED
+                    ):
+                        self._emit_run_limit_error("MaxBudgetReached", budget_detail)
+                        break
+
                     if iteration >= self.max_iteration_per_run:
                         # If the agent finished on this final iteration,
                         # preserve the FINISHED status rather than
@@ -1449,6 +1486,16 @@ class LocalConversation(BaseConversation):
                         ):
                             break
 
+                        budget_detail = self._budget_exceeded_detail()
+                        if budget_detail and (
+                            self._state.execution_status
+                            != ConversationExecutionStatus.FINISHED
+                        ):
+                            self._emit_run_limit_error(
+                                "MaxBudgetReached", budget_detail
+                            )
+                            break
+
                         if iteration >= self.max_iteration_per_run:
                             if (
                                 self._state.execution_status
@@ -1615,6 +1662,14 @@ class LocalConversation(BaseConversation):
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
+                        break
+
+                    budget_detail = self._budget_exceeded_detail()
+                    if budget_detail and (
+                        self._state.execution_status
+                        != ConversationExecutionStatus.FINISHED
+                    ):
+                        self._emit_run_limit_error("MaxBudgetReached", budget_detail)
                         break
 
                     if iteration >= self.max_iteration_per_run:
