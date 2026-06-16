@@ -692,6 +692,39 @@ class TestPluginSourceSecretExpansion:
 
         conversation.close()
 
+    def test_unknown_var_with_default_left_untouched(self, tmp_path: Path, basic_agent):
+        """`${MISSING:-default}` is preserved verbatim (expand_defaults=False).
+
+        An unresolved variable in a URL must not be silently replaced with its
+        default -- the placeholder is left intact so the failure is visible
+        rather than producing a wrong-but-plausible URL.
+        """
+        source = "https://x-token-auth:${MISSING:-fallback}@host.example.com/o/r.git"
+        conversation, plugin_dir = self._make_conversation(
+            tmp_path, basic_agent, source
+        )
+        # No secret named MISSING registered.
+
+        captured: dict[str, str | None] = {}
+
+        def fake_fetch(source, ref=None, repo_path=None, **kwargs):
+            captured["source"] = source
+            return plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            side_effect=fake_fetch,
+        ):
+            conversation._ensure_plugins_loaded()
+
+        # Placeholder preserved verbatim: the default is NOT substituted in,
+        # the whole ${MISSING:-fallback} token is left intact.
+        assert captured["source"] == source
+        assert "${MISSING:-fallback}" in (captured["source"] or "")
+
+        conversation.close()
+
     def test_ref_secret_expanded_before_fetch(self, tmp_path: Path, basic_agent):
         """A ${VAR} in the ref is also expanded from secrets."""
         source = str(tmp_path / "plugin")

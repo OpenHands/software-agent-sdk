@@ -645,35 +645,30 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec in self._plugin_specs:
-                # Expand ${VAR} placeholders in the source/ref using
-                # per-conversation secrets, so private plugins can be cloned
-                # with a token supplied via the secrets API, e.g.:
-                #   "https://x-token-auth:${MY_TOKEN}@host/org/repo.git"
-                #
-                # SECURITY: secrets only (check_env=False) -- never fold host
-                # environment variables into a URL sent to a remote git host.
-                # Braced-only (support_unbraced=False) avoids mangling a literal
-                # "$" that may legitimately appear in a token/password.
-                get_secret = self._state.secret_registry.get_secret_value
-                fetch_source = expand_variable_references(
-                    spec.source,
+            # Expand ${VAR} placeholders in the source/ref using per-conversation
+            # secrets, so private plugins can be cloned with a token supplied via
+            # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
+            #
+            # SECURITY: secrets only (check_env=False) -- never fold host
+            # environment variables into a URL sent to a remote git host.
+            # Braced-only (support_unbraced=False) avoids mangling a literal "$"
+            # that may legitimately appear in a token/password. expand_defaults
+            # is False so an unknown ${VAR} is left verbatim rather than silently
+            # defaulted inside a URL.
+            get_secret = self._state.secret_registry.get_secret_value
+
+            def _expand_secret_refs(value: str) -> str:
+                return expand_variable_references(
+                    value,
                     get_secret=get_secret,
                     check_env=False,
                     support_unbraced=False,
                     expand_defaults=False,
                 )
-                fetch_ref = (
-                    expand_variable_references(
-                        spec.ref,
-                        get_secret=get_secret,
-                        check_env=False,
-                        support_unbraced=False,
-                        expand_defaults=False,
-                    )
-                    if spec.ref
-                    else spec.ref
-                )
+
+            for spec in self._plugin_specs:
+                fetch_source = _expand_secret_refs(spec.source)
+                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
