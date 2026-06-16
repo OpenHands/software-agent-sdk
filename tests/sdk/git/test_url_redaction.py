@@ -211,7 +211,7 @@ REDACTED_URL = "https://****@github.com/o/r.git"
 
 
 class TestRunGitCommandCredentialRedaction:
-    """GitCommandError.command must never carry raw credentials across all raise sites."""
+    """Credentials must not leak into GitCommandError.command on any error path."""
 
     def _args(self):
         return ["git", "clone", CREDENTIAL_URL, "/tmp/x"]
