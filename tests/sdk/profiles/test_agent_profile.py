@@ -6,6 +6,7 @@ cross-variant fields are rejected, and confirm the ``mcp_server_refs`` null/[]
 distinction. Adds the profile-specific contract: secret-free at rest.
 """
 
+import json
 from uuid import UUID, uuid4
 
 import pytest
@@ -296,3 +297,28 @@ def test_acp_profile_persists_no_secret_fields() -> None:
     # No embedded credential and no acp_env-style secret bag on the profile.
     for key in ("llm", "api_key", "acp_env", "secrets", "agent_context"):
         assert key not in dumped
+
+
+def test_verification_field_cannot_carry_a_secret() -> None:
+    """The verification block is secret-free: ``critic_api_key`` is not a field,
+    so a payload supplying it is stripped and can never be exposed at rest."""
+    profile = validate_agent_profile(
+        {
+            "name": "oh",
+            "llm_profile_ref": "default",
+            "verification": {
+                "critic_enabled": True,
+                "critic_model_name": "gpt-5.5",
+                "critic_api_key": "sk-real-secret-value",
+            },
+        }
+    )
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert not hasattr(profile.verification, "critic_api_key")
+    assert profile.verification.critic_enabled is True
+    assert profile.verification.critic_model_name == "gpt-5.5"
+
+    # Even forcing secret exposure must not surface the value (it isn't stored).
+    exposed = profile.model_dump(mode="json", context={"expose_secrets": True})
+    assert "critic_api_key" not in exposed["verification"]
+    assert "sk-real-secret-value" not in json.dumps(exposed)

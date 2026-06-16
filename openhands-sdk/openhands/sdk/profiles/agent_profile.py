@@ -25,13 +25,31 @@ from pydantic import (
 from openhands.sdk.settings.model import (
     ACPServerKind,
     CondenserSettingsConfig,
+    CriticMode,
     LLMSummarizingCondenserSettings,
-    VerificationSettings,
 )
 from openhands.sdk.skills import Skill
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 1
+
+
+class ProfileVerificationSettings(BaseModel):
+    """Secret-free critic/refinement policy for a profile.
+
+    The non-credential subset of
+    :class:`~openhands.sdk.settings.model.VerificationSettings`: ``critic_api_key``
+    is omitted so the profile holds no secret. The critic reuses the resolved
+    LLM profile's key (the existing ``critic_api_key=None`` behavior).
+    """
+
+    critic_enabled: bool = False
+    critic_mode: CriticMode = "finish_and_message"
+    enable_iterative_refinement: bool = False
+    critic_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    max_refinement_iterations: int = Field(default=3, ge=1)
+    critic_server_url: str | None = None
+    critic_model_name: str | None = None
 
 
 class AgentProfileBase(BaseModel):
@@ -114,9 +132,9 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default_factory=LLMSummarizingCondenserSettings,
         description="Condenser settings for the agent.",
     )
-    verification: VerificationSettings = Field(
-        default_factory=VerificationSettings,
-        description="Verification settings for the agent critic.",
+    verification: ProfileVerificationSettings = Field(
+        default_factory=ProfileVerificationSettings,
+        description="Critic/verification policy (secret-free; no critic_api_key).",
     )
     enable_sub_agents: bool = Field(
         default=False,

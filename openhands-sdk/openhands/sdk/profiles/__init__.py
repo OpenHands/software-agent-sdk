@@ -6,6 +6,7 @@ from openhands.sdk.profiles.agent_profile import (
     AgentProfile,
     AgentProfileBase,
     OpenHandsAgentProfile,
+    ProfileVerificationSettings,
     validate_agent_profile,
 )
 
@@ -16,5 +17,6 @@ __all__ = [
     "AgentProfile",
     "AgentProfileBase",
     "OpenHandsAgentProfile",
+    "ProfileVerificationSettings",
     "validate_agent_profile",
 ]
