@@ -1,11 +1,11 @@
 """Named :class:`PromptRegistry` presets -- ready-to-use section compositions.
 
-``create_default_registry()`` registers the static-tier sections in the exact order
+``create_registry()`` registers the static-tier sections in the exact order
 ``agent/prompts/system_prompt.j2`` emits them, so ``registry.build(ctx).static``
 reproduces ``AgentBase.static_system_message``. The dynamic-tier sections
-(``system_message_suffix.j2``) are appended separately. Future prompt variants
-(interactive, planning, ...) join this module as sibling ``create_*_registry``
-factories over the same engine.
+(``system_message_suffix.j2``) are appended separately. It will gain a ``preset``
+flag to select among prompt variants (interactive, planning, ...) over the same
+engine; today it returns the default composition.
 """
 
 from openhands.sdk.context.prompts.registry import PromptRegistry
@@ -38,10 +38,10 @@ from openhands.sdk.context.prompts.sections.static import (
 )
 
 
-__all__ = ["create_default_registry"]
+__all__ = ["create_registry"]
 
 
-def create_default_registry() -> PromptRegistry:
+def create_registry() -> PromptRegistry:
     r = PromptRegistry()
     # static tier -- ported verbatim from system_prompt.j2 (#3610)
     r.register(SoulSection())

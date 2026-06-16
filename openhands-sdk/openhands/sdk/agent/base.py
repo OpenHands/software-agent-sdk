@@ -24,7 +24,7 @@ from pydantic import (
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
-from openhands.sdk.context.prompts.presets import create_default_registry
+from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
@@ -458,7 +458,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         across conversations for better prompt caching efficiency.
 
         The default prompt is assembled from the typed section registry
-        (``create_default_registry``). The escape hatches are preserved untouched:
+        (``create_registry``). The escape hatches are preserved untouched:
         an inline ``system_prompt`` is returned verbatim, and a custom or absolute
         ``system_prompt_filename`` keeps rendering through ``render_template``.
 
@@ -476,7 +476,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 **self._resolved_template_kwargs(),
             )
 
-        return create_default_registry().build(self._build_prompt_context()).static
+        return create_registry().build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -597,7 +597,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self.agent_context:
             return None
-        return create_default_registry().build(self._build_prompt_context()).dynamic
+        return create_registry().build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
