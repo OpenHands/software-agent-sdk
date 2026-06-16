@@ -24,6 +24,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, AgentBase, Conversation, Message
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
@@ -41,6 +42,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationEvent,
 )
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -313,6 +315,81 @@ class TestEventServiceSearchEvents:
 
         assert len(result.items) == 5  # All available events
         assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_events_skips_empty_event_files(self, event_service):
+        """Unreadable persisted events should not abort event pagination."""
+        fs = InMemoryFileStore()
+        event0 = MessageEvent(
+            id="00000000-0000-0000-0000-000000000001",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="first")]),
+            timestamp="2026-06-16T09:00:00",
+        )
+        missing_event_id = "00000000-0000-0000-0000-000000000002"
+        event2 = MessageEvent(
+            id="00000000-0000-0000-0000-000000000003",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="third")]),
+            timestamp="2026-06-16T09:00:02",
+        )
+        fs.write(
+            f"events/event-00000-{event0.id}.json",
+            event0.model_dump_json(exclude_none=True),
+        )
+        fs.write(f"events/event-00001-{missing_event_id}.json", "")
+        fs.write(
+            f"events/event-00002-{event2.id}.json",
+            event2.model_dump_json(exclude_none=True),
+        )
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.events = EventLog(fs)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        result = await event_service.search_events(limit=10)
+
+        assert [event.id for event in result.items] == [event0.id, event2.id]
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_count_events_skips_empty_event_files(self, event_service):
+        """Filtered event counts should skip unreadable persisted events."""
+        fs = InMemoryFileStore()
+        event0 = MessageEvent(
+            id="00000000-0000-0000-0000-000000000001",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="first")]),
+            timestamp="2026-06-16T09:00:00",
+        )
+        missing_event_id = "00000000-0000-0000-0000-000000000002"
+        event2 = MessageEvent(
+            id="00000000-0000-0000-0000-000000000003",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="third")]),
+            timestamp="2026-06-16T09:00:02",
+        )
+        fs.write(
+            f"events/event-00000-{event0.id}.json",
+            event0.model_dump_json(exclude_none=True),
+        )
+        fs.write(f"events/event-00001-{missing_event_id}.json", "")
+        fs.write(
+            f"events/event-00002-{event2.id}.json",
+            event2.model_dump_json(exclude_none=True),
+        )
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.events = EventLog(fs)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        count = await event_service.count_events(source="user")
+
+        assert count == 2
 
     @pytest.mark.asyncio
     async def test_search_events_zero_limit(

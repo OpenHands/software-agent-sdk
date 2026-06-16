@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
@@ -204,6 +206,18 @@ class EventService:
             return False
         return True
 
+    def _get_searchable_event(self, events, index: int) -> Event | None:
+        try:
+            return events[index]
+        except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
+            logger.warning(
+                "Skipping unreadable event at index %d for conversation %s: %s",
+                index,
+                self.stored.id,
+                exc,
+            )
+            return None
+
     def _search_events_sync(
         self,
         page_id: str | None = None,
@@ -259,7 +273,8 @@ class EventService:
                     start_index = None
             else:
                 for i in range(total):
-                    if events[i].id == page_id:
+                    event = self._get_searchable_event(events, i)
+                    if event is not None and event.id == page_id:
                         start_index = i
                         break
         if start_index is None:
@@ -273,7 +288,9 @@ class EventService:
         items: list[Event] = []
         next_page_id: str | None = None
         for i in indices:
-            event = events[i]
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if not self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
@@ -347,7 +364,10 @@ class EventService:
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
-        for event in events:
+        for i in range(len(events)):
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
