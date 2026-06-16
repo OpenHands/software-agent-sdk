@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-
 def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,

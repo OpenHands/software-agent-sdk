@@ -6,7 +6,10 @@ from unittest.mock import patch
 import pytest
 
 from openhands.sdk.git.exceptions import GitCommandError
-from openhands.sdk.git.utils import redact_url_credentials, run_git_command  # re-exported for compat
+from openhands.sdk.git.utils import (
+    redact_url_credentials,
+    run_git_command,
+)  # re-exported for compat
 from openhands.sdk.plugin.types import PluginSource, ResolvedPluginSource
 from openhands.sdk.utils.redact import (
     redact_url_credentials as redact_url_credentials_central,
