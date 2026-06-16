@@ -14,8 +14,9 @@ and provider settings are resolved through the existing profile machinery.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,10 @@ from openhands.sdk.logger import get_logger
 _DEFAULT_META_PROFILE_DIR: Final[Path] = Path.home() / ".openhands" / "meta-profiles"
 
 logger = get_logger(__name__)
+
+
+class MetaProfileLimitExceeded(Exception):
+    """Raised when saving would exceed the configured meta-profile limit."""
 
 
 class MetaProfileClass(BaseModel):
@@ -108,3 +113,89 @@ class MetaProfileStore:
             return MetaProfile.model_validate(data)
         except Exception as e:
             raise ValueError(f"Failed to load meta-profile `{name}`: {e}") from e
+
+    def save(
+        self,
+        name: str,
+        meta_profile: MetaProfile,
+        *,
+        max_profiles: int | None = None,
+    ) -> None:
+        """Persist a meta-profile under ``name`` (atomic write, overwrites).
+
+        Args:
+            name: Name of the meta-profile to save.
+            meta_profile: The meta-profile to persist.
+            max_profiles: Optional cap on the number of meta-profiles. When set,
+                raises :class:`MetaProfileLimitExceeded` if creating a *new*
+                meta-profile would exceed the limit.
+
+        Raises:
+            MetaProfileLimitExceeded: If ``max_profiles`` would be exceeded.
+            ValueError: If ``name`` is not a valid meta-profile name.
+        """
+        path = self._get_path(name)
+
+        if max_profiles is not None and not path.exists():
+            if len(self.list()) >= max_profiles:
+                raise MetaProfileLimitExceeded(
+                    f"Meta-profile limit reached ({max_profiles})."
+                )
+
+        profile_json = json.dumps(meta_profile.model_dump(mode="json"), indent=2)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=self.base_dir,
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
+        ) as tmp:
+            tmp.write(profile_json)
+            tmp_path = Path(tmp.name)
+
+        try:
+            Path.replace(tmp_path, path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        logger.info(f"Saved meta-profile `{name}` at {path}")
+
+    def delete(self, name: str) -> None:
+        """Delete a meta-profile (idempotent — missing names are a no-op).
+
+        Raises:
+            ValueError: If ``name`` is not a valid meta-profile name.
+        """
+        path = self._get_path(name)
+        if not path.exists():
+            logger.info(f"Meta-profile `{name}` not found. Skipping delete.")
+            return
+        path.unlink()
+        logger.info(f"Deleted meta-profile `{name}`")
+
+    def list_summaries(self) -> list[dict[str, Any]]:
+        """List meta-profile metadata without full schema validation.
+
+        Files with corrupted JSON or non-dict top-level values are skipped with
+        a warning so a single bad file never breaks the listing.
+        """
+        summaries: list[dict[str, Any]] = []
+        for name in self.list():
+            try:
+                data = json.loads(self._get_path(name).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning(f"Skipping corrupted meta-profile {name!r}: {e}")
+                continue
+            if not isinstance(data, dict):
+                logger.warning(f"Skipping non-dict meta-profile {name!r}")
+                continue
+            classes = data.get("classes") or []
+            summaries.append(
+                {
+                    "name": name,
+                    "classifier_model": data.get("classifier_model"),
+                    "default_model": data.get("default_model"),
+                    "num_classes": len(classes) if isinstance(classes, list) else 0,
+                }
+            )
+        return summaries

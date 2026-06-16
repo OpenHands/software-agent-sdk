@@ -5,6 +5,8 @@ import pytest
 
 from openhands.sdk.llm.meta_profile_store import (
     MetaProfile,
+    MetaProfileClass,
+    MetaProfileLimitExceeded,
     MetaProfileStore,
 )
 
@@ -80,3 +82,78 @@ def test_load_schema_violation_raises_value_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         store.load("bad")
+
+
+def test_save_then_load_roundtrip(tmp_path: Path) -> None:
+    store = MetaProfileStore(base_dir=tmp_path)
+    meta = MetaProfile(
+        classifier_model="minimax",
+        default_model="gpt",
+        classes=[MetaProfileClass(description="UI / images", model="deepseek")],
+    )
+
+    store.save("balanced", meta)
+
+    loaded = store.load("balanced")
+    assert loaded.classifier_model == "minimax"
+    assert loaded.default_model == "gpt"
+    assert [c.model for c in loaded.classes] == ["deepseek"]
+
+
+def test_save_overwrites_existing(tmp_path: Path) -> None:
+    store = MetaProfileStore(base_dir=tmp_path)
+    store.save("p", MetaProfile(classifier_model="a", default_model="b"))
+    store.save("p", MetaProfile(classifier_model="c", default_model="d"))
+
+    assert store.load("p").classifier_model == "c"
+    assert store.list() == ["p"]
+
+
+def test_save_invalid_name_raises_value_error(tmp_path: Path) -> None:
+    store = MetaProfileStore(base_dir=tmp_path)
+
+    with pytest.raises(ValueError):
+        store.save("../escape", MetaProfile(classifier_model="a", default_model="b"))
+
+
+def test_save_respects_max_profiles(tmp_path: Path) -> None:
+    store = MetaProfileStore(base_dir=tmp_path)
+    store.save("a", MetaProfile(classifier_model="a", default_model="b"))
+
+    with pytest.raises(MetaProfileLimitExceeded):
+        store.save(
+            "b", MetaProfile(classifier_model="a", default_model="b"), max_profiles=1
+        )
+
+    # Overwriting an existing one is still allowed at the limit.
+    store.save(
+        "a", MetaProfile(classifier_model="x", default_model="y"), max_profiles=1
+    )
+    assert store.load("a").classifier_model == "x"
+
+
+def test_delete_is_idempotent(tmp_path: Path) -> None:
+    store = MetaProfileStore(base_dir=tmp_path)
+    store.save("p", MetaProfile(classifier_model="a", default_model="b"))
+
+    store.delete("p")
+    assert store.list() == []
+    # Deleting a missing meta-profile is a no-op.
+    store.delete("p")
+
+
+def test_list_summaries_skips_corrupted(tmp_path: Path) -> None:
+    _write(tmp_path, "good", VALID)
+    (tmp_path / "broken.json").write_text("{not json", encoding="utf-8")
+    store = MetaProfileStore(base_dir=tmp_path)
+
+    summaries = store.list_summaries()
+
+    assert summaries == [
+        {
+            "name": "good",
+            "classifier_model": "minimax",
+            "default_model": "gpt",
+            "num_classes": 2,
+        }
+    ]

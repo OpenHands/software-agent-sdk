@@ -1,0 +1,172 @@
+"""Tests for meta_profiles_router endpoints."""
+
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+from openhands.agent_server.api import create_app
+from openhands.agent_server.config import Config
+from openhands.agent_server.persistence import reset_stores
+from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
+
+
+@pytest.fixture
+def temp_meta_profiles_dir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        meta_dir = Path(tmpdir) / "meta-profiles"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        yield meta_dir
+
+
+@pytest.fixture
+def temp_settings_dir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        settings_dir = Path(tmpdir) / "settings"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        yield settings_dir
+
+
+@pytest.fixture
+def client(temp_meta_profiles_dir, temp_settings_dir, monkeypatch):
+    reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+    config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
+    app = create_app(config)
+    with patch(
+        "openhands.agent_server.meta_profiles_router.MetaProfileStore",
+        lambda: MetaProfileStore(base_dir=temp_meta_profiles_dir),
+    ):
+        yield TestClient(app)
+    reset_stores()
+
+
+@pytest.fixture
+def store(temp_meta_profiles_dir):
+    return MetaProfileStore(base_dir=temp_meta_profiles_dir)
+
+
+def _meta(classifier="minimax", default="gpt", classes=None) -> dict:
+    return MetaProfile(
+        classifier_model=classifier,
+        default_model=default,
+        classes=classes or [{"description": "UI", "model": "deepseek"}],
+    ).model_dump(mode="json")
+
+
+# ── List ────────────────────────────────────────────────────────────────────
+
+
+def test_list_empty(client):
+    response = client.get("/api/meta-profiles")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["meta_profiles"] == []
+    assert body["active_meta_profile"] is None
+
+
+def test_list_returns_summaries(client, store):
+    store.save("balanced", MetaProfile.model_validate(_meta()))
+    response = client.get("/api/meta-profiles")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["meta_profiles"] == [
+        {
+            "name": "balanced",
+            "classifier_model": "minimax",
+            "default_model": "gpt",
+            "num_classes": 1,
+        }
+    ]
+
+
+# ── Get ──────────────────────────────────────────────────────────────────────
+
+
+def test_get_meta_profile(client, store):
+    store.save("balanced", MetaProfile.model_validate(_meta()))
+    response = client.get("/api/meta-profiles/balanced")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "balanced"
+    assert body["config"]["classifier_model"] == "minimax"
+    assert body["config"]["classes"][0]["model"] == "deepseek"
+
+
+def test_get_missing_returns_404(client):
+    response = client.get("/api/meta-profiles/nope")
+    assert response.status_code == 404
+
+
+# ── Save ─────────────────────────────────────────────────────────────────────
+
+
+def test_save_creates_meta_profile(client, store):
+    response = client.post("/api/meta-profiles/balanced", json=_meta())
+    assert response.status_code == 201
+    assert store.load("balanced").classifier_model == "minimax"
+
+
+def test_save_overwrites(client, store):
+    client.post("/api/meta-profiles/p", json=_meta(classifier="a", default="b"))
+    response = client.post(
+        "/api/meta-profiles/p", json=_meta(classifier="c", default="d")
+    )
+    assert response.status_code == 201
+    assert store.load("p").classifier_model == "c"
+
+
+def test_save_invalid_body_returns_422(client):
+    response = client.post("/api/meta-profiles/p", json={"default_model": "gpt"})
+    assert response.status_code == 422
+
+
+def test_save_invalid_name_returns_422(client):
+    response = client.post("/api/meta-profiles/..bad..", json=_meta())
+    assert response.status_code == 422
+
+
+# ── Delete ───────────────────────────────────────────────────────────────────
+
+
+def test_delete_meta_profile(client, store):
+    store.save("p", MetaProfile.model_validate(_meta()))
+    response = client.delete("/api/meta-profiles/p")
+    assert response.status_code == 200
+    assert store.list() == []
+
+
+def test_delete_is_idempotent(client):
+    response = client.delete("/api/meta-profiles/nope")
+    assert response.status_code == 200
+
+
+def test_delete_active_clears_active(client, store):
+    store.save("p", MetaProfile.model_validate(_meta()))
+    activate = client.post("/api/meta-profiles/p/activate")
+    assert activate.status_code == 200
+
+    client.delete("/api/meta-profiles/p")
+
+    listed = client.get("/api/meta-profiles").json()
+    assert listed["active_meta_profile"] is None
+
+
+# ── Activate ─────────────────────────────────────────────────────────────────
+
+
+def test_activate_sets_active_meta_profile(client, store):
+    store.save("p", MetaProfile.model_validate(_meta()))
+    response = client.post("/api/meta-profiles/p/activate")
+    assert response.status_code == 200
+    assert response.json()["name"] == "p"
+
+    listed = client.get("/api/meta-profiles").json()
+    assert listed["active_meta_profile"] == "p"
+
+
+def test_activate_missing_returns_404(client):
+    response = client.post("/api/meta-profiles/nope/activate")
+    assert response.status_code == 404
