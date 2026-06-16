@@ -547,8 +547,7 @@ class TestHttpExceptionLogging:
 
     They should be logged as a single ERROR line without a full stack
     trace; only genuinely unhandled exceptions should get a traceback.
-    Otherwise routine upstream blips (e.g. a 502 from /api/cloud-proxy
-    when the cloud is unreachable) look indistinguishable from a process
+    Otherwise routine upstream blips look indistinguishable from a process
     crash in the logs.
     """
 

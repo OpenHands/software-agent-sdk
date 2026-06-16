@@ -3,7 +3,7 @@ from __future__ import annotations
 import pathlib
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import (
     BaseModel,
@@ -37,6 +37,16 @@ from openhands.sdk.utils.pydantic_secrets import (
 logger = get_logger(__name__)
 
 PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
+
+
+class ResolvedDynamicData(NamedTuple):
+    """Dynamic-tier inputs resolved once, shared by the legacy ``.j2`` renderer and
+    the section registry (skills gated by model family, secrets merged)."""
+
+    repo_skills: list[Skill]
+    available_skills_prompt: str
+    secret_infos: list[dict[str, str | None]]
+    formatted_datetime: str | None
 
 
 class AgentContext(BaseModel):
@@ -128,13 +138,16 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        default_factory=datetime.now,
+        # Timezone-aware local "now" so the value injected into the system prompt
+        # carries a UTC offset instead of an ambiguous naive local time (#3438).
+        default_factory=lambda: datetime.now().astimezone(),
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
             "or a pre-formatted string. When provided, this information is "
             "included in the system prompt to give the agent awareness of "
-            "the current time context. Defaults to the current datetime."
+            "the current time context. Defaults to the current "
+            "(timezone-aware) datetime."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -297,6 +310,40 @@ class AgentContext(BaseModel):
         - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
         - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
+        data = self._resolve_dynamic_data(
+            llm_model, llm_model_canonical, additional_secret_infos
+        )
+        has_content = (
+            data.repo_skills
+            or self.system_message_suffix
+            or data.secret_infos
+            or data.available_skills_prompt
+            or data.formatted_datetime
+        )
+        if has_content:
+            formatted_text = render_template(
+                prompt_dir=str(PROMPT_DIR),
+                template_name="system_message_suffix.j2",
+                repo_skills=data.repo_skills,
+                system_message_suffix=self.system_message_suffix or "",
+                secret_infos=data.secret_infos,
+                available_skills_prompt=data.available_skills_prompt,
+                current_datetime=data.formatted_datetime,
+            ).strip()
+            return formatted_text
+        elif self.system_message_suffix and self.system_message_suffix.strip():
+            return self.system_message_suffix.strip()
+        return None
+
+    def _resolve_dynamic_data(
+        self,
+        llm_model: str | None = None,
+        llm_model_canonical: str | None = None,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> ResolvedDynamicData:
+        """Resolve the dynamic-tier inputs shared by :meth:`get_system_message_suffix`
+        and the section registry: model-gated repo skills, the available-skills
+        prompt, merged secret infos, and the formatted datetime. Pure (no render)."""
         repo_skills, available_skills = self._partition_skills()
 
         # Gate vendor-specific repo skills based on model family.
@@ -320,7 +367,6 @@ class AgentContext(BaseModel):
 
         logger.debug(f"Loaded {len(repo_skills)} repository skills: {repo_skills}")
 
-        # Generate available skills prompt
         available_skills_prompt = ""
         if available_skills:
             available_skills_prompt = to_prompt(available_skills)
@@ -328,37 +374,21 @@ class AgentContext(BaseModel):
                 f"Generated available skills prompt for {len(available_skills)} skills"
             )
 
-        # Build the workspace context information
-        # Merge agent_context secrets with additional secrets from registry
+        # Merge agent_context secrets with additional secrets from the registry
+        # (additional override by name).
         secret_infos = self.get_secret_infos()
         if additional_secret_infos:
-            # Merge: additional secrets override agent_context secrets by name
             secret_dict = {s["name"]: s for s in secret_infos}
             for additional in additional_secret_infos:
                 secret_dict[additional["name"]] = additional
             secret_infos = list(secret_dict.values())
-        formatted_datetime = self.get_formatted_datetime()
-        has_content = (
-            repo_skills
-            or self.system_message_suffix
-            or secret_infos
-            or available_skills_prompt
-            or formatted_datetime
+
+        return ResolvedDynamicData(
+            repo_skills=repo_skills,
+            available_skills_prompt=available_skills_prompt,
+            secret_infos=secret_infos,
+            formatted_datetime=self.get_formatted_datetime(),
         )
-        if has_content:
-            formatted_text = render_template(
-                prompt_dir=str(PROMPT_DIR),
-                template_name="system_message_suffix.j2",
-                repo_skills=repo_skills,
-                system_message_suffix=self.system_message_suffix or "",
-                secret_infos=secret_infos,
-                available_skills_prompt=available_skills_prompt,
-                current_datetime=formatted_datetime,
-            ).strip()
-            return formatted_text
-        elif self.system_message_suffix and self.system_message_suffix.strip():
-            return self.system_message_suffix.strip()
-        return None
 
     def validate_acp_compatibility(self) -> None:
         """Raise if this context uses fields unsupported by ACP prompt mode.

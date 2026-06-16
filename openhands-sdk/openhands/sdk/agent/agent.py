@@ -584,9 +584,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
-        # Prepare LLM messages using the utility function
+        # Prepare LLM messages from the cached, incrementally-maintained view.
+        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            state.view, condenser=self.condenser, llm=self.llm
         )
 
         # Process condensation event before agent sampels another action
@@ -634,6 +635,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "triggering condensation retry with condensed history: "
                     f"{e}"
                 )
+                # The incremental view may itself be the source of the
+                # malformed history.  Re-derive with full enforcement so
+                # the condenser operates on a clean view.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(
@@ -720,8 +725,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
+        # Prepare LLM messages from the cached, incrementally-maintained view.
+        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = await aprepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            state.view, condenser=self.condenser, llm=self.llm
         )
 
         if isinstance(_messages_or_condensation, Condensation):
@@ -770,6 +777,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "history: %s",
                     e,
                 )
+                # Mirror step(): re-derive the cached view with full
+                # enforcement before the condensation retry.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(
@@ -948,6 +958,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
     ) -> None:
+        try:
+            json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            tool_call = tool_call.model_copy(
+                update={
+                    "arguments": json.dumps(
+                        {
+                            "_openhands_malformed_tool_call": True,
+                            "error": error,
+                        }
+                    )
+                }
+            )
+
         tc_event = ActionEvent(
             source="agent",
             thought=thought or [],

@@ -105,36 +105,21 @@ def _has_api_key(llm: LLM) -> bool:
     return bool(llm.api_key.get_secret_value().strip())
 
 
-def _model_to_profile_name(model: str) -> str:
-    """Convert a model name to a valid profile name.
+def _set_active_profile_if_matches(
+    request: Request, old_name: str, new_name: str | None
+) -> bool:
+    config = get_config(request)
+    settings_store = get_settings_store(config)
+    settings = settings_store.load() or PersistedSettings()
+    if settings.active_profile != old_name:
+        return False
 
-    Transforms model names like "openai/gpt-4o" or "anthropic/claude-3-opus"
-    into valid profile names by:
-    - Taking just the model part after provider prefix (if present)
-    - Replacing invalid characters with dashes
-    - Truncating to max 64 characters
-    """
-    import re
+    def update_active(settings: PersistedSettings) -> PersistedSettings:
+        settings.active_profile = new_name
+        return settings
 
-    # Extract model name after provider prefix (e.g., "openai/gpt-4o" -> "gpt-4o")
-    if "/" in model:
-        model = model.rsplit("/", 1)[-1]
-
-    # Replace any character that's not alphanumeric, dash, underscore, or dot
-    # Profile names must match: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
-    sanitized = re.sub(r"[^A-Za-z0-9._-]", "-", model)
-
-    # Ensure it starts with alphanumeric (required by profile name pattern)
-    if sanitized and not sanitized[0].isalnum():
-        sanitized = "m" + sanitized
-
-    # Truncate to max 64 characters
-    sanitized = sanitized[:64]
-
-    # Remove trailing non-alphanumeric characters
-    sanitized = sanitized.rstrip("._-")
-
-    return sanitized or "default"
+    settings_store.update(update_active)
+    return True
 
 
 @profiles_router.get("", response_model=ProfileListResponse)
@@ -144,17 +129,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     Returns the list of profiles along with the currently active profile name,
     if one has been activated. The active_profile tracks which LLM profile
     configuration is currently in use.
-
-    Auto-creates a profile named after the model if:
-    - No profiles exist
-    - agent_settings.llm has an API key configured
-
-    The API key check ensures we only auto-create when the user has actually
-    configured their LLM (not just relying on defaults). This allows users
-    with existing LLM configurations to see their settings as a profile
-    without manual creation.
     """
-    cipher = get_cipher(request)
     config = get_config(request)
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
@@ -163,42 +138,9 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     with _store_errors():
         summaries = store.list_summaries()
 
-    active_profile = settings.active_profile
-
-    # Auto-create profile from existing LLM settings if no profiles exist
-    # but an API key is configured. Use the model name as the profile name.
-    if not summaries and settings.llm_api_key_is_set:
-        llm = settings.agent_settings.llm
-        profile_name = _model_to_profile_name(llm.model or "default")
-        try:
-            with _store_errors():
-                store.save(
-                    profile_name,
-                    llm,
-                    include_secrets=True,
-                    cipher=cipher,
-                )
-
-            # Update settings to mark this as active
-            def set_active(s: PersistedSettings) -> PersistedSettings:
-                s.active_profile = profile_name
-                return s
-
-            settings_store.update(set_active)
-            active_profile = profile_name
-
-            # Refresh summaries to include the new profile
-            summaries = store.list_summaries()
-            logger.info(
-                f"Auto-created '{profile_name}' profile from existing LLM settings"
-            )
-        except Exception as e:
-            # Log but don't fail - auto-creation is a convenience feature
-            logger.warning(f"Failed to auto-create profile: {e}")
-
     return ProfileListResponse(
         profiles=[ProfileInfo(**s) for s in summaries],
-        active_profile=active_profile,
+        active_profile=settings.active_profile,
     )
 
 
@@ -282,11 +224,15 @@ async def save_profile(
 
 
 @profiles_router.delete("/{name}", response_model=ProfileMutationResponse)
-async def delete_profile(name: ProfileName) -> ProfileMutationResponse:
+async def delete_profile(
+    request: Request, name: ProfileName
+) -> ProfileMutationResponse:
     """Delete a saved profile (idempotent)."""
     store = LLMProfileStore()
     with _store_errors():
         store.delete(name)
+    if _set_active_profile_if_matches(request, name, None):
+        logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
     return ProfileMutationResponse(name=name, message=f"Profile '{name}' deleted")
 
@@ -320,21 +266,10 @@ async def rename_profile(
             detail=f"Profile '{body.new_name}' already exists",
         )
 
-    # Update active_profile if the renamed profile was the active one
-    if name != body.new_name:
-        config = get_config(request)
-        settings_store = get_settings_store(config)
-        settings = settings_store.load() or PersistedSettings()
-
-        if settings.active_profile == name:
-            new_name = body.new_name
-
-            def update_active(s: PersistedSettings) -> PersistedSettings:
-                s.active_profile = new_name
-                return s
-
-            settings_store.update(update_active)
-            logger.info(f"Updated active_profile from '{name}' to '{new_name}'")
+    if name != body.new_name and _set_active_profile_if_matches(
+        request, name, body.new_name
+    ):
+        logger.info(f"Updated active_profile from '{name}' to '{body.new_name}'")
 
     if name == body.new_name:
         message = f"Profile '{name}' unchanged (same name)"

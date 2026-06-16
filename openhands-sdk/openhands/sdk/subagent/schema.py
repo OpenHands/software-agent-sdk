@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Final
 import frontmatter
 from pydantic import BaseModel, Field
 
+from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.utils.path import to_posix_path
 
@@ -25,10 +26,12 @@ KNOWN_FIELDS: Final[set[str]] = {
     "tools",
     "skills",
     "max_iteration_per_run",
+    "max_budget_per_run",
     "hooks",
     "profile_store_dir",
     "mcp_servers",
     "permission_mode",
+    "condenser",
 }
 
 _VALID_PERMISSION_MODES: Final[set[str]] = {
@@ -139,6 +142,18 @@ def _extract_max_iteration_per_run(fm: dict[str, object]) -> int | None:
     return None
 
 
+def _extract_max_budget_per_run(fm: dict[str, object]) -> float | None:
+    """Extract the per-run cost budget (USD) from a frontmatter file."""
+    raw = fm.get("max_budget_per_run")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        return float(raw)
+    return None
+
+
 def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
     # Parse hooks configuration
     hooks_raw = fm.get("hooks")
@@ -146,6 +161,33 @@ def _extract_hooks(fm: dict[str, object]) -> HookConfig | None:
     if hooks_raw is not None and isinstance(hooks_raw, dict):
         hooks = HookConfig.model_validate(hooks_raw)
     return hooks
+
+
+def _extract_condenser(fm: dict[str, Any]) -> CondenserBase | None:
+    """Extract the condenser config from frontmatter.
+
+    Absent / 'default' / None -> None (a default summarizing condenser is applied
+    at factory time). 'none'/'off'/false -> NoOpCondenser (disable condensation).
+    A mapping -> a full condenser spec validated against the discriminated union.
+    """
+    raw = fm.get("condenser")
+    if raw is None or isinstance(raw, CondenserBase):
+        return raw
+    if isinstance(raw, bool):
+        return None if raw else NoOpCondenser()
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in ("", "default", "inherit"):
+            return None
+        if value in ("none", "off", "false", "no", "disable", "disabled"):
+            return NoOpCondenser()
+        raise ValueError(
+            f"Invalid condenser value: {raw!r}. Use 'default', 'none', "
+            "or a mapping with a condenser config."
+        )
+    if isinstance(raw, dict):
+        return CondenserBase.model_validate(raw)
+    raise ValueError(f"Invalid condenser value: {raw!r}")
 
 
 class AgentDefinition(BaseModel):
@@ -193,6 +235,12 @@ class AgentDefinition(BaseModel):
         "It must be strictly positive, or None for default.",
         gt=0,
     )
+    max_budget_per_run: float | None = Field(
+        default=None,
+        description="Maximum accumulated cost (USD) per run for this sub-agent. "
+        "Must be strictly positive, or None for no budget.",
+        gt=0,
+    )
     mcp_servers: dict[str, Any] | None = Field(
         default=None,
         description="MCP server configurations for this agent. "
@@ -203,6 +251,11 @@ class AgentDefinition(BaseModel):
         default=None,
         description="Path to the directory where LLM profiles are stored. "
         "If None, the default profile store directory is used.",
+    )
+    condenser: CondenserBase | None = Field(
+        default=None,
+        description="Context condenser for the sub-agent. None applies a default "
+        "summarizing condenser; set a NoOpCondenser to disable condensation.",
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
@@ -276,9 +329,11 @@ class AgentDefinition(BaseModel):
         skills: list[str] = _extract_skills(fm)
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
+        max_budget_per_run: float | None = _extract_max_budget_per_run(fm)
         mcp_servers: dict[str, Any] | None = _extract_mcp_servers(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
+        condenser: CondenserBase | None = _extract_condenser(fm)
 
         # Extract whenToUse examples from description
         when_to_use_examples = _extract_examples(description)
@@ -295,9 +350,11 @@ class AgentDefinition(BaseModel):
             skills=skills,
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             mcp_servers=mcp_servers,
             hooks=hooks,
             profile_store_dir=profile_store_dir,
+            condenser=condenser,
             system_prompt=content,
             source=to_posix_path(agent_path),
             when_to_use_examples=when_to_use_examples,

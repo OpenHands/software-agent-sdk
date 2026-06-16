@@ -61,6 +61,13 @@ def test_model_matches(name, pattern, expected):
         ("litellm_proxy/gpt-5", True),
         ("litellm_proxy/claude-opus-4-5", True),
         ("litellm_proxy/gemini-3-flash-preview", True),
+        # SDK-side override for models LiteLLM doesn't yet recognize.
+        # claude-fable-5 must be detected as a reasoning model so the chat
+        # options layer strips temperature/top_p before the request reaches
+        # Anthropic (which rejects temperature for this model).
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
         # LiteLLM proxy with deployment path prefixes (prod/, dev/, staging/, test/)
         ("litellm_proxy/prod/claude-opus-4-5-20251101", True),
         ("litellm_proxy/dev/claude-opus-4-5", True),
@@ -119,14 +126,21 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
         ("claude-opus-4-6", True),
+        # claude-fable-5 supports prompt caching but is too new for LiteLLM
+        # metadata, so it must be detected via the local allowlist across the
+        # raw, provider-prefixed, and litellm_proxy-prefixed forms.
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
         ("anthropic.claude-3-opus-20240229", True),
-        # Gemini explicit context caching through LiteLLM.
-        ("gemini-2.5-pro", True),
-        ("gemini-3.1-pro-preview", True),
-        ("litellm_proxy/gemini-3.1-pro-preview", True),
+        # Gemini must NOT use explicit cache_control markers: they freeze the
+        # cache at the static prefix and disable Google's implicit caching.
+        ("gemini-2.5-pro", False),
+        ("gemini-3.1-pro-preview", False),
+        ("litellm_proxy/gemini-3.1-pro-preview", False),
         ("gpt-4o", False),  # OpenAI doesn't support explicit prompt caching
         ("gemini-1.5-pro", False),
         ("unknown-model", False),

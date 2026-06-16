@@ -118,6 +118,29 @@ def test_api_server_details_no_auth_required(client_with_auth):
     assert response.status_code != 401
 
 
+def test_openai_routes_accept_bearer_session_key(client_with_auth, monkeypatch):
+    class EmptyProfileStore:
+        def list_summaries(self) -> list[dict[str, object]]:
+            return []
+
+    monkeypatch.setattr(
+        "openhands.agent_server.openai.service.LLMProfileStore", EmptyProfileStore
+    )
+
+    response = client_with_auth.get("/v1/models")
+    assert response.status_code == 401
+
+    response = client_with_auth.get(
+        "/v1/models", headers={"Authorization": "Bearer test-key-123"}
+    )
+    assert response.status_code == 200
+
+    response = client_with_auth.get(
+        "/v1/models", headers={"X-Session-API-Key": "test-key-123"}
+    )
+    assert response.status_code == 200
+
+
 def test_api_protected_endpoints_require_auth(client_with_auth):
     """Test that API endpoints under /api prefix require authentication."""
     protected_endpoints = [

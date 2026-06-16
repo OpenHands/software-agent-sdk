@@ -222,6 +222,63 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_sends_observability_fields(self, mock_ws_client):
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            observability_metadata={"repo": "OpenHands/software-agent-sdk"},
+            observability_tags=["sdk", "remote"],
+            user_id="test-user-42",
+        )
+
+        create_call = next(
+            (
+                call
+                for call in mock_client_instance.request.call_args_list
+                if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+            ),
+            None,
+        )
+        assert create_call is not None, "No POST /api/conversations call found"
+        payload = create_call.kwargs["json"]
+        assert payload["observability_metadata"] == {
+            "repo": "OpenHands/software-agent-sdk"
+        }
+        assert payload["observability_tags"] == ["sdk", "remote"]
+        assert payload["user_id"] == "test-user-42"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_user_id_none_sends_explicit_null(self, mock_ws_client):
+        """user_id=None sends an explicit null key (not omitted) so the server
+        receives a consistent payload regardless of whether user_id was supplied."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        create_call = next(
+            (
+                call
+                for call in mock_client_instance.request.call_args_list
+                if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+            ),
+            None,
+        )
+        assert create_call is not None, "No POST /api/conversations call found"
+        payload = create_call.kwargs["json"]
+        assert "user_id" in payload
+        assert payload["user_id"] is None
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_llm_completion_log_callback_writes_utf8(self, mock_ws_client, tmp_path):
         llm = LLM(
             model="gpt-4o-mini",

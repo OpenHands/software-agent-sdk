@@ -386,6 +386,23 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._get_execution_status_sync)
 
+    def _mark_error_status_sync(self) -> None:
+        """Force the conversation into ERROR status (idempotent backstop).
+
+        Called when a run task raised before the conversation could set its own
+        ERROR status — e.g. an exception in ``init_state``, which executes
+        outside ``run()``/``arun()``'s try-block (via ``_ensure_agent_ready()``).
+        Without this, the run's finally would publish a stale non-error status
+        (IDLE/RUNNING) and the failure would look like a clean stop. No-op once
+        the status is already ERROR. Best-effort: never raises (the caller is an
+        error handler).
+        """
+        if not self._conversation:
+            return
+        with self._conversation._state as state:
+            if state.execution_status != ConversationExecutionStatus.ERROR:
+                state.execution_status = ConversationExecutionStatus.ERROR
+
     def _create_state_update_event_sync(self) -> ConversationStateUpdateEvent:
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -764,6 +781,8 @@ class EventService:
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
             user_id=self.stored.user_id,
+            observability_metadata=self.stored.observability_metadata,
+            observability_tags=self.stored.observability_tags,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
@@ -893,6 +912,13 @@ class EventService:
                         await loop.run_in_executor(self._run_executor, conversation.run)
                 except Exception:
                     logger.exception("Error during conversation run")
+                    # Backstop: a run that raised before reaching its own error
+                    # handling (e.g. an ACP cold-start failure in init_state,
+                    # which runs outside run()/arun()'s try-block) can leave the
+                    # status at IDLE/RUNNING. Force ERROR so the finally's
+                    # _publish_state_update() surfaces the failure instead of a
+                    # misleading non-error state.
+                    await loop.run_in_executor(None, self._mark_error_status_sync)
                 finally:
                     # Wait for all pending events to be published via
                     # AsyncCallbackWrapper before publishing the final state update.

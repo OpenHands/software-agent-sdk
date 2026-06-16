@@ -1,0 +1,46 @@
+{
+  "backing_model": "gpt-5-nano",
+  "gateway_model": "openhands_openai_nano",
+  "messages": [
+    {
+      "content": "Answer directly and do not use tools.",
+      "role": "system"
+    },
+    {
+      "content": "In one sentence, explain what an OpenAI-compatible agent-server gateway does.",
+      "role": "user"
+    }
+  ],
+  "profile_name": "openai_nano",
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "annotations": null,
+          "audio": null,
+          "content": "An OpenAI-compatible agent-server gateway is a bridge that exposes an OpenAI-style API to clients, translating prompts into the agent\u2019s actions and returning the results in the familiar OpenAI chat/completion format.",
+          "function_call": null,
+          "refusal": null,
+          "role": "assistant",
+          "tool_calls": null
+        }
+      }
+    ],
+    "created": 1780752878,
+    "id": "chatcmpl-a948351964a24d2191092e150033b594",
+    "model": "openhands_openai_nano",
+    "object": "chat.completion",
+    "service_tier": null,
+    "system_fingerprint": null,
+    "usage": {
+      "completion_tokens": 818,
+      "completion_tokens_details": null,
+      "prompt_tokens": 3914,
+      "prompt_tokens_details": null,
+      "total_tokens": 4732
+    }
+  }
+}

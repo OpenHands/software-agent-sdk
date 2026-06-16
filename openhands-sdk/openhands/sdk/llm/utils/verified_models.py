@@ -74,6 +74,7 @@ VERIFIED_MINIMAX_MODELS = [
     "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
 ]
 
 VERIFIED_GLM_MODELS = [
@@ -108,6 +109,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "minimax-m2.1",
     "minimax-m2.5",
     "minimax-m2.7",
+    "minimax-m3",
     "gemini-3.1-pro",
     "gemini-3.1-pro-preview",
     "gemini-3-flash",

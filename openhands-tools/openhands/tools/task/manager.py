@@ -28,6 +28,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security import ConfirmationPolicyBase
@@ -105,6 +106,23 @@ class TaskManager:
         # Set once in _ensure_parent: uses the parent's subagents dir
         # when the parent persists, otherwise a temporary directory.
         self._persistence_dir: Path | None = None
+
+    def attach_parent(self, conversation: LocalConversation) -> None:
+        """Attach the parent conversation used to create sub-agent tasks.
+
+        Idempotent: if a parent conversation is already attached, subsequent
+        calls with the same conversation have no effect. Calls with a different
+        conversation are also ignored, but log a warning to surface potential
+        programming errors where two subsystems try to register different parents.
+        """
+        if (
+            self._parent_conversation is not None
+            and self._parent_conversation is not conversation
+        ):
+            logger.warning(
+                "attach_parent called with a different conversation; ignoring."
+            )
+        self._ensure_parent(conversation)
 
     def _ensure_parent(self, conversation: LocalConversation) -> None:
         if self._parent_conversation is None:
@@ -234,6 +252,11 @@ class TaskManager:
             if factory.definition.max_iteration_per_run
             else self.parent_conversation.max_iteration_per_run
         )
+        # Sub-agent budget: definition value, else inherit the parent's.
+        effective_max_budget = (
+            factory.definition.max_budget_per_run
+            or self.parent_conversation.max_budget_per_run
+        )
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()
@@ -241,6 +264,7 @@ class TaskManager:
             sub_conversation = self._get_conversation(
                 description=description,
                 max_iteration_per_run=effective_max_iter,
+                max_budget_per_run=effective_max_budget,
                 task_id=task_id,
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
@@ -268,6 +292,7 @@ class TaskManager:
         conversation_id: uuid.UUID,
         worker_agent: Agent,
         hook_config: HookConfig | None = None,
+        max_budget_per_run: float | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -284,6 +309,7 @@ class TaskManager:
             persistence_dir=self._persistence_dir,
             conversation_id=conversation_id,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             hook_config=hook_config,
             delete_on_close=True,
         )
@@ -329,9 +355,19 @@ class TaskManager:
         try:
             task.conversation.send_message(prompt, sender=parent_name)
             self._run_until_finished(task.id, task.conversation)
-            result = get_agent_final_response(task.conversation.state.events)
-            task.set_result(result)
-            logger.info(f"Task '{task.id}' completed.")
+            # A run-limit stop (cost budget or iteration cap) ends the
+            # sub-conversation in ERROR without raising; surface that to the
+            # parent instead of an empty "completed" result.
+            if (
+                task.conversation.state.execution_status
+                == ConversationExecutionStatus.ERROR
+            ):
+                task.set_error(self._run_error_detail(task.conversation))
+                logger.warning(f"Task '{task.id}' ended with an error.")
+            else:
+                result = get_agent_final_response(task.conversation.state.events)
+                task.set_result(result)
+                logger.info(f"Task '{task.id}' completed.")
         except Exception as e:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
@@ -340,6 +376,19 @@ class TaskManager:
             self._evict_task(task)
 
         return task
+
+    @staticmethod
+    def _run_error_detail(conversation: LocalConversation) -> str:
+        """Best-effort detail for a sub-agent run that ended in ERROR (e.g. the
+        cost budget or iteration cap), so the parent sees why it stopped."""
+        errors = [
+            e
+            for e in conversation.state.events
+            if isinstance(e, ConversationErrorEvent)
+        ]
+        if errors:
+            return errors[-1].detail
+        return "Sub-agent run ended with an error."
 
     def _run_until_finished(
         self, task_id: str, conversation: LocalConversation

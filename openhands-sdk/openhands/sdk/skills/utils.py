@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from fastmcp.mcp_config import MCPConfig
 
-from openhands.sdk.git.cached_repo import try_cached_clone_or_update
+from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillValidationError
 from openhands.sdk.utils.path import to_posix_path
@@ -47,7 +47,8 @@ def find_skill_md(skill_dir: Path) -> Path | None:
     """
     if not skill_dir.is_dir():
         return None
-    for item in skill_dir.iterdir():
+    # sorted() ensures deterministic case-collision winner (SKILL.md < skill.md).
+    for item in sorted(skill_dir.iterdir()):
         if item.is_file() and item.name.lower() == "skill.md":
             return item
     return None
@@ -278,7 +279,8 @@ def find_third_party_files(
     files: list[Path] = []
     seen_names: set[str] = set()
     seen_real_paths: set[Path] = set()
-    for item in repo_root.iterdir():
+    # sorted() so an AGENTS.md/agents.md collision and the order are deterministic.
+    for item in sorted(repo_root.iterdir()):
         if item.is_file() and item.name.lower() in target_names:
             # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
             name_lower = item.name.lower()
@@ -316,7 +318,7 @@ def find_skill_md_directories(skill_dir: Path) -> list[Path]:
     results: list[Path] = []
     if not skill_dir.exists():
         return results
-    for subdir in skill_dir.iterdir():
+    for subdir in sorted(skill_dir.iterdir()):
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
             if skill_md:
@@ -337,7 +339,7 @@ def find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Path
     files: list[Path] = []
     if not skill_dir.exists():
         return files
-    for f in skill_dir.rglob("*.md"):
+    for f in sorted(skill_dir.rglob("*.md")):
         is_readme = f.name == "README.md"
         is_skill_md = f.name.lower() == "skill.md"
         is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
@@ -393,7 +395,7 @@ def get_skills_cache_dir() -> Path:
 
 def update_skills_repository(
     repo_url: str,
-    branch: str,
+    ref: str,
     cache_dir: Path,
 ) -> Path | None:
     """Clone or update the local skills repository.
@@ -403,14 +405,30 @@ def update_skills_repository(
 
     Args:
         repo_url: URL of the skills repository.
-        branch: Branch name to checkout and track.
+        ref: Branch name, tag, or full commit SHA to checkout.
         cache_dir: Directory where the repository should be cached.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
+    return try_cached_clone_or_update(repo_url, repo_path, ref=ref, update=True)
+
+
+def is_skills_repo_pinned(repo_path: Path) -> bool:
+    """Return True if the local skills repo is pinned to a fixed ref.
+
+    A pinned ref is one that cannot change over time — a tag or a specific
+    commit SHA. After checking out such a ref the repository is left in
+    detached HEAD state, which is the signal used here.
+
+    Returns False on any git error so callers can safely treat the result
+    as ``False`` (i.e., keep polling) when the state cannot be determined.
+    """
+    try:
+        return GitHelper().get_current_branch(repo_path) is None
+    except Exception:
+        return False
 
 
 def discover_skill_resources(skill_dir: Path) -> SkillResources:

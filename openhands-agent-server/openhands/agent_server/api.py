@@ -2,6 +2,7 @@ import asyncio
 import os
 import tempfile
 import traceback
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -18,13 +19,11 @@ from starlette.requests import Request
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
 from openhands.agent_server.conversation_router import conversation_router
-from openhands.agent_server.conversation_router_acp import conversation_router_acp
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -41,6 +40,10 @@ from openhands.agent_server.hooks_router import hooks_router
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
+from openhands.agent_server.openai.router import (
+    create_openai_api_key_dependency,
+    openai_router,
+)
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -300,7 +303,6 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
     api_router.include_router(conversation_router)
-    api_router.include_router(conversation_router_acp)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
     api_router.include_router(git_router)
@@ -314,11 +316,15 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
-    api_router.include_router(cloud_proxy_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
     app.include_router(api_router)
+
+    openai_dependencies = []
+    if config.session_api_keys:
+        openai_dependencies.append(Depends(create_openai_api_key_dependency(config)))
+    app.include_router(openai_router, dependencies=openai_dependencies)
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
@@ -394,6 +400,10 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
         error = dict(error)  # shallow copy so we don't mutate the original
         if "input" in error:
             error["input"] = sanitize_dict(error["input"])
+        if isinstance(error.get("ctx"), dict) and isinstance(
+            error["ctx"].get("error"), Exception
+        ):
+            error["ctx"] = {**error["ctx"], "error": str(error["ctx"]["error"])}
         sanitized.append(error)
     return sanitized
 
@@ -431,18 +441,24 @@ def _add_exception_handlers(api: FastAPI) -> None:
         request: Request, exc: Exception
     ) -> JSONResponse:
         """Handle unhandled exceptions."""
+        # Correlation id that ties the 500 a caller receives to the server-side
+        # log line (with full traceback) for this failure, so an otherwise
+        # opaque 500 can be matched to its traceback in the server logs.
+        error_id = uuid.uuid4().hex
         # Always log that we're in the exception handler for debugging
         logger.debug(
-            "Exception handler called for %s %s with %s: %s",
+            "Exception handler called for %s %s with %s: %s [error_id=%s]",
             request.method,
             request.url.path,
             type(exc).__name__,
             str(exc),
+            error_id,
         )
 
         content = {
             "detail": "Internal Server Error",
             "exception": str(exc),
+            "error_id": error_id,
         }
         # In DEBUG mode, include stack trace in response
         if DEBUG:
@@ -458,9 +474,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
                 return await _http_exception_handler(request, http_exc)
             # If no HTTPException found, treat as unhandled exception
             logger.error(
-                "Unhandled ExceptionGroup on %s %s",
+                "Unhandled ExceptionGroup on %s %s [error_id=%s]",
                 request.method,
                 request.url.path,
+                error_id,
                 exc_info=(type(exc), exc, exc.__traceback__),
             )
             return JSONResponse(status_code=500, content=content)
@@ -468,9 +485,10 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Logs full stack trace for any unhandled error that FastAPI would
         # turn into a 500
         logger.error(
-            "Unhandled exception on %s %s",
+            "Unhandled exception on %s %s [error_id=%s]",
             request.method,
             request.url.path,
+            error_id,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         return JSONResponse(status_code=500, content=content)
@@ -492,8 +510,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Log 5xx errors at error level. HTTPException is intentionally
         # raised flow control — the route picked this status and detail
         # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips (e.g. a 502 from
-        # /api/cloud-proxy when the cloud is unreachable) look
+        # `exc.detail` and makes routine upstream blips look
         # indistinguishable from a process crash. Unhandled exceptions
         # still get a full traceback via _unhandled_exception_handler
         # above. Include the traceback only when DEBUG is on, as an
@@ -539,7 +556,11 @@ def create_app(config: Config | None = None) -> FastAPI:
 
     _add_api_routes(app, config)
     _setup_static_files(app, config)
-    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
+    app.add_middleware(
+        CORSDispatcher,
+        allow_origins=config.allow_cors_origins,
+        allow_origin_regex=config.allow_cors_origin_regex,
+    )
     _add_exception_handlers(app)
 
     return app

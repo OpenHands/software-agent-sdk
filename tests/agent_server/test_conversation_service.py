@@ -138,6 +138,70 @@ def conversation_service():
 
 
 @pytest.mark.asyncio
+async def test_start_conversation_registers_and_injects_client_tools(
+    conversation_service, tmp_path
+):
+    """client_tools specs are registered, injected into the agent, and persisted.
+
+    Persistence on ``StoredConversation`` is what allows forks and server
+    restarts to re-register the dynamic client tools.
+    """
+    from openhands.sdk.tool.client_tool import ClientToolSpec
+
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+        client_tools=[
+            ClientToolSpec(
+                name="srv_show_dialog",
+                description="Show a dialog",
+                parameters={
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            )
+        ],
+    )
+
+    captured: dict[str, StoredConversation] = {}
+
+    async def fake_start_event_service(stored: StoredConversation):
+        captured["stored"] = stored
+        service = AsyncMock(spec=EventService)
+        service.stored = stored
+        service.get_state.return_value = ConversationState(
+            id=stored.id,
+            agent=stored.agent,
+            workspace=stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=stored.confirmation_policy,
+        )
+        return service
+
+    with patch.object(
+        conversation_service,
+        "_start_event_service",
+        side_effect=fake_start_event_service,
+    ):
+        await conversation_service.start_conversation(request)
+
+    stored = captured["stored"]
+    # Injected into the agent's tool specs so _initialize() can resolve it
+    assert "srv_show_dialog" in {t.name for t in stored.agent.tools}
+    # Persisted so forks / restarts can re-register the dynamic action type
+    assert [s.name for s in stored.client_tools] == ["srv_show_dialog"]
+    # The class is registered in the global tool registry
+    from openhands.sdk.tool.registry import list_registered_tools
+
+    assert "srv_show_dialog" in list_registered_tools()
+
+
+@pytest.mark.asyncio
 async def test_start_conversation_decrypts_encrypted_agent_settings_mcp_env(
     conversation_service, tmp_path
 ):

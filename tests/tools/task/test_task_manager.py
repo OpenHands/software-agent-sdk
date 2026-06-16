@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -942,3 +943,67 @@ class TestTaskManagerPersistence:
         conv_persistence = conv.state.persistence_dir
         assert conv_persistence is not None
         assert str(conv_persistence).startswith(str(manager._persistence_dir))
+
+
+class TestTaskManagerBudget:
+    """The per-subagent cost budget flows from the agent definition / parent
+    into the spawned sub-conversation."""
+
+    def test_budget_from_agent_definition(self, tmp_path):
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="budgeted", model="inherit", tools=[], max_budget_per_run=4.0
+        )
+        register_agent(
+            name="budgeted",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(subagent_type="budgeted", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 4.0
+
+    def test_budget_inherits_from_parent(self, tmp_path):
+        register_builtins_agents()
+        agent = Agent(llm=_make_llm(), tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_budget_per_run=7.0,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 7.0
+
+
+class TestRunErrorSurfacing:
+    """A sub-agent run that ends in ERROR (cost budget or iteration cap) is
+    surfaced to the parent task rather than reported as an empty success."""
+
+    def test_run_error_detail_returns_last_error(self):
+        from types import SimpleNamespace
+
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+        err = ConversationErrorEvent(
+            source="environment",
+            code="MaxBudgetReached",
+            detail="Agent reached maximum budget limit ($0.05).",
+        )
+        conv = SimpleNamespace(state=SimpleNamespace(events=[err]))
+        assert (
+            TaskManager._run_error_detail(cast(LocalConversation, conv)) == err.detail
+        )
+
+    def test_run_error_detail_default_when_no_error_event(self):
+        from types import SimpleNamespace
+
+        conv = SimpleNamespace(state=SimpleNamespace(events=[]))
+        detail = TaskManager._run_error_detail(cast(LocalConversation, conv))
+        assert "error" in detail.lower()

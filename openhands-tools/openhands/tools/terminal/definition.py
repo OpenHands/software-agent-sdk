@@ -34,6 +34,55 @@ from openhands.tools.terminal.descriptions import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
+_LITERAL_ARG_HINT_TEMPLATE = (
+    "[Tool-argument error] The `command` argument looks like a Python/JSON "
+    "{literal_kind}, not a shell command. It starts with: {head!r}\n\n"
+    "The `terminal` tool runs exactly ONE shell command at a time. To pass "
+    "structured data or multi-line code:\n"
+    "  - Write a script first with `file_editor` "
+    '(command="create", path="/tmp/run.py", ...), then invoke it: '
+    "`python /tmp/run.py`.\n"
+    "  - Or use a heredoc inline, e.g.:\n"
+    "        python - <<'EOF'\n"
+    "        DATABASES = {{'default': {{...}}}}\n"
+    "        # your code here\n"
+    "        EOF\n\n"
+    "Do not put a Python list/dict literal into the `command` field; the shell "
+    "cannot interpret it."
+)
+
+
+def looks_like_python_literal_argument(command: str) -> str | None:
+    """Detect when a tool call has packed structured data into `command`.
+
+    Returns a short reason string (``"list literal"``, ``"nested list literal"``
+    or ``"dict literal"``) if ``command`` appears to be a Python/JSON literal
+    rather than a shell command, otherwise ``None``.
+
+    Carefully distinguishes legitimate bash uses of ``[`` and ``[[`` (which
+    are always followed by whitespace) from Python-style literals. See the
+    accompanying tests for the full matrix.
+    """
+    stripped = command.lstrip()
+    if len(stripped) < 2:
+        return None
+    a, b = stripped[0], stripped[1]
+    # Top-level list literals: [{...}], ["..."], ['...']
+    if a == "[" and b in ("{", '"', "'"):
+        return "list literal"
+    # Nested list literals: [[...]] — but bash `[[ -f x ]]` is followed by a
+    # whitespace char, so we only flag `[[` followed by non-whitespace.
+    if a == "[" and b == "[":
+        if len(stripped) >= 3 and stripped[2] not in (" ", "\t"):
+            return "nested list literal"
+        return None
+    # Top-level dict literals: {"key": ...} or {'key': ...}.
+    # Bash group commands `{ ls; }` always have a space after `{`.
+    if a == "{" and b in ('"', "'"):
+        return "dict literal"
+    return None
+
+
 class TerminalAction(Action):
     """Schema for terminal command execution."""
 

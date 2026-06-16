@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -53,6 +54,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -195,7 +197,7 @@ class WebSocketCallbackClient:
 
         # Add API key as query parameter if provided
         if self.api_key:
-            ws_url += f"?session_api_key={self.api_key}"
+            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
         while not self._stop.is_set():
@@ -346,10 +348,14 @@ class RemoteEventsList(EventsListBase):
 
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
-        # ACP streaming emits one ACPToolCallEvent per ToolCallProgress, each
-        # carrying the full cumulative stdout so far — O(n²) memory growth.
-        # Deduplicate by tool_call_id: replace the existing entry in-place so
-        # only the latest (most complete) snapshot is kept.
+        # ACP emits two ACPToolCallEvents per call — an early ``started`` event
+        # and one terminal (``completed`` / ``failed``) event — the
+        # action->observation pair for a tool call. Merge by tool_call_id:
+        # replace the ``started`` entry in-place with the terminal one so a
+        # single card updates from running to its result, mirroring how an
+        # ObservationEvent supersedes its ActionEvent. (The source no longer
+        # fans out one frame per cumulative-output ToolCallProgress, so this is
+        # an O(1) two-event merge, not an O(n²) dedup.)
         if isinstance(event, ACPToolCallEvent):
             existing_id = self._acp_tool_call_id_to_event_id.get(event.tool_call_id)
             if existing_id is not None:
@@ -667,6 +673,9 @@ class RemoteConversation(BaseConversation):
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -696,6 +705,12 @@ class RemoteConversation(BaseConversation):
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
             user_id: Optional user ID to associate with observability traces
+            client_tools: Optional list of client-defined tool specs. These tools
+                      have no server-side executor — when the agent calls them an
+                      ActionEvent is emitted over the WebSocket and the client
+                      handles execution via callbacks.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -708,6 +723,12 @@ class RemoteConversation(BaseConversation):
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
+
+        # Client tool specs the server already has persisted for this
+        # conversation (populated when re-attaching to an existing one). These
+        # must be registered locally before the initial event sync so that
+        # persisted ``ClientAction_*`` events can be deserialized.
+        attached_client_tools: list[ClientToolSpec] = []
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -722,11 +743,18 @@ class RemoteConversation(BaseConversation):
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
-                agent_payload = resp.json().get("agent")
+                info = resp.json()
+                agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
                     if remote_agent.agent_kind != agent.agent_kind:
                         raise ValueError(_agent_kind_mismatch_message(conversation_id))
+                # Capture persisted client tool specs so we can register their
+                # dynamic action types before RemoteState syncs events.
+                for raw_spec in info.get("client_tools") or []:
+                    attached_client_tools.append(
+                        ClientToolSpec.model_validate(raw_spec)
+                    )
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
@@ -761,9 +789,24 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
-                # Include tags if provided
-                "tags": tags or {},
+                # Include client-defined tool specs (no server-side executor)
+                "client_tools": (
+                    [s.model_dump(mode="json") for s in client_tools]
+                    if client_tools
+                    else []
+                ),
+                # Include tags and observability metadata if provided
+                "tags": tags if tags is not None else {},
+                "observability_metadata": observability_metadata
+                if observability_metadata is not None
+                else {},
+                "observability_tags": observability_tags
+                if observability_tags is not None
+                else [],
+                "user_id": user_id,
             }
+            if user_id:
+                payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -792,6 +835,18 @@ class RemoteConversation(BaseConversation):
             self._id = uuid.UUID(cid)
 
             workspace.register_conversation(str(self._id))
+
+        # Register client tool action types locally so WebSocket/persisted
+        # events with ClientAction_* action_type can be deserialized by the
+        # event loop. This must cover both the specs the caller passed in and
+        # the specs the server already had persisted (when re-attaching), so a
+        # plain reattach by conversation_id can still sync persisted events.
+        seen_client_tool_names: set[str] = set()
+        for spec in [*(client_tools or []), *attached_client_tools]:
+            if spec.name in seen_client_tool_names:
+                continue
+            seen_client_tool_names.add(spec.name)
+            ClientTool.from_spec(spec)
 
         # Initialize the remote state
         self._state = RemoteState(
@@ -916,7 +971,13 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id), user_id=user_id)
+        self._start_observability_span(
+            str(self._id),
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close

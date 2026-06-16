@@ -9,6 +9,7 @@ from openhands.sdk.conversation.types import (
     ConversationID,
     ConversationTokenCallbackType,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -18,6 +19,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
+from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -81,6 +83,9 @@ class Conversation:
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -106,6 +111,9 @@ class Conversation:
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -131,6 +139,9 @@ class Conversation:
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -185,6 +196,9 @@ class Conversation:
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
                 user_id=user_id,
+                client_tools=client_tools,
+                observability_metadata=observability_metadata,
+                observability_tags=observability_tags,
             )
 
         return LocalConversation(
@@ -204,4 +218,7 @@ class Conversation:
             delete_on_close=delete_on_close,
             tags=tags,
             user_id=user_id,
+            client_tools=client_tools,
+            observability_metadata=observability_metadata,
+            observability_tags=observability_tags,
         )
