@@ -66,7 +66,10 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.skills import load_available_skills, merge_skills_by_name
-from openhands.sdk.skills.utils import expand_mcp_variables
+from openhands.sdk.skills.utils import (
+    expand_mcp_variables,
+    expand_variable_references,
+)
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -643,14 +646,47 @@ class LocalConversation(BaseConversation):
             self._resolved_plugins = []
 
             for spec in self._plugin_specs:
+                # Expand ${VAR} placeholders in the source/ref using
+                # per-conversation secrets, so private plugins can be cloned
+                # with a token supplied via the secrets API, e.g.:
+                #   "https://x-token-auth:${MY_TOKEN}@host/org/repo.git"
+                #
+                # SECURITY: secrets only (check_env=False) -- never fold host
+                # environment variables into a URL sent to a remote git host.
+                # Braced-only (support_unbraced=False) avoids mangling a literal
+                # "$" that may legitimately appear in a token/password.
+                get_secret = self._state.secret_registry.get_secret_value
+                fetch_source = expand_variable_references(
+                    spec.source,
+                    get_secret=get_secret,
+                    check_env=False,
+                    support_unbraced=False,
+                    expand_defaults=False,
+                )
+                fetch_ref = (
+                    expand_variable_references(
+                        spec.ref,
+                        get_secret=get_secret,
+                        check_env=False,
+                        support_unbraced=False,
+                        expand_defaults=False,
+                    )
+                    if spec.ref
+                    else spec.ref
+                )
+
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
-                    source=spec.source,
-                    ref=spec.ref,
+                    source=fetch_source,
+                    ref=fetch_ref,
                     repo_path=spec.repo_path,
                 )
 
-                # Store resolved ref for persistence
+                # Store resolved ref for persistence. Build this from the
+                # ORIGINAL spec (not the expanded values) so the persisted
+                # record keeps the ${VAR} placeholder rather than the raw
+                # secret. from_plugin_source() additionally redacts any inline
+                # credentials. Resume re-fetches via the resolved commit SHA.
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
 
