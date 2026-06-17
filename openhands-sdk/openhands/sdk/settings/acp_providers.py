@@ -378,21 +378,10 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
 # so the `@version` suffix is a no-op there.
 #
-# claude-agent-acp 0.44+ (and codex-acp 0.16+) select the model via a ``model``
-# ``configOptions`` entry instead of ``session/set_model``; the SDK detects the
-# mechanism per session (see ``_session_selects_model_via_config_option``) and
-# applies it accordingly, so model switching works on either mechanism.
-#
-# claude-agent-acp is held at 0.44.0 (0.45.0/0.46.0 published <7 days ago and
-# trip the supply-chain hold) — same configOptions mechanism + model set as
-# 0.46.0; revisit once a newer release ages past the hold.
-#
-# codex-acp 0.16 split the 0.15 combined ``<model>/<effort>`` id into a bare
-# ``model`` preset id + a separate ``reasoning_effort`` config option; sending
-# the combined id to ``set_config_option(model)`` is taken literally and 400s
-# at the backend. The apply path splits accordingly (see
-# ``_split_codex_model_effort`` in acp_agent.py), so ``_CODEX_MODELS`` keeps the
-# combined ids and switching works on 0.16. See issue #3772.
+# claude-agent-acp 0.44+ / codex-acp 0.16+ select the model via a ``model``
+# ``configOptions`` entry, not ``session/set_model``; the SDK detects which per
+# session in ``_extract_session_models`` and applies it. codex 0.16 also splits
+# the model id from the reasoning effort (see ``_split_codex_model_effort``). #3772.
 CLAUDE_AGENT_ACP_VERSION = "0.44.0"
 CODEX_ACP_VERSION = "0.16.0"
 GEMINI_CLI_VERSION = "0.46.0"

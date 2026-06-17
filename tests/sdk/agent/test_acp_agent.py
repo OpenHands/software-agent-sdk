@@ -21,7 +21,6 @@ from pydantic import Field, SecretStr
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
     _apply_acp_model,
-    _apply_acp_model_with_fallback,
     _classify_acp_init_error,
     _codex_auth_file,
     _codex_base_url_overrides,
@@ -29,7 +28,6 @@ from openhands.sdk.agent.acp_agent import (
     _extract_session_models,
     _extract_token_usage,
     _image_url_to_acp_block,
-    _is_method_not_found,
     _mask_json_value,
     _maybe_set_session_model,
     _mcp_config_to_acp_servers,
@@ -37,7 +35,6 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
-    _session_selects_model_via_config_option,
     _split_codex_model_effort,
     _strip_inherited_npm_env,
 )
@@ -4478,33 +4475,40 @@ class TestMaybeSetSessionModel:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_uses_set_config_option_fallback(self):
-        # An unknown/custom server now tries set_config_option as a fallback
-        # for model selection, which is a standard ACP method.
-        conn = AsyncMock()
+    async def test_unknown_provider_applies_via_detected_mechanism(self):
+        # An unknown/custom server applies the model via whichever mechanism its
+        # session/new advertised (detected upstream), not a hardcoded guess.
+        conn_cfg = AsyncMock()
         applied = await _maybe_set_session_model(
-            conn, "devin-cli", "session-1", "kimi-k2-6", via_config_option=False
+            conn_cfg, "devin-cli", "session-1", "kimi-k2-6", via_config_option=True
         )
-        conn.set_session_model.assert_not_called()
-        conn.set_config_option.assert_awaited_once_with(
-            config_id="model",
-            value="kimi-k2-6",
-            session_id="session-1",
+        conn_cfg.set_config_option.assert_awaited_once_with(
+            config_id="model", value="kimi-k2-6", session_id="session-1"
         )
+        conn_cfg.set_session_model.assert_not_called()
+        assert applied is True
+
+        conn_set = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn_set, "devin-cli", "session-1", "kimi-k2-6", via_config_option=False
+        )
+        conn_set.set_session_model.assert_awaited_once_with(
+            model_id="kimi-k2-6", session_id="session-1"
+        )
+        conn_set.set_config_option.assert_not_called()
         assert applied is True
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_set_config_option_failure_is_tolerated(self):
-        # If set_config_option fails for an unknown provider, we log a warning
-        # but don't break session creation.
+    async def test_unknown_provider_apply_failure_is_tolerated(self):
+        # If the model-apply fails for an unknown provider, we log a warning but
+        # don't break session creation.
         conn = AsyncMock()
         conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         applied = await _maybe_set_session_model(
-            conn, "some-custom-acp", "session-1", "whatever", via_config_option=False
+            conn, "some-custom-acp", "session-1", "whatever", via_config_option=True
         )
-        conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_awaited_once()
         assert applied is False
 
@@ -4558,12 +4562,12 @@ class TestReapplySessionModelOnResume:
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_attempts_reapply_via_set_config_option(self):
-        # provider=None (custom server) now attempts reapply via set_config_option
-        # as a fallback, which is a standard ACP method.
+    async def test_unknown_provider_reapplies_via_detected_mechanism(self):
+        # provider=None (custom server) reapplies via whichever mechanism the
+        # resumed session advertised, not a hardcoded guess.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "devin-cli", "sess-1", "kimi-k2-6", via_config_option=False
+            conn, "devin-cli", "sess-1", "kimi-k2-6", via_config_option=True
         )
         conn.set_session_model.assert_not_called()
         conn.set_config_option.assert_awaited_once_with(
@@ -4610,7 +4614,7 @@ class TestReapplySessionModelOnResume:
             code=-32601, message="method not found"
         )
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever", via_config_option=False
+            conn, "some-custom-acp", "sess-1", "whatever", via_config_option=True
         )
         conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
@@ -4740,23 +4744,22 @@ class TestSetACPModel:
         )
         assert agent._current_model_id == "sonnet"
 
-    def test_switch_falls_back_on_method_not_found(self):
-        # Detected set_session_model, but the live server only has the
-        # configOptions mechanism: the first apply raises -32601, the switch
-        # retries with the other call and remembers it.
+    def test_switch_method_not_found_raises_no_fallback(self):
+        # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
+        # the advertised mechanism, and the other call is never attempted.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=False)
         agent._conn.set_session_model.side_effect = ACPRequestError(
             code=-32601, message="Method not found"
         )
-        agent.set_acp_model("gpt-5.4/low")
-        assert agent._executor.run_async.call_count == 2
-        # The flipped mechanism applied (split into model + reasoning_effort).
-        assert agent._conn.set_config_option.call_count == 2
-        assert agent._model_via_config_option is True
-        assert agent.llm.model == "gpt-5.4/low"
-        assert agent._current_model_id == "gpt-5.4/low"
+        with pytest.raises(ValueError, match="rejected set_session_model"):
+            agent.set_acp_model("gpt-5.4/low")
+        agent._conn.set_config_option.assert_not_called()
+        agent._executor.run_async.assert_called_once()
+        # Mechanism + sentinel model are left unchanged on a failed switch.
+        assert agent._model_via_config_option is False
+        assert agent.llm.model != "gpt-5.4/low"
 
-    def test_switch_invalid_model_does_not_fall_back(self):
+    def test_switch_invalid_model_raises_value_error(self):
         # A -32602 invalid-params is a real client error, not a wrong-mechanism
         # signal: surface it as ValueError without a second call.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
@@ -4820,8 +4823,10 @@ class TestSetACPModel:
         # A protocol-level rejection (e.g. method-not-found on a custom server,
         # or an invalid model id) must surface as a ValueError — not leak as a
         # raw acp.exceptions.RequestError — so the agent-server maps it to 400.
+        # The rejection is raised by the conn (driven through the real apply
+        # coroutine), exercising set_acp_model's actual error path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._executor.run_async.side_effect = ACPRequestError(
+        agent._conn.set_session_model.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
@@ -4835,7 +4840,7 @@ class TestSetACPModel:
         # than be mislabeled as a 400-class ValueError, mirroring the retriable
         # handling on the prompt path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._executor.run_async.side_effect = ACPRequestError(
+        agent._conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
         )
         with pytest.raises(ACPRequestError):
@@ -6141,10 +6146,11 @@ class TestACPSessionIdPersistence:
         models.available_models = entries
         return models
 
-    def test_unknown_provider_applies_override_via_set_config_option(self, tmp_path):
+    def test_unknown_provider_applies_override_via_detected_mechanism(self, tmp_path):
         """Fresh session on an unknown/custom provider with ``acp_model`` set:
-        the override is pushed via ``set_config_option`` (not ``set_session_model``),
-        so ``current_model_id`` must reflect the applied override.
+        the override is pushed via the mechanism the session advertised — here a
+        ``models``-capability response, so ``set_session_model`` — and
+        ``current_model_id`` must reflect the applied override.
         """
         agent = _make_agent(acp_model="caller-model")
         state = _make_state(tmp_path)
@@ -6159,9 +6165,9 @@ class TestACPSessionIdPersistence:
 
         self._patched_start_acp_server(agent, state, conn=conn)
 
-        conn.set_session_model.assert_not_awaited()
-        conn.set_config_option.assert_awaited_once_with(
-            config_id="model", value="caller-model", session_id="fresh-sess"
+        conn.set_config_option.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="caller-model", session_id="fresh-sess"
         )
         assert agent.current_model_id == "caller-model"
 
@@ -7023,7 +7029,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = "default"
         response.models.available_models = [m1]
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur == "default"
         # Normalized into our stable ACPModelInfo, not the raw acp type.
         assert avail == [
@@ -7038,7 +7044,7 @@ class TestExtractSessionModels:
         # Older agents don't include the ``models`` block at all -> None, so
         # callers know nothing was reported (and can preserve prior state).
         response = MagicMock(spec=[])
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur is None
         assert avail is None
 
@@ -7049,19 +7055,19 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = "gpt-5"
         response.models.available_models = None
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur == "gpt-5"
         assert avail == []
 
     def test_returns_none_list_when_response_is_none(self):
         # ``load_session`` can return ``None`` for servers that don't
         # implement the call — the helper must not crash, and reports "absent".
-        assert _extract_session_models(None) == (None, None)
+        assert _extract_session_models(None) == (None, None, False)
 
     def test_returns_none_list_when_models_field_is_none(self):
         response = MagicMock()
         response.models = None
-        assert _extract_session_models(response) == (None, None)
+        assert _extract_session_models(response) == (None, None, False)
 
     def test_returns_none_when_current_model_id_is_empty_string(self):
         # An empty string is treated the same as a missing field — we don't
@@ -7071,7 +7077,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = ""
         response.models.available_models = []
-        assert _extract_session_models(response) == (None, [])
+        assert _extract_session_models(response) == (None, [], False)
 
     def test_returns_none_when_current_model_id_is_not_a_string(self):
         # Defensive: an agent returning a non-string here is malformed.
@@ -7079,7 +7085,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = 42
         response.models.available_models = []
-        assert _extract_session_models(response) == (None, [])
+        assert _extract_session_models(response) == (None, [], False)
 
 
 class TestExtractSessionModelsNormalization:
@@ -7104,7 +7110,7 @@ class TestExtractSessionModelsNormalization:
         response.models.available_models = [
             self._raw("gpt-5.4/low", "gpt-5.4 (low)", "Strong everyday model."),
         ]
-        _cur, avail = _extract_session_models(response)
+        _cur, avail, _ = _extract_session_models(response)
         assert avail == [
             ACPModelInfo(
                 model_id="gpt-5.4/low",
@@ -7125,7 +7131,7 @@ class TestExtractSessionModelsNormalization:
             self._raw(model_id="good", name="Good"),
             self._raw(model_id="", name="Empty"),  # empty -> dropped
         ]
-        _cur, avail = _extract_session_models(response)
+        _cur, avail, _ = _extract_session_models(response)
         assert avail == [ACPModelInfo(model_id="good", name="Good", description=None)]
 
 
@@ -7135,8 +7141,8 @@ class TestConfigOptionModelMechanism:
     codex-acp 0.16+ and claude-agent-acp 0.46+ dropped the UNSTABLE ``models``
     capability + ``session/set_model`` in favour of a ``model`` config-option
     select driven by ``session/set_config_option``. ``_extract_session_models``
-    reads that select, and ``_session_selects_model_via_config_option`` picks
-    the apply mechanism.
+    reads that select and reports the apply mechanism as its third return value
+    (``via_config_option``) in the same scan.
     """
 
     def _select(self, *, id="model", type="select", current_value, options):
@@ -7166,8 +7172,9 @@ class TestConfigOptionModelMechanism:
                 )
             ],
         )
-        cur, avail = _extract_session_models(response)
+        cur, avail, via = _extract_session_models(response)
         assert cur == "opus[1m]"
+        assert via is True
         assert avail == [
             ACPModelInfo(
                 model_id="default",
@@ -7189,8 +7196,8 @@ class TestConfigOptionModelMechanism:
         )
         wrapped = SimpleNamespace(root=select)  # mimics the RootModel wrapper
         response = self._response(config_options=[wrapped])
-        assert _session_selects_model_via_config_option(response) is True
-        cur, avail = _extract_session_models(response)
+        cur, avail, via = _extract_session_models(response)
+        assert via is True
         assert cur == "opus[1m]"
         assert avail is not None
         assert [m.model_id for m in avail] == ["opus[1m]", "sonnet"]
@@ -7208,10 +7215,10 @@ class TestConfigOptionModelMechanism:
                 )
             ],
         )
-        cur, avail = _extract_session_models(response)
+        cur, avail, via = _extract_session_models(response)
         assert cur == "from-models"
         assert avail == []
-        assert _session_selects_model_via_config_option(response) is False
+        assert via is False
 
     def test_detects_config_option_mechanism(self):
         response = self._response(
@@ -7221,10 +7228,11 @@ class TestConfigOptionModelMechanism:
                 )
             ],
         )
-        assert _session_selects_model_via_config_option(response) is True
+        assert _extract_session_models(response)[2] is True
 
     def test_ignores_non_model_config_options(self):
-        # A ``mode`` select alongside no ``model`` select ⇒ old mechanism.
+        # A ``mode`` select alongside no ``model`` select ⇒ old mechanism, and
+        # the default (False) is reported since neither block was present.
         response = self._response(
             config_options=[
                 SimpleNamespace(
@@ -7235,8 +7243,7 @@ class TestConfigOptionModelMechanism:
                 ),
             ],
         )
-        assert _session_selects_model_via_config_option(response) is False
-        assert _extract_session_models(response) == (None, None)
+        assert _extract_session_models(response) == (None, None, False)
 
     def test_drops_options_without_usable_value(self):
         response = self._response(
@@ -7251,12 +7258,31 @@ class TestConfigOptionModelMechanism:
                 )
             ],
         )
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur == "ok"
         assert avail == [ACPModelInfo(model_id="ok", name="Ok", description=None)]
 
     def test_none_response_is_not_config_option(self):
-        assert _session_selects_model_via_config_option(None) is False
+        assert _extract_session_models(None)[2] is False
+
+    def test_default_via_config_option_used_when_no_block_present(self):
+        # On resume a load_session that omits both the models capability and the
+        # model config-option must not blindly default to set_session_model: the
+        # caller passes the persisted mechanism hint, which is honored (#3772).
+        response = self._response(config_options=[])
+        assert _extract_session_models(response)[2] is False
+        assert (
+            _extract_session_models(response, default_via_config_option=True)[2] is True
+        )
+        # A present block still wins over the hint.
+        present = self._response(
+            config_options=[
+                self._select(current_value="x", options=[self._opt("x", "X")])
+            ]
+        )
+        assert (
+            _extract_session_models(present, default_via_config_option=False)[2] is True
+        )
 
 
 # Real ``session/new`` wire payloads (by-alias) captured from the pinned CLIs.
@@ -7341,98 +7367,58 @@ class TestDetectionAgainstRealSessionResponses:
 
     def test_claude_046_uses_config_option(self):
         resp = NewSessionResponse.model_validate(_CLAUDE_046_SESSION)
-        assert _session_selects_model_via_config_option(resp) is True
-        cur, avail = _extract_session_models(resp)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is True
         assert cur == "opus[1m]"
         assert avail is not None
         assert [m.model_id for m in avail] == ["default", "opus[1m]", "sonnet", "haiku"]
 
     def test_codex_016_uses_config_option(self):
         resp = NewSessionResponse.model_validate(_CODEX_016_SESSION)
-        assert _session_selects_model_via_config_option(resp) is True
-        cur, avail = _extract_session_models(resp)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is True
         assert cur == "gpt-5.5"
         assert avail is not None
         assert [m.model_id for m in avail] == ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
 
     def test_gemini_046_uses_set_session_model(self):
         resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
-        assert _session_selects_model_via_config_option(resp) is False
-        cur, avail = _extract_session_models(resp)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is False
         assert cur == "gemini-3-flash-preview"
         assert avail is not None
         assert "gemini-3-pro-preview" in [m.model_id for m in avail]
 
 
-class TestApplyAcpModelFallback:
-    """Model-apply falls back to the other mechanism on -32601 method-not-found.
-
-    Response-detection is correct for every validated CLI, but it reads an
-    UNSTABLE capability; a misdetect (or a server that moved between mechanisms)
-    must self-heal rather than crash session init / a switch.
+class TestApplyAcpModelNoFallback:
+    """``_apply_acp_model`` applies via the advertised mechanism only — there is
+    no cross-mechanism fallback. Response-detection is deterministic from the
+    session/new shape and correct for every validated CLI, so any rejection is a
+    real error (invalid model id, or a genuinely mis-advertised server) and
+    propagates rather than silently trying the other call.
     """
 
-    def test_is_method_not_found(self):
-        assert _is_method_not_found(ACPRequestError(code=-32601, message="x")) is True
-        assert _is_method_not_found(ACPRequestError(code=-32603, message="x")) is False
-        assert _is_method_not_found(ACPRequestError(code=-32602, message="x")) is False
-
     @pytest.mark.asyncio
-    async def test_config_option_falls_back_to_set_session_model(self):
-        # Detected configOptions, but the server only has set_session_model.
+    async def test_config_option_rejection_propagates(self):
         conn = AsyncMock()
         conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="Method not found"
         )
-        effective = await _apply_acp_model_with_fallback(
-            conn, "sess-1", "gemini-3-flash", via_config_option=True
-        )
-        conn.set_config_option.assert_awaited_once()
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="gemini-3-flash", session_id="sess-1"
-        )
-        assert effective is False  # the mechanism that actually worked
+        with pytest.raises(ACPRequestError):
+            await _apply_acp_model(conn, "sess-1", "opus[1m]", via_config_option=True)
+        conn.set_session_model.assert_not_called()  # no fallback
 
     @pytest.mark.asyncio
-    async def test_set_session_model_falls_back_to_config_option(self):
-        # Detected set_session_model, but the server moved to configOptions
-        # (codex 0.16 / claude 0.46 reached via a stale/degraded detection).
+    async def test_set_session_model_rejection_propagates(self):
         conn = AsyncMock()
         conn.set_session_model.side_effect = ACPRequestError(
             code=-32601, message="Method not found"
         )
-        effective = await _apply_acp_model_with_fallback(
-            conn, "sess-1", "opus[1m]", via_config_option=False
-        )
-        conn.set_session_model.assert_awaited_once()
-        conn.set_config_option.assert_awaited_once_with(
-            config_id="model", value="opus[1m]", session_id="sess-1"
-        )
-        assert effective is True
-
-    @pytest.mark.asyncio
-    async def test_no_fallback_when_primary_succeeds(self):
-        conn = AsyncMock()
-        effective = await _apply_acp_model_with_fallback(
-            conn, "sess-1", "sonnet", via_config_option=True
-        )
-        conn.set_config_option.assert_awaited_once()
-        conn.set_session_model.assert_not_called()
-        assert effective is True
-
-    @pytest.mark.asyncio
-    async def test_non_method_not_found_error_propagates(self):
-        # An invalid-model / server error is NOT a wrong-mechanism signal — it
-        # must propagate, not silently try the other call.
-        conn = AsyncMock()
-        conn.set_config_option.side_effect = ACPRequestError(
-            code=-32602, message="Invalid params"
-        )
         with pytest.raises(ACPRequestError):
-            await _apply_acp_model_with_fallback(
-                conn, "sess-1", "bad", via_config_option=True
+            await _apply_acp_model(
+                conn, "sess-1", "gemini-3-flash", via_config_option=False
             )
-        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_not_called()  # no fallback
 
 
 class TestCodexModelEffortSplit:
@@ -7471,6 +7457,27 @@ class TestCodexModelEffortSplit:
         conn.set_config_option.assert_awaited_once_with(
             config_id="model", value="opus[1m]", session_id="sess-1"
         )
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_failure_is_tolerated(self):
+        # The model selection is the switch; a rejected reasoning_effort must NOT
+        # fail the whole apply (else the live session changed model while the
+        # caller reports failure and leaves llm.model stale). The model call
+        # succeeded, so _apply_acp_model returns normally. #3772
+        conn = AsyncMock()
+
+        async def _effort_fails(*, config_id, value, session_id):
+            if config_id == "reasoning_effort":
+                raise ACPRequestError(code=-32603, message="transient")
+
+        conn.set_config_option.side_effect = _effort_fails
+        # Does not raise: the model preset applied, only the effort refinement
+        # was dropped.
+        await _apply_acp_model(conn, "sess-1", "gpt-5.5/medium", via_config_option=True)
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+            call(config_id="reasoning_effort", value="medium", session_id="sess-1"),
+        ]
 
 
 class TestACPAgentAvailableModelsProperty:

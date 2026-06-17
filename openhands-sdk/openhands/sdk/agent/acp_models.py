@@ -49,15 +49,19 @@ class ACPModelInfo(BaseModel):
     )
 
     @classmethod
-    def from_protocol(cls, raw: Any) -> ACPModelInfo:
+    def from_protocol(cls, raw: Any, *, id_attr: str = "model_id") -> ACPModelInfo:
         """Build from a raw ACP ``ModelInfo`` (or any duck-typed object).
 
         Tolerant of partial/malformed entries: non-string fields degrade to
         ``""`` (``model_id``) or ``None`` (``name``/``description``) rather
         than raising, since the source is an UNSTABLE protocol capability that
         older or half-implemented agents may emit incompletely.
+
+        ``id_attr`` names the attribute carrying the model id — ``"model_id"``
+        for a ``models``-capability ``ModelInfo``, ``"value"`` for a
+        ``configOptions`` select option.
         """
-        model_id = getattr(raw, "model_id", None)
+        model_id = getattr(raw, id_attr, None)
         name = getattr(raw, "name", None)
         description = getattr(raw, "description", None)
         return cls(
