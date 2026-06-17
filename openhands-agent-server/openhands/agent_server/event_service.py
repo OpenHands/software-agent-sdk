@@ -1079,21 +1079,24 @@ class EventService:
         )
 
     async def switch_acp_model(self, model: str) -> None:
-        """Switch the model on a running ACP conversation, mid-conversation.
+        """Switch the model on an ACP conversation.
 
-        Runs the (blocking) protocol-level ``session/set_model`` round-trip in a
-        worker thread, then mirrors the new model into ``meta.json`` so the
-        switch survives an agent-server restart: ``start()`` rebuilds the agent
-        from ``self.stored.agent`` and ``ConversationState.create()`` copies
-        that over the persisted base_state.json on resume. Only ``acp_model``
-        needs updating — ``model_post_init`` re-derives the sentinel
-        ``llm.model`` on reload.
+        For a conversation that has already started, runs the (blocking)
+        protocol-level ``session/set_model`` round-trip in a worker thread; for
+        one not yet run, the SDK defers the switch (persist-only). Either way it
+        mirrors the new model into ``meta.json`` so the switch survives an
+        agent-server restart: ``start()`` rebuilds the agent from
+        ``self.stored.agent`` and ``ConversationState.create()`` copies that over
+        the persisted base_state.json on resume. Only ``acp_model`` needs
+        updating — ``model_post_init`` re-derives the sentinel ``llm.model`` on
+        reload.
         """
         if self._conversation is None:
-            raise RuntimeError(
-                "Conversation is not active; it has not been started or has "
-                "been closed."
-            )
+            # Match the inactive-service convention of the other event-service
+            # methods (the conversation router maps it to 400). The SDK no
+            # longer raises for a created-but-not-yet-run conversation, so a
+            # pre-first-run switch is a normal 200 deferral, not an error.
+            raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.switch_acp_model, model)
         self.stored = self.stored.model_copy(

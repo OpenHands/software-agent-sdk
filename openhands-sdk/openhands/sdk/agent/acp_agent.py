@@ -1654,6 +1654,13 @@ class ACPAgent(AgentBase):
         through ``model_dump()``.  Consumers that need to read it across the
         API boundary should look at ``ConversationInfo.current_model_id``,
         which the agent-server lifts off the agent into the response.
+
+        This (the protocol-reported session model) is the authoritative model
+        id — trust it over what the model says about itself. Provider models
+        introspect their own identity unreliably: gemini-cli reports a stale
+        ``gemini-1.5-flash-latest`` regardless of the active model, and codex
+        won't name its tier. Verified across all three providers; the switch is
+        honored even when the model's self-description disagrees.
         """
         return self._current_model_id
 
@@ -1696,6 +1703,29 @@ class ACPAgent(AgentBase):
             return False
         provider = detect_acp_provider_by_agent_name(self._agent_name)
         return provider is not None and provider.supports_runtime_model_switch
+
+    @property
+    def has_live_acp_session(self) -> bool:
+        """Whether a live ACP session exists to act on right now.
+
+        ``True`` only once the subprocess-backed session is fully wired —
+        connection, session id, and executor all present — which happens during
+        the first ``run()`` (see :meth:`init_state`). ``False`` before that
+        (created but not yet run) and after teardown.
+
+        Lets callers branch on session state instead of catching the
+        ``RuntimeError`` that :meth:`set_acp_model` raises pre-session or
+        reaching into the ``_conn`` / ``_session_id`` / ``_executor``
+        PrivateAttrs. In particular
+        :meth:`~openhands.sdk.conversation.impl.local_conversation.LocalConversation.switch_acp_model`
+        uses it to decide between a live in-place switch and a deferred persist
+        that the next session start applies.
+        """
+        return (
+            self._conn is not None
+            and self._session_id is not None
+            and self._executor is not None
+        )
 
     def get_all_llms(self) -> Generator[LLM]:
         yield self.llm
@@ -2418,16 +2448,23 @@ class ACPAgent(AgentBase):
                 )
                 session_id = response.session_id
                 reported_model_id, available_models = _extract_session_models(response)
-                # Initial-selection protocol call for providers that use it
-                # (codex-acp, gemini-cli); no-op for claude, which selected its
-                # model via the _meta above.
+                # Initial-model protocol call for every built-in provider
+                # (codex, gemini, claude-code). The pinned claude CLI ignores
+                # the _meta above, so this set_session_model call is what
+                # actually applies the model (#3654); _meta is kept only as
+                # backward-compat for older claude CLIs that still honor it.
                 applied_via_call = await _maybe_set_session_model(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                 )
-                override_applied = bool(session_meta) or applied_via_call
+                # set_session_model is the authoritative signal that acp_model
+                # reached the server. _meta is a no-op on the pinned claude CLI,
+                # so it must not by itself claim the override took effect. (For
+                # claude+acp_model the two always agree: the call returns True or
+                # raises before we reach here.)
+                override_applied = applied_via_call
             else:
                 # Resumed session. load_session() does not carry model _meta, so
                 # reapply the persisted (possibly runtime-switched) acp_model via
@@ -3448,10 +3485,17 @@ class ACPAgent(AgentBase):
             keeps cost/token accounting on the previously-known model and
             self-heals on the next successful switch; the agent itself always
             runs whatever model the live ACP session holds.
+
+            claude-agent-acp caveat: a live switch changes the session model
+            and the inference target, but the model-naming system context is
+            injected at session *start* and is not refreshed here, so the
+            agent's self-reported identity can lag (e.g. still says "haiku"
+            after switching to sonnet) until a new session. The switch itself
+            is applied; only the model's self-description is stale.
         """
         if not model or not model.strip():
             raise ValueError("model must be a non-empty string")
-        if self._conn is None or self._session_id is None or self._executor is None:
+        if not self.has_live_acp_session:
             raise RuntimeError(
                 "ACP session is not initialized; the model can only be switched "
                 "after the conversation has started (first run())."
