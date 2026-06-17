@@ -1021,33 +1021,46 @@ class LocalConversation(BaseConversation):
         self.switch_llm(cached)
 
     def switch_acp_model(self, model: str) -> None:
-        """Switch the model on a running ACP conversation (mid-conversation).
+        """Switch the model on an ACP conversation.
 
         Unlike :meth:`switch_llm`, which swaps OpenHands' own LLM object, this
-        issues a protocol-level ``session/set_model`` call to the ACP
-        subprocess so the new model applies to subsequent turns of the *same*
-        session, preserving conversation context. ``switch_llm`` would not
+        targets the model the ACP subprocess runs. ``switch_llm`` would not
         affect an ACP conversation, since the subprocess owns its own model.
+
+        Behaves differently depending on whether a live session exists yet:
+
+        * **Live session** (after the first ``run()``): issues a protocol-level
+          ``session/set_model`` call so the new model applies to subsequent
+          turns of the *same* session, preserving conversation context.
+        * **No live session yet** (created but not yet run): there is nothing to
+          switch live, so the new value is only persisted. Session creation on
+          the first ``run()`` then honors it — ``_maybe_set_session_model``
+          issues a one-shot ``set_session_model`` for every built-in provider
+          (codex, gemini, and claude-code) — so the first turn runs on the
+          switched model rather than silently using the construction-time one.
 
         Args:
             model: Provider-specific model id to switch to.
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or the provider does not support runtime model switching, or
-                the ACP server rejects the switch.
-            RuntimeError: If the ACP session is not yet initialized.
-            TimeoutError: If the ACP server does not respond within
-                ``acp_prompt_timeout`` seconds.
+                or (for a live switch) the provider does not support runtime
+                model switching, or the ACP server rejects the switch.
+            TimeoutError: If a live switch's ``session/set_model`` round-trip
+                exceeds ``acp_prompt_timeout`` seconds.
         """
         if not isinstance(self.agent, ACPAgent):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
         with self._state:
-            # Perform the live protocol switch first; if it fails we leave the
-            # persisted state untouched.
-            self.agent.set_acp_model(model)
+            # With a live session, perform the protocol switch first; if it
+            # fails we leave the persisted state untouched. Without one (pre
+            # first run()), there is nothing to switch live — skip the call and
+            # just persist; session creation applies the value (see docstring).
+            live = self.agent.has_live_acp_session
+            if live:
+                self.agent.set_acp_model(model)
             # Persist the switched model as the authoritative value. ``acp_model``
             # is frozen, so we replace the agent with a copy carrying the new
             # value. This matters on two counts the in-place mutation missed:
@@ -1058,14 +1071,17 @@ class LocalConversation(BaseConversation):
             #      and the resumed session model from ``acp_model`` on reload, so
             #      it must hold the switched value, not the construction-time one.
             #
-            # model_copy is shallow, so the copy shares the live ACP runtime
+            # model_copy is shallow, so a live copy shares the ACP runtime
             # (_conn/_executor/_process) with the old agent. Disarm the old
             # agent's finalizer before dropping it: otherwise ACPAgent.__del__
             # -> close() on the discarded agent would tear down the session the
             # copy now owns, leaving the next turn pointing at a dead connection.
+            # Pre-session there is no runtime to hand off, so release_runtime is
+            # unnecessary (the discarded agent's close() is already a no-op).
             old_agent = self.agent
             new_agent = old_agent.model_copy(update={"acp_model": model})
-            old_agent.release_runtime()
+            if live:
+                old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``
             # calls; ``self._state.agent`` is what the autosave path serializes
             # to base_state.json. Update both so the running conversation and the

@@ -1156,14 +1156,18 @@ def test_switch_acp_model_non_acp_returns_400(
         client.app.dependency_overrides.clear()
 
 
-def test_switch_acp_model_uninitialized_returns_409(
+def test_switch_acp_model_pre_session_returns_200(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
-    """A RuntimeError (session not initialized yet) maps to 409."""
+    """A switch before the first run() is a 200, not a 409.
+
+    Regression for #3763: the SDK now persists (defers) a pre-session switch
+    instead of raising, so the route no longer maps it to 409 "ACP session not
+    initialized yet". The event service returns normally (the deferral is
+    applied when the first session starts).
+    """
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.switch_acp_model.side_effect = RuntimeError(
-        "ACP session is not initialized"
-    )
+    mock_event_service.switch_acp_model.return_value = None
 
     client.app.dependency_overrides[get_conversation_service] = (
         lambda: mock_conversation_service
@@ -1173,7 +1177,33 @@ def test_switch_acp_model_uninitialized_returns_409(
             f"/api/conversations/{sample_conversation_id}/switch_acp_model",
             json={"model": "haiku"},
         )
-        assert response.status_code == 409
+        assert response.status_code == 200
+        mock_event_service.switch_acp_model.assert_awaited_once_with("haiku")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_switch_acp_model_inactive_service_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """An inactive service (closed/never-started) maps to 400.
+
+    The event service raises the shared ``inactive_service`` ValueError for a
+    missing live conversation, consistent with its other methods; the router's
+    generic ValueError handler turns it into a 400.
+    """
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.switch_acp_model.side_effect = ValueError("inactive_service")
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/switch_acp_model",
+            json={"model": "haiku"},
+        )
+        assert response.status_code == 400
     finally:
         client.app.dependency_overrides.clear()
 

@@ -4607,6 +4607,48 @@ class TestReapplySessionModelOnResume:
         assert applied is False
 
 
+class TestHasLiveACPSession:
+    """The public predicate LocalConversation branches on for model switching."""
+
+    def test_false_before_session(self):
+        # Freshly constructed: no connection / session / executor wired yet.
+        agent = _make_agent()
+        assert agent.has_live_acp_session is False
+
+    def test_true_when_fully_wired(self):
+        agent = _make_agent()
+        agent._conn = MagicMock()
+        agent._session_id = "sess-1"
+        agent._executor = MagicMock()
+        assert agent.has_live_acp_session is True
+
+    @pytest.mark.parametrize(
+        "conn,session_id,executor",
+        [
+            (None, "sess-1", "exec"),
+            ("conn", None, "exec"),
+            ("conn", "sess-1", None),
+        ],
+    )
+    def test_false_when_partially_wired(self, conn, session_id, executor):
+        # Every one of the three runtime handles must be present; a partial
+        # teardown / bootstrap must not read as a live session.
+        agent = _make_agent()
+        agent._conn = MagicMock() if conn else None
+        agent._session_id = session_id
+        agent._executor = MagicMock() if executor else None
+        assert agent.has_live_acp_session is False
+
+    def test_set_acp_model_raises_when_no_live_session(self):
+        # The low-level primitive still rejects a pre-session call (the deferral
+        # lives in LocalConversation.switch_acp_model, which branches on the
+        # predicate); guards that the two stay in sync.
+        agent = _make_agent()
+        assert not agent.has_live_acp_session
+        with pytest.raises(RuntimeError, match="not initialized"):
+            agent.set_acp_model("gpt-5.4")
+
+
 class TestSetACPModel:
     """Runtime (mid-conversation) model switching via set_session_model."""
 

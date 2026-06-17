@@ -27,6 +27,7 @@ from openhands.sdk.agent.utils import (
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
+from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.conversation import (
     CancellationToken,
     ConversationCallbackType,
@@ -457,7 +458,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         This method pulls secrets from the conversation's secret_registry and
         merges them with agent_context to build the dynamic portion of the
-        system prompt.
+        system prompt, assembled from the dynamic-tier sections of the default
+        registry. ``_build_prompt_context`` reproduces the legacy no-agent_context
+        path: with no agent_context but registry secrets present, it resolves a
+        default ``AgentContext()`` so the secrets (and its datetime) still render.
 
         Args:
             state: The conversation state containing the secret_registry.
@@ -468,25 +472,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
-        if not self.agent_context:
-            # No agent_context but we might have secrets from registry
-            if secret_infos:
-                from openhands.sdk.context.agent_context import AgentContext
-
-                # Create a minimal context just for secrets
-                temp_context = AgentContext()
-                return temp_context.get_system_message_suffix(
-                    llm_model=self.llm.model,
-                    llm_model_canonical=self.llm.model_canonical_name,
-                    additional_secret_infos=secret_infos,
-                )
-            return None
-
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-            additional_secret_infos=secret_infos,
-        )
+        ctx = self._build_prompt_context(additional_secret_infos=secret_infos)
+        return create_registry().build(ctx).dynamic
 
     def _execute_actions(
         self,
