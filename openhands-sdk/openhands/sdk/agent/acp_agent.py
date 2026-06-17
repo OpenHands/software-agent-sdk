@@ -23,7 +23,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable, Generator, Iterable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple
@@ -492,6 +492,25 @@ async def _apply_acp_model_with_fallback(
         return not via_config_option
 
 
+def _usable_models(infos: Iterable[ACPModelInfo]) -> list[ACPModelInfo]:
+    """Drop entries without a usable ``model_id`` — an empty/missing id is an
+    invalid picker option and an unusable model-switch target."""
+    return [info for info in infos if info.model_id]
+
+
+def _config_option_to_model(opt: Any) -> ACPModelInfo:
+    """Build an :class:`ACPModelInfo` from a ``configOptions`` select option,
+    whose ``value`` is the model id. A non-string id degrades to ``""`` (then
+    dropped by :func:`_usable_models`), mirroring ``ACPModelInfo.from_protocol``.
+    """
+    value = getattr(opt, "value", None)
+    return ACPModelInfo(
+        model_id=value if isinstance(value, str) else "",
+        name=getattr(opt, "name", None),
+        description=getattr(opt, "description", None),
+    )
+
+
 def _extract_session_models(
     response: Any,
 ) -> tuple[str | None, list[ACPModelInfo] | None]:
@@ -523,15 +542,7 @@ def _extract_session_models(
         current = getattr(models, "current_model_id", None)
         current = current if isinstance(current, str) and current else None
         raw = getattr(models, "available_models", None) or []
-        # Drop entries without a usable id: an empty/missing ``model_id`` is an
-        # invalid picker option and an unusable ``set_session_model`` target, so
-        # we filter it out rather than surfacing ``model_id=""``.
-        available = [
-            info
-            for info in (ACPModelInfo.from_protocol(m) for m in raw)
-            if info.model_id
-        ]
-        return current, available
+        return current, _usable_models(ACPModelInfo.from_protocol(m) for m in raw)
     # configOptions mechanism: the ``model`` select carries the same state, with
     # ``value`` as the model id (== the ``set_config_option`` target).
     opt = _model_config_option(response)
@@ -539,18 +550,8 @@ def _extract_session_models(
         return None, None
     current = getattr(opt, "current_value", None)
     current = current if isinstance(current, str) and current else None
-    available = []
-    for o in getattr(opt, "options", None) or []:
-        value = getattr(o, "value", None)
-        if isinstance(value, str) and value:
-            available.append(
-                ACPModelInfo(
-                    model_id=value,
-                    name=getattr(o, "name", None),
-                    description=getattr(o, "description", None),
-                )
-            )
-    return current, available
+    options = getattr(opt, "options", None) or []
+    return current, _usable_models(_config_option_to_model(o) for o in options)
 
 
 # The ACP MCP server union accepted by new_session() / load_session().
