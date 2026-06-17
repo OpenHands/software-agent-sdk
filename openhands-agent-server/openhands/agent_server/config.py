@@ -236,6 +236,17 @@ class Config(BaseModel):
             "The URL where this agent server instance is available externally"
         ),
     )
+    deferred_init: bool = Field(
+        default=False,
+        description=(
+            "When True, the server starts in dormant mode. Stateless services "
+            "(VSCode, tool preload, etc.) start as usual, but the conversation, "
+            "event, and bash routers return 503 until POST /api/init is called with "
+            "the runtime configuration. This is intended for warm-pool deployments "
+            "where pods are pre-warmed before a user is matched and per-user "
+            "configuration is delivered later."
+        ),
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
     @property
