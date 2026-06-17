@@ -14,7 +14,7 @@ This pattern is useful for teams that want to:
 - Create a curated skill set for their specific workflows
 
 Directory Structure:
-    43_mixed_marketplace_skills/
+    05_skills_and_plugins/05_mixed_marketplace_skills/
     ├── .plugin/
     │   └── marketplace.json     # Marketplace with local and remote skills
     ├── skills/
