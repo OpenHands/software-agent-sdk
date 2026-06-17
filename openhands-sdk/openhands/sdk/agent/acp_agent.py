@@ -1654,6 +1654,13 @@ class ACPAgent(AgentBase):
         through ``model_dump()``.  Consumers that need to read it across the
         API boundary should look at ``ConversationInfo.current_model_id``,
         which the agent-server lifts off the agent into the response.
+
+        This (the protocol-reported session model) is the authoritative model
+        id — trust it over what the model says about itself. Provider models
+        introspect their own identity unreliably: gemini-cli reports a stale
+        ``gemini-1.5-flash-latest`` regardless of the active model, and codex
+        won't name its tier. Verified across all three providers; the switch is
+        honored even when the model's self-description disagrees.
         """
         return self._current_model_id
 
@@ -3478,6 +3485,13 @@ class ACPAgent(AgentBase):
             keeps cost/token accounting on the previously-known model and
             self-heals on the next successful switch; the agent itself always
             runs whatever model the live ACP session holds.
+
+            claude-agent-acp caveat: a live switch changes the session model
+            and the inference target, but the model-naming system context is
+            injected at session *start* and is not refreshed here, so the
+            agent's self-reported identity can lag (e.g. still says "haiku"
+            after switching to sonnet) until a new session. The switch itself
+            is applied; only the model's self-description is stale.
         """
         if not model or not model.strip():
             raise ValueError("model must be a non-empty string")
