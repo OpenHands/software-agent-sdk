@@ -387,14 +387,14 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # trip the supply-chain hold) — same configOptions mechanism + model set as
 # 0.46.0; revisit once a newer release ages past the hold.
 #
-# codex-acp is held at 0.15.0: 0.16.0 moved to the configOptions mechanism, but
-# a real e2e showed that applying a model via ``set_config_option`` then running
-# a turn fails with JSON-RPC -32603 (verified against the ChatGPT-subscription
-# backend; 0.15.0's ``set_session_model`` switch + turn works). Bumping would
-# regress ACP model switching for codex (the #3763/#3764 path), so hold until
-# codex-acp fixes the 0.16 set_config_option turn path. See issue #3772.
+# codex-acp 0.16 split the 0.15 combined ``<model>/<effort>`` id into a bare
+# ``model`` preset id + a separate ``reasoning_effort`` config option; sending
+# the combined id to ``set_config_option(model)`` is taken literally and 400s
+# at the backend. The apply path splits accordingly (see
+# ``_split_codex_model_effort`` in acp_agent.py), so ``_CODEX_MODELS`` keeps the
+# combined ids and switching works on 0.16. See issue #3772.
 CLAUDE_AGENT_ACP_VERSION = "0.44.0"
-CODEX_ACP_VERSION = "0.15.0"
+CODEX_ACP_VERSION = "0.16.0"
 GEMINI_CLI_VERSION = "0.46.0"
 
 

@@ -383,6 +383,9 @@ def _write_secret_file(path: Path, value: str) -> None:
 # (codex-acp 0.16+, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
+# Companion config-option id codex-acp 0.16 uses for the reasoning-effort tier
+# (the 0.15 combined ``<model>/<effort>`` id is split across the two on 0.16).
+_REASONING_EFFORT_CONFIG_OPTION_ID = "reasoning_effort"
 
 
 def _model_config_option(response: Any) -> Any | None:
@@ -426,28 +429,55 @@ def _session_selects_model_via_config_option(response: Any) -> bool:
     return _model_config_option(response) is not None
 
 
-def _apply_acp_model(
+def _split_codex_model_effort(model: str) -> tuple[str, str | None]:
+    """Split a codex-style ``<model>/<effort>`` id into ``(model, effort)``.
+
+    codex-acp's ``models`` capability (0.15) used a combined id like
+    ``gpt-5.5/medium`` that the server parsed itself. Its 0.16 ``model``
+    ``configOptions`` select instead wants a **bare preset id** (``gpt-5.5``)
+    with the reasoning effort set via a separate ``reasoning_effort`` option —
+    an unknown combined id is taken literally and rejected by the backend
+    (``"<id>" model is not supported``). So when applying via configOptions we
+    split on ``/``. Bare ids (claude ``opus[1m]``/``sonnet``, gemini ``auto``,
+    codex without an effort suffix) return ``(model, None)`` unchanged.
+    """
+    base, sep, effort = model.partition("/")
+    if sep and effort:
+        return base, effort
+    return model, None
+
+
+async def _apply_acp_model(
     conn: ClientSideConnection,
     session_id: str,
     model: str,
     *,
     via_config_option: bool,
-) -> Awaitable[Any]:
-    """Build the awaitable that applies ``model`` to a live ACP session via
-    whichever protocol the session advertised: ``set_config_option(configId=
-    "model")`` for configOptions-based servers (codex-acp 0.16+, claude-agent-acp
-    0.44+), else ``set_session_model``.
+) -> None:
+    """Apply ``model`` to a live ACP session via whichever protocol the session
+    advertised: ``set_config_option(configId="model")`` for configOptions-based
+    servers (codex-acp 0.16+, claude-agent-acp 0.44+), else ``set_session_model``.
 
-    Returns the (eagerly constructed) coroutine so callers can either ``await``
-    it directly or hand it to ``run_async`` — the underlying ``conn`` method is
-    invoked now, mirroring the previous inline ``conn.set_session_model(...)``
-    call site.
+    For the configOptions mechanism a codex ``<model>/<effort>`` id is split into
+    a bare ``model`` plus a separate ``reasoning_effort`` option (see
+    :func:`_split_codex_model_effort`); other ids apply as a single ``model``
+    selection.
     """
-    if via_config_option:
-        return conn.set_config_option(
-            config_id=_MODEL_CONFIG_OPTION_ID, value=model, session_id=session_id
+    if not via_config_option:
+        await conn.set_session_model(model_id=model, session_id=session_id)
+        return
+    base, effort = _split_codex_model_effort(model)
+    await conn.set_config_option(
+        config_id=_MODEL_CONFIG_OPTION_ID, value=base, session_id=session_id
+    )
+    if effort is not None:
+        # Order matters: reasoning_effort is only valid once the model is a known
+        # preset, which the call above just set.
+        await conn.set_config_option(
+            config_id=_REASONING_EFFORT_CONFIG_OPTION_ID,
+            value=effort,
+            session_id=session_id,
         )
-    return conn.set_session_model(model_id=model, session_id=session_id)
 
 
 def _is_method_not_found(exc: ACPRequestError) -> bool:

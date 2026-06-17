@@ -11,7 +11,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
@@ -20,6 +20,7 @@ from pydantic import Field, SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _apply_acp_model,
     _apply_acp_model_with_fallback,
     _classify_acp_init_error,
     _codex_auth_file,
@@ -37,6 +38,7 @@ from openhands.sdk.agent.acp_agent import (
     _select_auth_method,
     _serialize_tool_content,
     _session_selects_model_via_config_option,
+    _split_codex_model_effort,
     _strip_inherited_npm_env,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
@@ -4532,14 +4534,16 @@ class TestReapplySessionModelOnResume:
     @pytest.mark.asyncio
     async def test_reapply_via_set_config_option_mechanism(self):
         # codex-acp 0.16+/claude-agent-acp 0.46+ reapply via
-        # ``set_config_option(configId="model")``.
+        # ``set_config_option(configId="model")``; a codex combined id splits
+        # into model + reasoning_effort.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
             conn, "codex-acp", "sess-1", "gpt-5.4/low", via_config_option=True
         )
-        conn.set_config_option.assert_awaited_once_with(
-            config_id="model", value="gpt-5.4/low", session_id="sess-1"
-        )
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="gpt-5.4", session_id="sess-1"),
+            call(config_id="reasoning_effort", value="low", session_id="sess-1"),
+        ]
         conn.set_session_model.assert_not_called()
         assert applied is True
 
@@ -4678,20 +4682,33 @@ class TestSetACPModel:
     def _wire(
         agent: ACPAgent, agent_name: str, *, via_config_option: bool = False
     ) -> ACPAgent:
-        agent._conn = MagicMock()
+        conn = MagicMock()
+        conn.set_session_model = AsyncMock()
+        conn.set_config_option = AsyncMock()
+        agent._conn = conn
         agent._session_id = "sess-1"
         agent._agent_name = agent_name
         agent._model_via_config_option = via_config_option
         executor = MagicMock()
-        executor.run_async = MagicMock()
+
+        # run_async actually drives the (async) apply coroutine to completion so
+        # the AsyncMock conn calls fire — exercising the real apply/split path.
+        def _run(coro: Any, timeout: Any = None) -> Any:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        executor.run_async = MagicMock(side_effect=_run)
         agent._executor = executor
         return agent
 
     def test_switches_model_on_live_codex_session(self):
-        # Default (models-capability) session ⇒ set_session_model.
+        # Default (models-capability) session ⇒ set_session_model (combined id).
         agent = self._wire(_make_agent(), "codex-acp")
         agent.set_acp_model("gpt-5.4/low")
-        agent._conn.set_session_model.assert_called_once_with(
+        agent._conn.set_session_model.assert_awaited_once_with(
             model_id="gpt-5.4/low", session_id="sess-1"
         )
         agent._conn.set_config_option.assert_not_called()
@@ -4700,31 +4717,41 @@ class TestSetACPModel:
         assert agent.llm.model == "gpt-5.4/low"
         assert agent.llm.metrics.model_name == "gpt-5.4/low"
 
-    def test_switches_model_via_config_option_session(self):
-        # configOptions session (codex-acp 0.16+, claude-agent-acp 0.46+) ⇒
-        # set_config_option(configId="model").
+    def test_switches_codex_via_config_option_splits_model_and_effort(self):
+        # codex-acp 0.16 configOptions: the combined id is split into a bare
+        # `model` preset + a separate `reasoning_effort` option.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.4/low")
-        agent._conn.set_config_option.assert_called_once_with(
-            config_id="model", value="gpt-5.4/low", session_id="sess-1"
-        )
+        assert agent._conn.set_config_option.await_args_list == [
+            call(config_id="model", value="gpt-5.4", session_id="sess-1"),
+            call(config_id="reasoning_effort", value="low", session_id="sess-1"),
+        ]
         agent._conn.set_session_model.assert_not_called()
-        agent._executor.run_async.assert_called_once()
+        # The agent's surfaced/persisted model stays the combined registry id.
         assert agent.llm.model == "gpt-5.4/low"
         assert agent._current_model_id == "gpt-5.4/low"
+
+    def test_switches_claude_via_config_option_single_call(self):
+        # A bare id (no `/`) applies as a single `model` selection — no effort.
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("sonnet")
+        agent._conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="sonnet", session_id="sess-1"
+        )
+        assert agent._current_model_id == "sonnet"
 
     def test_switch_falls_back_on_method_not_found(self):
         # Detected set_session_model, but the live server only has the
         # configOptions mechanism: the first apply raises -32601, the switch
         # retries with the other call and remembers it.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=False)
-        agent._executor.run_async.side_effect = [
-            ACPRequestError(code=-32601, message="Method not found"),
-            None,  # retry with the flipped mechanism succeeds
-        ]
+        agent._conn.set_session_model.side_effect = ACPRequestError(
+            code=-32601, message="Method not found"
+        )
         agent.set_acp_model("gpt-5.4/low")
         assert agent._executor.run_async.call_count == 2
-        # The working mechanism is remembered for later switches.
+        # The flipped mechanism applied (split into model + reasoning_effort).
+        assert agent._conn.set_config_option.call_count == 2
         assert agent._model_via_config_option is True
         assert agent.llm.model == "gpt-5.4/low"
         assert agent._current_model_id == "gpt-5.4/low"
@@ -4733,7 +4760,7 @@ class TestSetACPModel:
         # A -32602 invalid-params is a real client error, not a wrong-mechanism
         # signal: surface it as ValueError without a second call.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
-        agent._executor.run_async.side_effect = ACPRequestError(
+        agent._conn.set_config_option.side_effect = ACPRequestError(
             code=-32602, message="Invalid params"
         )
         with pytest.raises(ValueError, match="rejected set_config_option"):
@@ -7406,6 +7433,44 @@ class TestApplyAcpModelFallback:
                 conn, "sess-1", "bad", via_config_option=True
             )
         conn.set_session_model.assert_not_called()
+
+
+class TestCodexModelEffortSplit:
+    """codex-acp 0.16 splits the 0.15 combined ``<model>/<effort>`` id into a
+    bare ``model`` preset + a separate ``reasoning_effort`` configOption."""
+
+    def test_splits_combined_id(self):
+        assert _split_codex_model_effort("gpt-5.5/medium") == ("gpt-5.5", "medium")
+        assert _split_codex_model_effort("gpt-5.4-mini/xhigh") == (
+            "gpt-5.4-mini",
+            "xhigh",
+        )
+
+    def test_bare_ids_unchanged(self):
+        # claude / gemini / codex-without-effort ids have no ``/``.
+        assert _split_codex_model_effort("opus[1m]") == ("opus[1m]", None)
+        assert _split_codex_model_effort("sonnet") == ("sonnet", None)
+        assert _split_codex_model_effort("auto") == ("auto", None)
+        assert _split_codex_model_effort("gpt-5.5") == ("gpt-5.5", None)
+
+    @pytest.mark.asyncio
+    async def test_apply_splits_into_two_config_options(self):
+        # The configOptions apply path sets model (bare) then reasoning_effort.
+        conn = AsyncMock()
+        await _apply_acp_model(conn, "sess-1", "gpt-5.5/medium", via_config_option=True)
+        assert conn.set_config_option.await_args_list == [
+            call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+            call(config_id="reasoning_effort", value="medium", session_id="sess-1"),
+        ]
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apply_bare_config_option_single_call(self):
+        conn = AsyncMock()
+        await _apply_acp_model(conn, "sess-1", "opus[1m]", via_config_option=True)
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="opus[1m]", session_id="sess-1"
+        )
 
 
 class TestACPAgentAvailableModelsProperty:
