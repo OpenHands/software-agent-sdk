@@ -94,8 +94,14 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_mcp_servers: list[str] = Field(default_factory=list)
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
 
-    # ACP provider credential names the editor/materialize checks (ACP only).
-    required_acp_secret_names: list[str] = Field(default_factory=list)
+    # ACP provider credential channels the editor/materialize checks (ACP only).
+    # These are NOT jointly required: authentication needs the API key *or* one
+    # of the file-content credentials, and the base URL is optional proxy
+    # routing. Keeping them in separate fields lets the editor mark set/missing
+    # honestly instead of treating a working api-key-only setup as incomplete.
+    acp_api_key_secret_name: str | None = None
+    acp_base_url_secret_name: str | None = None
+    acp_file_secret_names: list[str] = Field(default_factory=list)
 
     # Redacted resolved settings, present iff ``valid``.
     resolved_settings: dict[str, Any] | None = None
@@ -177,22 +183,22 @@ def _api_key_set(llm: LLM) -> bool:
     return bool(value.strip()) and value != REDACTED_SECRET_VALUE
 
 
-def _required_acp_secret_names(acp_server: str) -> list[str]:
-    """Provider secret names derived from ``acp_server`` via ``ACP_PROVIDERS``.
+def _acp_credential_channels(
+    acp_server: str,
+) -> tuple[str | None, str | None, list[str]]:
+    """Provider credential channels for ``acp_server`` via ``ACP_PROVIDERS``.
 
-    The env-var key for the API credential and (optional) base URL, plus any
-    file-content credential secret names. Empty for ``'custom'`` servers.
+    Returns ``(api_key_env_var, base_url_env_var, file_secret_names)`` kept
+    separate by role: the API-key env var and the file-content credentials are
+    *alternative* auth mechanisms (one suffices), and the base URL is optional
+    proxy routing — not jointly required. All empty/``None`` for ``'custom'``
+    servers, whose creds the user manages directly.
     """
     info = get_acp_provider(acp_server)
     if info is None:
-        return []
-    names: list[str] = []
-    if info.api_key_env_var:
-        names.append(info.api_key_env_var)
-    if info.base_url_env_var:
-        names.append(info.base_url_env_var)
-    names.extend(spec.secret_name for spec in info.file_secrets)
-    return names
+        return None, None, []
+    file_names = [spec.secret_name for spec in info.file_secrets]
+    return info.api_key_env_var, info.base_url_env_var, file_names
 
 
 def _build_openhands_settings(
@@ -318,9 +324,11 @@ def resolve_agent_profile_dry_run(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             )
     else:
-        diagnostics.required_acp_secret_names = _required_acp_secret_names(
-            profile.acp_server
-        )
+        (
+            diagnostics.acp_api_key_secret_name,
+            diagnostics.acp_base_url_secret_name,
+            diagnostics.acp_file_secret_names,
+        ) = _acp_credential_channels(profile.acp_server)
 
     diagnostics.valid = not diagnostics.errors
     if diagnostics.valid:

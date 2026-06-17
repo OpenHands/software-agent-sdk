@@ -362,7 +362,7 @@ def test_dry_run_verdict_matches_real_resolve(
         )
 
 
-def test_dry_run_acp_reports_required_secret_names(
+def test_dry_run_acp_reports_credential_channels_by_role(
     llm_store: LLMProfileStore,
 ) -> None:
     profile = ACPAgentProfile(name="acp", acp_server="codex")
@@ -371,16 +371,15 @@ def test_dry_run_acp_reports_required_secret_names(
     )
     assert diag.agent_kind == "acp"
     assert diag.valid is True
-    # api_key + base_url env vars and the file-content secret name, from the registry.
-    assert diag.required_acp_secret_names == [
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "CODEX_AUTH_JSON",
-    ]
+    # The API key and the file-content credential are alternative auth paths;
+    # the base URL is optional proxy routing — each surfaced in its own field.
+    assert diag.acp_api_key_secret_name == "OPENAI_API_KEY"
+    assert diag.acp_base_url_secret_name == "OPENAI_BASE_URL"
+    assert diag.acp_file_secret_names == ["CODEX_AUTH_JSON"]
     assert diag.resolved_settings is not None
 
 
-def test_dry_run_acp_custom_server_has_no_required_secrets(
+def test_dry_run_acp_custom_server_has_no_credential_channels(
     llm_store: LLMProfileStore,
 ) -> None:
     profile = ACPAgentProfile(
@@ -389,7 +388,9 @@ def test_dry_run_acp_custom_server_has_no_required_secrets(
     diag = resolve_agent_profile_dry_run(
         profile, llm_store=llm_store, mcp_config=None, cipher=None
     )
-    assert diag.required_acp_secret_names == []
+    assert diag.acp_api_key_secret_name is None
+    assert diag.acp_base_url_secret_name is None
+    assert diag.acp_file_secret_names == []
 
 
 def test_dry_run_normalizes_settings_build_failure(
