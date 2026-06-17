@@ -2441,16 +2441,23 @@ class ACPAgent(AgentBase):
                 )
                 session_id = response.session_id
                 reported_model_id, available_models = _extract_session_models(response)
-                # Initial-selection protocol call for providers that use it
-                # (codex-acp, gemini-cli); no-op for claude, which selected its
-                # model via the _meta above.
+                # Initial-model protocol call for every built-in provider
+                # (codex, gemini, claude-code). The pinned claude CLI ignores
+                # the _meta above, so this set_session_model call is what
+                # actually applies the model (#3654); _meta is kept only as
+                # backward-compat for older claude CLIs that still honor it.
                 applied_via_call = await _maybe_set_session_model(
                     conn,
                     agent_name,
                     session_id,
                     self.acp_model,
                 )
-                override_applied = bool(session_meta) or applied_via_call
+                # set_session_model is the authoritative signal that acp_model
+                # reached the server. _meta is a no-op on the pinned claude CLI,
+                # so it must not by itself claim the override took effect. (For
+                # claude+acp_model the two always agree: the call returns True or
+                # raises before we reach here.)
+                override_applied = applied_via_call
             else:
                 # Resumed session. load_session() does not carry model _meta, so
                 # reapply the persisted (possibly runtime-switched) acp_model via
