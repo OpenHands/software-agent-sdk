@@ -7,7 +7,7 @@
     "base_url_env_var": "ANTHROPIC_BASE_URL",
     "default_session_mode": "bypassPermissions",
     "agent_name_patterns": ["claude-agent"],
-    "supports_set_session_model": false,
+    "supports_set_session_model": true,
     "session_meta_key": "claudeCode",
     "available_models": [
       {
