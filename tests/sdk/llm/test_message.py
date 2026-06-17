@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import pytest
+from litellm.types.utils import Message as LiteLLMMessage
 
 from openhands.sdk.llm.message import Message
 
@@ -212,8 +213,6 @@ def test_empty_assistant_message_uses_string_content_in_list_serializer():
 
 def test_empty_assistant_from_llm_chat_message_uses_string_content_in_list_serializer():
     """Empty assistant LLM responses should keep string content."""
-    from litellm.types.utils import Message as LiteLLMMessage
-
     litellm_message = LiteLLMMessage(role="assistant", content=None)
     message = Message.from_llm_chat_message(litellm_message)
 
@@ -226,8 +225,6 @@ def test_empty_assistant_from_llm_chat_message_uses_string_content_in_list_seria
 
 def test_message_from_llm_chat_message_function_role_error():
     """Test Message.from_llm_chat_message with function role raises error."""
-    from litellm.types.utils import Message as LiteLLMMessage
-
     from openhands.sdk.llm.message import Message
 
     litellm_message = LiteLLMMessage(role="function", content="Function response")  # type: ignore
@@ -238,8 +235,6 @@ def test_message_from_llm_chat_message_function_role_error():
 
 def test_message_from_llm_chat_message_with_non_string_content():
     """Test Message.from_llm_chat_message with non-string content."""
-    from litellm.types.utils import Message as LiteLLMMessage
-
     from openhands.sdk.llm.message import Message
 
     # Create a message with non-string content (None or list)
