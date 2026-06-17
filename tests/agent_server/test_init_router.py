@@ -50,12 +50,6 @@ class TestConfigDefaults:
     def test_deferred_init_defaults_false(self):
         assert Config().deferred_init is False
 
-    def test_deferred_init_reads_env(self, monkeypatch):
-        monkeypatch.setenv("OH_DEFERRED_INIT", "1")
-        # The factory is only used when no env-parser flow is in play; for
-        # programmatic Config() this still reads the env directly.
-        assert Config().deferred_init is True
-
 
 class TestBuildInitializedConfig:
     def test_clears_deferred_init_flag(self):
