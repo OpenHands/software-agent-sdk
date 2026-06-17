@@ -23,10 +23,15 @@ def test_returns_prompt_context() -> None:
 
 
 def test_equivalent_to_static_template_kwargs(monkeypatch) -> None:
+    # After the Phase 3 cutover the default prompt renders via the registry, so
+    # render_template is only reached through the custom-filename escape hatch.
+    # That path and _build_prompt_context both resolve kwargs via
+    # _resolved_template_kwargs, so they must not drift.
     agent = Agent(
         llm=_make_llm(),
         tools=[Tool(name="browser_tool_set")],
         system_prompt_kwargs={"cli_mode": True},
+        system_prompt_filename="custom.j2",
     )
 
     captured: dict = {}

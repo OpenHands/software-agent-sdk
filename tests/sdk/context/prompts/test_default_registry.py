@@ -18,7 +18,7 @@ import pytest
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.prompts.default_registry import build_default_registry
+from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.context.prompts.sections.dynamic import (
     AvailableSkillsSection,
@@ -80,7 +80,7 @@ def _mask_datetime(text: str) -> str:
 def test_registry_static_matches_legacy(cell: Cell) -> None:
     agent = _build_agent(cell)
     ctx = agent._build_prompt_context()
-    static = build_default_registry().build(ctx).static
+    static = create_registry().build(ctx).static
     assert static == _canonical_gaps(agent.static_system_message)
 
 
@@ -92,7 +92,7 @@ def test_registry_static_matches_legacy_windows(
     monkeypatch.setattr(sys, "platform", "win32")
     agent = _build_agent(PLATFORM_CELL)
     ctx = agent._build_prompt_context()
-    static = build_default_registry().build(ctx).static
+    static = create_registry().build(ctx).static
     assert static == _canonical_gaps(agent.static_system_message)
     assert "powershell" in static
 
@@ -106,7 +106,7 @@ def test_default_registry_is_all_static() -> None:
         model_family="anthropic_claude",
         cli_mode=True,
     )
-    blocks = build_default_registry().build(ctx)
+    blocks = create_registry().build(ctx)
     assert blocks.dynamic is None
     assert blocks.static.startswith("<SOUL>\nYou are OpenHands agent")
     assert "<IMPORTANT>" in blocks.static
@@ -203,7 +203,7 @@ def test_model_specific_omitted_without_matching_body() -> None:
 def test_registry_dynamic_matches_legacy(cell: Cell) -> None:
     agent = _build_agent(cell)
     ctx = agent._build_prompt_context()
-    registry = build_default_registry().build(ctx).dynamic or ""
+    registry = create_registry().build(ctx).dynamic or ""
     assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
 
 
@@ -221,7 +221,7 @@ def test_registry_dynamic_matches_legacy_with_secret_registry(tmp_path: Path) ->
 
     additional = state.secret_registry.get_secret_infos()
     ctx = agent._build_prompt_context(additional_secret_infos=additional)
-    registry = build_default_registry().build(ctx).dynamic or ""
+    registry = create_registry().build(ctx).dynamic or ""
     legacy = agent.get_dynamic_context(state) or ""
     assert _canonical_gaps(registry) == _canonical_gaps(legacy)
 
@@ -289,7 +289,7 @@ def test_dynamic_sections_render_into_dynamic_block() -> None:
         custom_suffix="Follow conventions.",
         secret_infos=(("GITHUB_TOKEN", None),),
     )
-    blocks = build_default_registry().build(ctx)
+    blocks = create_registry().build(ctx)
     assert "<CURRENT_DATETIME>" in (blocks.dynamic or "")
     assert "<CUSTOM_SECRETS>" in (blocks.dynamic or "")
     assert "Follow conventions." in (blocks.dynamic or "")
@@ -315,7 +315,7 @@ def test_registry_dynamic_matches_legacy_with_available_skills() -> None:
     llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
     agent = Agent(llm=llm, tools=[], agent_context=agent_context)
     ctx = agent._build_prompt_context()
-    registry = build_default_registry().build(ctx).dynamic or ""
+    registry = create_registry().build(ctx).dynamic or ""
     assert "<SKILLS>" in registry
     assert "<name>pdf-tools</name>" in registry
     assert "<location>" not in registry  # invoke_skill is the only entry point
@@ -350,7 +350,7 @@ def test_registry_dynamic_matches_legacy_with_datetime_object() -> None:
     llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
     agent = Agent(llm=llm, tools=[], agent_context=AgentContext(current_datetime=dt))
     ctx = agent._build_prompt_context()
-    registry = build_default_registry().build(ctx).dynamic or ""
+    registry = create_registry().build(ctx).dynamic or ""
     assert "The current date and time is: 2025-01-01T12:34:56.789000+00:00" in registry
     assert _canonical_gaps(registry) == _canonical_gaps(agent.dynamic_context or "")
 
@@ -372,7 +372,7 @@ def test_registry_dynamic_matches_legacy_no_context_secrets(tmp_path: Path) -> N
     additional = state.secret_registry.get_secret_infos()
 
     ctx = agent._build_prompt_context(additional_secret_infos=additional)
-    registry = build_default_registry().build(ctx).dynamic or ""
+    registry = create_registry().build(ctx).dynamic or ""
     legacy = agent.get_dynamic_context(state) or ""
 
     assert "<CURRENT_DATETIME>" in registry
