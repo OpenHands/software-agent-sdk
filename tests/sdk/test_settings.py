@@ -886,6 +886,31 @@ def test_acp_create_agent_uses_server_default_command(
         "@agentclientprotocol/claude-agent-acp@0.30.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
+    # The authoritative provider key is carried onto the agent.
+    assert agent.acp_server == "claude-code"
+
+
+def test_acp_create_agent_carries_provider_key() -> None:
+    """``create_agent`` stamps the provider key onto the agent for every choice.
+
+    ``acp_command`` does not reliably reverse-map to a provider, so the key must
+    ride the agent (and thus ``ConversationInfo.agent``) for consumers to resolve
+    a brand label / model list. Custom carries through verbatim; an agent built
+    directly (not from settings) defaults to ``None``; and the key survives a
+    serialization round-trip through the ``AgentBase`` discriminated union.
+    """
+    for server in ("claude-code", "codex", "gemini-cli", "custom"):
+        kwargs: dict[str, Any] = {"acp_server": server}
+        if server == "custom":
+            kwargs["acp_command"] = ["my-acp"]
+        agent = ACPAgentSettings(**kwargs).create_agent()
+        assert agent.acp_server == server
+
+    assert ACPAgent(acp_command=["x"]).acp_server is None
+
+    agent = ACPAgentSettings(acp_server="gemini-cli").create_agent()
+    reloaded = ACPAgent.model_validate_json(agent.model_dump_json())
+    assert reloaded.acp_server == "gemini-cli"
 
 
 def test_acp_resolve_command_for_known_servers(
@@ -1604,6 +1629,56 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
 
     assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+
+
+def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    settings = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config)
+
+    blob = settings.model_dump_json()
+    assert "sk-mcp-secret" not in blob
+    assert "tok-mcp-secret" not in blob
+
+    exposed = settings.model_dump(context={"expose_secrets": True})
+    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
+    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
+    # create_agent must hand the subprocess real env/headers (the field serializer
+    # redacts mcp_config for transit/storage only).
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
+
+    assert isinstance(agent, ACPAgent)
+    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+    assert (
+        agent.mcp_config["mcpServers"]["leaky"]["headers"]["Authorization"]
+        == "Bearer tok-mcp-secret"
+    )
 
 
 # ---------------------------------------------------------------------------

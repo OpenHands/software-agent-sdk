@@ -295,3 +295,82 @@ def test_discriminated_union_with_pydantic_model():
     # First skill is always-active (trigger is None)
     assert model.skills[1].trigger.type == "keyword"
     assert model.skills[2].trigger.type == "task"
+
+
+# A clearly identifiable secret value for the mcp_tools masking tests.
+_MCP_SECRET = "ghp_SUPER_SECRET_TOKEN_SHOULD_NOT_LEAK"
+
+
+def _skill_with_mcp_secret() -> Skill:
+    return Skill(
+        name="leaky",
+        content="do stuff",
+        mcp_tools={
+            "mcpServers": {
+                "svc": {
+                    "url": "https://x.test",
+                    "headers": {"Authorization": f"Bearer {_MCP_SECRET}"},
+                    "env": {"API_KEY": _MCP_SECRET},
+                }
+            }
+        },
+    )
+
+
+def test_mcp_tools_secrets_redacted_by_default():
+    """mcp_tools env/headers carry MCP credentials; they must be redacted at
+    rest, just like settings mcp_config -- not dumped in plaintext."""
+    skill = _skill_with_mcp_secret()
+
+    dumped = json.dumps(skill.model_dump(mode="json"))
+    assert _MCP_SECRET not in dumped
+
+    json_dumped = skill.model_dump_json()
+    assert _MCP_SECRET not in json_dumped
+
+
+def test_mcp_tools_secrets_exposed_under_expose_secrets():
+    """Opt-in exposure surfaces the real values (parity with mcp_config)."""
+    skill = _skill_with_mcp_secret()
+
+    exposed = json.dumps(
+        skill.model_dump(mode="json", context={"expose_secrets": "plaintext"})
+    )
+    assert _MCP_SECRET in exposed
+
+
+def test_mcp_tools_secrets_encrypted_under_cipher():
+    """With a cipher in context, secrets are encrypted (not plaintext, not
+    dropped) so they can be decrypted on restore."""
+    from openhands.sdk.utils.cipher import Cipher
+
+    skill = _skill_with_mcp_secret()
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    encrypted = json.dumps(
+        skill.model_dump(
+            mode="json", context={"expose_secrets": "encrypted", "cipher": cipher}
+        )
+    )
+    assert _MCP_SECRET not in encrypted
+    # The header/env keys survive; only their values are transformed.
+    assert "Authorization" in encrypted
+    assert "API_KEY" in encrypted
+
+
+def test_mcp_tools_real_values_remain_accessible_in_memory():
+    """Masking is serialization-only: the live attribute keeps real values so
+    runtime MCP usage is unaffected."""
+    skill = _skill_with_mcp_secret()
+
+    assert skill.mcp_tools is not None
+    env = skill.mcp_tools["mcpServers"]["svc"]["env"]
+    assert env["API_KEY"] == _MCP_SECRET
+
+
+def test_mcp_tools_none_round_trips_unchanged():
+    """A skill without mcp_tools still serializes mcp_tools as None."""
+    skill = Skill(name="clean", content="hello")
+    dumped = skill.model_dump(mode="json")
+    assert dumped["mcp_tools"] is None
+    assert Skill.model_validate(dumped) == skill

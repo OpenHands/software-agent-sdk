@@ -44,6 +44,19 @@ class JsonDecodingOptionalAction(Action):
     config: dict[str, int] | None = Field(default=None, description="Optional dict")
 
 
+class StrFieldAction(Action):
+    """Test action with str-only fields (mirrors file_editor old_str/new_str)."""
+
+    old_str: str | None = Field(default=None, description="A required string field")
+    name: str = Field(description="A regular string field")
+
+
+class StrOrListAction(Action):
+    """Test action with a field that accepts either a str or a list."""
+
+    value: str | list[str] = Field(description="A str-or-list field")
+
+
 class _NestedActionForMalformedArgs(Action):
     """Action with nested structures for testing JSON decoding.
 
@@ -328,3 +341,45 @@ def test_trailing_garbage_with_nested_braces():
     action = _NestedActionForMalformedArgs.model_validate(fixed_data)
 
     assert action.nested_dict == {"outer": {"inner": "v"}}
+
+
+def test_str_field_list_joined():
+    """A str-only field given a list of string chunks is joined (minimax-m2.5)."""
+    data = {
+        "old_str": ["[dependencies]\nhypatia = ", '{ features = ["arrow"] }'],
+        "name": "test",
+    }
+    fixed_data = fix_malformed_tool_arguments(data, StrFieldAction)
+    action = StrFieldAction.model_validate(fixed_data)
+
+    # "".join preserves embedded newlines and concatenates without separators.
+    assert action.old_str == '[dependencies]\nhypatia = { features = ["arrow"] }'
+    assert action.name == "test"
+
+
+def test_str_field_native_string_passthrough():
+    """A str-only field given a normal string is left unchanged."""
+    data = {"old_str": "already a string", "name": "test"}
+    fixed_data = fix_malformed_tool_arguments(data, StrFieldAction)
+    action = StrFieldAction.model_validate(fixed_data)
+
+    assert action.old_str == "already a string"
+
+
+def test_str_field_list_with_non_strings_not_joined():
+    """A str field given a list with non-string members is not joined."""
+    data = {"old_str": ["a", 1], "name": "test"}
+    fixed_data = fix_malformed_tool_arguments(data, StrFieldAction)
+
+    # Left as-is, so Pydantic rejects it rather than silently mangling it.
+    with pytest.raises(ValidationError):
+        StrFieldAction.model_validate(fixed_data)
+
+
+def test_str_or_list_field_list_passthrough():
+    """A str|list field given a list is valid and must not be joined."""
+    data = {"value": ["a", "b", "c"]}
+    fixed_data = fix_malformed_tool_arguments(data, StrOrListAction)
+    action = StrOrListAction.model_validate(fixed_data)
+
+    assert action.value == ["a", "b", "c"]

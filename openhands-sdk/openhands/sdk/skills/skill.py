@@ -12,7 +12,14 @@ from xml.sax.saxutils import escape as xml_escape
 import frontmatter
 import yaml
 from fastmcp.mcp_config import MCPConfig
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.skills.exceptions import SkillError, SkillValidationError
@@ -268,6 +275,25 @@ class Skill(BaseModel):
             except Exception as e:
                 raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
         return v
+
+    @field_serializer("mcp_tools")
+    def _serialize_mcp_tools(
+        self, value: dict | None, info: SerializationInfo
+    ) -> dict | None:
+        """Mask credentials in ``mcp_tools`` (``mcpServers.*.env``/``headers``).
+
+        ``mcp_tools`` is an unmodeled ``dict``, so it would otherwise dump its
+        MCP server secrets in plaintext wherever a ``Skill`` is serialized.
+        Route it through the same ``serialize_mcp_config`` as settings
+        ``mcp_config``: redacted by default, plaintext under ``expose_secrets``,
+        encrypted under a cipher. Imported lazily to avoid the
+        settings.model -> agent_context -> skills import cycle.
+        """
+        if not value:
+            return value
+        from openhands.sdk.settings.model import serialize_mcp_config
+
+        return serialize_mcp_config(MCPConfig.model_validate(value), info)
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",

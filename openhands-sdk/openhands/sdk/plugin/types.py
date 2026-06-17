@@ -382,10 +382,3 @@ class CommandDefinition(BaseModel):
             source=self.source,
             allowed_tools=self.allowed_tools if self.allowed_tools else None,
         )
-
-
-# =============================================================================
-# Deprecated marketplace classes - moved to openhands.sdk.marketplace
-# =============================================================================
-# These are re-exported here for backward compatibility. Import from
-# openhands.sdk.marketplace instead.

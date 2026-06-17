@@ -24,6 +24,7 @@ from pydantic import (
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
+from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
@@ -106,6 +107,12 @@ _SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
 _DEFAULT_SOUL = (
     "You are OpenHands agent, a helpful AI assistant that can interact"
     " with a computer to solve tasks."
+)
+
+# Built-in prompt dir. The registry only stands in for the default prompt here; a
+# subclass with its own prompts/system_prompt.j2 keeps the Jinja render path.
+_BUILTIN_PROMPT_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "prompts")
 )
 
 
@@ -456,20 +463,35 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
-        When ``system_prompt`` is set, that string is returned verbatim,
-        bypassing Jinja2 template rendering entirely.
+        The default prompt is assembled from the typed section registry
+        (``create_registry``). Escape hatches keep the Jinja render path: an inline
+        ``system_prompt`` is returned verbatim; a custom/absolute
+        ``system_prompt_filename`` renders through ``render_template``; a subclass
+        with its own ``prompt_dir`` still renders its default-named template; and a
+        custom ``security_policy_filename`` renders so its policy file is included.
 
         Returns:
-            The rendered system prompt template without dynamic context.
+            The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
             return self.system_prompt
 
-        return render_template(
-            prompt_dir=self.prompt_dir,
-            template_name=self.system_prompt_filename,
-            **self._resolved_template_kwargs(),
-        )
+        # Escape hatch: custom/absolute filename, a subclass with its own
+        # prompt_dir, or a custom security policy. The registry reproduces only
+        # the built-in default prompt (default template + default policy); a
+        # non-default security_policy_filename must keep the Jinja include path.
+        if (
+            self.system_prompt_filename != "system_prompt.j2"
+            or os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR
+            or self.security_policy_filename != "security_policy.j2"
+        ):
+            return render_template(
+                prompt_dir=self.prompt_dir,
+                template_name=self.system_prompt_filename,
+                **self._resolved_template_kwargs(),
+            )
+
+        return create_registry().build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -502,26 +524,58 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_variant"] = spec.variant
         return template_kwargs
 
-    def _build_prompt_context(self) -> PromptContext:
+    def _build_prompt_context(
+        self,
+        additional_secret_infos: list[dict[str, str | None]] | None = None,
+    ) -> PromptContext:
         """Frozen :class:`PromptContext` snapshot for this agent.
 
         ``template_kwargs`` is resolved by the shared
         :meth:`_resolved_template_kwargs`; the other fields snapshot
-        per-conversation signals.
+        per-conversation signals. The dynamic-tier fields reuse
+        ``AgentContext._resolve_dynamic_data`` so skills are model-gated and
+        secrets merged exactly as ``get_system_message_suffix`` does;
+        ``additional_secret_infos`` mirrors ``get_dynamic_context(state)``.
         """
         agent_context = self.agent_context
+        # Mirror get_dynamic_context's temp-context path: with no agent_context but
+        # conversation secrets present, the legacy renderer resolves a default
+        # AgentContext() (which carries a default current_datetime), so its dynamic
+        # block advertises the secrets *and* a <CURRENT_DATETIME>. Resolve the same
+        # default here so the registry reproduces both blocks, not just secrets.
+        if agent_context is None and additional_secret_infos:
+            agent_context = AgentContext()
+
+        now: str | None = None
+        skill_names: tuple[str, ...] = ()
+        secret_names: tuple[str, ...] = ()
+        repo_skills: tuple[tuple[str, str], ...] = ()
+        available_skills_prompt: str | None = None
+        custom_suffix: str | None = None
+        secret_infos: tuple[tuple[str, str | None], ...] = ()
+
         if agent_context is not None:
-            now = agent_context.get_formatted_datetime()
-            skill_names = tuple(skill.name for skill in agent_context.skills)
-            secret_names = tuple(
-                info["name"]
-                for info in agent_context.get_secret_infos()
-                if info["name"] is not None
+            data = agent_context._resolve_dynamic_data(
+                self.llm.model,
+                self.llm.model_canonical_name,
+                additional_secret_infos,
             )
-        else:
-            now = None
-            skill_names = ()
-            secret_names = ()
+            # Reuse the shared resolver's formatted datetime rather than re-deriving
+            # it: get_system_message_suffix renders this exact string, so the registry
+            # must too (a rounded copy would break byte-for-byte parity for callers
+            # that pass a datetime object instead of a pre-formatted string).
+            now = data.formatted_datetime
+            skill_names = tuple(skill.name for skill in agent_context.skills)
+            repo_skills = tuple((s.name, s.content) for s in data.repo_skills)
+            available_skills_prompt = data.available_skills_prompt or None
+            custom_suffix = agent_context.system_message_suffix or None
+            secret_infos = tuple(
+                (info["name"] or "", info["description"]) for info in data.secret_infos
+            )
+            # Derive names from the resolver's merged secret_infos instead of a
+            # second get_secret_infos() walk; this now includes registry-provided
+            # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
+            secret_names = tuple(name for name, _ in secret_infos if name)
 
         return PromptContext(
             template_kwargs=self._resolved_template_kwargs(),
@@ -531,6 +585,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             now=now,
             skill_names=skill_names,
             secret_names=secret_names,
+            repo_skills=repo_skills,
+            available_skills_prompt=available_skills_prompt,
+            custom_suffix=custom_suffix,
+            secret_infos=secret_infos,
         )
 
     @property
@@ -547,15 +605,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         cross-conversation cache sharing. Instead, it is sent as a second content
         block (without a cache marker) inside the system message.
 
+        Assembled from the dynamic-tier sections of the default registry.
+
         Returns:
             The dynamic context string, or None if no context is configured.
         """
         if not self.agent_context:
             return None
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-        )
+        return create_registry().build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
