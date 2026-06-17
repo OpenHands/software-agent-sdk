@@ -19,6 +19,7 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     validate_agent_profile,
 )
+from openhands.sdk.skills import Skill
 
 
 _ADAPTER: TypeAdapter[OpenHandsAgentProfile | ACPAgentProfile] = TypeAdapter(
@@ -322,3 +323,50 @@ def test_verification_field_cannot_carry_a_secret() -> None:
     exposed = profile.model_dump(mode="json", context={"expose_secrets": True})
     assert "critic_api_key" not in exposed["verification"]
     assert "sk-real-secret-value" not in json.dumps(exposed)
+
+
+def _skill_with_mcp_secret() -> Skill:
+    return Skill(
+        name="leaky",
+        content="do stuff",
+        mcp_tools={
+            "mcpServers": {
+                "svc": {
+                    "url": "https://x.test",
+                    "headers": {"Authorization": "Bearer sk-HEADER-SECRET"},
+                    "env": {"API_KEY": "env-SECRET"},
+                }
+            }
+        },
+    )
+
+
+def test_skills_mcp_tools_credentials_are_masked_at_rest() -> None:
+    """``Skill.mcp_tools`` (an unmodeled dict) can carry an MCP server credential
+    in ``env`` / ``headers``; the profile must mask it at rest like
+    ``OpenHandsAgentSettings.mcp_config`` does — not dump it in plaintext."""
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skills=[_skill_with_mcp_secret()]
+    )
+
+    default_dump = json.dumps(profile.model_dump(mode="json"))
+    assert "sk-HEADER-SECRET" not in default_dump
+    assert "env-SECRET" not in default_dump
+
+    # Opt-in exposure surfaces the real values (parity with mcp_config).
+    exposed = json.dumps(
+        profile.model_dump(mode="json", context={"expose_secrets": True})
+    )
+    assert "sk-HEADER-SECRET" in exposed
+    assert "env-SECRET" in exposed
+
+
+def test_skills_without_secrets_round_trip() -> None:
+    """A plain skill (no mcp_tools secrets) still round-trips unchanged."""
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        skills=[Skill(name="clean", content="hello")],
+    )
+    reloaded = validate_agent_profile(profile.model_dump(mode="json"))
+    assert reloaded == profile
