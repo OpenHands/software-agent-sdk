@@ -236,7 +236,19 @@ def _build_acp_settings(
     The profile stores ``acp_command`` as a single shell string; the settings
     field is a token list, so a non-empty command is split with :func:`shlex.split`.
     No credential is set — provider creds ride ``state.secret_registry`` (#3720).
+
+    Enforces the launch invariant that ``resolve_acp_command`` checks at
+    ``create_agent`` time: a ``custom`` server has no default command, so one
+    must be supplied. Surfacing it here keeps the resolved settings actually
+    executable (and the dry-run verdict honest) instead of deferring the failure
+    to conversation start.
     """
+    command = shlex.split(profile.acp_command) if profile.acp_command else []
+    if profile.acp_server == "custom" and not command:
+        raise ValueError(
+            "acp_command is required when acp_server='custom' — there is no "
+            "default launch command to fall back to"
+        )
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "acp",
@@ -244,7 +256,7 @@ def _build_acp_settings(
         "acp_model": profile.acp_model,
         "acp_session_mode": profile.acp_session_mode,
         "acp_prompt_timeout": profile.acp_prompt_timeout,
-        "acp_command": shlex.split(profile.acp_command) if profile.acp_command else [],
+        "acp_command": command,
         "acp_args": list(profile.acp_args) if profile.acp_args else [],
         "mcp_config": mcp_config,
     }

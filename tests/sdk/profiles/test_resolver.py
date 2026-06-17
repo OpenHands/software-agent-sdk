@@ -393,6 +393,25 @@ def test_dry_run_acp_custom_server_has_no_credential_channels(
     assert diag.acp_file_secret_names == []
 
 
+def test_custom_acp_without_command_is_invalid(
+    llm_store: LLMProfileStore,
+) -> None:
+    # A custom server has no default launch command, so the resolved settings
+    # would fail in create_agent(). The dry-run must report valid=False and the
+    # strict resolve must raise, rather than deferring the failure to start.
+    profile = ACPAgentProfile(name="acp", acp_server="custom")
+    diag = resolve_agent_profile_dry_run(
+        profile, llm_store=llm_store, mcp_config=None, cipher=None
+    )
+    assert diag.valid is False
+    assert diag.errors
+    assert diag.resolved_settings is None
+    with pytest.raises(ValueError):
+        resolve_agent_profile(
+            profile, llm_store=llm_store, mcp_config=None, cipher=None
+        )
+
+
 def test_dry_run_normalizes_settings_build_failure(
     llm_store: LLMProfileStore,
 ) -> None:
