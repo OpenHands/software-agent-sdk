@@ -378,11 +378,9 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
 # so the `@version` suffix is a no-op there.
 #
-# codex-acp 0.16.0 and claude-agent-acp 0.46.0 dropped the UNSTABLE ``models``
-# capability + ``session/set_model`` in favour of a ``model`` ``configOptions``
-# select driven by ``session/set_config_option``; the SDK auto-detects and uses
-# the right call (see ``_session_selects_model_via_config_option`` in
-# acp_agent.py), so model switching keeps working across the bump (#3772).
+# codex-acp 0.16.0 / claude-agent-acp 0.46.0 select the model via a ``model``
+# ``configOptions`` entry instead of ``session/set_model``; the SDK detects the
+# mechanism per session (see ``_session_selects_model_via_config_option``).
 CLAUDE_AGENT_ACP_VERSION = "0.46.0"
 CODEX_ACP_VERSION = "0.16.0"
 GEMINI_CLI_VERSION = "0.46.0"
@@ -452,12 +450,9 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             api_key_env_var="GEMINI_API_KEY",
             base_url_env_var="GEMINI_BASE_URL",
             # gemini-cli 0.46.0 rejects ``set_session_mode("yolo")`` at session
-            # init with a JSON-RPC -32603 (it gates yolo on folder-trust that is
-            # not yet established right after session/new), which would crash
-            # headless startup. ``default`` is accepted at init, and the SDK's
-            # ACP bridge already auto-approves every ``session/request_permission``
-            # the server sends, so permission prompts never block regardless of
-            # mode — making ``default`` the headless-safe choice. See #3772.
+            # init (-32603), which crashes headless startup; ``default`` is
+            # accepted. The ACP bridge auto-approves every request_permission, so
+            # prompts never block regardless of mode. See #3772.
             default_session_mode="default",
             agent_name_patterns=("gemini-cli",),
             supports_set_session_model=True,

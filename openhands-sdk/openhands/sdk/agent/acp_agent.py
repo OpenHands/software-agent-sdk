@@ -679,31 +679,19 @@ async def _maybe_set_session_model(
 ) -> bool:
     """Apply the *initial* session model right after session creation.
 
-    This is the session-creation path only, gated on
-    :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.supports_set_session_model`.
-    All built-in providers get a one-shot model-apply call here, via whichever
-    protocol the session advertised (``via_config_option``):
-    ``set_config_option(configId="model")`` for configOptions-based servers
-    (codex-acp 0.16+, claude-agent-acp 0.46+), else ``set_session_model``.
-    claude-agent-acp used to be skipped on the assumption that it already
-    received the model via ``new_session()`` ``_meta``, but 0.30.0 silently
-    ignores that payload (#3654) — the protocol call is the only path that
-    both validates and applies the model.
+    Session-creation path only, gated on
+    ``ACPProviderInfo.supports_set_session_model``. Built-in providers get a
+    one-shot model-apply via whichever protocol the session advertised
+    (``via_config_option``): ``set_config_option(configId="model")`` for
+    configOptions-based servers (codex-acp 0.16+, claude-agent-acp 0.46+), else
+    ``set_session_model``. The ``_meta`` model payload is ignored by the pinned
+    CLIs, so the protocol call is what actually applies the model (#3654).
+    Unknown/custom providers fall back to ``set_config_option(configId="model")``.
+    Runtime switches go through :meth:`ACPAgent.set_acp_model`.
 
-    For unknown/custom providers (e.g. Devin CLI), we fall back to the generic
-    ``set_config_option`` method with configId="model", which is a standard ACP
-    method that many custom ACP servers support.
-
-    Runtime, mid-conversation switches go through
-    :meth:`ACPAgent.set_acp_model` instead, which always uses
-    ``set_session_model`` and is gated on the separate
-    ``supports_runtime_model_switch`` capability flag.
-
-    Returns ``True`` only when this issued a model-setting call that succeeded — i.e.
-    the override was actually pushed to the server via *this* path. ``False``
-    when there is nothing to apply (no ``acp_model``) or the provider selects
-    its model another way (``_meta``) or the server rejected the call, so
-    the caller can tell whether the live session is really running ``acp_model``.
+    Returns ``True`` only when a model-setting call succeeded (the override
+    reached the server); ``False`` when there is nothing to apply or the call
+    was rejected, so the caller knows whether the live session runs ``acp_model``.
     """
     if not acp_model:
         return False
@@ -3720,6 +3708,16 @@ class ACPAgent(AgentBase):
                 except ACPRequestError as e2:
                     pending_error = e2
                 else:
+                    # The live session's mechanism diverged from init-time
+                    # detection; warn and adopt the working one for later
+                    # switches.
+                    logger.warning(
+                        "ACP model-select mechanism changed mid-session "
+                        "(init detected via_config_option=%s, switch needed %s); "
+                        "using the latter for subsequent switches",
+                        not flipped,
+                        flipped,
+                    )
                     self._model_via_config_option = flipped
                     pending_error = None  # both selections applied
             if pending_error is not None:
