@@ -11,6 +11,7 @@ from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import get_settings_store, reset_stores
 from openhands.sdk.llm.meta_profile_store import MetaProfile, MetaProfileStore
+from openhands.sdk.settings.model import OpenHandsAgentSettings
 
 
 @pytest.fixture
@@ -49,10 +50,12 @@ def store(temp_meta_profiles_dir):
 
 
 def _meta(classifier="minimax", default="gpt", classes=None) -> dict:
-    return MetaProfile(
-        classifier_model=classifier,
-        default_model=default,
-        classes=classes or [{"description": "UI", "model": "deepseek"}],
+    return MetaProfile.model_validate(
+        {
+            "classifier_model": classifier,
+            "default_model": default,
+            "classes": classes or [{"description": "UI", "model": "deepseek"}],
+        }
     ).model_dump(mode="json")
 
 
@@ -168,6 +171,7 @@ def test_delete_active_clears_nested_agent_settings(client, store):
     persisted = get_settings_store().load()
     assert persisted is not None
     agent = persisted.agent_settings
+    assert isinstance(agent, OpenHandsAgentSettings)
     assert agent.active_meta_profile is None
     assert agent.enable_classify_and_switch_llm_tool is False
 
@@ -200,6 +204,7 @@ def test_activate_propagates_into_agent_settings(client, store):
     assert persisted is not None
     assert persisted.active_meta_profile == "p"
     agent = persisted.agent_settings
+    assert isinstance(agent, OpenHandsAgentSettings)
     assert agent.active_meta_profile == "p"
     assert agent.enable_classify_and_switch_llm_tool is True
 
