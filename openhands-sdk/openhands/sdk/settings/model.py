@@ -1025,6 +1025,35 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    enable_classify_and_switch_llm_tool: bool = Field(
+        default=False,
+        description=(
+            "Enable the built-in classify_and_switch_llm tool, which routes the "
+            "task to the best LLM profile using the active meta-profile. When no "
+            "active_meta_profile is set, the first available meta-profile is used."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Enable intelligent model routing tool",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description=(
+            "Name of the active meta-profile (in ~/.openhands/meta-profiles) used "
+            "by the classify_and_switch_llm tool to route tasks to LLM profiles."
+        ),
+        json_schema_extra={
+            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
+                label="Active meta-profile",
+                prominence=SettingProminence.MINOR,
+                variant="openhands",
+            ).model_dump()
+        },
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -1119,7 +1148,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         """
         from openhands.sdk.agent import Agent
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
-        from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
+        from openhands.sdk.tool import Tool
+        from openhands.sdk.tool.builtins import (
+            BUILT_IN_TOOLS,
+            ClassifyAndSwitchLLMTool,
+            SwitchLLMTool,
+        )
 
         # Bypass ``_serialize_mcp_config``: MCP servers need real env/headers.
         mcp_config = (
@@ -1131,11 +1165,24 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
 
+        # The routing tool needs the active meta-profile name, which the
+        # name-only ``include_default_tools`` path cannot pass, so add it as a
+        # ``Tool`` spec carrying the param. When no meta-profile is active, the
+        # tool falls back to the first available one, so we still wire it.
+        tools = list(self.tools)
+        if self.enable_classify_and_switch_llm_tool:
+            params = (
+                {"active_meta_profile": self.active_meta_profile}
+                if self.active_meta_profile
+                else {}
+            )
+            tools.append(Tool(name=ClassifyAndSwitchLLMTool.__name__, params=params))
+
         llm = create_subscription_llm_from_config(self.llm)
         condenser = None if llm.is_subscription else self.build_condenser(llm)
         return Agent(
             llm=llm,
-            tools=self.tools,
+            tools=tools,
             mcp_config=mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,

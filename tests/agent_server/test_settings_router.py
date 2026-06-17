@@ -642,7 +642,7 @@ def test_patch_settings_empty_payload_returns_400(client_with_settings):
     assert response.json()["detail"] == (
         "At least one of agent_settings_diff, "
         "conversation_settings_diff, misc_settings_diff, "
-        "or active_profile must be provided"
+        "active_profile, or active_meta_profile must be provided"
     )
 
 

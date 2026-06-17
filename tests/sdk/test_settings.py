@@ -69,6 +69,8 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "enable_classify_and_switch_llm_tool",
+        "active_meta_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }
@@ -342,6 +344,8 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "tools",
         "enable_sub_agents",
         "enable_switch_llm_tool",
+        "enable_classify_and_switch_llm_tool",
+        "active_meta_profile",
         "tool_concurrency_limit",
         "mcp_config",
     }

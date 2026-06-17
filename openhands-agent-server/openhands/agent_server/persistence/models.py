@@ -55,6 +55,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     conversation_settings_diff: dict[str, Any]
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
+    active_meta_profile: str | None
 
 
 def _deep_merge(
@@ -139,6 +140,11 @@ class PersistedSettings(BaseModel):
     active_profile: str | None = Field(
         default=None,
         description="Name of the currently active LLM profile.",
+    )
+    active_meta_profile: str | None = Field(
+        default=None,
+        description="Name of the currently active meta-profile used for "
+        "intelligent model routing.",
     )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
@@ -248,10 +254,31 @@ class PersistedSettings(BaseModel):
             # Update active_profile if explicitly provided (including None to clear)
             if "active_profile" in payload:
                 self.active_profile = payload["active_profile"]
+
+            # Update active_meta_profile if explicitly provided (incl. None)
+            if "active_meta_profile" in payload:
+                self._apply_active_meta_profile(payload["active_meta_profile"])
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
                 conv_merged.clear()
+
+    def _apply_active_meta_profile(self, name: str | None) -> None:
+        """Set ``active_meta_profile`` and propagate it into agent_settings.
+
+        Propagating into the nested ``agent_settings`` is what enables/uses the
+        routing tool on the agent built from these settings (mirrors how
+        activating a profile bakes the LLM into ``agent_settings``). ACP agent
+        settings lack these fields, so guard on their presence.
+        """
+        self.active_meta_profile = name
+        if "active_meta_profile" in type(self.agent_settings).model_fields:
+            self.agent_settings = self.agent_settings.model_copy(
+                update={
+                    "active_meta_profile": name,
+                    "enable_classify_and_switch_llm_tool": name is not None,
+                }
+            )
 
     @classmethod
     def from_persisted(
