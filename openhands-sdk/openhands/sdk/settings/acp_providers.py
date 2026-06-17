@@ -378,15 +378,23 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
 # so the `@version` suffix is a no-op there.
 #
-# codex-acp 0.16.0 / claude-agent-acp 0.44.0 select the model via a ``model``
+# claude-agent-acp 0.44+ (and codex-acp 0.16+) select the model via a ``model``
 # ``configOptions`` entry instead of ``session/set_model``; the SDK detects the
-# mechanism per session (see ``_session_selects_model_via_config_option``).
+# mechanism per session (see ``_session_selects_model_via_config_option``) and
+# applies it accordingly, so model switching works on either mechanism.
 #
 # claude-agent-acp is held at 0.44.0 (0.45.0/0.46.0 published <7 days ago and
 # trip the supply-chain hold) — same configOptions mechanism + model set as
 # 0.46.0; revisit once a newer release ages past the hold.
+#
+# codex-acp is held at 0.15.0: 0.16.0 moved to the configOptions mechanism, but
+# a real e2e showed that applying a model via ``set_config_option`` then running
+# a turn fails with JSON-RPC -32603 (verified against the ChatGPT-subscription
+# backend; 0.15.0's ``set_session_model`` switch + turn works). Bumping would
+# regress ACP model switching for codex (the #3763/#3764 path), so hold until
+# codex-acp fixes the 0.16 set_config_option turn path. See issue #3772.
 CLAUDE_AGENT_ACP_VERSION = "0.44.0"
-CODEX_ACP_VERSION = "0.16.0"
+CODEX_ACP_VERSION = "0.15.0"
 GEMINI_CLI_VERSION = "0.46.0"
 
 

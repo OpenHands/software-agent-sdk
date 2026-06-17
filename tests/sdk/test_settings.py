@@ -1034,7 +1034,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@zed-industries/codex-acp",
-        "@zed-industries/codex-acp@0.16.0",
+        "@zed-industries/codex-acp@0.15.0",
         "@zed-industries/codex-acp@0.11.1",
     ):
         settings = ACPAgentSettings(
@@ -1057,7 +1057,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.16.0",
+        "@zed-industries/codex-acp@0.15.0",
     ]
 
 
