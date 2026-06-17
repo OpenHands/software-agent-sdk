@@ -11,6 +11,7 @@ import { HooksClient } from '../client/hooks-client';
 import { LLMMetadataClient } from '../client/llm-client';
 import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
+import { MetaProfilesClient } from '../client/meta-profiles-client';
 import { ServerClient } from '../client/server-client';
 import { SecurityClient } from '../client/security-client';
 import { SessionClient } from '../client/session-client';
@@ -84,6 +85,7 @@ export class ConversationManager {
   public readonly server: ServerClient;
   public readonly llm: LLMMetadataClient;
   public readonly profiles: ProfilesClient;
+  public readonly metaProfiles: MetaProfilesClient;
   public readonly settings: SettingsClient;
   public readonly skills: SkillsClient;
   public readonly tools: ToolClient;
@@ -118,6 +120,7 @@ export class ConversationManager {
     this.server = new ServerClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.profiles = new ProfilesClient(clientOptions);
+    this.metaProfiles = new MetaProfilesClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.skills = new SkillsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
@@ -404,6 +407,7 @@ export class ConversationManager {
     this.server.close();
     this.llm.close();
     this.profiles.close();
+    this.metaProfiles.close();
     this.settings.close();
     this.skills.close();
     this.tools.close();

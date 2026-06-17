@@ -21,6 +21,7 @@ import {
   HooksClient,
   isAgentServerVersionError,
   MCPClient,
+  MetaProfilesClient,
   ProfilesClient,
   SecurityClient,
   ServerClient,
@@ -46,10 +47,13 @@ describe('Auxiliary API clients', () => {
     expect(manager.server).toBeInstanceOf(ServerClient);
     expect(manager.skills).toBeInstanceOf(SkillsClient);
     expect(manager.profiles).toBeInstanceOf(ProfilesClient);
+    expect(manager.metaProfiles).toBeInstanceOf(MetaProfilesClient);
     expect(manager.server.host).toBe('http://example.com');
     expect(manager.server.apiKey).toBe('secret');
     expect(manager.profiles.host).toBe('http://example.com');
     expect(manager.profiles.apiKey).toBe('secret');
+    expect(manager.metaProfiles.host).toBe('http://example.com');
+    expect(manager.metaProfiles.apiKey).toBe('secret');
     expect(manager.files).toBeInstanceOf(FileClient);
     expect(manager.workspaces).toBeInstanceOf(WorkspacesClient);
     expect(manager.security).toBeInstanceOf(SecurityClient);
@@ -658,6 +662,125 @@ describe('Auxiliary API clients', () => {
         method: 'POST',
         body: '{}',
       })
+    );
+  });
+
+  it('MetaProfilesClient.listMetaProfiles GETs the meta-profiles endpoint', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          meta_profiles: [
+            {
+              name: 'balanced',
+              classifier_model: 'classifier',
+              default_model: 'default',
+              num_classes: 2,
+            },
+          ],
+          active_meta_profile: 'balanced',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new MetaProfilesClient({ host: 'http://example.com' });
+    const result = await client.listMetaProfiles();
+
+    expect(result.meta_profiles).toHaveLength(1);
+    expect(result.meta_profiles[0].name).toBe('balanced');
+    expect(result.active_meta_profile).toBe('balanced');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/meta-profiles',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('MetaProfilesClient.getMetaProfile percent-encodes the name', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          name: 'my profile',
+          config: {
+            classifier_model: 'classifier',
+            default_model: 'default',
+            classes: [{ description: 'UI', model: 'fast' }],
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    ) as typeof fetch;
+
+    const client = new MetaProfilesClient({ host: 'http://example.com' });
+    const result = await client.getMetaProfile('my profile');
+
+    expect(result.name).toBe('my profile');
+    expect(result.config.classes).toHaveLength(1);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/meta-profiles/my%20profile',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('MetaProfilesClient.saveMetaProfile POSTs the meta-profile body', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' saved" }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new MetaProfilesClient({ host: 'http://example.com' });
+    const config = {
+      classifier_model: 'classifier',
+      default_model: 'default',
+      classes: [{ description: 'tests', model: 'slow' }],
+    };
+    const result = await client.saveMetaProfile('balanced', config);
+
+    expect(result.name).toBe('balanced');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/meta-profiles/balanced',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify(config) })
+    );
+  });
+
+  it('MetaProfilesClient.deleteMetaProfile DELETEs the meta-profile endpoint', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' deleted" }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      ) as typeof fetch;
+
+    const client = new MetaProfilesClient({ host: 'http://example.com' });
+    const result = await client.deleteMetaProfile('balanced');
+
+    expect(result.name).toBe('balanced');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/meta-profiles/balanced',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
+  it('MetaProfilesClient.activateMetaProfile POSTs to the activate endpoint', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ name: 'balanced', message: "Meta-profile 'balanced' activated" }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      ) as typeof fetch;
+
+    const client = new MetaProfilesClient({ host: 'http://example.com' });
+    const result = await client.activateMetaProfile('balanced');
+
+    expect(result.name).toBe('balanced');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/meta-profiles/balanced/activate',
+      expect.objectContaining({ method: 'POST', body: '{}' })
     );
   });
 
