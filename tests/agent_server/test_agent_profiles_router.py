@@ -333,6 +333,174 @@ def test_activate_unknown_id_returns_404(client, store):
     assert response.status_code == 404
 
 
+# ── Seed fidelity (migration preserves the user's launch config) ────────────
+
+
+def test_seed_preserves_openhands_fields(client):
+    """The OpenHands seed carries the overlapping launch fields, not just refs."""
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "enable_sub_agents": True,
+                "tool_concurrency_limit": 3,
+                "agent_context": {"system_message_suffix": "be terse"},
+                "verification": {
+                    "critic_enabled": True,
+                    "critic_model_name": "x-critic",
+                },
+            }
+        },
+    )
+    client.get("/api/agent-profiles")  # triggers the seed
+
+    prof = client.get("/api/agent-profiles/default").json()["profile"]
+    assert prof["enable_sub_agents"] is True
+    assert prof["tool_concurrency_limit"] == 3
+    assert prof["system_message_suffix"] == "be terse"
+    assert prof["verification"]["critic_enabled"] is True
+    assert prof["verification"]["critic_model_name"] == "x-critic"
+    # The profile verification is secret-free — no critic_api_key projected.
+    assert "critic_api_key" not in prof["verification"]
+
+
+def test_seed_preserves_acp_fields(client):
+    """The ACP seed carries acp_server/model/args, not just the kind."""
+    client.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "codex",
+                "acp_model": "gpt-5.5",
+                "acp_args": ["--foo", "--bar"],
+            }
+        },
+    )
+    client.get("/api/agent-profiles")  # triggers the seed
+
+    prof = client.get("/api/agent-profiles/default").json()["profile"]
+    assert prof["agent_kind"] == "acp"
+    assert prof["acp_server"] == "codex"
+    assert prof["acp_model"] == "gpt-5.5"
+    assert prof["acp_args"] == ["--foo", "--bar"]
+
+
+# ── Cipher: skills[].mcp_tools secret round-trip ────────────────────────────
+
+
+@pytest.fixture
+def secret_key():
+    from base64 import urlsafe_b64encode
+
+    return urlsafe_b64encode(b"a" * 32).decode("ascii")
+
+
+@pytest.fixture
+def cipher(secret_key):
+    from openhands.sdk.utils.cipher import Cipher
+
+    return Cipher(secret_key)
+
+
+@pytest.fixture
+def client_with_cipher(
+    temp_agent_profiles_dir, temp_settings_dir, secret_key, monkeypatch
+):
+    from pydantic import SecretStr
+
+    reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+    config = Config(
+        static_files_path=None, session_api_keys=[], secret_key=SecretStr(secret_key)
+    )
+    app = create_app(config)
+    with patch(
+        "openhands.agent_server.agent_profiles_router.AgentProfileStore",
+        lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+    ):
+        yield TestClient(app)
+    reset_stores()
+
+
+def _profile_with_mcp_secret(header_value: str) -> dict:
+    return {
+        "llm_profile_ref": "base",
+        "skills": [
+            {
+                "name": "leaky",
+                "content": "do stuff",
+                "mcp_tools": {
+                    "mcpServers": {
+                        "svc": {
+                            "url": "https://x.test",
+                            "headers": {"Authorization": header_value},
+                        }
+                    }
+                },
+            }
+        ],
+    }
+
+
+def _mcp_auth(profile_payload: dict) -> str:
+    servers = profile_payload["skills"][0]["mcp_tools"]["mcpServers"]
+    return servers["svc"]["headers"]["Authorization"]
+
+
+def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
+    """GET(encrypted) -> POST -> the secret still decrypts exactly once.
+
+    Without decrypt-incoming-before-save the re-posted token would be encrypted
+    again and the stored value would decrypt to a stale token.
+    """
+    secret = "Bearer ghp_roundtrip_secret"
+
+    created = client_with_cipher.post(
+        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
+    )
+    assert created.status_code == 201
+
+    # GET encrypted: a Fernet token of the ORIGINAL secret (not double-encrypted).
+    enc = client_with_cipher.get(
+        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
+    ).json()
+    token = _mcp_auth(enc["profile"])
+    assert token != secret
+    assert cipher.decrypt(token).get_secret_value() == secret
+
+    # Re-post the encrypted token (an ordinary client edit round-trip).
+    reposted = client_with_cipher.post(
+        "/api/agent-profiles/p", json=_profile_with_mcp_secret(token)
+    )
+    assert reposted.status_code == 201
+
+    # Plaintext GET returns the original secret -> decrypted exactly once.
+    plain = client_with_cipher.get(
+        "/api/agent-profiles/p", headers={"X-Expose-Secrets": "plaintext"}
+    ).json()
+    assert _mcp_auth(plain["profile"]) == secret
+
+
+def test_mcp_tools_secret_encrypted_at_rest(
+    client_with_cipher, temp_agent_profiles_dir, cipher
+):
+    """A posted plaintext MCP secret is encrypted on disk, never stored raw."""
+    import json
+
+    secret = "Bearer ghp_at_rest_secret"
+    client_with_cipher.post(
+        "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
+    )
+
+    raw = json.loads((temp_agent_profiles_dir / "p.json").read_text())
+    stored = raw["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["headers"][
+        "Authorization"
+    ]
+    assert stored != secret
+    assert cipher.decrypt(stored).get_secret_value() == secret
+
+
 # ── Store errors → HTTP ─────────────────────────────────────────────────────
 
 

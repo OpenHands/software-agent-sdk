@@ -10,6 +10,8 @@ pointer-only — unlike the LLM ``/activate`` it must **not** write
 is deliberately not implemented here so this router ships independently.
 """
 
+import copy
+import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
@@ -35,10 +37,14 @@ from openhands.sdk.profiles import (
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
     ProfileReferenced,
+    ProfileVerificationSettings,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
 from openhands.sdk.settings import AgentSettingsConfig
+from openhands.sdk.settings.model import VerificationSettings
+from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
 
 logger = get_logger(__name__)
@@ -119,12 +125,82 @@ def _store_errors() -> Iterator[None]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
+def _decrypt_mcp_tools(tools: dict[str, Any], cipher: Cipher) -> dict[str, Any]:
+    """Return a copy of an ``mcp_tools`` dict with env/headers Fernet tokens
+    decrypted. Non-Fernet (plaintext) values pass through unchanged."""
+    servers = tools.get("mcpServers")
+    if not isinstance(servers, dict):
+        return tools
+    out = copy.deepcopy(tools)
+    for server in out["mcpServers"].values():
+        if not isinstance(server, dict):
+            continue
+        for key in ("env", "headers"):
+            mapping = server.get(key)
+            if isinstance(mapping, dict):
+                server[key] = {
+                    k: decrypt_str_with_cipher_or_keep(
+                        cipher, v, description="MCP env/headers"
+                    )
+                    for k, v in mapping.items()
+                }
+    return out
+
+
+def _decrypt_profile_mcp_tools(
+    profile: OpenHandsAgentProfile | ACPAgentProfile, cipher: Cipher | None
+) -> OpenHandsAgentProfile | ACPAgentProfile:
+    """Decrypt Fernet-encrypted ``skills[].mcp_tools`` env/headers on a profile.
+
+    ``AgentProfileStore`` masks/encrypts these on save but has no symmetric
+    load-time validator, so both the GET (at-rest) and the save (client
+    round-tripped) values carry ciphertext. Decrypting here gives the GET expose
+    serializer plaintext to re-mask, and stops the save path from
+    double-encrypting an already-encrypted value (the round-trip the resolver
+    would otherwise decrypt once and get a stale token). No-op without a cipher
+    or on ACP profiles (no skills).
+    """
+    if cipher is None:
+        return profile
+    skills = getattr(profile, "skills", None)
+    if not skills:
+        return profile
+    new_skills = [
+        skill.model_copy(
+            update={"mcp_tools": _decrypt_mcp_tools(skill.mcp_tools, cipher)}
+        )
+        if skill.mcp_tools
+        else skill
+        for skill in skills
+    ]
+    return profile.model_copy(update={"skills": new_skills})
+
+
+def _profile_verification(v: VerificationSettings) -> ProfileVerificationSettings:
+    """Project the secret-free subset of ``VerificationSettings``.
+
+    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses
+    the resolved LLM profile's key.
+    """
+    return ProfileVerificationSettings(
+        critic_enabled=v.critic_enabled,
+        critic_mode=v.critic_mode,
+        enable_iterative_refinement=v.enable_iterative_refinement,
+        critic_threshold=v.critic_threshold,
+        max_refinement_iterations=v.max_refinement_iterations,
+        critic_server_url=v.critic_server_url,
+        critic_model_name=v.critic_model_name,
+    )
+
+
 def _build_seed_profile(
     agent_settings: AgentSettingsConfig, active_llm_profile: str | None
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Build one conservative ``AgentProfile`` from the current ``agent_settings``.
+    """Build one ``AgentProfile`` faithfully from the current ``agent_settings``.
 
-    Carries only the cleanly-overlapping fields; ``mcp_server_refs=None`` exposes
+    Carries every cleanly-overlapping launch field so the migrated profile is a
+    stable representation of the user's current configuration (the active
+    pointer is otherwise just a lightweight id). ``mcp_server_refs=None`` exposes
     all of the user's MCP servers. An OpenHands profile references the active LLM
     profile (falling back to ``"default"`` when none is set — a soft ref the
     resolver checks at materialize time).
@@ -136,12 +212,25 @@ def _build_seed_profile(
             acp_model=agent_settings.acp_model,
             acp_session_mode=agent_settings.acp_session_mode,
             acp_prompt_timeout=agent_settings.acp_prompt_timeout,
+            # settings store the command as a token list; the profile holds a
+            # single (re-parseable) string. Empty list => use the server default.
+            acp_command=(
+                shlex.join(agent_settings.acp_command)
+                if agent_settings.acp_command
+                else None
+            ),
+            acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
         )
+    context = agent_settings.agent_context
     return OpenHandsAgentProfile(
         name=SEED_PROFILE_NAME,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
+        skills=list(context.skills),
+        system_message_suffix=context.system_message_suffix,
+        condenser=agent_settings.condenser,
+        verification=_profile_verification(agent_settings.verification),
         enable_sub_agents=agent_settings.enable_sub_agents,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
@@ -149,12 +238,18 @@ def _build_seed_profile(
 
 
 def _seed_default_profile(
-    store: AgentProfileStore, request: Request, settings: PersistedSettings
+    store: AgentProfileStore,
+    request: Request,
+    settings: PersistedSettings,
+    cipher: Cipher | None,
 ) -> None:
     """Persist one default profile and point ``active_agent_profile_id`` at it."""
     profile = _build_seed_profile(settings.agent_settings, settings.active_profile)
+    # Settings persist skills[].mcp_tools encrypted (and never decrypt on load),
+    # so decrypt before re-encrypting at save to avoid double-encryption.
+    profile = _decrypt_profile_mcp_tools(profile, cipher)
     with _store_errors():
-        store.save(profile, max_profiles=MAX_AGENT_PROFILES)
+        store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
 
     profile_id = str(profile.id)
     settings_store = get_settings_store(get_config(request))
@@ -194,7 +289,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
         existing = store.list()
 
     if not existing and settings.active_agent_profile_id is None:
-        _seed_default_profile(store, request, settings)
+        _seed_default_profile(store, request, settings, get_cipher(request))
         settings = settings_store.load() or settings
 
     with _store_errors():
@@ -221,6 +316,10 @@ async def get_agent_profile(
     store = AgentProfileStore()
     with _store_errors():
         profile = store.load(name, cipher=cipher)
+
+    # The store leaves skills[].mcp_tools encrypted on load; decrypt to plaintext
+    # so the expose serializer can correctly redact / re-encrypt / reveal them.
+    profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     context = build_expose_context(expose_mode, cipher)
     with translate_missing_cipher():
@@ -252,6 +351,11 @@ async def save_agent_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid agent profile: {type(e).__name__}",
         )
+
+    # A client editing a profile fetched with X-Expose-Secrets: encrypted posts
+    # back Fernet tokens; decrypt them so the save re-encrypts the original
+    # secret once rather than double-encrypting the token.
+    profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     store = AgentProfileStore()
     try:
