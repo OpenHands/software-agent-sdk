@@ -141,9 +141,10 @@ def delete_llm_profile(
 ) -> None:
     """Delete an LLM profile only if no agent profile references it.
 
-    Lock order: agent-profiles (held across check + delete), then llm-profiles
-    (inside ``llm_store.delete``). Raises :class:`ProfileReferenced` naming the
-    referrers if any exist.
+    Holds the agent-profiles lock across the referrer check and the delete, then
+    delegates to ``llm_store.delete`` (which manages its own lock) — preserving
+    the agent-profiles-before-llm-profiles order. Raises
+    :class:`ProfileReferenced` naming the referrers if any exist.
     """
     with agent_store._acquire_lock():
         referrers = _scan_referrers(agent_store, llm_profile_name)
@@ -160,10 +161,11 @@ def rename_llm_profile(
 ) -> list[str]:
     """Rename an LLM profile and cascade the rename to its referrers.
 
-    Lock order: agent-profiles (held across the LLM rename + cascade), then
-    llm-profiles (inside ``llm_store.rename``). The LLM file is renamed first so
-    that if it fails (missing source / taken target) no refs are rewritten.
-    Returns the rewritten agent-profile names.
+    Holds the agent-profiles lock across the whole operation, then delegates to
+    ``llm_store.rename`` (which manages its own lock) — preserving the
+    agent-profiles-before-llm-profiles order. The LLM file is renamed first, so
+    if it fails (missing source / taken target) no refs are rewritten. Returns
+    the rewritten agent-profile names.
     """
     _validate_name(new_name)
     with agent_store._acquire_lock():
