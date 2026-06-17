@@ -143,7 +143,7 @@ _RETRIABLE_SERVER_ERROR_CODES: frozenset[int] = frozenset({-32603})
 # -32601 = "Method not found" (JSON-RPC spec). An ACP server raises this when a
 # model-selection call uses the mechanism it does *not* implement — e.g.
 # `session/set_model` on a CLI that moved model selection to `configOptions`
-# (codex-acp 0.16+, claude-agent-acp 0.46+), or vice versa. We use it to fall
+# (codex-acp 0.16+, claude-agent-acp 0.44+), or vice versa. We use it to fall
 # back to the other mechanism if response-detection picked the wrong one.
 _METHOD_NOT_FOUND_CODE: Final[int] = -32601
 
@@ -380,7 +380,7 @@ def _write_secret_file(path: Path, value: str) -> None:
 
 # Session config-option id that selects the model on ACP servers that drive
 # model selection through ``configOptions`` / ``session/set_config_option``
-# (codex-acp 0.16+, claude-agent-acp 0.46+) rather than the UNSTABLE ``models``
+# (codex-acp 0.16+, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
 
@@ -436,7 +436,7 @@ def _apply_acp_model(
     """Build the awaitable that applies ``model`` to a live ACP session via
     whichever protocol the session advertised: ``set_config_option(configId=
     "model")`` for configOptions-based servers (codex-acp 0.16+, claude-agent-acp
-    0.46+), else ``set_session_model``.
+    0.44+), else ``set_session_model``.
 
     Returns the (eagerly constructed) coroutine so callers can either ``await``
     it directly or hand it to ``run_async`` — the underlying ``conn`` method is
@@ -521,7 +521,7 @@ def _extract_session_models(
     type at this boundary so nothing downstream depends on the vendored
     ``acp.schema`` shape. Reads whichever mechanism the session advertised: the
     UNSTABLE ``models`` capability, or the ``model`` ``configOptions`` select
-    (codex-acp 0.16+, claude-agent-acp 0.46+).
+    (codex-acp 0.16+, claude-agent-acp 0.44+).
 
     The second element distinguishes **absent** from **empty** — this matters
     for resume persistence (preserve the last-known list when the server didn't
@@ -684,7 +684,7 @@ async def _maybe_set_session_model(
     ``ACPProviderInfo.supports_set_session_model``. Built-in providers get a
     one-shot model-apply via whichever protocol the session advertised
     (``via_config_option``): ``set_config_option(configId="model")`` for
-    configOptions-based servers (codex-acp 0.16+, claude-agent-acp 0.46+), else
+    configOptions-based servers (codex-acp 0.16+, claude-agent-acp 0.44+), else
     ``set_session_model``. The ``_meta`` model payload is ignored by the pinned
     CLIs, so the protocol call is what actually applies the model (#3654).
     Unknown/custom providers fall back to ``set_config_option(configId="model")``.
@@ -770,7 +770,7 @@ async def _reapply_session_model_on_resume(
     try:
         if provider is not None:
             # Known provider: apply via the mechanism the resumed session uses
-            # (set_config_option for codex-acp 0.16+/claude-agent-acp 0.46+,
+            # (set_config_option for codex-acp 0.16+/claude-agent-acp 0.44+,
             # else set_session_model). A rejection is already tolerated below
             # (the session keeps the server default), so resume doesn't need the
             # cross-mechanism fallback the init/switch paths use.
@@ -1627,7 +1627,7 @@ class ACPAgent(AgentBase):
     )  # ACP server version from InitializeResponse
     # Which protocol this session uses to select the model: ``True`` ⇒
     # ``session/set_config_option(configId="model")`` (codex-acp 0.16+,
-    # claude-agent-acp 0.46+); ``False`` ⇒ ``session/set_model`` (gemini-cli and
+    # claude-agent-acp 0.44+); ``False`` ⇒ ``session/set_model`` (gemini-cli and
     # older codex/claude). Detected from the session/new (or load_session)
     # response at init and reused by runtime ``set_acp_model`` switches.
     _model_via_config_option: bool = PrivateAttr(default=False)

@@ -294,7 +294,7 @@ class ACPProviderInfo:
 # ---------------------------------------------------------------------------
 
 # Model IDs the Claude Code CLI accepts, mirroring the ``model`` configOptions
-# select claude-agent-acp 0.46.0 reports at ``session/new`` (the short aliases
+# select claude-agent-acp 0.44.0 reports at ``session/new`` (the short aliases
 # the CLI's own ``/model`` menu offers, switched via ``set_config_option``).
 # ``opus[1m]`` is the SDK-documented version-agnostic 1M-context alias and the
 # CLI's own default (``currentValue``); ``default`` is the CLI's recommended
@@ -378,10 +378,14 @@ _GEMINI_FILE_SECRETS: tuple[ACPFileSecretSpec, ...] = (
 # `ACPAgentSettings.resolve_acp_command` runs the pinned `binary_name` instead,
 # so the `@version` suffix is a no-op there.
 #
-# codex-acp 0.16.0 / claude-agent-acp 0.46.0 select the model via a ``model``
+# codex-acp 0.16.0 / claude-agent-acp 0.44.0 select the model via a ``model``
 # ``configOptions`` entry instead of ``session/set_model``; the SDK detects the
 # mechanism per session (see ``_session_selects_model_via_config_option``).
-CLAUDE_AGENT_ACP_VERSION = "0.46.0"
+#
+# claude-agent-acp is held at 0.44.0 (0.45.0/0.46.0 published <7 days ago and
+# trip the supply-chain hold) — same configOptions mechanism + model set as
+# 0.46.0; revisit once a newer release ages past the hold.
+CLAUDE_AGENT_ACP_VERSION = "0.44.0"
 CODEX_ACP_VERSION = "0.16.0"
 GEMINI_CLI_VERSION = "0.46.0"
 
@@ -403,7 +407,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # claude-agent-acp ignores the session-_meta model selection (the
             # requested model only becomes a picker option; the session keeps
             # running its default), so the init path must push the model via a
-            # protocol call (#3654). On 0.46.0 that call is
+            # protocol call (#3654). On 0.44.0+ that call is
             # ``set_config_option(configId="model")`` rather than
             # ``set_session_model`` (auto-detected from session/new); the _meta
             # payload (session_meta_key below) is still sent — harmless, and
