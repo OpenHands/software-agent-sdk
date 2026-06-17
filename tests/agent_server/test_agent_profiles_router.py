@@ -205,6 +205,26 @@ def test_overwrite_preserves_id_and_pointer(client, store):
     assert client.get("/api/settings").json()["active_agent_profile_id"] == pid
 
 
+def test_create_mints_fresh_id_ignoring_client_id(client):
+    """Creating a new name never reuses a client-supplied id (ids stay unique).
+
+    Duplicate ids would make the id-keyed active pointer ambiguous — deleting
+    one profile could clear the active selection while a namesake id lives on.
+    """
+    client.post("/api/agent-profiles/a", json={"llm_profile_ref": "x"})
+    a_id = client.get("/api/agent-profiles/a").json()["profile"]["id"]
+
+    # Try to create 'b' reusing a's id; the server must mint a fresh one.
+    client.post("/api/agent-profiles/b", json={"llm_profile_ref": "y", "id": a_id})
+    b_id = client.get("/api/agent-profiles/b").json()["profile"]["id"]
+    assert b_id != a_id
+
+    # Activate b, delete a: the pointer must survive (ids are distinct).
+    client.post(f"/api/agent-profiles/{b_id}/activate")
+    client.delete("/api/agent-profiles/a")
+    assert client.get("/api/settings").json()["active_agent_profile_id"] == b_id
+
+
 def test_save_path_name_is_authoritative(client, store):
     """The path name overrides any ``name`` in the body."""
     response = client.post(

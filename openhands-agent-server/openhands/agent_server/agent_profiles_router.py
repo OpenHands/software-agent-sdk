@@ -15,7 +15,7 @@ import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, ValidationError
@@ -408,14 +408,18 @@ async def save_agent_profile(
     profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     store = AgentProfileStore()
-    # The id is stable state, not a defaultable request field: overwriting a
-    # namesake keeps its id (so an active pointer never dangles) and bumps the
-    # revision, even when a create-style body omits both.
+    # The id is server-managed state, never a client-settable field — the active
+    # pointer is keyed on it. Overwriting a namesake keeps its id (so the pointer
+    # never dangles) and bumps the revision; creating a new name always mints a
+    # fresh id (ignoring any client-supplied one) so ids stay globally unique and
+    # the pointer is never ambiguous.
     existing_id, existing_rev = _existing_identity(store, name)
     if existing_id is not None:
         profile = profile.model_copy(
             update={"id": existing_id, "revision": (existing_rev or 0) + 1}
         )
+    else:
+        profile = profile.model_copy(update={"id": uuid4()})
     try:
         with _store_errors():
             store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
