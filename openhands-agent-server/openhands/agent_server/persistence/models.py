@@ -254,11 +254,9 @@ class PersistedSettings(BaseModel):
             if new_misc is not None:
                 self.misc_settings = new_misc
 
-            # Update active_profile if explicitly provided (including None to clear)
+            # Update pointers if explicitly provided (including None to clear)
             if "active_profile" in payload:
                 self.active_profile = payload["active_profile"]
-
-            # Same for the AgentProfile pointer (including None to clear)
             if "active_agent_profile_id" in payload:
                 self.active_agent_profile_id = payload["active_agent_profile_id"]
         finally:

@@ -512,10 +512,12 @@ async def activate_agent_profile(
         logger.error("Failed to activate agent profile - file I/O error")
         raise HTTPException(status_code=500, detail="Failed to activate agent profile")
     except RuntimeError as e:
+        # A corrupted / mis-keyed settings file is a server-side integrity
+        # failure, not a client conflict.
         logger.error(f"Failed to activate agent profile: {e}")
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Settings file is corrupted or encrypted with a different key",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to activate agent profile",
         )
 
     logger.info(f"Activated agent profile id '{profile_id}'")

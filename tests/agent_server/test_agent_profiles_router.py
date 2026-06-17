@@ -375,6 +375,21 @@ def test_activate_unknown_id_returns_404(client, store):
     assert response.status_code == 404
 
 
+def test_activate_settings_corruption_returns_500(client, store, monkeypatch):
+    """A corrupted/mis-keyed settings file is a server-side failure (500)."""
+    from openhands.agent_server.persistence.store import FileSettingsStore
+
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="x"))
+    profile_id = client.get("/api/agent-profiles/p").json()["profile"]["id"]
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("settings file corrupted")
+
+    monkeypatch.setattr(FileSettingsStore, "update", boom)
+    response = client.post(f"/api/agent-profiles/{profile_id}/activate")
+    assert response.status_code == 500
+
+
 # ── Seed fidelity (migration preserves the user's launch config) ────────────
 
 

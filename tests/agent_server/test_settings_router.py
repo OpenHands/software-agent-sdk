@@ -524,14 +524,15 @@ def test_patch_settings_rejects_invalid_active_profile(client_with_settings):
 
 def test_patch_settings_active_agent_profile_id_independent(client_with_settings):
     """active_agent_profile_id sets/clears independently of active_profile."""
+    agent_id = "12345678-1234-1234-1234-1234567890ab"
     set_response = client_with_settings.patch(
         "/api/settings",
-        json={"active_profile": "fast-profile", "active_agent_profile_id": "abc-123"},
+        json={"active_profile": "fast-profile", "active_agent_profile_id": agent_id},
     )
     assert set_response.status_code == 200
     body = set_response.json()
     assert body["active_profile"] == "fast-profile"
-    assert body["active_agent_profile_id"] == "abc-123"
+    assert body["active_agent_profile_id"] == agent_id
 
     # Clearing the agent pointer must leave the LLM profile pointer untouched.
     clear_response = client_with_settings.patch(
@@ -546,6 +547,15 @@ def test_patch_settings_active_agent_profile_id_independent(client_with_settings
     refetch = client_with_settings.get("/api/settings").json()
     assert refetch["active_agent_profile_id"] is None
     assert refetch["active_profile"] == "fast-profile"
+
+
+def test_patch_settings_rejects_malformed_active_agent_profile_id(client_with_settings):
+    """A non-UUID active_agent_profile_id is rejected at the HTTP layer."""
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"active_agent_profile_id": "not-a-uuid"},
+    )
+    assert response.status_code == 422
 
 
 def test_existing_settings_load_with_null_active_agent_profile_id(
