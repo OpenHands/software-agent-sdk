@@ -63,20 +63,6 @@ def _default_web_url() -> str | None:
     return None
 
 
-def _default_deferred_init() -> bool:
-    """Read OH_DEFERRED_INIT, accepting the same truthy values as BoolEnvParser.
-
-    The env parser pipeline reads this from ``OH_DEFERRED_INIT`` once
-    ``deferred_init`` is registered on ``Config``. This factory is just a
-    safety fallback for direct ``Config()`` construction outside the env
-    parser flow (e.g. tests that import ``os.environ`` directly).
-    """
-    raw = os.getenv("OH_DEFERRED_INIT")
-    if raw is None:
-        return False
-    return raw.upper() in ("1", "TRUE")
-
-
 class WebhookSpec(BaseModel):
     """Spec to create a webhook. All webhook requests use POST method."""
 
@@ -251,7 +237,7 @@ class Config(BaseModel):
         ),
     )
     deferred_init: bool = Field(
-        default_factory=_default_deferred_init,
+        default=False,
         description=(
             "When True, the server starts in dormant mode. Stateless services "
             "(VSCode, tool preload, etc.) start as usual, but the conversation, "
