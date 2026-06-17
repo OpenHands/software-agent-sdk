@@ -2065,6 +2065,73 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_restarts_session_off_caller_loop(self, tmp_path):
+        """Restart init can synchronously resolve loopback LookupSecret values.
+
+        ``astep`` must keep that restart work off the caller loop so the
+        agent-server can serve those loopback HTTP requests instead of waiting
+        for each secret lookup to time out.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+        agent._restart_session_on_next_turn = True
+
+        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            mock_client.accumulated_text.append("answer")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+
+        executor = AsyncExecutor()
+
+        async def _run_restart() -> None:
+            caller_loop = asyncio.get_running_loop()
+            caller_thread_id = threading.get_ident()
+            restart_entered = asyncio.Event()
+            release_restart = threading.Event()
+            restart_thread_ids: list[int] = []
+
+            def _blocking_restart(self, state, on_event):  # noqa: ARG001
+                assert self is agent
+                restart_thread_ids.append(threading.get_ident())
+                caller_loop.call_soon_threadsafe(restart_entered.set)
+                assert release_restart.wait(5.0)
+                agent._restart_session_on_next_turn = False
+
+            with patch.object(
+                ACPAgent,
+                "_restart_session_after_drain_timeout",
+                new=_blocking_restart,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=emitted.append)
+                )
+                await asyncio.wait_for(restart_entered.wait(), timeout=5.0)
+                assert len(restart_thread_ids) == 1
+                assert restart_thread_ids[0] != caller_thread_id
+                release_restart.set()
+                await asyncio.wait_for(task, timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_restart())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert emitted
+
     def test_astep_active_prompt_survives_idle_window(self, tmp_path):
         """End-to-end via the real portal: an actively-streaming prompt that
         runs well past ``acp_prompt_timeout`` finalizes normally.
@@ -4155,6 +4222,9 @@ class TestClientForkTextRouting:
 # ---------------------------------------------------------------------------
 
 
+_CHATGPT_AUTH_JSON = '{"tokens": {"id_token": "x", "access_token": "y"}}'
+
+
 class TestSelectAuthMethod:
     """Test auto-detection of ACP auth method from env vars."""
 
@@ -4189,7 +4259,7 @@ class TestSelectAuthMethod:
         ]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
@@ -4218,7 +4288,7 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "chatgpt"
@@ -4288,7 +4358,7 @@ class TestSelectAuthMethod:
         even though ~/.codex/auth.json does not exist."""
         codex_home = tmp_path / "conv" / "acp" / "codex"
         codex_home.mkdir(parents=True)
-        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        (codex_home / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
         methods = [self._make_auth_method("chatgpt")]
         empty_home = tmp_path / "home"
         empty_home.mkdir()
@@ -4322,6 +4392,44 @@ class TestSelectAuthMethod:
             assert _codex_auth_file({}) == home / ".codex" / "auth.json"
         ch = tmp_path / "ch"
         assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- apikey-format auth.json must not be treated as chatgpt (#3627) -----
+
+    def test_apikey_format_auth_file_falls_back_to_api_key(self, tmp_path):
+        """Codex rewrites $CODEX_HOME/auth.json with {"auth_mode": "apikey", ...}
+        during apikey-mode sessions. On a restart, that file must NOT be picked
+        as ``chatgpt`` or codex-acp hangs on browser-based OAuth (issue #3627).
+        """
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            '{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test"}',
+            encoding="utf-8",
+        )
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_malformed_auth_file_falls_back_to_api_key(self, tmp_path):
+        """A non-JSON / unreadable auth.json must not trip chatgpt selection."""
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text("not-json{", encoding="utf-8")
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
 
     # -- Gemini Vertex AI service-account detection (issue #1020) ----------
 

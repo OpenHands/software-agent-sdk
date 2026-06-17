@@ -284,6 +284,27 @@ def _codex_auth_file(env: dict[str, str]) -> Path:
     return Path.home() / _CHATGPT_AUTH_PATH
 
 
+def _codex_auth_file_is_chatgpt(env: dict[str, str]) -> bool:
+    """Return True only if ``auth.json`` is in ChatGPT-subscription format.
+
+    Codex itself rewrites ``$CODEX_HOME/auth.json`` during apikey-mode sessions
+    with ``{"auth_mode": "apikey", "OPENAI_API_KEY": "..."}``. That file's mere
+    presence used to make :func:`_select_auth_method` prefer ``chatgpt`` on a
+    restart, after which ``conn.authenticate("chatgpt")`` hung indefinitely
+    waiting for browser-based OAuth (issue #3627). The ChatGPT token blob is
+    keyed by ``tokens``; require that key before claiming the file is usable
+    for the ``chatgpt`` auth method.
+    """
+    path = _codex_auth_file(env)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and "tokens" in data
+
+
 def _select_auth_method(
     auth_methods: list[Any],
     env: dict[str, str],
@@ -308,7 +329,7 @@ def _select_auth_method(
     method_ids = {m.id for m in auth_methods}
     # Prefer file-backed subscription / service-account logins when their
     # credential file is present.
-    if "chatgpt" in method_ids and _codex_auth_file(env).is_file():
+    if "chatgpt" in method_ids and _codex_auth_file_is_chatgpt(env):
         return "chatgpt"
     gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
     if "vertex-ai" in method_ids and gac and Path(gac).is_file():
@@ -2704,6 +2725,20 @@ class ACPAgent(AgentBase):
         self.init_state(state, on_event=on_event)
         self._restart_session_on_next_turn = False
 
+    async def _arestart_session_after_drain_timeout(
+        self,
+        state: ConversationState,
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Restart ACP without blocking the async conversation loop."""
+        # Restart calls init_state(), which may synchronously resolve LookupSecret
+        # values through HTTP loopback to this same agent server. Keep it off the
+        # server loop for the same reason LocalConversation.arun() offloads the
+        # initial _ensure_agent_ready() path.
+        await asyncio.to_thread(
+            self._restart_session_after_drain_timeout, state, on_event
+        )
+
     def _request_session_cancel(self) -> None:
         """Ask the ACP server to cancel the active session prompt."""
         if self._conn is None or self._executor is None or self._session_id is None:
@@ -3209,7 +3244,7 @@ class ACPAgent(AgentBase):
         if self._restart_session_on_next_turn:
             # If restart initialization fails, let the conversation transition
             # to ERROR rather than reusing an ambiguous ACP session.
-            self._restart_session_after_drain_timeout(state, on_event)
+            await self._arestart_session_after_drain_timeout(state, on_event)
 
         prompt_blocks: list[Any] | None = None
         if prompt_message is not None:
