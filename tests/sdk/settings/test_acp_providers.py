@@ -37,7 +37,7 @@ class TestACPProviderInfo:
         assert "claude-agent" in info.agent_name_patterns
         # Initial selection rides a protocol call — claude-agent-acp ignores the
         # session-_meta payload (#3654), which is still sent as best-effort
-        # (session_meta_key below). On 0.46.0 the call is set_config_option.
+        # (session_meta_key below). On 0.44.0 the call is set_config_option.
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"

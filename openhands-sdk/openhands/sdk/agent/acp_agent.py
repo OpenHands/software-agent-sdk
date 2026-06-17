@@ -1403,10 +1403,10 @@ class ACPAgent(AgentBase):
     acp_model: str | None = Field(
         default=None,
         description=(
-            "Model for the ACP server to use (e.g. 'claude-opus-4-6' or "
-            "'gpt-5.4'). For Claude ACP, passed via session _meta. For Codex "
-            "ACP, applied via the protocol-level set_session_model call. "
-            "If None, the server picks its default."
+            "Model for the ACP server to use (e.g. 'sonnet' or 'gpt-5.5'). "
+            "Applied via the protocol — set_config_option(model) for "
+            "configOptions-based servers (codex, claude), else "
+            "set_session_model. If None, the server picks its default."
         ),
     )
     acp_resume_session_id: str | None = Field(
@@ -1729,8 +1729,8 @@ class ACPAgent(AgentBase):
         server's ``model_id`` plus an optional ``name``/``description`` —
         enough for a client to render a model picker and resolve
         ``current_model_id`` to a display label without any server-side
-        curation.  ``current_model_id`` is the value to pass to
-        ``set_session_model`` to switch.
+        curation.  ``current_model_id`` is the value to pass back to the server
+        to switch to that model.
 
         Same lifecycle and serialization caveats as ``current_model_id``:
         in-process runtime state, lifted onto
@@ -1746,7 +1746,7 @@ class ACPAgent(AgentBase):
 
         Tells a client whether to offer the inline picker's live-switch control.
         ``True`` only for known providers that explicitly declare support for
-        ``session/set_model``. Unknown/custom providers use ``set_config_option``
+        runtime model switching. Unknown/custom providers use ``set_config_option``
         for *initial* model selection but that RPC is a generic config write, not
         a guaranteed live-switch primitive, so the picker is hidden for them.
         ``False`` before a session exists (nothing to switch yet).
@@ -3528,9 +3528,11 @@ class ACPAgent(AgentBase):
     def set_acp_model(self, model: str) -> None:
         """Switch the model on the running ACP session (mid-conversation).
 
-        Issues a protocol-level ``session/set_model`` call on the live
-        connection so the new model takes effect for subsequent turns in the
-        *same* session — no subprocess restart, no loss of conversation
+        Issues a protocol-level model-switch call on the live connection (the
+        mechanism the session advertised — ``set_config_option(model)`` or
+        ``set_session_model``) so the new model takes effect for subsequent
+        turns in the *same* session — no subprocess restart, no loss of
+        conversation
         context. Verified against claude-agent-acp and codex-acp.
 
         This is the low-level agent primitive; prefer
@@ -3550,7 +3552,7 @@ class ACPAgent(AgentBase):
         Raises:
             ValueError: If ``model`` is empty or whitespace-only, if the
                 detected provider does not support runtime model switching, or
-                if the ACP server rejects the ``session/set_model`` call (e.g.
+                if the ACP server rejects the model-switch call (e.g.
                 method-not-found on a custom server, or an invalid model id).
             RuntimeError: If the ACP session has not been initialized yet
                 (i.e. before the first ``run()``).
@@ -3559,8 +3561,8 @@ class ACPAgent(AgentBase):
 
         Note:
             A timeout means the client stopped waiting, not that the switch was
-            rejected: the ``session/set_model`` request may already have been
-            written and could still be applied server-side. The connection and
+            rejected: the switch request may already have been written and
+            could still be applied server-side. The connection and
             session stay alive and the local sentinel model is intentionally
             left unchanged, so a timed-out switch leaves the server-side model
             indeterminate. The conservative choice (treat it as failed locally)
@@ -3586,7 +3588,7 @@ class ACPAgent(AgentBase):
         if provider is not None and not provider.supports_runtime_model_switch:
             raise ValueError(
                 f"ACP provider '{provider.key}' does not support runtime model "
-                "switching via set_session_model."
+                "switching."
             )
         # ``has_live_acp_session`` above guarantees a session id; narrow for the
         # type checker.

@@ -12,11 +12,10 @@ Each record captures the static properties that are known at configuration time
 - ``agent_name_patterns``   lowercase substrings in the runtime agent name;
                             used by ``ACPAgent`` to auto-detect mode / protocol
 - ``supports_set_session_model``  whether the provider applies its *initial*
-                                  model via the ``set_session_model`` protocol
-                                  call at session creation
-- ``supports_runtime_model_switch``  whether the server supports the
-                                  ``session/set_model`` protocol call for
-                                  runtime, mid-conversation model switching
+                                  model via a protocol call at session creation
+                                  (``set_config_option``/``set_session_model``)
+- ``supports_runtime_model_switch``  whether the server supports a protocol-level
+                                  model switch for runtime, mid-conversation use
 - ``session_meta_key``      top-level ``_meta`` key for model selection (or ``None``)
 - ``available_models``      curated list of selectable models for the provider's
                             model picker (``acp_model`` candidates)
@@ -194,12 +193,13 @@ class ACPProviderInfo:
     When non-``None``, the model is additionally advertised via ACP session
     ``_meta`` using the structure
     ``{session_meta_key: {"options": {"model": <model>}}}`` passed to
-    ``new_session()``. This is best-effort only: claude-agent-acp 0.30.0
-    ignores it (#3654), so the authoritative initial selection is the
-    ``set_session_model`` call gated on :attr:`supports_set_session_model`.
+    ``new_session()``. This is best-effort only: claude-agent-acp ignores it
+    (#3654), so the authoritative initial selection is the protocol call gated
+    on :attr:`supports_set_session_model`.
 
-    Runtime switches always use ``set_session_model`` (gated on
-    :attr:`supports_runtime_model_switch`).
+    Runtime switches use the mechanism the session advertised
+    (``set_config_option`` or ``set_session_model``), gated on
+    :attr:`supports_runtime_model_switch`.
 
     - ``"claudeCode"`` — claude-agent-acp
     - ``None``         — codex-acp, gemini-cli
@@ -234,7 +234,7 @@ class ACPProviderInfo:
     Unlike :attr:`supports_set_session_model`, this is about switching the
     model of an *already-running* session, not the initial selection. A
     provider may select its initial model via ``_meta`` (claude-agent-acp)
-    yet still support ``set_session_model`` for later switches.
+    yet still support a protocol-level switch for later changes.
 
     Defaults to ``False`` so forward-compat providers — and any external
     caller constructing this dataclass positionally — keep working without a

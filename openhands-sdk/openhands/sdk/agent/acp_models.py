@@ -41,7 +41,7 @@ class ACPModelInfo(BaseModel):
     )
     name: str | None = Field(
         default=None,
-        description='Human-readable label, e.g. ``"GPT-5.5 (xhigh)"``.',
+        description='Human-readable label, e.g. ``"GPT-5.5"``.',
     )
     description: str | None = Field(
         default=None,
