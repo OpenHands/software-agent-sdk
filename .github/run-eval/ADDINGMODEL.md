@@ -4,6 +4,33 @@
 
 This file (`resolve_model_config.py`) defines models available for evaluation. Models must be added here before they can be used in integration tests or evaluations.
 
+## Two kinds of MODELS entries
+
+`MODELS` accepts two shapes of `llm_config`:
+
+1. **Plain LLM config** — a dict with a top-level `"model": "litellm_proxy/..."`,
+   plus optional parameters (`temperature`, `top_p`, `reasoning_effort`, …).
+   This is the overwhelmingly common case and what the rest of this guide is
+   about.
+2. **Intelligent-router config** — a dict with `"kind": "intelligent-router-v0"`
+   and a `tiers` map (`model_id -> per-tier plain llm_config`). Used to dispatch
+   per-instance model selection at eval time (see
+   [`OpenHands/benchmarks#742`](https://github.com/OpenHands/benchmarks/pull/742)
+   and the `router-classified-3tier` entry below for the canonical example).
+
+The preflight check (`check_model`) detects router entries via
+`is_router_config(llm_config)` and recurses into each tier sub-model. So a
+router entry's "model is reachable" test is automatically the AND of all its
+tier sub-models' tests. If you add a new router entry, every tier sub-model
+must already be a working `litellm_proxy/...` config — you do not need to add
+anything else.
+
+The serialization to `models_json` is identical for both shapes (the whole
+`llm_config` dict is passed through as-is); the downstream
+`OpenHands/evaluation/eval-job/scripts/build_matrix.py` and the benchmark
+loader in `OpenHands/benchmarks` are responsible for handling the router
+shape end-to-end.
+
 ## Critical Rules
 
 **ONLY ADD NEW CONTENT - DO NOT MODIFY EXISTING CODE**

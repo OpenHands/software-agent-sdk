@@ -15,8 +15,10 @@ run_eval_path = Path(__file__).parent.parent.parent / ".github" / "run-eval"
 sys.path.append(str(run_eval_path))
 from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-found]
     MODELS,
+    ROUTER_CONFIG_KIND,
     check_model,
     find_models_by_id,
+    is_router_config,
     run_preflight_check,
 )
 
@@ -64,12 +66,64 @@ class LLMConfig(BaseModel):
         return v
 
 
+class RouterLLMConfig(BaseModel):
+    """Pydantic model for ``intelligent-router-v0`` configuration validation.
+
+    Router configs have no top-level ``model`` field; they carry a ``kind``
+    discriminator and a ``tiers`` map. Each tier value must itself satisfy
+    :class:`LLMConfig` (i.e. be a real downstream model config).
+    """
+
+    kind: str
+    classifier_model_id: str
+    fallback_model_id: str
+    tiers: dict[str, LLMConfig]
+    routing: dict[str, str]
+    vision_capable_model_ids: list[str] | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def kind_must_be_router_v0(cls, v: str) -> str:
+        if v != ROUTER_CONFIG_KIND:
+            raise ValueError(f"router kind must be '{ROUTER_CONFIG_KIND}', got '{v}'")
+        return v
+
+    @model_validator(mode="after")
+    def references_are_consistent(self) -> "RouterLLMConfig":
+        if self.classifier_model_id not in self.tiers:
+            raise ValueError(
+                f"classifier_model_id '{self.classifier_model_id}' "
+                "must be a key in tiers"
+            )
+        if self.fallback_model_id not in self.tiers:
+            raise ValueError(
+                f"fallback_model_id '{self.fallback_model_id}' must be a key in tiers"
+            )
+        unknown = {v for v in self.routing.values() if v not in self.tiers}
+        if unknown:
+            raise ValueError(f"routing targets not present in tiers: {sorted(unknown)}")
+        if self.vision_capable_model_ids is not None:
+            stray = [
+                mid for mid in self.vision_capable_model_ids if mid not in self.tiers
+            ]
+            if stray:
+                raise ValueError(
+                    f"vision_capable_model_ids not present in tiers: {stray}"
+                )
+        return self
+
+
 class EvalModelConfig(BaseModel):
-    """Pydantic model for evaluation model configuration validation."""
+    """Pydantic model for evaluation model configuration validation.
+
+    ``llm_config`` is either a plain :class:`LLMConfig` or, when the entry
+    represents intelligent routing (``kind: intelligent-router-v0``), a
+    :class:`RouterLLMConfig`.
+    """
 
     id: str
     display_name: str
-    llm_config: LLMConfig
+    llm_config: RouterLLMConfig | LLMConfig
 
     @field_validator("id")
     @classmethod
@@ -754,3 +808,208 @@ def test_step_3_7_flash_config():
     assert model["llm_config"]["num_retries"] >= 10
     assert model["llm_config"]["retry_min_wait"] >= 15
     assert model["llm_config"]["retry_max_wait"] >= 90
+
+
+# ---------------------------------------------------------------------------
+# Tests for the intelligent-router-v0 entry (``router-classified-3tier``).
+# ---------------------------------------------------------------------------
+
+
+class TestRouterClassified3Tier:
+    """Tests for the ``router-classified-3tier`` MODELS entry."""
+
+    def test_entry_is_router_shaped(self):
+        model = MODELS["router-classified-3tier"]
+
+        assert model["id"] == "router-classified-3tier"
+        # is_router_config is the canonical predicate consumed by check_model
+        # and (via re-export) by build_matrix in OpenHands/evaluation.
+        assert is_router_config(model["llm_config"])
+        # Router payloads have NO top-level "model" — they would otherwise be
+        # mistaken for a regular LLM config by downstream tooling.
+        assert "model" not in model["llm_config"]
+
+    def test_router_references_are_internally_consistent(self):
+        """classifier/fallback IDs and all routing targets must exist in tiers."""
+        cfg = MODELS["router-classified-3tier"]["llm_config"]
+        tiers = cfg["tiers"]
+
+        assert cfg["classifier_model_id"] in tiers
+        assert cfg["fallback_model_id"] in tiers
+        for category, target in cfg["routing"].items():
+            assert target in tiers, (
+                f"routing target for '{category}' missing from tiers: {target}"
+            )
+        for vision_mid in cfg.get("vision_capable_model_ids", []):
+            assert vision_mid in tiers, (
+                f"vision_capable model id missing from tiers: {vision_mid}"
+            )
+
+    def test_tier_configs_are_real_litellm_proxy_models(self):
+        """Each tier value must itself be a valid plain LLM config."""
+        cfg = MODELS["router-classified-3tier"]["llm_config"]
+        for tier_id, tier_cfg in cfg["tiers"].items():
+            assert tier_cfg["model"].startswith("litellm_proxy/"), (
+                f"tier '{tier_id}' model must use litellm_proxy/: {tier_cfg['model']}"
+            )
+            # Pydantic LLMConfig acceptance is enforced by the registry-wide
+            # ``test_all_models_valid_with_pydantic`` test, but we additionally
+            # exercise it directly here to give a focused failure message.
+            LLMConfig.model_validate(tier_cfg)
+
+    def test_routing_table_matches_iter5_classifier_categories(self):
+        """The 5 categories from the iter5 classifier prompt must all be mapped."""
+        cfg = MODELS["router-classified-3tier"]["llm_config"]
+        expected_categories = {
+            "Frontend",
+            "Issue Resolution (other)",
+            "Greenfield",
+            "Testing",
+            "Information Gathering",
+        }
+        assert set(cfg["routing"].keys()) == expected_categories
+
+    def test_router_config_validates_with_pydantic(self):
+        """The router entry must satisfy the RouterLLMConfig validator."""
+        # This is also covered transitively by ``test_all_models_valid_with_pydantic``
+        # via ``EvalModelConfig.llm_config: RouterLLMConfig | LLMConfig``, but a
+        # direct call keeps the failure mode obvious if the union ordering ever
+        # changes.
+        cfg = MODELS["router-classified-3tier"]["llm_config"]
+        RouterLLMConfig.model_validate(cfg)
+
+
+class TestIsRouterConfig:
+    """Tests for the ``is_router_config`` predicate."""
+
+    def test_plain_llm_config_is_not_router(self):
+        assert not is_router_config({"model": "litellm_proxy/foo"})
+
+    def test_missing_kind_is_not_router(self):
+        assert not is_router_config({"tiers": {"a": {"model": "litellm_proxy/x"}}})
+
+    def test_missing_tiers_is_not_router(self):
+        assert not is_router_config({"kind": ROUTER_CONFIG_KIND})
+
+    def test_wrong_kind_is_not_router(self):
+        assert not is_router_config(
+            {"kind": "some-other-kind", "tiers": {"a": {"model": "litellm_proxy/x"}}}
+        )
+
+    def test_canonical_router_payload_is_router(self):
+        assert is_router_config(
+            {
+                "kind": ROUTER_CONFIG_KIND,
+                "tiers": {"a": {"model": "litellm_proxy/x"}},
+            }
+        )
+
+    def test_non_dict_inputs_are_not_router(self):
+        # The signature is typed as dict, but downstream code in
+        # build_matrix.py may pass arbitrary JSON values; we guard regardless.
+        assert not is_router_config(None)  # type: ignore[arg-type]
+        assert not is_router_config([])  # type: ignore[arg-type]
+        assert not is_router_config("string")  # type: ignore[arg-type]
+
+
+class TestCheckModelRouterRecursion:
+    """Tests for ``check_model``'s recursion into router tiers.
+
+    These tests exercise the real ``check_model`` code path with
+    ``litellm.completion`` mocked, the same pattern as the existing
+    ``TestTestModel`` class above.
+    """
+
+    def _router_entry(self) -> dict[str, Any]:
+        return {
+            "id": "router-test",
+            "display_name": "Router Test",
+            "llm_config": {
+                "kind": ROUTER_CONFIG_KIND,
+                "classifier_model_id": "a",
+                "fallback_model_id": "b",
+                "tiers": {
+                    "a": {"model": "litellm_proxy/provider/a"},
+                    "b": {"model": "litellm_proxy/provider/b"},
+                },
+                "routing": {"Frontend": "a", "Issue Resolution (other)": "b"},
+            },
+        }
+
+    def test_all_tiers_succeed(self):
+        """When every tier sub-model passes, the router entry passes."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        with patch("litellm.completion", return_value=mock_response) as mock_completion:
+            success, message = check_model(
+                self._router_entry(), "k", "https://t", timeout=5
+            )
+
+        assert success is True
+        assert "Router Test" in message
+        assert "2 tier(s)" in message
+        # Each tier triggered exactly one litellm completion call.
+        assert mock_completion.call_count == 2
+        called_models = sorted(
+            call.kwargs["model"] for call in mock_completion.call_args_list
+        )
+        assert called_models == [
+            "litellm_proxy/provider/a",
+            "litellm_proxy/provider/b",
+        ]
+
+    def test_one_tier_failure_fails_router(self):
+        """If a single tier fails, the router entry as a whole fails."""
+        import litellm
+
+        ok_response = MagicMock()
+        ok_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+
+        def side_effect(*_args, model: str, **_kwargs):
+            if model.endswith("/b"):
+                raise litellm.exceptions.NotFoundError(
+                    "no such model", llm_provider="x", model=model
+                )
+            return ok_response
+
+        with patch("litellm.completion", side_effect=side_effect):
+            success, message = check_model(
+                self._router_entry(), "k", "https://t", timeout=5
+            )
+
+        assert success is False
+        assert "one or more tiers failed" in message
+        # Diagnostic still surfaces the per-tier line.
+        assert "litellm_proxy/provider/b" in message or "not found" in message
+
+    def test_empty_tiers_fails_loudly(self):
+        """A router with an empty tiers map should fail preflight, not crash."""
+        entry = self._router_entry()
+        entry["llm_config"]["tiers"] = {}
+        # ``check_model`` short-circuits before calling litellm at all.
+        with patch("litellm.completion") as mock_completion:
+            success, message = check_model(entry, "k", "https://t", timeout=5)
+        assert success is False
+        assert "no tiers" in message
+        mock_completion.assert_not_called()
+
+    def test_tier_config_params_are_forwarded(self):
+        """Tier-level temperature/top_p/etc. must reach litellm.completion."""
+        entry = self._router_entry()
+        entry["llm_config"]["tiers"]["a"]["temperature"] = 0.5
+        entry["llm_config"]["tiers"]["a"]["top_p"] = 0.9
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="OK"))]
+        with patch("litellm.completion", return_value=mock_response) as mock_completion:
+            check_model(entry, "k", "https://t", timeout=5)
+
+        # Find the call for tier 'a' specifically.
+        a_call = next(
+            call
+            for call in mock_completion.call_args_list
+            if call.kwargs["model"].endswith("/a")
+        )
+        assert a_call.kwargs["temperature"] == 0.5
+        assert a_call.kwargs["top_p"] == 0.9
