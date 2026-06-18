@@ -173,8 +173,10 @@ def test_contract_summary_shows_schema_property_modifications_as_diff():
     assert '+schema Item property count optional schema=type="string"' in diff
 
 
-def test_update_body_inserts_summary_block_inside_summary_section():
+def test_update_body_inserts_summary_block_inside_agent_summary_section():
     body = """HUMAN:
+
+## Summary
 
 human-written note
 
@@ -199,9 +201,11 @@ pytest
         body, "### REST API contract changes\n\n```diff\n+ GET /api/x\n```"
     )
 
+    agent_summary = updated.rindex("## Summary")
     assert _body.START_MARKER in updated
-    assert updated.index(_body.START_MARKER) > updated.index("## Summary")
+    assert updated.index(_body.START_MARKER) > agent_summary
     assert updated.index(_body.END_MARKER) < updated.index("## How to Test")
+    assert updated.count("human-written note") == 1
     assert "- Existing bullet." in updated
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 START_MARKER = "<!-- agent-server-rest-api-contract-summary:start -->"
 END_MARKER = "<!-- agent-server-rest-api-contract-summary:end -->"
+AGENT_SECTION_RE = re.compile(r"(?m)^AGENT:\s*$")
 SUMMARY_HEADING_RE = re.compile(r"(?m)^##\s+Summary\s*$")
 NEXT_HEADING_RE = re.compile(r"(?m)^##\s+")
 GENERATED_BLOCK_RE = re.compile(
@@ -19,7 +20,11 @@ GENERATED_BLOCK_RE = re.compile(
 
 
 def _summary_bounds(body: str) -> tuple[int, int] | None:
-    summary_match = SUMMARY_HEADING_RE.search(body)
+    agent_match = AGENT_SECTION_RE.search(body)
+    if agent_match is None:
+        return None
+
+    summary_match = SUMMARY_HEADING_RE.search(body, agent_match.end())
     if summary_match is None:
         return None
 
