@@ -1322,10 +1322,10 @@ class ACPAgentSettings(AgentSettingsBase):
     acp_model: str | None = Field(
         default=None,
         description=(
-            "Model identifier for the ACP server to use (e.g. "
-            "``'claude-opus-4-6'``). claude-agent-acp receives it via session "
-            "_meta; codex-acp and gemini-cli via ``set_session_model``. "
-            "Leave blank to let the server pick its default."
+            "Model identifier for the ACP server to use (e.g. ``'sonnet'`` or "
+            "``'gpt-5.5'``). Applied via the protocol — set_config_option(model) "
+            "for configOptions-based servers (codex, claude), else "
+            "set_session_model. Leave blank to let the server pick its default."
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
