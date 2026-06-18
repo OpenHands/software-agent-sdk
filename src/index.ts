@@ -219,6 +219,35 @@ export type {
 export { ACP_PROVIDERS, ACP_SETTINGS_KEYS, getAcpProvider } from './models/acp';
 export type { ACPModelOption, ACPProviderInfo, ACPProviderKey } from './models/acp';
 
+// Agent profile types (mirrors openhands-sdk agent_profile.py + resolver.py)
+export type {
+  AgentKind,
+  ACPServerKind,
+  ProfileVerificationSettings,
+  OpenHandsAgentProfile,
+  ACPAgentProfile,
+  AgentProfile,
+  AgentProfileSaveInput,
+  AgentProfileSummary,
+  AgentProfileDiagnostics,
+  LaunchedProfile,
+} from './models/agent-profile';
+
+// Agent profiles client
+export { AgentProfilesClient } from './client/agent-profiles-client';
+export type {
+  AgentProfilesClientOptions,
+  GetAgentProfileOptions,
+  AgentProfileListResponse,
+  AgentProfileDetailResponse,
+  AgentProfileMutationResponse,
+  ActivateAgentProfileResponse,
+} from './client/agent-profiles-client';
+
+// deriveSwitchPlan — pure profile-switch decision helper
+export { deriveSwitchPlan } from './profiles/derive-switch-plan';
+export type { SwitchPlan } from './profiles/derive-switch-plan';
+
 // Conversation models
 export type {
   ConversationInfo,

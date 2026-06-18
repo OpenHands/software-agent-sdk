@@ -25,7 +25,23 @@ export interface ConversationClientOptions {
   timeout?: number;
 }
 
-export type CreateConversationPayload = Record<string, unknown>;
+/**
+ * Payload for creating a new conversation.
+ *
+ * Mutually exclusive sources for the agent:
+ * - `agent_profile_id` — stable UUID; server resolves the profile server-side.
+ * - `agent` / `agent_settings` — direct agent spec (legacy path).
+ *
+ * Additional fields (e.g. `initial_message`, `max_iterations`) are forwarded
+ * as-is. `agent_profile_id` support lands with SDK PR #3784.
+ */
+export interface CreateConversationPayload {
+  /** Stable UUID of an agent profile to resolve server-side. */
+  agent_profile_id?: string;
+  agent?: unknown;
+  agent_settings?: unknown;
+  [key: string]: unknown;
+}
 
 export interface SendConversationEventOptions {
   run?: boolean;

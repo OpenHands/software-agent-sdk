@@ -3,6 +3,7 @@
  */
 
 import { HttpClient } from '../client/http-client';
+import { AgentProfilesClient } from '../client/agent-profiles-client';
 import { ApiKeysClient } from '../client/api-keys-client';
 import { CloudProxyClient } from '../client/cloud-proxy-client';
 import { DesktopClient } from '../client/desktop-client';
@@ -85,6 +86,7 @@ export class ConversationManager {
   public readonly server: ServerClient;
   public readonly llm: LLMMetadataClient;
   public readonly profiles: ProfilesClient;
+  public readonly agentProfiles: AgentProfilesClient;
   public readonly metaProfiles: MetaProfilesClient;
   public readonly settings: SettingsClient;
   public readonly skills: SkillsClient;
@@ -120,6 +122,7 @@ export class ConversationManager {
     this.server = new ServerClient(clientOptions);
     this.llm = new LLMMetadataClient(clientOptions);
     this.profiles = new ProfilesClient(clientOptions);
+    this.agentProfiles = new AgentProfilesClient(clientOptions);
     this.metaProfiles = new MetaProfilesClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.skills = new SkillsClient(clientOptions);
