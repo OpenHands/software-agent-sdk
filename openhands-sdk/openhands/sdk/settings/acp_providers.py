@@ -297,8 +297,10 @@ class ACPProviderInfo:
 # the CLI's own ``/model`` menu offers, switched via ``set_config_option``).
 # ``opus[1m]`` is the SDK-documented version-agnostic 1M-context alias and the
 # CLI's own default (``currentValue``); ``default`` is the CLI's recommended
-# tier (Opus 4.8 · 1M). The CLI also accepts ids outside this list, so these
-# are curated suggestions, not an access check.
+# tier (Opus 4.8 · 1M). The ``/model`` menu is dynamic/account-dependent and the
+# CLI validates ``set_config_option(model)`` against the live select — it rejects
+# an absent id (e.g. ``sonnet`` on accounts without it), so these are pre-session
+# suggestions, not ground truth; a rejected id degrades to the server default.
 _CLAUDE_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="default", label="Default (recommended)"),
     ACPModelOption(id="opus[1m]", label="Claude Opus 4.8 (1M)"),
@@ -324,6 +326,11 @@ _CODEX_MODELS: tuple[ACPModelOption, ...] = (
 # are curated suggestions, not an access check.
 _GEMINI_MODELS: tuple[ACPModelOption, ...] = (
     ACPModelOption(id="auto", label="Auto"),
+    # gemini-cli 0.46 surfaces the pro-preview as ``gemini-3.1-pro-preview`` once
+    # the Gemini 3.1 launch flag is on (``PREVIEW_GEMINI_3_1_MODEL``), falling
+    # back to ``gemini-3-pro-preview`` (``PREVIEW_GEMINI_MODEL``) otherwise — keep
+    # both so the picker matches either rollout state.
+    ACPModelOption(id="gemini-3.1-pro-preview", label="Gemini 3.1 Pro (preview)"),
     ACPModelOption(id="gemini-3-pro-preview", label="Gemini 3 Pro (preview)"),
     ACPModelOption(id="gemini-3-flash-preview", label="Gemini 3 Flash (preview)"),
     ACPModelOption(id="gemini-3.1-flash-lite", label="Gemini 3.1 Flash Lite"),

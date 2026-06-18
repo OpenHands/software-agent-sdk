@@ -617,9 +617,11 @@ async def _maybe_set_session_model(
     ``set_config_option(configId="model")`` for configOptions-based servers
     (codex-acp 0.16+, claude-agent-acp 0.44+), else ``set_session_model``. The
     ``_meta`` model payload is ignored by the pinned CLIs, so this protocol call
-    is what actually applies the model (#3654). Unknown/custom providers are
-    best-effort (a rejection is tolerated — the session keeps the server
-    default). Runtime switches go through :meth:`ACPAgent.set_acp_model`.
+    is what actually applies the model (#3654). A rejection is tolerated for
+    any provider — the curated model list is a pre-session suggestion, not an
+    access check (a server's model menu is dynamic/account-dependent), so the
+    session keeps the server default rather than failing to start. Runtime
+    switches go through :meth:`ACPAgent.set_acp_model`.
 
     Returns ``True`` only when a model-setting call succeeded (the override
     reached the server); ``False`` when there is nothing to apply or the call
@@ -628,31 +630,29 @@ async def _maybe_set_session_model(
     if not acp_model:
         return False
     provider = detect_acp_provider_by_agent_name(agent_name)
-    if provider is not None and provider.supports_set_session_model:
+    # Known providers gate on supports_set_session_model; unknown/custom servers
+    # always attempt (best-effort).
+    if provider is not None and not provider.supports_set_session_model:
+        return False
+    # A rejection is tolerated so session creation can't break: the curated model
+    # list is a suggestion, not an access check — a server's model menu is
+    # dynamic/account-dependent (claude-agent-acp validates set_config_option
+    # against the live select and rejects an absent id), so a model the live
+    # session won't accept degrades to the server default rather than failing.
+    try:
         await _apply_acp_model(
             conn, session_id, acp_model, via_config_option=via_config_option
         )
         return True
-    # Unknown/custom provider: best-effort apply via the detected mechanism; a
-    # rejection is tolerated so session creation can't break.
-    if provider is None:
-        try:
-            await _apply_acp_model(
-                conn, session_id, acp_model, via_config_option=via_config_option
-            )
-            logger.info(
-                "Set model %r on unknown/custom ACP server %s", acp_model, agent_name
-            )
-            return True
-        except ACPRequestError as e:
-            logger.warning(
-                "Could not set model %r on unknown/custom ACP server %s (%s); "
-                "the session will use the server default",
-                acp_model,
-                agent_name,
-                e,
-            )
-    return False
+    except ACPRequestError as e:
+        logger.warning(
+            "Could not set model %r on ACP server %s (%s); "
+            "the session will use the server default",
+            acp_model,
+            agent_name,
+            e,
+        )
+        return False
 
 
 async def _reapply_session_model_on_resume(

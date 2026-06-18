@@ -4511,6 +4511,25 @@ class TestMaybeSetSessionModel:
         conn.set_config_option.assert_awaited_once()
         assert applied is False
 
+    @pytest.mark.asyncio
+    async def test_known_provider_apply_rejection_is_tolerated(self):
+        # claude-agent-acp's ``model`` select is dynamic/account-dependent and
+        # rejects an absent curated id (e.g. ``sonnet`` on accounts without it,
+        # dressed as -32603). A rejected *initial* model must not fail session
+        # creation — it degrades to the server default (applied=False) like the
+        # unknown-provider path, since the curated list is a suggestion not an
+        # access check. (Runtime switches via set_acp_model surface the error.)
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32603, message="Invalid value for config option model: sonnet"
+        )
+        applied = await _maybe_set_session_model(
+            conn, "claude-agent-acp", "session-1", "sonnet", via_config_option=True
+        )
+        conn.set_config_option.assert_awaited_once()
+        conn.set_session_model.assert_not_called()
+        assert applied is False
+
 
 class TestReapplySessionModelOnResume:
     """Resume reapplies the persisted model via the runtime-switch gate."""
