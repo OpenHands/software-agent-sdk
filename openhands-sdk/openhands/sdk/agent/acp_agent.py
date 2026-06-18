@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -89,6 +90,7 @@ from openhands.sdk.utils.pydantic_secrets import (
     validate_secret,
     validate_secret_dict,
 )
+from openhands.sdk.utils.redact import redact_text_secrets
 
 
 logger = get_logger(__name__)
@@ -102,6 +104,7 @@ if TYPE_CHECKING:
         ConversationTokenCallbackType,
         LocalConversation,
     )
+    from openhands.sdk.conversation.secret_registry import SecretRegistry
 
 
 # Maximum seconds to wait for a UsageUpdate notification after prompt()
@@ -866,6 +869,101 @@ async def _filter_jsonrpc_lines(source: Any, dest: Any) -> None:
         dest.feed_eof()
 
 
+# Substrings that mark a generic ``-32603 Internal error`` as really a credential
+# failure.  ACP servers collapse upstream 401/403s into -32603 instead of -32000
+# (codex-acp swallows its thread-startup error; the claude SDK has a catch-all that
+# rewraps everything as internal), so the code alone is not a reliable auth signal —
+# the message + data must be scanned too.
+# Matched as whole words so "4031ms" or "model-id-401b" don't fire.
+_ACP_AUTH_HTTP_CODES_RE = re.compile(r"\b(401|403)\b")
+
+_ACP_AUTH_ERROR_MARKERS: tuple[str, ...] = (
+    "unauthorized",
+    "invalid api key",
+    "invalid_api_key",
+    "invalid x-api-key",
+    "expired",
+    "please run /login",
+    "authentication required",
+    "oauth token",
+    "credential",
+)
+
+
+def _stringify_acp_error_data(data: Any) -> str:
+    """Render an ACP ``RequestError.data`` payload as a compact string.
+
+    Servers put the real cause here: codex sends ``{"message", "codex_error_info"}``
+    or a bare string; the claude SDK catch-all sends ``{"details": ...}``.  Pull the
+    human-readable field to the front; otherwise fall back to a compact JSON dump.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    if isinstance(data, dict):
+        for key in ("message", "details", "detail", "error"):
+            val = data.get(key)
+            if isinstance(val, str) and val:
+                extra = data.get("codex_error_info")
+                return f"{val} ({extra})" if extra else val
+    try:
+        return json.dumps(data, default=str)
+    except (TypeError, ValueError):
+        return str(data)
+
+
+def _acp_error_text(exc: BaseException) -> str:
+    """Lowercased message + data text used for substring classification."""
+    if isinstance(exc, ACPRequestError):
+        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        return f"{exc} {data_str}".lower()
+    return str(exc).lower()
+
+
+def _acp_error_indicates_auth(exc: BaseException) -> bool:
+    """True when the failure is (or really is) a credential problem.
+
+    ``-32000`` is the explicit auth code; a ``-32603`` whose message/data carries an
+    auth marker is an upstream 401/403 the server collapsed into a generic internal
+    error.  Either way the client should offer re-authentication.
+    """
+    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
+        return True
+    text = _acp_error_text(exc)
+    return any(marker in text for marker in _ACP_AUTH_ERROR_MARKERS) or bool(
+        _ACP_AUTH_HTTP_CODES_RE.search(text)
+    )
+
+
+def _acp_error_detail(
+    exc: BaseException, secret_registry: SecretRegistry | None = None
+) -> str:
+    """Compose a human-readable, secret-free ``detail`` for an ACP failure.
+
+    ``acp.exceptions.RequestError.__str__`` returns only its ``message`` — so the
+    JSON-RPC ``code`` and the ``data`` payload (where servers stash the real cause:
+    an upstream 401 body, a model-not-found string, ``codex_error_info``) are lost
+    when callers use ``str(exc)``, which is why ``-32603`` failures reach the user as
+    a bare "Internal error".  This keeps all three.  ``data`` can echo a base URL or
+    auth header, so the result is redacted (pattern pass) and masked (exact tracked
+    secret values) before it leaves, and capped to the 500-char event limit.
+    """
+    if isinstance(exc, ACPRequestError):
+        code = getattr(exc, "code", None)
+        message = str(exc)
+        data_str = _stringify_acp_error_data(getattr(exc, "data", None))
+        detail = f"[{code}] {message}" if code is not None else message
+        if data_str and data_str != message:
+            detail = f"{detail}: {data_str}"
+    else:
+        detail = str(exc)
+    detail = redact_text_secrets(detail)
+    if secret_registry is not None:
+        detail = secret_registry.mask_secrets_in_output(detail)
+    return detail[:500]
+
+
 def _classify_acp_init_error(exc: BaseException) -> str:
     """Map a cold-start failure to a structured ``ConversationErrorEvent`` code.
 
@@ -876,10 +974,9 @@ def _classify_acp_init_error(exc: BaseException) -> str:
     ``init_state`` surfaces them itself.  The code tells clients *which* failure
     occurred so they can react (e.g. prompt re-auth vs. report a missing binary):
 
-    - ``ACPAuthRequired``: the ACP server reported a JSON-RPC auth-required error
-      (code ``-32000``) from ``authenticate``/``new_session`` — missing, expired,
-      or rejected credentials.  The most actionable cloud failure, so it gets its
-      own code.
+    - ``ACPAuthRequired``: a credential failure — the explicit ``-32000`` auth code,
+      or a ``-32603`` whose message/data reveals an upstream 401/403 (see
+      :func:`_acp_error_indicates_auth`).  The most actionable cloud failure.
     - ``ACPSpawnError``: the subprocess could not be launched — the CLI binary is
       missing or not executable (``FileNotFoundError`` / ``PermissionError`` from
       ``create_subprocess_exec``).
@@ -887,11 +984,26 @@ def _classify_acp_init_error(exc: BaseException) -> str:
       creation (timeouts, transport drops, unexpected protocol errors, cwd
       mismatch surfaced by the server).
     """
-    if isinstance(exc, ACPRequestError) and getattr(exc, "code", None) == -32000:
+    if _acp_error_indicates_auth(exc):
         return "ACPAuthRequired"
     if isinstance(exc, (FileNotFoundError, PermissionError)):
         return "ACPSpawnError"
     return "ACPInitError"
+
+
+def _classify_acp_turn_error(exc: BaseException) -> str:
+    """Map a prompt-turn failure to a structured ``ConversationErrorEvent`` code.
+
+    The turn-loop counterpart to :func:`_classify_acp_init_error`: usage/content
+    policy refusals get their own code, credential failures map to ``ACPAuthRequired``
+    (so the client can offer re-auth), everything else is a generic ``ACPPromptError``.
+    """
+    text = _acp_error_text(exc)
+    if "usage policy" in text or "content policy" in text:
+        return "UsagePolicyRefusal"
+    if _acp_error_indicates_auth(exc):
+        return "ACPAuthRequired"
+    return "ACPPromptError"
 
 
 class _OpenHandsACPBridge:
@@ -1889,7 +2001,7 @@ class ACPAgent(AgentBase):
                     ConversationErrorEvent(
                         source="agent",
                         code=_classify_acp_init_error(e),
-                        detail=str(e)[:500],
+                        detail=_acp_error_detail(e, state.secret_registry),
                     )
                 )
             except Exception:
@@ -3098,7 +3210,10 @@ class ACPAgent(AgentBase):
     ) -> None:
         """Error path for non-timeout exceptions raised out of the prompt."""
         logger.error("ACP prompt failed: %s", exc, exc_info=True)
-        error_str = str(exc)
+        # Rich, secret-free detail: for an ACPRequestError this keeps the JSON-RPC
+        # code + data (the real cause) instead of the bare "Internal error" that
+        # str(exc) yields — see _acp_error_detail.
+        error_detail = _acp_error_detail(exc, state.secret_registry)
         # Close any tool cards left in flight before surfacing the error.
         self._cancel_inflight_tool_calls()
         # Emit error as an agent message (preserved for consumers that
@@ -3108,21 +3223,18 @@ class ACPAgent(AgentBase):
                 source="agent",
                 llm_message=Message(
                     role="assistant",
-                    content=[TextContent(text=f"ACP error: {exc}")],
+                    content=[TextContent(text=f"ACP error: {error_detail}")],
                 ),
             )
         )
         # Emit typed ConversationErrorEvent so RemoteConversation surfaces
         # the actual detail instead of falling back to
         # "Remote conversation ended with error".
-        is_aup = (
-            "usage policy" in error_str.lower() or "content policy" in error_str.lower()
-        )
         on_event(
             ConversationErrorEvent(
                 source="agent",
-                code="UsagePolicyRefusal" if is_aup else "ACPPromptError",
-                detail=error_str[:500],
+                code=_classify_acp_turn_error(exc),
+                detail=error_detail,
             )
         )
         state.execution_status = ConversationExecutionStatus.ERROR

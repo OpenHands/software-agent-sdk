@@ -4,7 +4,7 @@ import contextlib
 import copy
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -87,6 +87,29 @@ ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
 ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
+    """Whether the agent's own step already emitted a typed ConversationErrorEvent.
+
+    ACPAgent surfaces a detailed, classified ``ConversationErrorEvent``
+    (``source="agent"``) from its step/init and then re-raises so the run loop
+    tears down.  Without this guard the run loop's generic ``except`` would emit a
+    second, less-informative event (``code=type(exc).__name__``, ``detail=str(exc)``)
+    as the *latest* error — clobbering the agent's rich one in clients that show the
+    most recent error.  Regular agents never self-emit (all their error events are
+    ``source="environment"``), so only the ACP duplicate is suppressed.
+
+    ``since`` should be the number of events that existed at the start of the current
+    ``run()``/``arun()`` call.  Scoping the scan to events added *during this run*
+    prevents a stale source="agent" event from a prior run from suppressing the error
+    event for an unrelated exception in a subsequent run on the same conversation.
+    """
+    for i in range(len(events) - 1, since - 1, -1):
+        event = events[i]
+        if isinstance(event, ConversationErrorEvent):
+            return event.source == "agent"
+    return False
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -1199,6 +1222,7 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -1323,14 +1347,19 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
 
-                # Add an error event
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Add an error event — unless the agent already surfaced a typed,
+                # detailed one for this failure (e.g. ACPAgent._emit_turn_error),
+                # which a generic str(e) duplicate would otherwise clobber.
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
@@ -1397,6 +1426,7 @@ class LocalConversation(BaseConversation):
             )
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
@@ -1782,13 +1812,18 @@ class LocalConversation(BaseConversation):
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
                 self._state.agent_state = updated_agent_state
                 self._state.execution_status = ConversationExecutionStatus.ERROR
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Skip the generic event if the agent already surfaced a typed,
+                # detailed one for this failure (see _agent_already_surfaced_error).
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e

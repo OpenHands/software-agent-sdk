@@ -20,8 +20,11 @@ from pydantic import Field, SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _acp_error_detail,
+    _acp_error_indicates_auth,
     _apply_acp_model,
     _classify_acp_init_error,
+    _classify_acp_turn_error,
     _codex_auth_file,
     _codex_base_url_overrides,
     _estimate_cost_from_tokens,
@@ -35,11 +38,13 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _stringify_acp_error_data,
     _strip_inherited_npm_env,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -876,6 +881,20 @@ class TestACPAgentInitState:
         assert "protocol handshake timed out" in errors[0].detail
         assert state.execution_status == ConversationExecutionStatus.ERROR
 
+    def test_init_state_surfaces_request_error_data(self, tmp_path):
+        """A ``RequestError`` cold-start failure surfaces its ``.code`` and
+        ``.data`` — not the bare "Internal error" that ``str(exc)`` yields — so the
+        real cause (an auth marker here) reaches the user and is classified."""
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "401 Unauthorized from provider"}
+        )
+        _state, events = self._init_state_failure(tmp_path, exc)
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPAuthRequired"
+        assert "401 Unauthorized from provider" in errors[0].detail
+        assert "-32603" in errors[0].detail
+
     def test_init_state_truncates_long_detail(self, tmp_path):
         """detail is capped at 500 chars, matching the run-loop error path."""
         exc = RuntimeError("x" * 1000)
@@ -931,6 +950,185 @@ class TestClassifyACPInitError:
 
     def test_generic_exception_is_init_error(self):
         assert _classify_acp_init_error(RuntimeError("x")) == "ACPInitError"
+
+    def test_auth_marker_in_internal_error_is_auth_required(self):
+        # Servers collapse upstream 401/403s into a generic -32603 instead of
+        # -32000; the message/data still reveal the credential failure, which must
+        # map to ACPAuthRequired so the client can offer re-auth.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "401 Unauthorized: invalid api key"}
+        )
+        assert _classify_acp_init_error(exc) == "ACPAuthRequired"
+
+    def test_benign_internal_error_stays_init_error(self):
+        # A -32603 with no auth marker is a generic init failure, not auth.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "disk full"})
+        assert _classify_acp_init_error(exc) == "ACPInitError"
+
+
+# ---------------------------------------------------------------------------
+# _stringify_acp_error_data
+# ---------------------------------------------------------------------------
+
+
+class TestStringifyACPErrorData:
+    def test_none_is_empty(self):
+        assert _stringify_acp_error_data(None) == ""
+
+    def test_bare_string_passthrough(self):
+        assert _stringify_acp_error_data("OPENAI_API_KEY is not set") == (
+            "OPENAI_API_KEY is not set"
+        )
+
+    def test_dict_prefers_message_key(self):
+        # codex turn errors send {"message", "codex_error_info"}.
+        out = _stringify_acp_error_data(
+            {"message": "model not found", "codex_error_info": "gpt-9"}
+        )
+        assert out == "model not found (gpt-9)"
+
+    def test_dict_details_key(self):
+        # the claude SDK catch-all wraps non-RequestError exceptions as {"details"}.
+        assert _stringify_acp_error_data({"details": "boom"}) == "boom"
+
+    def test_opaque_dict_falls_back_to_json(self):
+        out = _stringify_acp_error_data({"foo": "bar"})
+        assert "foo" in out and "bar" in out
+
+
+# ---------------------------------------------------------------------------
+# _acp_error_indicates_auth
+# ---------------------------------------------------------------------------
+
+
+class TestACPErrorIndicatesAuth:
+    def test_explicit_auth_code(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32000, "Authentication required")
+        )
+
+    def test_marker_in_message(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32603, "Internal error: please run /login")
+        )
+
+    def test_marker_in_data(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32603, "Internal error", {"message": "token expired"})
+        )
+
+    def test_marker_in_plain_exception(self):
+        assert _acp_error_indicates_auth(RuntimeError("HTTP 401 Unauthorized"))
+
+    def test_no_marker(self):
+        assert not _acp_error_indicates_auth(ACPRequestError(-32603, "Internal error"))
+        assert not _acp_error_indicates_auth(RuntimeError("timed out"))
+
+    def test_http_401_as_word_matches(self):
+        assert _acp_error_indicates_auth(RuntimeError("HTTP 401 Unauthorized"))
+
+    def test_digit_substring_in_timeout_does_not_match(self):
+        # "4031ms" contains "403" but must not fire — word-boundary check.
+        assert not _acp_error_indicates_auth(RuntimeError("timeout after 4031ms"))
+
+    def test_model_id_with_401_does_not_match(self):
+        assert not _acp_error_indicates_auth(
+            ACPRequestError(
+                -32603, "Internal error", {"message": "model id '401b' not found"}
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# _classify_acp_turn_error
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyACPTurnError:
+    def test_generic_turn_error(self):
+        assert _classify_acp_turn_error(RuntimeError("boom")) == "ACPPromptError"
+
+    def test_usage_policy_refusal(self):
+        exc = RuntimeError("blocked by usage policy")
+        assert _classify_acp_turn_error(exc) == "UsagePolicyRefusal"
+
+    def test_content_policy_refusal(self):
+        exc = ACPRequestError(-32603, "Internal error", {"message": "content policy"})
+        assert _classify_acp_turn_error(exc) == "UsagePolicyRefusal"
+
+    def test_auth_failure_maps_to_auth_required(self):
+        # A bad credential surfaced mid-turn as -32603 must still route to re-auth.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "401 unauthorized"})
+        assert _classify_acp_turn_error(exc) == "ACPAuthRequired"
+
+
+# ---------------------------------------------------------------------------
+# _acp_error_detail
+# ---------------------------------------------------------------------------
+
+
+class TestACPErrorDetail:
+    def test_plain_exception_is_str(self):
+        assert _acp_error_detail(RuntimeError("boom")) == "boom"
+
+    def test_request_error_keeps_code_and_data(self):
+        # The bug this fixes: str(RequestError) is just "Internal error"; the real
+        # cause lives in .code/.data and must reach the user.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "model gpt-9 not found"}
+        )
+        detail = _acp_error_detail(exc)
+        assert "-32603" in detail
+        assert "model gpt-9 not found" in detail
+
+    def test_request_error_bare_data_string(self):
+        exc = ACPRequestError(-32603, "Internal error", "OPENAI_API_KEY is not set")
+        detail = _acp_error_detail(exc)
+        assert "OPENAI_API_KEY is not set" in detail
+
+    def test_no_duplicate_when_data_matches_message(self):
+        exc = ACPRequestError(-32000, "Authentication required")
+        detail = _acp_error_detail(exc)
+        assert detail == "[-32000] Authentication required"
+
+    def test_data_appended_when_it_differs_from_message(self):
+        # data["message"] differs from exc.message → must be included.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "model gpt-9 not found"}
+        )
+        detail = _acp_error_detail(exc)
+        assert "model gpt-9 not found" in detail
+        assert "Internal error" in detail
+
+    def test_data_not_duplicated_when_equal_to_message(self):
+        # When data["message"] == exc.message, nothing extra to add — avoid
+        # "[-32603] Internal error: Internal error" redundancy.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "Internal error"})
+        detail = _acp_error_detail(exc)
+        assert detail == "[-32603] Internal error"
+
+    def test_truncated_to_500_chars(self):
+        exc = ACPRequestError(-32603, "Internal error", "x" * 1000)
+        assert len(_acp_error_detail(exc)) == 500
+
+    def test_pattern_redaction_of_data(self):
+        # redact_text_secrets scrubs api_key=... even without a registry.
+        exc = ACPRequestError(-32603, "Internal error", "api_key='sk-leakme123'")
+        detail = _acp_error_detail(exc)
+        assert "sk-leakme123" not in detail
+        assert "<redacted>" in detail
+
+    def test_registry_masks_tracked_secret_value(self):
+        registry = SecretRegistry()
+        registry.update_secrets({"PROVIDER_TOKEN": "supersecretvalue"})
+        # Resolve once so the value is tracked for masking.
+        registry.get_all_secrets_as_env_vars()
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "rejected supersecretvalue"}
+        )
+        detail = _acp_error_detail(exc, registry)
+        assert "supersecretvalue" not in detail
+        assert "<secret-hidden>" in detail
 
 
 # ---------------------------------------------------------------------------
