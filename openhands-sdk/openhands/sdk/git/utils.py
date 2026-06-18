@@ -5,7 +5,10 @@ import subprocess
 from pathlib import Path
 
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
-from openhands.sdk.utils.redact import redact_url_credentials
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -48,14 +51,18 @@ def run_git_command(
 
         if result.returncode != 0:
             error_msg = f"Git command failed: {cmd_str}"
+            # stderr can echo the remote URL (with embedded credentials on some
+            # git versions / error paths), so redact before logging and storing.
+            redacted_stderr = redact_url_credentials_in_text(result.stderr)
             logger.error(
-                f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
+                f"{error_msg}. Exit code: {result.returncode}. "
+                f"Stderr: {redacted_stderr}"
             )
             raise GitCommandError(
                 message=error_msg,
                 command=redacted_args,
                 exit_code=result.returncode,
-                stderr=result.stderr.strip(),
+                stderr=redacted_stderr.strip(),
             )
 
         logger.debug(f"Git command succeeded: {cmd_str}")
