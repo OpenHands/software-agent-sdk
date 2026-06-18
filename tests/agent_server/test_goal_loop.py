@@ -108,18 +108,18 @@ _NOT_DONE = '{"score": 0.2, "complete": false, "missing": "tests"}'
     ],
     ids=["completes-after-two-rounds", "caps-at-max"],
 )
-async def test_goal_outcomes(
+async def test_goal_loop_outcomes(
     event_service, tmp_path, agent_turns, verdicts, max_iterations, status, iterations
 ):
     await _start(event_service, tmp_path, *agent_turns)
     judge = _scripted(*verdicts, usage_id="judge")
     try:
-        await event_service.start_goal(
+        await event_service.start_goal_loop(
             "build x", judge_llm=judge, max_iterations=max_iterations
         )
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
-        outcome = event_service._goal_outcome
+        outcome = event_service._goal_loop_outcome
         assert outcome is not None
         assert outcome.status == status
         assert outcome.iterations == iterations
@@ -128,7 +128,7 @@ async def test_goal_outcomes(
 
 
 @pytest.mark.asyncio
-async def test_goal_emits_status_events(event_service, tmp_path):
+async def test_goal_loop_emits_status_events(event_service, tmp_path):
     # The loop publishes ConversationStateUpdateEvent(key="goal") at each
     # lifecycle point; they are persisted to the shared event log (and streamed
     # to subscribers) so a UI can render a progress chip.
@@ -137,8 +137,10 @@ async def test_goal_emits_status_events(event_service, tmp_path):
         '{"score": 1.0, "complete": true, "missing": ""}', usage_id="judge"
     )
     try:
-        await event_service.start_goal("build x", judge_llm=judge, max_iterations=3)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=3
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
         updates = [
             e.value
@@ -158,15 +160,17 @@ async def test_goal_emits_status_events(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_goal_emits_per_round_verdicts(event_service, tmp_path):
+async def test_goal_loop_emits_per_round_verdicts(event_service, tmp_path):
     # Each continuing round publishes its judge verdict (score + missing) on the
     # running status event, so a UI can show per-round feedback, not just the
     # terminal verdict.
     await _start(event_service, tmp_path, "turn 1", "turn 2")
     judge = _scripted(_NOT_DONE, _DONE, usage_id="judge")
     try:
-        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
         updates = _goal_status_updates(event_service)
         # The kickoff update (iteration 0) has no verdict yet.
@@ -184,7 +188,7 @@ async def test_goal_emits_per_round_verdicts(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_goal_defaults_judge_to_agent_llm(event_service, tmp_path):
+async def test_goal_loop_defaults_judge_to_agent_llm(event_service, tmp_path):
     # No judge_llm passed -> the agent's own LLM is used as the judge, so its
     # scripted queue serves both the agent turn and the verdict. This is the
     # path the POST /goal endpoint always takes.
@@ -195,10 +199,10 @@ async def test_goal_defaults_judge_to_agent_llm(event_service, tmp_path):
         '{"score": 1.0, "complete": true, "missing": ""}',
     )
     try:
-        await event_service.start_goal("build x", max_iterations=3)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.start_goal_loop("build x", max_iterations=3)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
-        outcome = event_service._goal_outcome
+        outcome = event_service._goal_loop_outcome
         assert outcome is not None
         assert outcome.status == "complete"
         assert outcome.iterations == 1
@@ -207,57 +211,57 @@ async def test_goal_defaults_judge_to_agent_llm(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_start_goal_rejects_empty_objective(event_service, tmp_path):
+async def test_start_goal_loop_rejects_empty_objective(event_service, tmp_path):
     await _start(event_service, tmp_path, "noop")
     judge = _scripted("{}", usage_id="judge")
     try:
         with pytest.raises(ValueError):
-            await event_service.start_goal("   ", judge_llm=judge)
+            await event_service.start_goal_loop("   ", judge_llm=judge)
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_start_goal_rejects_concurrent_goal(event_service, tmp_path):
+async def test_start_goal_loop_rejects_concurrent_goal_loop(event_service, tmp_path):
     await _start(event_service, tmp_path, "noop")
     judge = _scripted("{}", usage_id="judge")
     try:
-        # Occupy the goal slot with a task that won't finish on its own.
-        event_service._goal_task = asyncio.create_task(asyncio.sleep(10))
+        # Occupy the goal loop slot with a task that won't finish on its own.
+        event_service._goal_loop_task = asyncio.create_task(asyncio.sleep(10))
         with pytest.raises(ValueError, match="goal_already_running"):
-            await event_service.start_goal("build x", judge_llm=judge)
+            await event_service.start_goal_loop("build x", judge_llm=judge)
     finally:
-        event_service._goal_task.cancel()
-        event_service._goal_task = None
+        event_service._goal_loop_task.cancel()
+        event_service._goal_loop_task = None
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_stop_goal_when_idle_returns_false(event_service, tmp_path):
+async def test_stop_goal_loop_when_idle_returns_false(event_service, tmp_path):
     await _start(event_service, tmp_path, "noop")
     try:
-        assert await event_service.stop_goal() is False
+        assert await event_service.stop_goal_loop() is False
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_user_message_stops_running_goal(event_service, tmp_path):
-    # A user message (the normal chat path, _from_goal=False) cancels a running
-    # goal loop before being processed.
+async def test_user_message_stops_running_goal_loop(event_service, tmp_path):
+    # A user message on the normal chat path cancels a running goal loop before
+    # being processed.
     await _start(event_service, tmp_path, "noop")
     try:
-        event_service._goal_task = asyncio.create_task(asyncio.sleep(30))
+        event_service._goal_loop_task = asyncio.create_task(asyncio.sleep(30))
         await event_service.send_message(
             Message(role="user", content=[TextContent(text="hello")]), run=False
         )
-        assert event_service._goal_task.done()
+        assert event_service._goal_loop_task.done()
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_stop_running_goal_emits_interrupted(event_service, tmp_path):
+async def test_stop_running_goal_loop_emits_interrupted(event_service, tmp_path):
     await _start(event_service, tmp_path, "did the work")
     judge = cast(
         _GatedLLM,
@@ -272,12 +276,14 @@ async def test_stop_running_goal_emits_interrupted(event_service, tmp_path):
         ),
     )
     try:
-        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
         # Wait until the judge is blocked: the goal is mid-audit, no run in flight.
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, judge._entered.wait, 5.0)
 
-        assert await event_service.stop_goal() is True
+        assert await event_service.stop_goal_loop() is True
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
@@ -290,7 +296,7 @@ async def test_stop_running_goal_emits_interrupted(event_service, tmp_path):
 @pytest.mark.asyncio
 async def test_resume_from_interrupted_status(event_service, tmp_path):
     await _start(event_service, tmp_path, "resumed and finished")
-    # Simulate a goal that was interrupted at round 1 of 5.
+    # Simulate a goal loop that was interrupted at round 1 of 5.
     conversation = event_service.get_conversation()
     with conversation._state:
         conversation._on_event(
@@ -310,10 +316,10 @@ async def test_resume_from_interrupted_status(event_service, tmp_path):
         '{"score": 1.0, "complete": true, "missing": ""}', usage_id="judge"
     )
     try:
-        await event_service.resume_goal(judge_llm=judge)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.resume_goal_loop(judge_llm=judge)
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
-        outcome = event_service._goal_outcome
+        outcome = event_service._goal_loop_outcome
         assert outcome is not None
         assert outcome.status == "complete"
         assert outcome.iterations == 2  # resumed from round 1 -> completed at round 2
@@ -322,19 +328,19 @@ async def test_resume_from_interrupted_status(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_without_resumable_goal_raises(event_service, tmp_path):
+async def test_resume_without_resumable_goal_loop_raises(event_service, tmp_path):
     await _start(event_service, tmp_path, "noop")
     judge = _scripted("{}", usage_id="judge")
     try:
         with pytest.raises(ValueError, match="no_resumable_goal"):
-            await event_service.resume_goal(judge_llm=judge)
+            await event_service.resume_goal_loop(judge_llm=judge)
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_resume_after_completed_goal_raises(event_service, tmp_path):
-    # A completed (or capped) goal is not resumable.
+async def test_resume_after_completed_goal_loop_raises(event_service, tmp_path):
+    # A completed (or capped) goal loop is not resumable.
     await _start(event_service, tmp_path, "noop")
     conversation = event_service.get_conversation()
     with conversation._state:
@@ -354,14 +360,14 @@ async def test_resume_after_completed_goal_raises(event_service, tmp_path):
     judge = _scripted("{}", usage_id="judge")
     try:
         with pytest.raises(ValueError, match="no_resumable_goal"):
-            await event_service.resume_goal(judge_llm=judge)
+            await event_service.resume_goal_loop(judge_llm=judge)
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_goal_halts_on_run_error_as_interrupted(event_service, tmp_path):
-    # Simulate "out of credits": the agent's run raises. The goal must record an
+async def test_goal_loop_halts_on_run_error_as_interrupted(event_service, tmp_path):
+    # Simulate "out of credits": the agent's run raises. The goal loop must record an
     # interrupted (resumable) status, not die silently with no outcome.
     (tmp_path / "workspace").mkdir(exist_ok=True)
     await event_service.start()
@@ -372,19 +378,21 @@ async def test_goal_halts_on_run_error_as_interrupted(event_service, tmp_path):
         '{"score": 0.1, "complete": false, "missing": "x"}', usage_id="judge"
     )
     try:
-        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
-        assert event_service._goal_outcome is None
+        assert event_service._goal_loop_outcome is None
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_goal_emits_interrupted_on_unexpected_error(event_service, tmp_path):
+async def test_goal_loop_emits_interrupted_on_unexpected_error(event_service, tmp_path):
     # A judge LLM that *raises* (e.g. a network error) crashes the loop via the
     # generic `except Exception` path -- distinct from a run error surfaced as
     # ConversationExecutionStatus.ERROR (test above). The loop must still record
@@ -395,30 +403,32 @@ async def test_goal_emits_interrupted_on_unexpected_error(event_service, tmp_pat
         [RuntimeError("judge network error")], usage_id="judge"
     )
     try:
-        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
-        await asyncio.wait_for(event_service._goal_task, timeout=15)
+        await event_service.start_goal_loop(
+            "build x", judge_llm=judge, max_iterations=5
+        )
+        await asyncio.wait_for(event_service._goal_loop_task, timeout=15)
 
         updates = _goal_status_updates(event_service)
         assert updates[-1]["status"] == "interrupted"
         assert updates[-1]["active"] is False
-        assert event_service._goal_outcome is None
+        assert event_service._goal_loop_outcome is None
     finally:
         await event_service.close()
 
 
 @pytest.mark.asyncio
-async def test_start_goal_rejected_while_run_active(event_service, tmp_path):
+async def test_start_goal_loop_rejected_while_run_active(event_service, tmp_path):
     # /goal must refuse with conversation_already_running (-> 409) when a normal
     # run is already in flight, instead of slipping in beside it and judging that
     # run's unrelated transcript. A placeholder _run_task stands in for the active
-    # run (same pattern as test_start_goal_rejects_concurrent_goal).
+    # run (same pattern as test_start_goal_loop_rejects_concurrent_goal_loop).
     await _start(event_service, tmp_path, "noop")
     judge = _scripted("{}", usage_id="judge")
     try:
         event_service._run_task = asyncio.create_task(asyncio.sleep(10))
         with pytest.raises(ValueError, match="conversation_already_running"):
-            await event_service.start_goal("build x", judge_llm=judge)
-        assert event_service._goal_task is None
+            await event_service.start_goal_loop("build x", judge_llm=judge)
+        assert event_service._goal_loop_task is None
     finally:
         event_service._run_task.cancel()
         event_service._run_task = None
@@ -426,8 +436,8 @@ async def test_start_goal_rejected_while_run_active(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_goal_rejected_while_run_active(event_service, tmp_path):
-    # resume_goal shares start_goal's guard; same placeholder _run_task approach.
+async def test_resume_goal_loop_rejected_while_run_active(event_service, tmp_path):
+    # Resume uses the same busy guard; reuse the placeholder _run_task approach.
     await _start(event_service, tmp_path, "noop")
     conversation = event_service.get_conversation()
     with conversation._state:
@@ -448,7 +458,7 @@ async def test_resume_goal_rejected_while_run_active(event_service, tmp_path):
     try:
         event_service._run_task = asyncio.create_task(asyncio.sleep(10))
         with pytest.raises(ValueError, match="conversation_already_running"):
-            await event_service.resume_goal(judge_llm=judge)
+            await event_service.resume_goal_loop(judge_llm=judge)
     finally:
         event_service._run_task.cancel()
         event_service._run_task = None

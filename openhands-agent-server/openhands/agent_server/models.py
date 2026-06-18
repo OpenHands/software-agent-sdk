@@ -500,7 +500,7 @@ class AskAgentResponse(BaseModel):
 
 
 class StartGoalRequest(BaseModel):
-    """Payload to start a ``/goal`` driver loop on a conversation."""
+    """Payload to start a ``/goal`` loop inside a conversation."""
 
     objective: str = Field(description="The goal objective to pursue and audit.")
     max_iterations: int = Field(
