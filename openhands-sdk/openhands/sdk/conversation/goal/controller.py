@@ -60,6 +60,9 @@ class GoalContinue(BaseModel):
     """Decision to keep going: send ``followup`` before the next run."""
 
     followup: str
+    verdict: GoalVerdict = Field(
+        description="The judge's verdict for the round that just finished."
+    )
 
 
 class GoalDone(BaseModel):
@@ -127,4 +130,4 @@ class GoalController:
             )
         missing = verdict.missing or "Some requirements are not yet verified."
         followup = FOLLOWUP_PROMPT.format(iteration=self.iteration, missing=missing)
-        return GoalContinue(followup=followup)
+        return GoalContinue(followup=followup, verdict=verdict)

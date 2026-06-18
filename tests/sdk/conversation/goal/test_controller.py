@@ -34,6 +34,11 @@ def test_continue_when_incomplete():
     assert isinstance(step, GoalContinue)
     assert "tests" in step.followup
     assert controller.iteration == 1
+    # The verdict for the round just finished rides along so a driver can
+    # publish per-round judge feedback, not just the terminal one.
+    assert step.verdict.score == 0.2
+    assert step.verdict.complete is False
+    assert step.verdict.missing == "tests"
 
 
 def test_done_when_complete():

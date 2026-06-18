@@ -1132,7 +1132,9 @@ class EventService:
                         step.outcome.iterations,
                     )
                     return
-                await _emit_status(active=True, status="running")
+                # Carry the round's verdict so a UI can show per-round judge
+                # feedback (score + what's missing), not just the final one.
+                await _emit_status(active=True, status="running", verdict=step.verdict)
                 await self.send_message(
                     _user(step.followup), run=False, _from_goal=True
                 )

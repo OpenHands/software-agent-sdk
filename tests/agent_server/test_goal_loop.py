@@ -158,6 +158,32 @@ async def test_goal_emits_status_events(event_service, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_goal_emits_per_round_verdicts(event_service, tmp_path):
+    # Each continuing round publishes its judge verdict (score + missing) on the
+    # running status event, so a UI can show per-round feedback, not just the
+    # terminal verdict.
+    await _start(event_service, tmp_path, "turn 1", "turn 2")
+    judge = _scripted(_NOT_DONE, _DONE, usage_id="judge")
+    try:
+        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
+        await asyncio.wait_for(event_service._goal_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        # The kickoff update (iteration 0) has no verdict yet.
+        kickoff = next(u for u in updates if u["iteration"] == 0)
+        assert kickoff["verdict"] is None
+        # The mid-loop "running" update for round 1 carries the round's verdict.
+        round_one = next(
+            u for u in updates if u["status"] == "running" and u["iteration"] == 1
+        )
+        assert round_one["verdict"] is not None
+        assert round_one["verdict"]["score"] == 0.2
+        assert round_one["verdict"]["missing"] == "tests"
+    finally:
+        await event_service.close()
+
+
+@pytest.mark.asyncio
 async def test_goal_defaults_judge_to_agent_llm(event_service, tmp_path):
     # No judge_llm passed -> the agent's own LLM is used as the judge, so its
     # scripted queue serves both the agent turn and the verdict. This is the
