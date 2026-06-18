@@ -209,6 +209,23 @@ class ACPAgentProfile(AgentProfileBase):
     )
 
 
+class LaunchedProfile(BaseModel):
+    """Provenance snapshot recorded when a profile launches a conversation.
+
+    Stored on ``StoredConversation`` and projected onto ``ConversationInfo`` so
+    ts-client ``deriveSwitchPlan`` can identify which profile is current without
+    fragile settings-comparison. See #3720.
+    """
+
+    profile_id: UUID = Field(
+        description="Stable id of the profile that launched the conversation."
+    )
+    revision: int = Field(
+        ge=0,
+        description="Revision of the profile at launch time.",
+    )
+
+
 def _agent_profile_discriminator(value: Any) -> str:
     """Discriminator for :data:`AgentProfile` — defaults to ``'openhands'``.
 

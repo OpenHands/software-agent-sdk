@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    LaunchedProfile,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -240,6 +241,72 @@ def _prepare_request_workspace(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_agent_from_profile(
+    profile_id: "UUID",
+    cipher: "Cipher | None",
+) -> "tuple[AgentBase, LaunchedProfile]":
+    """Load and resolve an agent profile by id, returning the built agent + provenance.
+
+    Runs synchronously (call via ``asyncio.to_thread`` from async context).
+
+    Raises:
+        ProfileNotFound: No stored profile has ``profile_id``.
+        DanglingMcpServerRef: A referenced MCP server is absent from the global config.
+        ValueError: Profile load or settings validation failure.
+    """
+    from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.sdk.profiles.resolver import (
+        DanglingMcpServerRef as _DanglingMcpServerRef,
+        ProfileNotFound,
+        resolve_agent_profile,
+    )
+
+    # Find the profile name from its stable id.
+    store = AgentProfileStore()
+    profile_name: str | None = None
+    for summary in store.list_summaries():
+        if str(summary.get("id")) == str(profile_id):
+            profile_name = summary.get("name")
+            break
+
+    if profile_name is None:
+        raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
+
+    try:
+        profile = store.load(profile_name, cipher=cipher)
+    except FileNotFoundError:
+        raise ProfileNotFound(
+            f"Agent profile '{profile_name}' (id={profile_id}) not found"
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to load agent profile '{profile_name}': {exc}"
+        ) from exc
+
+    # Global MCP config — already decrypted by the FileSettingsStore cipher context.
+    settings_store = get_settings_store()
+    settings = settings_store.load() or PersistedSettings()
+    mcp_config = settings.agent_settings.mcp_config
+
+    llm_store = LLMProfileStore()
+    try:
+        settings_config = resolve_agent_profile(
+            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
+        )
+    except _DanglingMcpServerRef:
+        raise
+    except ProfileNotFound:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
+
+    agent = settings_config.create_agent()
+    launched = LaunchedProfile(profile_id=profile.id, revision=profile.revision)
+    return agent, launched
+
+
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -309,6 +376,7 @@ def _compose_conversation_info(
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
+        launched_profile=stored.launched_profile,
     )
 
 
@@ -612,6 +680,18 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Profile resolution must happen before _prepare_request_workspace (which
+        # asserts request.agent is not None) and before model_dump so the resolved
+        # agent is captured in request_data.
+        launched_profile: LaunchedProfile | None = None
+        if request.agent_profile_id is not None:
+            resolved_agent, launched_profile = await asyncio.to_thread(
+                _resolve_agent_from_profile,
+                request.agent_profile_id,
+                self.cipher,
+            )
+            request = request.model_copy(update={"agent": resolved_agent})
+
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -686,11 +766,23 @@ class ConversationService:
                     "Set OH_SECRET_KEY environment variable."
                 )
             stored = StoredConversation.model_validate(
-                {"id": conversation_id, **request_data},
+                {
+                    "id": conversation_id,
+                    **request_data,
+                    "launched_profile": (
+                        launched_profile.model_dump(mode="json")
+                        if launched_profile is not None
+                        else None
+                    ),
+                },
                 context={"cipher": self.cipher},
             )
         else:
-            stored = StoredConversation(id=conversation_id, **request_data)
+            stored = StoredConversation(
+                id=conversation_id,
+                launched_profile=launched_profile,
+                **request_data,
+            )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
