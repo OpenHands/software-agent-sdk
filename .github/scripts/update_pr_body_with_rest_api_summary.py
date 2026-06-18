@@ -75,9 +75,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    body = args.body_file.read_text(newline="")
-    generated_summary = args.summary_file.read_text(newline="")
-    args.output.write_text(update_body(body, generated_summary), newline="")
+    with args.body_file.open(newline="") as body_file:
+        body = body_file.read()
+    with args.summary_file.open(newline="") as summary_file:
+        generated_summary = summary_file.read()
+    with args.output.open("w", newline="") as output_file:
+        output_file.write(update_body(body, generated_summary))
     return 0
 
 
