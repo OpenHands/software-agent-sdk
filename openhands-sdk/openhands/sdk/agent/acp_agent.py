@@ -400,6 +400,30 @@ def _write_secret_file(path: Path, value: str) -> None:
 # (codex-acp 0.16+, claude-agent-acp 0.44+) rather than the UNSTABLE ``models``
 # capability + ``session/set_model`` (gemini-cli, older codex/claude).
 _MODEL_CONFIG_OPTION_ID = "model"
+_CODEX_REASONING_EFFORTS: Final[frozenset[str]] = frozenset(
+    {"low", "medium", "high", "xhigh"}
+)
+
+
+def _codex_model_config_options(model: str) -> tuple[tuple[str, str], ...]:
+    """Map combined Canvas Codex model IDs to codex-acp config options."""
+    base_model, sep, effort = model.rpartition("/")
+    if sep and base_model and effort in _CODEX_REASONING_EFFORTS:
+        return (
+            (_MODEL_CONFIG_OPTION_ID, base_model),
+            ("reasoning_effort", effort),
+        )
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
+
+
+def _model_config_options(
+    agent_name: str | None,
+    model: str,
+) -> tuple[tuple[str, str], ...]:
+    provider = detect_acp_provider_by_agent_name(agent_name or "")
+    if provider is not None and provider.key == "codex":
+        return _codex_model_config_options(model)
+    return ((_MODEL_CONFIG_OPTION_ID, model),)
 
 
 def _model_config_option(response: Any) -> Any | None:
@@ -432,19 +456,23 @@ async def _apply_acp_model(
     session_id: str,
     model: str,
     *,
+    agent_name: str | None = None,
     via_config_option: bool,
 ) -> None:
     """Apply ``model`` to a live ACP session via the mechanism the session
     advertised: ``set_config_option(configId="model")`` for configOptions-based
     servers (codex-acp 0.16+, claude-agent-acp 0.44+), else ``set_session_model``.
 
-    The model id is a bare preset id the server lists in its ``model`` select /
-    ``models`` capability — applied as-is on either mechanism.
+    The model id is normally the bare preset id listed by the server. For
+    Codex, callers may still pass a combined Canvas id such as ``gpt-5.5/high``;
+    codex-acp exposes reasoning effort as a separate config option, so split it
+    only on the config-options mechanism.
     """
     if via_config_option:
-        await conn.set_config_option(
-            config_id=_MODEL_CONFIG_OPTION_ID, value=model, session_id=session_id
-        )
+        for config_id, value in _model_config_options(agent_name, model):
+            await conn.set_config_option(
+                config_id=config_id, value=value, session_id=session_id
+            )
     else:
         await conn.set_session_model(model_id=model, session_id=session_id)
 
@@ -665,7 +693,11 @@ async def _maybe_set_session_model(
     # session won't accept degrades to the server default rather than failing.
     try:
         await _apply_acp_model(
-            conn, session_id, acp_model, via_config_option=via_config_option
+            conn,
+            session_id,
+            acp_model,
+            agent_name=agent_name,
+            via_config_option=via_config_option,
         )
         return True
     except ACPRequestError as e:
@@ -715,7 +747,11 @@ async def _reapply_session_model_on_resume(
         return False
     try:
         await _apply_acp_model(
-            conn, session_id, acp_model, via_config_option=via_config_option
+            conn,
+            session_id,
+            acp_model,
+            agent_name=agent_name,
+            via_config_option=via_config_option,
         )
         return True
     except ACPRequestError as e:
@@ -3751,6 +3787,7 @@ class ACPAgent(AgentBase):
                     self._conn,
                     self._session_id,
                     model,
+                    agent_name=self._agent_name,
                     via_config_option=self._model_via_config_option,
                 ),
                 timeout=self.acp_prompt_timeout,

@@ -11,7 +11,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
@@ -27,6 +27,7 @@ from openhands.sdk.agent.acp_agent import (
     _classify_acp_turn_error,
     _codex_auth_file,
     _codex_base_url_overrides,
+    _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -4727,6 +4728,20 @@ class TestCodexBaseUrlOverrides:
         )
 
 
+class TestCodexModelConfigOptions:
+    def test_splits_combined_model_and_reasoning_effort(self):
+        assert _codex_model_config_options("gpt-5.5/high") == (
+            ("model", "gpt-5.5"),
+            ("reasoning_effort", "high"),
+        )
+
+    def test_leaves_base_or_custom_model_id_unchanged(self):
+        assert _codex_model_config_options("gpt-5.5") == (("model", "gpt-5.5"),)
+        assert _codex_model_config_options("custom/provider/model") == (
+            ("model", "custom/provider/model"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
@@ -4767,6 +4782,28 @@ class TestMaybeSetSessionModel:
             session_id="session-1",
         )
         conn.set_session_model.assert_not_called()
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_codex_config_option_splits_reasoning_effort(self):
+        # Canvas may persist Codex ids as ``model/effort``; codex-acp 0.16
+        # exposes effort as its own config option.
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "codex-acp", "session-1", "gpt-5.4/low", via_config_option=True
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.4", session_id="session-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="low",
+                    session_id="session-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
         assert applied is True
 
     @pytest.mark.asyncio
@@ -4871,6 +4908,26 @@ class TestReapplySessionModelOnResume:
             config_id="model", value="gpt-5.5", session_id="sess-1"
         )
         conn.set_session_model.assert_not_called()
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_codex_reapply_splits_reasoning_effort(self):
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "codex-acp", "sess-1", "gpt-5.4/low", via_config_option=True
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.4", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="low",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
         assert applied is True
 
     @pytest.mark.asyncio
@@ -5045,7 +5102,7 @@ class TestSetACPModel:
 
     def test_switches_codex_via_config_option_single_call(self):
         # codex-acp 0.16 configOptions: the bare preset id applies as a single
-        # `model` selection (reasoning effort is a separate, unmanaged option).
+        # `model` selection.
         agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
         agent.set_acp_model("gpt-5.5")
         agent._conn.set_config_option.assert_awaited_once_with(
@@ -5054,6 +5111,24 @@ class TestSetACPModel:
         agent._conn.set_session_model.assert_not_called()
         assert agent.llm.model == "gpt-5.5"
         assert agent._current_model_id == "gpt-5.5"
+
+    def test_switches_codex_via_config_option_splits_reasoning_effort(self):
+        agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
+        agent.set_acp_model("gpt-5.5/high")
+        agent._conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="high",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert agent._conn.set_config_option.await_count == 2
+        agent._conn.set_session_model.assert_not_called()
+        assert agent.llm.model == "gpt-5.5/high"
+        assert agent._current_model_id == "gpt-5.5/high"
 
     def test_switches_claude_via_config_option_single_call(self):
         # A bare id (no `/`) applies as a single `model` selection — no effort.
@@ -7742,11 +7817,7 @@ class TestApplyAcpModelNoFallback:
 
 
 class TestApplyAcpModel:
-    """``_apply_acp_model`` sends the model id verbatim through the mechanism the
-    session advertised — the ``model`` configOption select or
-    ``set_session_model`` — with no id rewriting. (codex 0.16 exposes reasoning
-    effort as a separate, unmanaged ``reasoning_effort`` configOption, so the
-    model ids are bare presets on every provider.)"""
+    """``_apply_acp_model`` uses the mechanism the session advertised."""
 
     @pytest.mark.asyncio
     async def test_config_option_single_call(self):
@@ -7767,6 +7838,29 @@ class TestApplyAcpModel:
             model_id="gemini-2.5-pro", session_id="sess-1"
         )
         conn.set_config_option.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_config_option_splits_reasoning_effort(self):
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn,
+            "sess-1",
+            "gpt-5.5/xhigh",
+            agent_name="codex-acp",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="xhigh",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        conn.set_session_model.assert_not_called()
 
 
 class TestACPAgentAvailableModelsProperty:

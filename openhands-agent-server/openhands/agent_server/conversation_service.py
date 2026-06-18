@@ -321,7 +321,7 @@ def _compose_conversation_info(
     # The ``acp_model`` fallback is gated on the agent NOT being a live,
     # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
     # authoritative resolved value — including ``None`` when an override couldn't
-    # be applied (unknown provider, or a resume whose ``set_session_model`` the
+    # be applied (unknown provider, or a resume whose model-selection call the
     # server rejected) — so falling back to ``acp_model`` there would re-assert an
     # override the live session isn't actually running. The fallback is only for
     # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
