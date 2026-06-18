@@ -92,6 +92,9 @@ class AgentProfileMutationResponse(BaseModel):
 class ActivateAgentProfileResponse(BaseModel):
     id: str
     message: str
+    # Always False: activation is pointer-only by contract. The field documents
+    # that agent_settings was untouched; materialize (#3717) is the path that
+    # resolves a profile into settings.
     agent_settings_applied: bool = False
 
 
@@ -148,15 +151,12 @@ def _decrypt_mcp_tools(tools: dict[str, Any], cipher: Cipher) -> dict[str, Any]:
 def _decrypt_profile_mcp_tools(
     profile: OpenHandsAgentProfile | ACPAgentProfile, cipher: Cipher | None
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Decrypt Fernet-encrypted ``skills[].mcp_tools`` env/headers on a profile.
+    """Decrypt Fernet ``skills[].mcp_tools`` env/headers (no-op without a cipher).
 
-    ``AgentProfileStore`` masks/encrypts these on save but has no symmetric
-    load-time validator, so both the GET (at-rest) and the save (client
-    round-tripped) values carry ciphertext. Decrypting here gives the GET expose
-    serializer plaintext to re-mask, and stops the save path from
-    double-encrypting an already-encrypted value (the round-trip the resolver
-    would otherwise decrypt once and get a stale token). No-op without a cipher
-    or on ACP profiles (no skills).
+    The store masks/encrypts these on save but has no symmetric load-time
+    validator, so values arrive as ciphertext on both GET (at-rest) and save
+    (client round-trip). Decrypting here lets GET re-mask from plaintext and
+    stops save from double-encrypting an already-encrypted value.
     """
     if cipher is None:
         return profile
@@ -243,9 +243,8 @@ def _seed_default_profile(
 ) -> None:
     """Persist one default profile and point ``active_agent_profile_id`` at it.
 
-    Holds the store lock across the empty-check + save + pointer write so
-    concurrent first requests seed exactly once (the loser sees a non-empty
-    store and returns); the pointer always matches the persisted profile id.
+    The lock spans empty-check + save + pointer write so concurrent first
+    requests seed exactly once and the pointer matches the persisted id.
     """
     with _store_errors(), store._acquire_lock():
         # Double-checked under the lock: a concurrent first request may have
@@ -406,20 +405,20 @@ async def save_agent_profile(
     profile = _decrypt_profile_mcp_tools(profile, cipher)
 
     store = AgentProfileStore()
-    # The id is server-managed state, never a client-settable field — the active
-    # pointer is keyed on it. Overwriting a namesake keeps its id (so the pointer
-    # never dangles) and bumps the revision; creating a new name always mints a
-    # fresh id (ignoring any client-supplied one) so ids stay globally unique and
-    # the pointer is never ambiguous.
-    existing_id, existing_rev = _existing_identity(store, name)
-    if existing_id is not None:
-        profile = profile.model_copy(
-            update={"id": existing_id, "revision": (existing_rev or 0) + 1}
-        )
-    else:
-        profile = profile.model_copy(update={"id": uuid4()})
+    # The id is server-managed (the active pointer is keyed on it): overwrite
+    # keeps the namesake's id and bumps revision; create mints a fresh id,
+    # ignoring any client-supplied one. The lock spans read + mint + save so two
+    # concurrent creates of the same new name can't both mint an id and clobber
+    # each other (the seed path guards the same window).
     try:
-        with _store_errors():
+        with _store_errors(), store._acquire_lock():
+            existing_id, existing_rev = _existing_identity(store, name)
+            if existing_id is not None:
+                profile = profile.model_copy(
+                    update={"id": existing_id, "revision": (existing_rev or 0) + 1}
+                )
+            else:
+                profile = profile.model_copy(update={"id": uuid4()})
             store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
     except ProfileLimitExceeded:
         raise HTTPException(

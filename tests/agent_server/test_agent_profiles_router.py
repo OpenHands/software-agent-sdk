@@ -225,6 +225,31 @@ def test_create_mints_fresh_id_ignoring_client_id(client):
     assert client.get("/api/settings").json()["active_agent_profile_id"] == b_id
 
 
+def test_concurrent_create_same_name_converges_on_one_id(client, store):
+    """Concurrent creates of the same new name yield one profile with one id.
+
+    The save path holds the store lock across read + id-mint + write, so the
+    second writer sees the namesake and preserves its id instead of clobbering
+    it with a fresh one (which would dangle an active pointer).
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        codes = list(
+            ex.map(
+                lambda _: (
+                    client.post(
+                        "/api/agent-profiles/dup", json={"llm_profile_ref": "x"}
+                    ).status_code
+                ),
+                range(8),
+            )
+        )
+
+    assert all(code == 201 for code in codes)
+    summaries = store.list_summaries()
+    assert len(summaries) == 1
+    assert len({s["id"] for s in summaries}) == 1
+
+
 def test_save_path_name_is_authoritative(client, store):
     """The path name overrides any ``name`` in the body."""
     response = client.post(
