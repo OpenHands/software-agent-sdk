@@ -37,7 +37,6 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
-    ProfileReferenced,
     ProfileVerificationSettings,
     validate_agent_profile,
 )
@@ -107,16 +106,14 @@ class RenameAgentProfileRequest(BaseModel):
 
 @contextmanager
 def _store_errors() -> Iterator[None]:
-    """Map ``AgentProfileStore`` / FK errors to HTTP responses."""
+    """Map ``AgentProfileStore`` errors to HTTP responses.
+
+    Mirrors ``profiles_router._store_errors``: ``TimeoutError`` and
+    ``ValueError`` only. ``FileNotFoundError`` / ``FileExistsError`` are handled
+    inline per-endpoint so each gets a clean, resource-specific message.
+    """
     try:
         yield
-    except ProfileReferenced as e:
-        # Names the referrers so the caller knows what to detach first.
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    except FileExistsError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -348,8 +345,14 @@ async def get_agent_profile(
     cipher = get_cipher(request)
 
     store = AgentProfileStore()
-    with _store_errors():
-        profile = store.load(name, cipher=cipher)
+    try:
+        with _store_errors():
+            profile = store.load(name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent profile '{name}' not found",
+        )
 
     # The store leaves skills[].mcp_tools encrypted on load; decrypt to plaintext
     # so the expose serializer can correctly redact / re-encrypt / reveal them.
@@ -381,17 +384,12 @@ async def save_agent_profile(
     try:
         profile = validate_agent_profile({**body, "name": name})
     except ValidationError as e:
-        # Surface field locations + error types so the client can fix the body,
-        # but omit ``input``/``msg`` — a nested mcp_tools MCPConfig error embeds
-        # the input (which may carry secrets) in its message.
+        # Match FastAPI's request-validation shape (``detail`` is a list of error
+        # objects), but surface only ``loc``/``type`` — a nested mcp_tools
+        # MCPConfig error embeds the input (which may carry secrets) in ``msg``.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "message": "Invalid agent profile",
-                "errors": [
-                    {"loc": err["loc"], "type": err["type"]} for err in e.errors()
-                ],
-            },
+            detail=[{"loc": err["loc"], "type": err["type"]} for err in e.errors()],
         )
     except Exception:
         # Any other validation failure (e.g. SkillValidationError from a
@@ -485,8 +483,19 @@ async def rename_agent_profile(
     ``new_name`` is taken.
     """
     store = AgentProfileStore()
-    with _store_errors():
-        store.rename(name, body.new_name)
+    try:
+        with _store_errors():
+            store.rename(name, body.new_name)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent profile '{name}' not found",
+        )
+    except FileExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Agent profile '{body.new_name}' already exists",
+        )
 
     if name == body.new_name:
         message = f"Agent profile '{name}' unchanged (same name)"

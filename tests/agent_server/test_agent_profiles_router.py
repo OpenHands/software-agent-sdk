@@ -251,12 +251,16 @@ def test_save_acp_profile(client, store):
 
 
 def test_save_missing_required_ref_returns_422(client):
-    """A missing required field is rejected and the field location is surfaced."""
+    """A missing required field is rejected and the field location is surfaced.
+
+    ``detail`` mirrors FastAPI's request-validation shape: a list of error
+    objects (here trimmed to loc/type to avoid leaking secret-bearing input).
+    """
     response = client.post("/api/agent-profiles/bad", json={})
     assert response.status_code == 422
     detail = response.json()["detail"]
     # The discriminated union tags the location with the variant ("openhands").
-    assert any("llm_profile_ref" in err["loc"] for err in detail["errors"])
+    assert any("llm_profile_ref" in err["loc"] for err in detail)
 
 
 def test_save_invalid_body_does_not_leak_mcp_secret(client):
@@ -312,6 +316,7 @@ def test_get_returns_profile(client, store):
 def test_get_not_found(client):
     response = client.get("/api/agent-profiles/nonexistent")
     assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 
 def test_get_corrupted_returns_400(client, temp_agent_profiles_dir):
@@ -379,6 +384,7 @@ def test_rename_conflict(client, store):
         json={"new_name": "target"},
     )
     assert response.status_code == 409
+    assert "already exists" in response.json()["detail"].lower()
 
 
 def test_rename_invalid_new_name_returns_422(client, store):
