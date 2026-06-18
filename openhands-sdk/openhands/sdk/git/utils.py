@@ -15,21 +15,6 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def _redact_args_for_logging(args: list[str]) -> str:
-    """Redact credentials from git command arguments for safe logging.
-
-    Joins command args with shlex.join and redacts any URLs containing credentials.
-
-    Args:
-        args: List of command arguments.
-
-    Returns:
-        A string representation of the command with credentials redacted.
-    """
-    redacted_args = [redact_url_credentials(arg) for arg in args]
-    return shlex.join(redacted_args)
-
-
 def run_git_command(
     args: list[str],
     cwd: str | Path | None = None,
@@ -48,6 +33,9 @@ def run_git_command(
     Raises:
         GitCommandError: If the git command fails
     """
+    redacted_args = [redact_url_credentials(a) for a in args]
+    cmd_str = shlex.join(redacted_args)
+
     try:
         result = subprocess.run(
             args,
@@ -59,29 +47,26 @@ def run_git_command(
         )
 
         if result.returncode != 0:
-            # Redact credentials from command for logging and error messages
-            cmd_str = _redact_args_for_logging(args)
             error_msg = f"Git command failed: {cmd_str}"
             logger.error(
                 f"{error_msg}. Exit code: {result.returncode}. Stderr: {result.stderr}"
             )
             raise GitCommandError(
                 message=error_msg,
-                command=args,
+                command=redacted_args,
                 exit_code=result.returncode,
                 stderr=result.stderr.strip(),
             )
 
-        logger.debug(f"Git command succeeded: {_redact_args_for_logging(args)}")
+        logger.debug(f"Git command succeeded: {cmd_str}")
         return result.stdout.strip()
 
     except subprocess.TimeoutExpired as e:
-        cmd_str = _redact_args_for_logging(args)
         error_msg = f"Git command timed out: {cmd_str}"
         logger.error(error_msg)
         raise GitCommandError(
             message=error_msg,
-            command=args,
+            command=redacted_args,
             exit_code=-1,
             stderr="Command timed out",
         ) from e
@@ -90,7 +75,7 @@ def run_git_command(
         logger.error(error_msg)
         raise GitCommandError(
             message=error_msg,
-            command=args,
+            command=redacted_args,
             exit_code=-1,
             stderr="Git executable not found",
         ) from e

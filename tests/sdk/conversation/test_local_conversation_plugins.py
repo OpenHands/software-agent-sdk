@@ -601,3 +601,151 @@ class TestPluginMcpSecretsExpansion:
         assert header == "default-header-value"
 
         conversation.close()
+
+
+class TestPluginSourceSecretExpansion:
+    """Secrets in plugin ``source``/``ref`` are expanded before fetch.
+
+    This enables cloning private plugin repositories with a token supplied via
+    the per-conversation secrets API, e.g. a ``source`` of
+    ``https://x-token-auth:${MY_TOKEN}@host/org/repo.git``.
+    """
+
+    def _make_conversation(
+        self, tmp_path: Path, basic_agent, plugin_source: str, ref: str | None = None
+    ):
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="private-plugin",
+            skills=[{"name": "private-skill", "content": "Private content"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=plugin_source, ref=ref)],
+            visualizer=None,
+        )
+        return conversation, plugin_dir
+
+    def test_source_secret_expanded_before_fetch(self, tmp_path: Path, basic_agent):
+        """A ${VAR} in the source is replaced with the secret value before clone."""
+        source = "https://x-token-auth:${MY_TOKEN}@host.example.com/org/repo.git"
+        conversation, plugin_dir = self._make_conversation(
+            tmp_path, basic_agent, source
+        )
+        conversation.update_secrets({"MY_TOKEN": "s3cr3t-value"})
+
+        captured: dict[str, str | None] = {}
+
+        def fake_fetch(source, ref=None, repo_path=None, **kwargs):
+            captured["source"] = source
+            captured["ref"] = ref
+            return plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            side_effect=fake_fetch,
+        ):
+            conversation._ensure_plugins_loaded()
+
+        # The secret was expanded in the URL handed to the fetcher.
+        assert captured["source"] == (
+            "https://x-token-auth:s3cr3t-value@host.example.com/org/repo.git"
+        )
+
+        # Persisted state must NOT contain the raw secret value.
+        assert conversation.resolved_plugins is not None
+        assert "s3cr3t-value" not in conversation.resolved_plugins[0].source
+
+        conversation.close()
+
+    def test_host_env_not_expanded_in_source(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Host environment variables must NOT be folded into the source URL."""
+        monkeypatch.setenv("HOST_ONLY_VAR", "host-value")
+        source = "https://x-token-auth:${HOST_ONLY_VAR}@host.example.com/org/repo.git"
+        conversation, plugin_dir = self._make_conversation(
+            tmp_path, basic_agent, source
+        )
+        # Deliberately register NO secret named HOST_ONLY_VAR.
+
+        captured: dict[str, str | None] = {}
+
+        def fake_fetch(source, ref=None, repo_path=None, **kwargs):
+            captured["source"] = source
+            return plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            side_effect=fake_fetch,
+        ):
+            conversation._ensure_plugins_loaded()
+
+        # Placeholder preserved verbatim - host env was not used.
+        assert captured["source"] == source
+        assert "host-value" not in (captured["source"] or "")
+
+        conversation.close()
+
+    def test_unknown_var_with_default_left_untouched(self, tmp_path: Path, basic_agent):
+        """`${MISSING:-default}` is preserved verbatim (expand_defaults=False).
+
+        An unresolved variable in a URL must not be silently replaced with its
+        default -- the placeholder is left intact so the failure is visible
+        rather than producing a wrong-but-plausible URL.
+        """
+        source = "https://x-token-auth:${MISSING:-fallback}@host.example.com/o/r.git"
+        conversation, plugin_dir = self._make_conversation(
+            tmp_path, basic_agent, source
+        )
+        # No secret named MISSING registered.
+
+        captured: dict[str, str | None] = {}
+
+        def fake_fetch(source, ref=None, repo_path=None, **kwargs):
+            captured["source"] = source
+            return plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            side_effect=fake_fetch,
+        ):
+            conversation._ensure_plugins_loaded()
+
+        # Placeholder preserved verbatim: the default is NOT substituted in,
+        # the whole ${MISSING:-fallback} token is left intact.
+        assert captured["source"] == source
+        assert "${MISSING:-fallback}" in (captured["source"] or "")
+
+        conversation.close()
+
+    def test_ref_secret_expanded_before_fetch(self, tmp_path: Path, basic_agent):
+        """A ${VAR} in the ref is also expanded from secrets."""
+        source = str(tmp_path / "plugin")
+        conversation, plugin_dir = self._make_conversation(
+            tmp_path, basic_agent, source, ref="${MY_REF}"
+        )
+        conversation.update_secrets({"MY_REF": "v1.2.3"})
+
+        captured: dict[str, str | None] = {}
+
+        def fake_fetch(source, ref=None, repo_path=None, **kwargs):
+            captured["ref"] = ref
+            return plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            side_effect=fake_fetch,
+        ):
+            conversation._ensure_plugins_loaded()
+
+        assert captured["ref"] == "v1.2.3"
+
+        conversation.close()

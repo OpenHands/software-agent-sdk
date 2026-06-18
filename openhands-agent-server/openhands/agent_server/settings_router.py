@@ -161,6 +161,7 @@ async def get_settings(request: Request) -> SettingsResponse:
             ),
             llm_api_key_is_set=settings.llm_api_key_is_set,
             active_profile=settings.active_profile,
+            active_agent_profile_id=settings.active_agent_profile_id,
             misc_settings=settings.misc_settings,
         )
 
@@ -204,8 +205,12 @@ async def update_settings(
     store = get_settings_store(config)
 
     update_data = payload.model_dump(exclude_none=True)
+    # exclude_none drops an explicit null, so re-add nullable pointers when the
+    # client set them (including to None) to allow clearing.
     if "active_profile" in payload.model_fields_set:
         update_data["active_profile"] = payload.active_profile
+    if "active_agent_profile_id" in payload.model_fields_set:
+        update_data["active_agent_profile_id"] = payload.active_agent_profile_id
     if not update_data:
         # No updates provided - this is a client error
         raise HTTPException(
@@ -213,7 +218,7 @@ async def update_settings(
             detail=(
                 "At least one of agent_settings_diff, "
                 "conversation_settings_diff, misc_settings_diff, "
-                "or active_profile must be provided"
+                "active_profile, or active_agent_profile_id must be provided"
             ),
         )
 
@@ -269,6 +274,7 @@ async def update_settings(
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
         llm_api_key_is_set=settings.llm_api_key_is_set,
         active_profile=settings.active_profile,
+        active_agent_profile_id=settings.active_agent_profile_id,
         misc_settings=settings.misc_settings,
     )
 

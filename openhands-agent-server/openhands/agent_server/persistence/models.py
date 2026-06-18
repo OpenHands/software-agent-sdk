@@ -55,6 +55,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     conversation_settings_diff: dict[str, Any]
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
+    active_agent_profile_id: str | None
 
 
 def _deep_merge(
@@ -140,6 +141,14 @@ class PersistedSettings(BaseModel):
         default=None,
         description="Name of the currently active LLM profile.",
     )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable id of the currently active AgentProfile. Distinct from "
+            "active_profile (the active LLM profile name); additive with a "
+            "default, so older settings files load with this as None."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -165,8 +174,8 @@ class PersistedSettings(BaseModel):
     def update(self, payload: SettingsUpdatePayload) -> None:
         """Apply a batch of changes from a nested dict.
 
-        Accepts ``agent_settings_diff``, ``conversation_settings_diff``, and
-        ``active_profile`` for partial updates.
+        Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
+        ``active_profile``, and ``active_agent_profile_id`` for partial updates.
 
         ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
         RFC 7386 merge-patch semantics with kind-switch awareness. When
@@ -245,9 +254,11 @@ class PersistedSettings(BaseModel):
             if new_misc is not None:
                 self.misc_settings = new_misc
 
-            # Update active_profile if explicitly provided (including None to clear)
+            # Update pointers if explicitly provided (including None to clear)
             if "active_profile" in payload:
                 self.active_profile = payload["active_profile"]
+            if "active_agent_profile_id" in payload:
+                self.active_agent_profile_id = payload["active_agent_profile_id"]
         finally:
             # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:

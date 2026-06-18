@@ -205,13 +205,13 @@ def test_available_models_lifted_from_acp_agent():
 def test_available_models_empty_when_server_omits_them():
     """Servers that don't surface the UNSTABLE ``models`` capability yield []."""
     agent = ACPAgent(acp_command=["echo", "test"])
-    agent._current_model_id = "gpt-5.5/xhigh"
+    agent._current_model_id = "gpt-5.5"
     state = _make_state(agent)
     stored = _make_stored(state)
 
     info = _compose_conversation_info(stored, state)
 
-    assert info.current_model_id == "gpt-5.5/xhigh"
+    assert info.current_model_id == "gpt-5.5"
     assert info.available_models == []
 
 

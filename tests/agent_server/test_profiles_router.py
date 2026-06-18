@@ -14,6 +14,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
 
 
 @pytest.fixture
@@ -26,6 +27,15 @@ def temp_profiles_dir():
 
 
 @pytest.fixture
+def temp_agent_profiles_dir():
+    """Create a temporary directory for agent profiles (FK store)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent_dir = Path(tmpdir) / "agent-profiles"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        yield agent_dir
+
+
+@pytest.fixture
 def temp_settings_dir():
     """Create a temporary directory for settings."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -35,7 +45,7 @@ def temp_settings_dir():
 
 
 @pytest.fixture
-def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
+def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
     """Create test client with isolated profiles/settings directories, no cipher."""
     # Reset store singletons to ensure clean state
     reset_stores()
@@ -47,10 +57,17 @@ def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
 
-    # Patch LLMProfileStore to use temp directory
-    with patch(
-        "openhands.agent_server.profiles_router.LLMProfileStore",
-        lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+    # Patch both stores to use temp directories (AgentProfileStore is hit by the
+    # FK guard on delete/rename).
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.LLMProfileStore",
+            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.AgentProfileStore",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
     ):
         yield TestClient(app)
 
@@ -62,6 +79,52 @@ def client(temp_profiles_dir, temp_settings_dir, monkeypatch):
 def store(temp_profiles_dir):
     """Create a profile store using the temp directory."""
     return LLMProfileStore(base_dir=temp_profiles_dir)
+
+
+@pytest.fixture
+def agent_store(temp_agent_profiles_dir):
+    """Create the agent-profile store backing the FK guard."""
+    return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+
+# ── FK Guard: deleting/renaming a referenced LLM profile ────────────────────
+
+
+def test_delete_referenced_llm_profile_returns_409(client, store, agent_store):
+    """Deleting an LLM profile cited by an AgentProfile returns 409 w/ referrers."""
+    store.save("base-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="base-llm"))
+
+    response = client.delete("/api/profiles/base-llm")
+
+    assert response.status_code == 409
+    assert "agent-a" in response.json()["detail"]
+    # The LLM profile is left intact.
+    assert store.load("base-llm").model == "gpt-4o"
+
+
+def test_delete_unreferenced_llm_profile_succeeds(client, store, agent_store):
+    """An LLM profile no AgentProfile cites deletes normally."""
+    store.save("lonely", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="other-llm"))
+
+    response = client.delete("/api/profiles/lonely")
+
+    assert response.status_code == 200
+    with pytest.raises(FileNotFoundError):
+        store.load("lonely")
+
+
+def test_rename_llm_profile_cascades_to_agent_refs(client, store, agent_store):
+    """Renaming an LLM profile repoints citing AgentProfile.llm_profile_ref."""
+    store.save("old-llm", LLM(model="gpt-4o"))
+    agent_store.save(OpenHandsAgentProfile(name="agent-a", llm_profile_ref="old-llm"))
+
+    response = client.post("/api/profiles/old-llm/rename", json={"new_name": "new-llm"})
+
+    assert response.status_code == 200
+    # The agent profile's FK was cascaded to the new name.
+    assert agent_store.load("agent-a").llm_profile_ref == "new-llm"
 
 
 # ── List Profiles ──────────────────────────────────────────────────────────
@@ -659,7 +722,13 @@ def secret_key():
 
 
 @pytest.fixture
-def client_with_cipher(temp_profiles_dir, temp_settings_dir, secret_key, monkeypatch):
+def client_with_cipher(
+    temp_profiles_dir,
+    temp_agent_profiles_dir,
+    temp_settings_dir,
+    secret_key,
+    monkeypatch,
+):
     """Create test client with cipher configured."""
     from pydantic import SecretStr
 
@@ -676,9 +745,15 @@ def client_with_cipher(temp_profiles_dir, temp_settings_dir, secret_key, monkeyp
     )
     app = create_app(config)
 
-    with patch(
-        "openhands.agent_server.profiles_router.LLMProfileStore",
-        lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+    with (
+        patch(
+            "openhands.agent_server.profiles_router.LLMProfileStore",
+            lambda: LLMProfileStore(base_dir=temp_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.profiles_router.AgentProfileStore",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
     ):
         yield TestClient(app)
 
