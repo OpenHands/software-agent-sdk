@@ -11,7 +11,14 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, Discriminator, Field, Tag, model_validator
+from pydantic import (
+    BaseModel,
+    Discriminator,
+    Field,
+    Tag,
+    field_serializer,
+    model_validator,
+)
 
 from openhands.sdk.agent.acp_agent import ACPAgent as ACPAgent
 from openhands.sdk.agent.agent import Agent as Agent
@@ -286,6 +293,12 @@ class StartConversationRequest(BaseModel):
                 " `agent_profile_id` must be provided"
             )
         return self
+
+    @field_serializer("agent", mode="wrap")
+    def _serialize_agent(self, value: AgentBase | None, handler: Any) -> Any:
+        if value is None:
+            return None
+        return handler(value)
 
 
 class StartACPConversationRequest(StartConversationRequest):
