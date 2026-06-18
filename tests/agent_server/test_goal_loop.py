@@ -381,3 +381,26 @@ async def test_goal_halts_on_run_error_as_interrupted(event_service, tmp_path):
         assert event_service._goal_outcome is None
     finally:
         await event_service.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_emits_interrupted_on_unexpected_error(event_service, tmp_path):
+    # A judge LLM that *raises* (e.g. a network error) crashes the loop via the
+    # generic `except Exception` path -- distinct from a run error surfaced as
+    # ConversationExecutionStatus.ERROR (test above). The loop must still record
+    # a terminal interrupted (resumable) status; otherwise the last persisted
+    # event stays active=True/running and the UI shows a dead goal as running.
+    await _start(event_service, tmp_path, "did the work")
+    judge = TestLLM.from_messages(
+        [RuntimeError("judge network error")], usage_id="judge"
+    )
+    try:
+        await event_service.start_goal("build x", judge_llm=judge, max_iterations=5)
+        await asyncio.wait_for(event_service._goal_task, timeout=15)
+
+        updates = _goal_status_updates(event_service)
+        assert updates[-1]["status"] == "interrupted"
+        assert updates[-1]["active"] is False
+        assert event_service._goal_outcome is None
+    finally:
+        await event_service.close()

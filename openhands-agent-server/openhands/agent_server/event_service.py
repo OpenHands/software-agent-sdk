@@ -1148,6 +1148,12 @@ class EventService:
             raise
         except Exception:
             logger.exception("Goal loop failed")
+            # An unexpected failure (judge LLM error, controller bug, ...) leaves
+            # the loop dead: record an interrupted status (resumable) so the UI
+            # doesn't show it running. Skip during close(), like the cancel path.
+            if not self._closing:
+                with suppress(Exception):
+                    await _emit_status(active=False, status="interrupted")
         finally:
             self._goal_task = None
 
