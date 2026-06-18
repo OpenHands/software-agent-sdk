@@ -1081,106 +1081,125 @@ class _OpenHandsACPBridge:
         # like the main-turn path — a secret echoed in a fork session must not
         # leak in cleartext.
         if self._fork_session_id is not None and session_id == self._fork_session_id:
-            if isinstance(update, AgentMessageChunk):
-                if isinstance(update.content, TextContentBlock):
-                    self._fork_accumulated_text.append(
-                        self._mask_value(update.content.text)
-                    )
+            self._handle_fork_update(update)
             return
 
         if isinstance(update, AgentMessageChunk):
-            if isinstance(update.content, TextContentBlock):
-                # Mask once, then use the masked chunk for both the persisted
-                # accumulation and the live ``on_token`` relay. A secret split
-                # across two chunks slips through here (each piece alone won't
-                # match); the joined response is re-masked at the persistence
-                # boundary in ``_finalize_successful_turn`` to catch that.
-                text = self._mask_value(update.content.text)
-                self.accumulated_text.append(text)
-                if self.on_token is not None:
-                    try:
-                        self.on_token(text)
-                    except Exception:
-                        logger.debug("on_token callback failed", exc_info=True)
-            self._maybe_signal_activity()
+            self._handle_message_chunk(update)
         elif isinstance(update, AgentThoughtChunk):
-            if isinstance(update.content, TextContentBlock):
-                self.accumulated_thoughts.append(self._mask_value(update.content.text))
+            self._handle_thought_chunk(update)
         elif isinstance(update, UsageUpdate):
-            # Store the update for step()/ask_agent() to process in one place.
-            self._context_window = update.size
-            self._context_window_by_session[session_id] = update.size
-            self._turn_usage_updates[session_id] = update
-            event = self._usage_received.get(session_id)
-            if event is not None:
-                event.set()
+            self._handle_usage_update(session_id, update)
         elif isinstance(update, ToolCallStart):
-            entry = {
-                "tool_call_id": update.tool_call_id,
-                "title": update.title,
-                "tool_kind": update.kind,
-                "status": update.status,
-                "raw_input": update.raw_input,
-                "raw_output": update.raw_output,
-                "content": _serialize_tool_content(update.content),
-            }
-            self._mask_tool_call_entry(entry)
-            self.accumulated_tool_calls.append(entry)
-            logger.debug("ACP tool call start: %s", update.tool_call_id)
-            # Emit one early "started" event — the action half of the
-            # action->observation pair. (If the server reports a terminal
-            # status on the very first notification, this single event is
-            # also the observation; the matching terminal-transition guard
-            # below then suppresses any redundant re-emission.)
-            self._emit_tool_call_event(entry)
-            self._maybe_signal_activity()
+            self._handle_tool_call_start(update)
         elif isinstance(update, ToolCallProgress):
-            # Find the existing tool call entry and merge updates. Track the
-            # status seen *before* this frame so we can detect the single
-            # transition into a terminal state.
-            target: dict[str, Any] | None = None
-            prev_status: str | None = None
-            for tc in self.accumulated_tool_calls:
-                if tc["tool_call_id"] == update.tool_call_id:
-                    prev_status = tc.get("status")
-                    if update.title is not None:
-                        tc["title"] = update.title
-                    if update.kind is not None:
-                        tc["tool_kind"] = update.kind
-                    if update.status is not None:
-                        tc["status"] = update.status
-                    if update.raw_input is not None:
-                        tc["raw_input"] = update.raw_input
-                    if update.raw_output is not None:
-                        tc["raw_output"] = update.raw_output
-                    if update.content is not None:
-                        tc["content"] = _serialize_tool_content(update.content)
-                    target = tc
-                    break
-            logger.debug("ACP tool call progress: %s", update.tool_call_id)
-            # Mask the merged entry on every frame so the accumulator (and thus
-            # the terminal event and any _cancel_inflight_tool_calls supersede)
-            # never carries plaintext secrets. ``status`` is left untouched, so
-            # the terminal-transition check below is unaffected.
-            if target is not None:
-                self._mask_tool_call_entry(target)
-            # Persist exactly one terminal event per tool call. Intermediate
-            # progress frames each carry the *full cumulative* output; emitting
-            # one per frame is O(n^2) storage + WebSocket relay (the bug this
-            # method fixes). We accumulate them into ``target`` silently and
-            # emit only on the first transition into a terminal status, so the
-            # terminal event still carries the complete final output. This is
-            # the observation half of the action->observation pair.
-            became_terminal = (
-                target is not None
-                and target.get("status") in _TERMINAL_TOOL_CALL_STATUSES
-                and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
-            )
-            if target is not None and became_terminal:
-                self._emit_tool_call_event(target)
-            self._maybe_signal_activity()
+            self._handle_tool_call_progress(update)
         else:
             logger.debug("ACP session update: %s", type(update).__name__)
+
+    def _handle_fork_update(self, update: Any) -> None:
+        if not isinstance(update, AgentMessageChunk):
+            return
+        if not isinstance(update.content, TextContentBlock):
+            return
+        self._fork_accumulated_text.append(self._mask_value(update.content.text))
+
+    def _handle_message_chunk(self, update: Any) -> None:
+        if isinstance(update.content, TextContentBlock):
+            # Mask once, then use the masked chunk for both the persisted
+            # accumulation and the live ``on_token`` relay. A secret split
+            # across two chunks slips through here (each piece alone won't
+            # match); the joined response is re-masked at the persistence
+            # boundary in ``_finalize_successful_turn`` to catch that.
+            text = self._mask_value(update.content.text)
+            self.accumulated_text.append(text)
+            if self.on_token is not None:
+                try:
+                    self.on_token(text)
+                except Exception:
+                    logger.debug("on_token callback failed", exc_info=True)
+        self._maybe_signal_activity()
+
+    def _handle_thought_chunk(self, update: Any) -> None:
+        if not isinstance(update.content, TextContentBlock):
+            return
+        self.accumulated_thoughts.append(self._mask_value(update.content.text))
+
+    def _handle_usage_update(self, session_id: str, update: Any) -> None:
+        # Store the update for step()/ask_agent() to process in one place.
+        self._context_window = update.size
+        self._context_window_by_session[session_id] = update.size
+        self._turn_usage_updates[session_id] = update
+        event = self._usage_received.get(session_id)
+        if event is not None:
+            event.set()
+
+    def _handle_tool_call_start(self, update: Any) -> None:
+        entry = {
+            "tool_call_id": update.tool_call_id,
+            "title": update.title,
+            "tool_kind": update.kind,
+            "status": update.status,
+            "raw_input": update.raw_input,
+            "raw_output": update.raw_output,
+            "content": _serialize_tool_content(update.content),
+        }
+        self._mask_tool_call_entry(entry)
+        self.accumulated_tool_calls.append(entry)
+        logger.debug("ACP tool call start: %s", update.tool_call_id)
+        # Emit one early "started" event — the action half of the
+        # action->observation pair. (If the server reports a terminal
+        # status on the very first notification, this single event is
+        # also the observation; the matching terminal-transition guard
+        # below then suppresses any redundant re-emission.)
+        self._emit_tool_call_event(entry)
+        self._maybe_signal_activity()
+
+    def _handle_tool_call_progress(self, update: Any) -> None:
+        # Find the existing tool call entry and merge updates. Track the
+        # status seen *before* this frame so we can detect the single
+        # transition into a terminal state.
+        target: dict[str, Any] | None = None
+        prev_status: str | None = None
+        for tc in self.accumulated_tool_calls:
+            if tc["tool_call_id"] == update.tool_call_id:
+                prev_status = tc.get("status")
+                if update.title is not None:
+                    tc["title"] = update.title
+                if update.kind is not None:
+                    tc["tool_kind"] = update.kind
+                if update.status is not None:
+                    tc["status"] = update.status
+                if update.raw_input is not None:
+                    tc["raw_input"] = update.raw_input
+                if update.raw_output is not None:
+                    tc["raw_output"] = update.raw_output
+                if update.content is not None:
+                    tc["content"] = _serialize_tool_content(update.content)
+                target = tc
+                break
+        logger.debug("ACP tool call progress: %s", update.tool_call_id)
+        # Mask the merged entry on every frame so the accumulator (and thus
+        # the terminal event and any _cancel_inflight_tool_calls supersede)
+        # never carries plaintext secrets. ``status`` is left untouched, so
+        # the terminal-transition check below is unaffected.
+        if target is not None:
+            self._mask_tool_call_entry(target)
+        # Persist exactly one terminal event per tool call. Intermediate
+        # progress frames each carry the *full cumulative* output; emitting
+        # one per frame is O(n^2) storage + WebSocket relay (the bug this
+        # method fixes). We accumulate them into ``target`` silently and
+        # emit only on the first transition into a terminal status, so the
+        # terminal event still carries the complete final output. This is
+        # the observation half of the action->observation pair.
+        became_terminal = (
+            target is not None
+            and target.get("status") in _TERMINAL_TOOL_CALL_STATUSES
+            and prev_status not in _TERMINAL_TOOL_CALL_STATUSES
+        )
+        if target is not None and became_terminal:
+            self._emit_tool_call_event(target)
+        self._maybe_signal_activity()
 
     def _emit_tool_call_event(self, tc: dict[str, Any]) -> None:
         """Emit an ACPToolCallEvent reflecting the current state of ``tc``.
