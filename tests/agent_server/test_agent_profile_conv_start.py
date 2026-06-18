@@ -160,7 +160,7 @@ class TestResolveAgentFromProfile:
         )
 
         with patch(_STORE_PATH) as MockStore:
-            MockStore.return_value.list_summaries.return_value = []
+            MockStore.return_value.name_for_id.return_value = None
             with pytest.raises(ProfileNotFound, match="not found"):
                 _resolve_agent_from_profile(uuid4(), cipher=None)
 
@@ -179,9 +179,7 @@ class TestResolveAgentFromProfile:
             patch(_RESOLVE_PATH) as MockResolve,
         ):
             store_inst = MockStore.return_value
-            store_inst.list_summaries.return_value = [
-                {"id": str(profile.id), "name": profile.name}
-            ]
+            store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
 
             MockSettings.return_value.load.return_value = MagicMock(
@@ -212,9 +210,7 @@ class TestResolveAgentFromProfile:
             patch(_RESOLVE_PATH) as MockResolve,
         ):
             store_inst = MockStore.return_value
-            store_inst.list_summaries.return_value = [
-                {"id": str(profile.id), "name": profile.name}
-            ]
+            store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
             MockSettings.return_value.load.return_value = MagicMock(
                 agent_settings=MagicMock(mcp_config=None)
@@ -241,9 +237,7 @@ class TestResolveAgentFromProfile:
             patch(_RESOLVE_PATH) as MockResolve,
         ):
             store_inst = MockStore.return_value
-            store_inst.list_summaries.return_value = [
-                {"id": str(profile.id), "name": profile.name}
-            ]
+            store_inst.name_for_id.return_value = profile.name
             store_inst.load.return_value = profile
             MockSettings.return_value.load.return_value = MagicMock(
                 agent_settings=MagicMock(mcp_config=None)

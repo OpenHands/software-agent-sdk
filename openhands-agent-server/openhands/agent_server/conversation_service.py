@@ -263,14 +263,8 @@ def _resolve_agent_from_profile(
         resolve_agent_profile,
     )
 
-    # Find the profile name from its stable id.
     store = AgentProfileStore()
-    profile_name: str | None = None
-    for summary in store.list_summaries():
-        if str(summary.get("id")) == str(profile_id):
-            profile_name = summary.get("name")
-            break
-
+    profile_name = store.name_for_id(profile_id)
     if profile_name is None:
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
 

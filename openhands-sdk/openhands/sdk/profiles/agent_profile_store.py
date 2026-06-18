@@ -17,6 +17,8 @@ from openhands.sdk.profiles.agent_profile import validate_agent_profile
 
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from openhands.sdk.profiles.agent_profile import (
         ACPAgentProfile,
         OpenHandsAgentProfile,
@@ -305,3 +307,16 @@ class AgentProfileStore:
                     }
                 )
         return summaries
+
+    def name_for_id(self, profile_id: str | UUID) -> str | None:
+        """Return the stored name for a stable profile id, or ``None`` if not found.
+
+        Scans ``list_summaries()`` under the lock so the lookup is consistent
+        with the on-disk state at the time of the call.  Mirrors the id→name
+        resolution that used to be open-coded by each caller.
+        """
+        target = str(profile_id)
+        for summary in self.list_summaries():
+            if str(summary.get("id")) == target:
+                return str(summary["name"])
+        return None
