@@ -17,7 +17,13 @@ from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
-from openhands.sdk.profiles import AgentProfileStore, OpenHandsAgentProfile
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.profiles import (
+    ACPAgentProfile,
+    AgentProfileStore,
+    OpenHandsAgentProfile,
+)
 
 
 @pytest.fixture
@@ -676,3 +682,139 @@ def test_save_at_limit_returns_409(client, store, monkeypatch):
     response = client.post("/api/agent-profiles/second", json={"llm_profile_ref": "y"})
     assert response.status_code == 409
     assert "limit" in response.json()["detail"].lower()
+
+
+# ── Materialize (resolve dry-run) ────────────────────────────────────────────
+
+
+@pytest.fixture
+def temp_llm_profiles_dir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        llm_dir = Path(tmpdir) / "llm-profiles"
+        llm_dir.mkdir(parents=True, exist_ok=True)
+        yield llm_dir
+
+
+@pytest.fixture
+def client_with_llm_store(
+    temp_agent_profiles_dir, temp_settings_dir, temp_llm_profiles_dir, monkeypatch
+):
+    """Test client with isolated agent-profile/settings/llm-profile dirs, no cipher."""
+    reset_stores()
+    monkeypatch.setenv("OH_PERSISTENCE_DIR", str(temp_settings_dir))
+    config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
+    app = create_app(config)
+    with (
+        patch(
+            "openhands.agent_server.agent_profiles_router.AgentProfileStore",
+            lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
+        ),
+        patch(
+            "openhands.agent_server.agent_profiles_router.LLMProfileStore",
+            lambda: LLMProfileStore(base_dir=temp_llm_profiles_dir),
+        ),
+    ):
+        yield TestClient(app)
+    reset_stores()
+
+
+@pytest.fixture
+def llm_store(temp_llm_profiles_dir):
+    return LLMProfileStore(base_dir=temp_llm_profiles_dir)
+
+
+def test_materialize_valid_openhands_profile(client_with_llm_store, store, llm_store):
+    """Valid OpenHands profile with a resolved LLM returns 200 + valid=True."""
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["agent_kind"] == "openhands"
+    assert body["llm_profile_ref"] == "base-llm"
+    assert body["llm_profile_resolved"] is True
+    assert body["errors"] == []
+    assert body["resolved_settings"] is not None
+    assert body["dangling_mcp_server_refs"] == []
+
+
+def test_materialize_valid_acp_profile(client_with_llm_store, store):
+    """Valid ACP profile returns 200 + valid=True (no LLM ref needed)."""
+    store.save(ACPAgentProfile(name="acp-p", acp_server="codex", acp_model="gpt-5.5"))
+
+    response = client_with_llm_store.post("/api/agent-profiles/acp-p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["agent_kind"] == "acp"
+    assert body["errors"] == []
+    assert body["resolved_settings"] is not None
+
+
+def test_materialize_dangling_llm_ref(client_with_llm_store, store):
+    """A profile referencing a missing LLM profile returns 200, valid=False."""
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="nonexistent"))
+
+    response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["llm_profile_ref"] == "nonexistent"
+    assert body["llm_profile_resolved"] is False
+    assert body["resolved_settings"] is None
+    assert any("nonexistent" in e for e in body["errors"])
+
+
+def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
+    """A profile with a missing MCP server ref returns 200, valid=False."""
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(
+        OpenHandsAgentProfile(
+            name="p",
+            llm_profile_ref="base-llm",
+            mcp_server_refs=["missing-server"],
+        )
+    )
+
+    response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["dangling_mcp_server_refs"] == ["missing-server"]
+    assert body["resolved_settings"] is None
+
+
+def test_materialize_unknown_name_returns_404(client_with_llm_store):
+    """Materializing an unknown profile name returns 404."""
+    response = client_with_llm_store.post("/api/agent-profiles/ghost/materialize")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_materialize_no_raw_secrets_in_resolved_settings(
+    client_with_llm_store, store, llm_store
+):
+    """resolved_settings must not contain raw API key values."""
+    raw_key = "sk-secret-key-should-not-appear"
+    from pydantic import SecretStr
+
+    llm_store.save(
+        "base-llm",
+        LLM(model="gpt-4o", api_key=SecretStr(raw_key)),
+        include_secrets=True,
+    )
+    store.save(OpenHandsAgentProfile(name="p", llm_profile_ref="base-llm"))
+
+    response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert raw_key not in response.text

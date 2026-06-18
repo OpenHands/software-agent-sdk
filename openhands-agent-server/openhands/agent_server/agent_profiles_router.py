@@ -6,8 +6,9 @@ reference-bearing :class:`~openhands.sdk.profiles.AgentProfile` union and keeps 
 pointer-only — unlike the LLM ``/activate`` it must **not** write
 ``agent_settings`` (the creation-time-only contract).
 
-``POST /{id}/materialize`` is a fast-follow once the resolver (#3717) lands; it
-is deliberately not implemented here so this router ships independently.
+``POST /{name}/materialize`` performs a dry-run resolve of a profile's LLM and
+MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnostics`
+(never raises on dangling refs — those appear in the body).
 """
 
 import copy
@@ -31,13 +32,16 @@ from openhands.agent_server.persistence import (
     PersistedSettings,
     get_settings_store,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     ACPAgentProfile,
+    AgentProfileDiagnostics,
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
     ProfileVerificationSettings,
+    resolve_agent_profile_dry_run,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
@@ -552,4 +556,46 @@ async def activate_agent_profile(
     return ActivateAgentProfileResponse(
         id=profile_id,
         message=f"Agent profile '{profile_id}' activated",
+    )
+
+
+@agent_profiles_router.post(
+    "/{name}/materialize",
+    response_model=AgentProfileDiagnostics,
+)
+async def materialize_agent_profile(
+    request: Request, name: ProfileName
+) -> AgentProfileDiagnostics:
+    """Dry-run resolve a profile's LLM/MCP references; return a diagnostics report.
+
+    Dangling LLM/MCP references are reported in the body (valid=False) rather
+    than raising — the only error status is 404 (unknown profile name).
+    resolved_settings is redacted (api_key_set booleans; no raw secrets).
+    """
+    cipher = get_cipher(request)
+
+    store = AgentProfileStore()
+    try:
+        with _store_errors():
+            profile = store.load(name, cipher=cipher)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent profile '{name}' not found",
+        )
+
+    # The store leaves skills[].mcp_tools encrypted on load; decrypt so the
+    # resolver builds settings from plaintext (not ciphertext) values.
+    profile = _decrypt_profile_mcp_tools(profile, cipher)
+
+    config = get_config(request)
+    settings = get_settings_store(config).load() or PersistedSettings()
+    mcp_config = settings.agent_settings.mcp_config
+
+    llm_store = LLMProfileStore()
+    return resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        cipher=cipher,
     )
