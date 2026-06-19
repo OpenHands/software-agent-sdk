@@ -276,7 +276,7 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert body["conversation_settings"]["max_iterations"] == 84
 
 
-def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
+def test_get_settings_migrates_acp_settings_and_resaves_encrypted_credentials(
     client_with_settings, temp_persistence_dir, secret_key
 ):
     """ACP settings use the same persisted migration/encryption path."""
@@ -290,7 +290,6 @@ def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
                 "acp_server": "custom",
                 "acp_command": ["echo", "settings"],
                 "acp_args": ["--verbose"],
-                "acp_env": {"OPENAI_API_KEY": _encrypt(cipher, "sk-acp-env")},
                 "acp_model": "acp-test-model",
                 "acp_session_mode": "bypassPermissions",
                 "acp_prompt_timeout": 123.0,
@@ -314,7 +313,6 @@ def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
     assert loaded.agent_settings.agent_kind == "acp"
     assert loaded.agent_settings.acp_command == ["echo", "settings"]
     assert loaded.agent_settings.acp_args == ["--verbose"]
-    assert loaded.agent_settings.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
     assert loaded.agent_settings.acp_model == "acp-test-model"
     assert loaded.agent_settings.acp_session_mode == "bypassPermissions"
     assert loaded.agent_settings.acp_prompt_timeout == 123.0
@@ -328,7 +326,6 @@ def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
     agent_settings = response.json()["agent_settings"]
     assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
     assert agent_settings["agent_kind"] == "acp"
-    assert agent_settings["acp_env"] == {"OPENAI_API_KEY": "sk-acp-env"}
     assert agent_settings["llm"]["api_key"] == "sk-acp-llm"
 
     patch_response = client_with_settings.patch(
@@ -337,18 +334,16 @@ def test_get_settings_migrates_acp_settings_and_resaves_encrypted_env(
     assert patch_response.status_code == 200, patch_response.text
 
     on_disk_text = (temp_persistence_dir / "settings.json").read_text()
-    assert "sk-acp-env" not in on_disk_text
     assert "sk-acp-llm" not in on_disk_text
     on_disk = json.loads(on_disk_text)
     assert on_disk["schema_version"] == PERSISTED_SETTINGS_SCHEMA_VERSION
-    assert on_disk["agent_settings"]["acp_env"]["OPENAI_API_KEY"].startswith("gAAAA")
+    assert on_disk["agent_settings"]["llm"]["api_key"].startswith("gAAAA")
     assert on_disk["conversation_settings"]["max_iterations"] == 88
 
     reloaded = store.load()
     assert reloaded is not None
     assert isinstance(reloaded.agent_settings, ACPAgentSettings)
 
-    assert reloaded.agent_settings.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
     assert reloaded.conversation_settings.max_iterations == 88
 
 
@@ -899,16 +894,16 @@ def test_deep_merge_top_level_null_is_set_not_delete():
 def test_deep_merge_nested_null_deletes_entry():
     """A ``None`` *inside a nested map* removes that entry; siblings survive."""
     merged = _deep_merge(
-        {"acp_env": {"KEEP": "a", "DROP": "b"}},
-        {"acp_env": {"DROP": None}},
+        {"env": {"KEEP": "a", "DROP": "b"}},
+        {"env": {"DROP": None}},
     )
-    assert merged == {"acp_env": {"KEEP": "a"}}
+    assert merged == {"env": {"KEEP": "a"}}
 
 
 def test_deep_merge_nested_null_on_absent_key_is_noop():
     """Unsetting a nested key that isn't present is a no-op, not an error."""
-    merged = _deep_merge({"acp_env": {"KEEP": "a"}}, {"acp_env": {"MISSING": None}})
-    assert merged == {"acp_env": {"KEEP": "a"}}
+    merged = _deep_merge({"env": {"KEEP": "a"}}, {"env": {"MISSING": None}})
+    assert merged == {"env": {"KEEP": "a"}}
 
 
 def test_deep_merge_new_map_embedded_null_stored_as_is():
@@ -986,24 +981,6 @@ def test_update_agent_settings_null_unsets_optional_field() -> None:
     assert settings.agent_settings.acp_model is None
 
 
-def test_update_agent_settings_nested_null_removes_map_entry() -> None:
-    """A null inside a nested map removes that entry (acp_env key removal)."""
-    settings = PersistedSettings()
-    settings.update(
-        {
-            "agent_settings_diff": {
-                "agent_kind": "acp",
-                "acp_server": "claude-code",
-                "acp_env": {"KEEP": "yes", "DROP": "bye"},
-            }
-        }
-    )
-    assert isinstance(settings.agent_settings, ACPAgentSettings)
-
-    settings.update({"agent_settings_diff": {"acp_env": {"DROP": None}}})
-    assert settings.agent_settings.acp_env == {"KEEP": "yes"}
-
-
 def test_update_agent_settings_secret_survives_same_kind_merge() -> None:
     """An existing api_key in agent_settings is preserved across a same-kind update."""
     from pydantic import SecretStr
@@ -1017,78 +994,6 @@ def test_update_agent_settings_secret_survives_same_kind_merge() -> None:
 
     assert isinstance(settings.agent_settings.llm.api_key, SecretStr)
     assert settings.agent_settings.llm.api_key.get_secret_value() == "sk-SECRET"
-
-
-def _seed_acp_settings(persistence_dir: Path, acp_env: dict[str, str]) -> None:
-    """Write a settings.json with an active ACP agent carrying ``acp_env``."""
-    acp = ACPAgentSettings(acp_command=["echo", "hi"], acp_env=acp_env)
-    persisted = PersistedSettings(agent_settings=acp)
-    payload = persisted.model_dump(mode="json", context={"expose_secrets": "plaintext"})
-    _write_settings_file(persistence_dir, payload)
-
-
-def test_patch_settings_unset_deletes_acp_env_key(
-    client_with_settings, temp_persistence_dir
-):
-    """PATCH with a ``null`` map value deletes a single ``acp_env`` entry —
-    the motivating case for the general merge-patch unset (supersedes the
-    need for a dedicated per-field DELETE endpoint)."""
-    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep", "DROP_ME": "drop"})
-
-    response = client_with_settings.patch(
-        "/api/settings",
-        json={"agent_settings_diff": {"acp_env": {"DROP_ME": None}}},
-    )
-    assert response.status_code == 200
-
-    acp_env = response.json()["agent_settings"]["acp_env"]
-    assert "KEEP_ME" in acp_env
-    assert "DROP_ME" not in acp_env
-
-
-def test_patch_settings_unset_absent_acp_env_key_is_noop(
-    client_with_settings, temp_persistence_dir
-):
-    """Unsetting a key that isn't present succeeds and changes nothing."""
-    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
-
-    response = client_with_settings.patch(
-        "/api/settings",
-        json={"agent_settings_diff": {"acp_env": {"NEVER_SET": None}}},
-    )
-    assert response.status_code == 200
-    assert set(response.json()["agent_settings"]["acp_env"]) == {"KEEP_ME"}
-
-
-def test_patch_settings_unset_then_add_acp_env_key(
-    client_with_settings, temp_persistence_dir
-):
-    """Add and delete coexist in one diff: set one key, drop another."""
-    _seed_acp_settings(temp_persistence_dir, {"OLD": "x", "DROP_ME": "y"})
-
-    response = client_with_settings.patch(
-        "/api/settings",
-        json={"agent_settings_diff": {"acp_env": {"NEW": "z", "DROP_ME": None}}},
-    )
-    assert response.status_code == 200
-    assert set(response.json()["agent_settings"]["acp_env"]) == {"OLD", "NEW"}
-
-
-def test_patch_settings_null_on_acp_env_field_resets_to_default(
-    client_with_settings, temp_persistence_dir
-):
-    """A ``null`` on the ``acp_env`` field itself resets it to its default ``{}``
-    (RFC 7386 semantics via apply_agent_settings_diff). This is a change from the
-    old _deep_merge behavior where top-level null would flow to validation and 422."""
-    _seed_acp_settings(temp_persistence_dir, {"KEEP_ME": "keep"})
-
-    response = client_with_settings.patch(
-        "/api/settings",
-        json={"agent_settings_diff": {"acp_env": None}},
-    )
-    assert response.status_code == 200
-    after = client_with_settings.get("/api/settings").json()
-    assert after["agent_settings"]["acp_env"] == {}
 
 
 def test_patch_settings_null_on_scalar_field_fails_loudly(client_with_settings):
@@ -1115,7 +1020,6 @@ def test_patch_settings_switch_agent_kind_from_acp_to_openhands(
     # carried into the new variant on a switch.
     acp = ACPAgentSettings(
         acp_command=["echo", "test"],
-        acp_env={"KEY": "value"},
         llm=LLM(model="acp-only-model", usage_id="default"),
     )
     persisted = PersistedSettings(agent_settings=acp)
@@ -1145,7 +1049,6 @@ def test_patch_settings_switch_agent_kind_from_acp_to_openhands(
     assert body["agent_settings"]["agent_kind"] == "openhands"
     # ACP-specific fields should not appear in the response
     assert "acp_command" not in body["agent_settings"]
-    assert "acp_env" not in body["agent_settings"]
     # The restated ``llm`` model wins — the ACP-seeded value is gone.
     assert body["agent_settings"]["llm"]["model"] == "claude-3-5-sonnet-20241022"
 
@@ -1267,23 +1170,24 @@ def test_patch_settings_same_kind_merge_after_a_switch(client_with_settings):
             "agent_settings_diff": {
                 "agent_kind": "acp",
                 "acp_command": ["my-cli"],
-                "acp_env": {"FOO": "bar"},
+                "acp_args": ["--foo"],
             }
         },
     )
     assert response.status_code == 200
     assert response.json()["agent_settings"]["acp_command"] == ["my-cli"]
 
-    # Same-kind follow-up: add an env var. Deep-merge must preserve acp_command
-    # and the pre-existing env entry.
+    # Same-kind follow-up: edit a different field. Deep-merge must preserve
+    # acp_command and acp_args set during the switch.
     response = client_with_settings.patch(
         "/api/settings",
-        json={"agent_settings_diff": {"acp_env": {"BAZ": "qux"}}},
+        json={"agent_settings_diff": {"acp_model": "some-model"}},
     )
     assert response.status_code == 200
     body = response.json()
     assert body["agent_settings"]["acp_command"] == ["my-cli"]
-    assert set(body["agent_settings"]["acp_env"]) == {"FOO", "BAZ"}
+    assert body["agent_settings"]["acp_args"] == ["--foo"]
+    assert body["agent_settings"]["acp_model"] == "some-model"
 
 
 # ── Secrets CRUD tests ──────────────────────────────────────────────────

@@ -355,19 +355,17 @@ class TaskManager:
         try:
             task.conversation.send_message(prompt, sender=parent_name)
             self._run_until_finished(task.id, task.conversation)
-            # A run-limit stop (cost budget or iteration cap) ends the
-            # sub-conversation in ERROR without raising; surface that to the
-            # parent instead of an empty "completed" result.
-            if (
-                task.conversation.state.execution_status
-                == ConversationExecutionStatus.ERROR
-            ):
-                task.set_error(self._run_error_detail(task.conversation))
-                logger.warning(f"Task '{task.id}' ended with an error.")
-            else:
+            status = task.conversation.state.execution_status
+            if status == ConversationExecutionStatus.FINISHED:
                 result = get_agent_final_response(task.conversation.state.events)
                 task.set_result(result)
                 logger.info(f"Task '{task.id}' completed.")
+            else:
+                # Any non-FINISHED terminal status (run-limit, stuck, paused, ...)
+                # is surfaced as an error, not an empty "completed"; the detail
+                # keeps partial output so the parent can use/retry it.
+                task.set_error(self._run_stop_detail(task.conversation, status))
+                logger.warning(f"Task '{task.id}' stopped: status '{status.value}'.")
         except Exception as e:
             task.set_error(str(e))
             logger.warning(f"Task {task.id} failed with error: {e}")
@@ -378,17 +376,24 @@ class TaskManager:
         return task
 
     @staticmethod
-    def _run_error_detail(conversation: LocalConversation) -> str:
-        """Best-effort detail for a sub-agent run that ended in ERROR (e.g. the
-        cost budget or iteration cap), so the parent sees why it stopped."""
+    def _run_stop_detail(
+        conversation: LocalConversation,
+        status: ConversationExecutionStatus,
+    ) -> str:
+        """Why a sub-agent stopped without finishing (run-limit, stuck, paused, ...),
+        plus any partial output so the parent isn't left with nothing to use."""
         errors = [
             e
             for e in conversation.state.events
             if isinstance(e, ConversationErrorEvent)
         ]
-        if errors:
-            return errors[-1].detail
-        return "Sub-agent run ended with an error."
+        reason = (
+            errors[-1].detail
+            if errors
+            else f"Sub-agent stopped without finishing (status: {status.value})."
+        )
+        partial = get_agent_final_response(conversation.state.events)
+        return f"{reason}\nPartial result:\n{partial}" if partial else reason
 
     def _run_until_finished(
         self, task_id: str, conversation: LocalConversation

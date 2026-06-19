@@ -43,7 +43,6 @@ class _GatedLLM(TestLLM):
         self,
         messages,
         tools=None,
-        _return_metrics=False,
         add_security_risk_prediction=False,
         on_token=None,
         **kwargs,
@@ -53,7 +52,6 @@ class _GatedLLM(TestLLM):
         return super().completion(
             messages,
             tools,
-            _return_metrics,
             add_security_risk_prediction,
             on_token,
             **kwargs,

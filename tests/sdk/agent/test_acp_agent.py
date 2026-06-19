@@ -6,7 +6,6 @@ import asyncio
 import json
 import threading
 import uuid
-from base64 import urlsafe_b64encode
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
 from acp.schema import NewSessionResponse, PromptResponse
-from pydantic import Field, SecretStr
+from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
@@ -92,11 +91,6 @@ def _make_agent(**kwargs) -> ACPAgent:
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
-def _make_cipher() -> Cipher:
-    """Deterministic Fernet cipher for round-trip tests."""
-    return Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
-
-
 def _make_state(tmp_path) -> ConversationState:
     agent = _make_agent()
     workspace = LocalWorkspace(working_dir=str(tmp_path))
@@ -153,10 +147,6 @@ class TestACPAgentInstantiation:
     def test_acp_args_default_empty(self):
         agent = _make_agent()
         assert agent.acp_args == []
-
-    def test_acp_env_default_empty(self):
-        agent = _make_agent()
-        assert agent.acp_env == {}
 
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
@@ -217,80 +207,12 @@ class TestACPAgentSerialization:
         agent = ACPAgent(
             acp_command=["npx", "-y", "claude-agent-acp"],
             acp_args=["--verbose"],
-            acp_env={"FOO": "bar"},
         )
-        # ``acp_env`` is redacted by default, so a value-preserving round-trip
-        # requires expose_secrets=True (same contract as ``LLM.api_key``).
-        dumped = agent.model_dump_json(context={"expose_secrets": True})
+        dumped = agent.model_dump_json()
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_command == agent.acp_command
         assert restored.acp_args == agent.acp_args
-        assert restored.acp_env == agent.acp_env
-
-    def test_acp_env_redacted_by_default(self):
-        """``acp_env`` values must be masked in default serialization output.
-
-        Regression guard: trace dumps consumed by evaluation tooling embed the
-        full ACPAgent state under ``history[*].value.agent``. Before masking,
-        live proxy keys leaked into shareable archives.
-        """
-        agent = ACPAgent(
-            acp_command=["echo", "test"],
-            acp_env={
-                "OPENAI_API_KEY": "sk-real-secret-do-not-leak",
-                "GEMINI_API_KEY": "sk-other-secret",
-                "GEMINI_BASE_URL": "https://llm-proxy.example/",
-            },
-        )
-
-        # In-memory state still holds the real values — only serialization masks.
-        assert agent.acp_env["OPENAI_API_KEY"] == "sk-real-secret-do-not-leak"
-
-        # model_dump returns SecretStr objects — real values are hidden.
-        dumped = agent.model_dump()
-        for v in dumped["acp_env"].values():
-            assert str(v) == REDACTED_SECRET_VALUE
-
-        # JSON path that produced the original leaks must not contain any of
-        # the real values.
-        dumped_json = agent.model_dump_json()
-        assert "sk-real-secret-do-not-leak" not in dumped_json
-        assert "sk-other-secret" not in dumped_json
-        assert "https://llm-proxy.example/" not in dumped_json
-        assert REDACTED_SECRET_VALUE in dumped_json
-
-    def test_acp_env_exposed_with_expose_secrets(self):
-        """``expose_secrets=True`` returns the real values for transport use."""
-        secrets = {
-            "OPENAI_API_KEY": "sk-real-secret",
-            "BASE_URL": "https://llm-proxy.example/",
-        }
-        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(secrets))
-
-        dumped = agent.model_dump(context={"expose_secrets": True})
-        assert dumped["acp_env"] == secrets
-
-        # Round-trip with expose_secrets must reconstruct the original values.
-        json_blob = agent.model_dump_json(context={"expose_secrets": True})
-        restored = AgentBase.model_validate_json(json_blob)
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == secrets
-
-    def test_acp_env_serializer_does_not_mutate_in_memory_state(self):
-        """Serialization must not mutate ``self.acp_env`` — the runtime path
-        (:meth:`ACPAgent._start_acp_server`) reads it directly to populate the
-        subprocess environment.
-        """
-        original = {"OPENAI_API_KEY": "sk-real-secret"}
-        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(original))
-
-        # Multiple dumps in different modes must leave the live dict alone.
-        agent.model_dump()
-        agent.model_dump_json()
-        agent.model_dump(context={"expose_secrets": True})
-
-        assert agent.acp_env == original
 
     def test_deserialization_from_dict(self):
         data = {
@@ -300,104 +222,6 @@ class TestACPAgentSerialization:
         agent = AgentBase.model_validate(data)
         assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "test"]
-
-    def test_acp_env_decrypts_ciphertext_with_cipher_in_context(self):
-        """Round-trip Fernet-encrypted ``acp_env`` values via cipher context.
-
-        Regression for a real production bug in v1.24.0: the on-disk →
-        ACPAgentSettings → ACPAgent path could leave Fernet ciphertext as
-        the field value because only the settings-side variant had a
-        decryption ``field_validator``. The conversation-start flow
-        validates the full :class:`StoredConversation` with cipher
-        context after the agent was already constructed (without cipher)
-        from ``StartConversationRequest.agent_settings`` — and without
-        the validator here, the ciphertext survives that re-validation
-        and reaches the ACP subprocess as the env-var value. The
-        provider call then fails (e.g. Anthropic reads the Fernet token
-        as ``ANTHROPIC_BASE_URL`` and 400s on URL parsing).
-        """
-        cipher = _make_cipher()
-        encrypted_key = cipher.encrypt(SecretStr("sk-real"))
-        encrypted_url = cipher.encrypt(SecretStr("https://api.example.com"))
-        assert encrypted_key is not None
-        assert encrypted_url is not None
-
-        # Build the wire payload an agent-server would receive: an
-        # ACPAgent dict whose ``acp_env`` values are Fernet ciphertext.
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {
-                "ANTHROPIC_API_KEY": encrypted_key,
-                "ANTHROPIC_BASE_URL": encrypted_url,
-            },
-        }
-
-        restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {
-            "ANTHROPIC_API_KEY": "sk-real",
-            "ANTHROPIC_BASE_URL": "https://api.example.com",
-        }
-
-    def test_acp_env_no_cipher_in_context_leaves_ciphertext_untouched(self):
-        """The ``cipher is None`` branch of the validator is exercised on
-        every code path that round-trips an agent dict without supplying
-        a cipher (e.g. test serialization helpers, JSON-only diagnostic
-        dumps). In that mode the ciphertext must survive verbatim — both
-        because there's nothing to decrypt with, and because mutating it
-        would defeat a downstream caller that *will* validate again with
-        the cipher present (the conversation-start re-validation step).
-        """
-        cipher = _make_cipher()
-        encrypted = cipher.encrypt(SecretStr("sk-real"))
-        assert encrypted is not None
-
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"ANTHROPIC_API_KEY": encrypted},
-        }
-        restored = AgentBase.model_validate(data)
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"ANTHROPIC_API_KEY": encrypted}
-
-    def test_acp_env_plaintext_passes_through_with_cipher(self):
-        """First writes from clients that never went through the encryption
-        pipeline carry plaintext. They must still validate cleanly when the
-        server happens to have a cipher in context."""
-        cipher = _make_cipher()
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"FOO": "plaintext-value"},
-        }
-        restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"FOO": "plaintext-value"}
-
-    def test_acp_env_undecryptable_ciphertext_passes_through_with_warning(self, caplog):
-        """Cipher mismatch / corruption shouldn't crash agent construction.
-
-        Mirrors the MCP env/header pattern: a ciphertext we can't decrypt
-        is left in place with a logged warning so the operator can repair
-        it, rather than turning into a hard failure that bricks the
-        agent.
-        """
-        cipher = _make_cipher()
-        # Looks like a Fernet token (prefix matches) but isn't a valid
-        # one — try_decrypt_str returns None.
-        bogus = "gAAAAA" + ("x" * 80)
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"BUSTED": bogus},
-        }
-        with caplog.at_level("WARNING"):
-            restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"BUSTED": bogus}
-        assert any("could not be decrypted" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -6692,8 +6516,7 @@ class TestACPSecretsEnvInjection:
     reach the subprocess through ``state.secret_registry``: ``LocalConversation``
     seeds ``agent_context.secrets`` into the registry at init (covering
     callers that never lift them into ``request.secrets``), and
-    ``_start_acp_server`` injects the registry. ``acp_env`` entries take
-    precedence over registry secrets.
+    ``_start_acp_server`` injects the registry.
     """
 
     @staticmethod
@@ -6812,33 +6635,6 @@ class TestACPSecretsEnvInjection:
             conv.close()
         assert env.get("GITHUB_TOKEN") == "ghp_test123"
 
-    def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
-        """An explicit acp_env entry wins over the same key in agent_context.secrets.
-
-        ``agent_context.secrets`` reach env via the registry (seeded at
-        ``LocalConversation.__init__``); ``acp_env`` is applied last and wins.
-        """
-        from pydantic import SecretStr
-
-        from openhands.sdk.conversation.impl.local_conversation import (
-            LocalConversation,
-        )
-        from openhands.sdk.secret import StaticSecret
-
-        agent = _make_agent(
-            acp_env={"MY_TOKEN": "acp-env-wins"},
-            agent_context=AgentContext(
-                secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
-            ),
-        )
-        conv = LocalConversation(agent, workspace=str(tmp_path))
-        try:
-            with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-                env = self._run_start_capturing_env(agent, tmp_path, state=conv.state)
-        finally:
-            conv.close()
-        assert env.get("MY_TOKEN") == "acp-env-wins"
-
     def test_none_value_secret_not_injected(self, tmp_path):
         """A StaticSecret with value=None is not added to the subprocess env."""
         from openhands.sdk.secret import StaticSecret
@@ -6865,35 +6661,6 @@ class TestACPSecretsEnvInjection:
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
 
-    def test_acp_env_still_injected(self, tmp_path):
-        """``acp_env`` (user arbitrary env vars) is still injected at spawn."""
-        agent = _make_agent(acp_env={"MY_TOKEN": "acp-env-value"})
-        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-            env = self._run_start_capturing_env(agent, tmp_path)
-        assert env.get("MY_TOKEN") == "acp-env-value"
-
-    def test_empty_acp_env_does_not_warn(self, tmp_path):
-        """An empty ``acp_env`` must not emit the deprecation warning."""
-        import warnings
-
-        agent = _make_agent()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self._run_start_capturing_env(agent, tmp_path)
-        assert not [w for w in caught if "acp_env" in str(w.message)]
-
-
-class _CountingLookupSecret(SecretSource):
-    """A lookup source that records each ``get_value()`` call (to assert it is
-    *not* invoked when ``acp_env`` shadows the key)."""
-
-    stored_value: str
-    calls: list[int] = Field(default_factory=list)
-
-    def get_value(self) -> str | None:
-        self.calls.append(1)
-        return self.stored_value
-
 
 class _BrokenSecret(SecretSource):
     """A source whose ``get_value()`` raises, to verify a failing lookup is
@@ -6913,7 +6680,7 @@ class TestACPSecretRegistryEnvInjection:
     registry at ``LocalConversation.__init__`` (below ``request.secrets``), so
     the registry is the single channel ``_start_acp_server`` injects from.
 
-    Same-key precedence is ``acp_env > secret_registry > os.environ``.
+    Same-key precedence is ``secret_registry > os.environ``.
     Registry secrets override ambient ``os.environ`` so an explicit
     per-conversation/provider secret wins over a same-named server env var.
     """
@@ -7021,33 +6788,6 @@ class TestACPSecretRegistryEnvInjection:
         )
         assert env.get("OPENAI_API_KEY") == "sk-fake-openai"
 
-    def test_acp_env_takes_precedence_over_registry_secret(self, tmp_path):
-        """An explicit ``acp_env`` entry wins over the same key in the registry."""
-        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
-        env = self._run_start_capturing_env(
-            agent,
-            tmp_path,
-            registry_secrets={"GITHUB_TOKEN": "from-registry"},
-        )
-        assert env.get("GITHUB_TOKEN") == "from-acp-env"
-
-    def test_acp_env_shadow_skips_registry_lookup(self, tmp_path):
-        """``acp_env`` shadowing a key must not trigger ``get_value()``.
-
-        LookupSecret performs an HTTP request in production; calling it for
-        a key that ``acp_env`` is about to override wastes a round-trip and
-        can emit spurious lookup-failure warnings.
-        """
-        secret = _CountingLookupSecret(stored_value="from-registry")
-        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
-        env = self._run_start_capturing_env(
-            agent,
-            tmp_path,
-            registry_secrets={"GITHUB_TOKEN": secret},
-        )
-        assert env.get("GITHUB_TOKEN") == "from-acp-env"
-        assert secret.calls == []
-
     def test_request_secret_wins_and_context_only_secret_still_reaches_env(
         self, tmp_path
     ):
@@ -7088,9 +6828,10 @@ class TestACPSecretRegistryEnvInjection:
 
     def test_empty_registry_does_not_change_behaviour(self, tmp_path):
         """An empty secret_registry must not raise or alter the spawn env."""
-        agent = _make_agent(acp_env={"FOO": "bar"})
+        agent = _make_agent()
         env = self._run_start_capturing_env(agent, tmp_path, registry_secrets=None)
-        assert env.get("FOO") == "bar"
+        # No secrets to inject; spawn still succeeds and produces an env dict.
+        assert isinstance(env, dict)
 
     def test_failing_registry_lookup_swallowed(self, tmp_path):
         """A secret source that raises is dropped, not propagated.
@@ -7166,7 +6907,7 @@ class TestACPEnvConflictSuppression:
     route the bearer to a proxy that rejects it, breaking auth silently.
 
     _start_acp_server must strip the conflicting vars regardless of where they
-    came from: acp_env, os.environ, secret_registry, or agent_context.secrets.
+    came from: os.environ, secret_registry, or agent_context.secrets.
     The strip is keyed on the token, not on CLAUDE_CONFIG_DIR (#3588).
     """
 
@@ -7251,29 +6992,13 @@ class TestACPEnvConflictSuppression:
 
         return captured
 
-    def test_oauth_token_suppresses_api_key_from_acp_env(self, tmp_path):
-        """ANTHROPIC_API_KEY from acp_env is stripped when the OAuth token is set."""
-        agent = _make_agent(
-            acp_env={
-                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok",
-                "ANTHROPIC_API_KEY": "sk-conflict",
-                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
-            }
-        )
-        env = self._run_start_capturing_env(agent, tmp_path)
-
-        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-tok"
-        assert "ANTHROPIC_API_KEY" not in env
-        assert "ANTHROPIC_BASE_URL" not in env
-
     def test_oauth_token_suppresses_api_key_from_os_environ(self, tmp_path):
         """ANTHROPIC_API_KEY leaking in from os.environ is stripped too."""
-        agent = _make_agent(
-            acp_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
-        )
+        agent = _make_agent()
         env = self._run_start_capturing_env(
             agent,
             tmp_path,
+            registry_secrets={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
             extra_os_env={
                 "ANTHROPIC_API_KEY": "sk-leaked",
                 "ANTHROPIC_BASE_URL": "https://proxy.example.com",
@@ -7318,7 +7043,6 @@ class TestACPEnvConflictSuppression:
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
-            acp_env={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
             agent_context=AgentContext(
                 secrets={
                     "ANTHROPIC_API_KEY": StaticSecret(
@@ -7330,8 +7054,11 @@ class TestACPEnvConflictSuppression:
                 }
             ),
         )
-        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-            env = self._run_start_capturing_env(agent, tmp_path)
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
+        )
 
         assert "CLAUDE_CODE_OAUTH_TOKEN" in env
         assert "ANTHROPIC_API_KEY" not in env
@@ -7339,10 +7066,12 @@ class TestACPEnvConflictSuppression:
 
     def test_no_suppression_without_oauth_token(self, tmp_path):
         """Without the OAuth token, ANTHROPIC_API_KEY passes through unchanged."""
-        agent = _make_agent(
-            acp_env={"ANTHROPIC_API_KEY": "sk-valid"},
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "sk-valid"},
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
 
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
@@ -7352,13 +7081,15 @@ class TestACPEnvConflictSuppression:
         strip ANTHROPIC_API_KEY. The config dir is a location lever (data-dir
         isolation), orthogonal to auth mode — keying the strip on it used to
         delete a working API key during isolation."""
-        agent = _make_agent(
-            acp_env={
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
                 "CLAUDE_CONFIG_DIR": "/tmp/claude-isolated",
                 "ANTHROPIC_API_KEY": "sk-valid",
-            }
+            },
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
 
         assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-isolated"
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
@@ -8332,30 +8063,6 @@ class TestACPFileSecretMaterialisation:
         assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
         assert "CODEX_AUTH_JSON" not in env
 
-    def test_acp_env_pin_wins_and_credential_seeds_where_it_points(self, tmp_path):
-        """An explicit acp_env[CODEX_HOME] keeps its precedence, and the
-        credential is seeded *there* so the file and env stay consistent."""
-        from openhands.sdk.secret import StaticSecret
-
-        pinned = tmp_path / "pinned_codex"
-        # Pre-create the pinned dir with deliberately wide (0755) perms.
-        pinned.mkdir()
-        pinned.chmod(0o755)
-        agent = _make_agent(acp_env={"CODEX_HOME": str(pinned)})
-        state = self._state(tmp_path)
-        state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"k": 1}'))}
-        )
-        env = self._run_start(agent, state, conn=self._make_conn())
-
-        assert env["CODEX_HOME"] == str(pinned)
-        # The credential lands under the pinned dir, not the conversation root.
-        assert (pinned / "auth.json").read_text(encoding="utf-8") == '{"k": 1}'
-        # The pinned dir's user-chosen perms are NOT silently narrowed...
-        assert pinned.stat().st_mode & 0o777 == 0o755
-        # ...but the credential file itself is still 0600.
-        assert (pinned / "auth.json").stat().st_mode & 0o777 == 0o600
-
     def test_fallback_root_when_not_persisted(self, tmp_path):
         """With no persistence_dir, the file lands under the workspace tree —
         still seed-if-absent, no TemporaryDirectory."""
@@ -8567,13 +8274,6 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(agent, state, conn=self._H._make_conn())
         assert "CODEX_HOME" not in env
         assert "CLAUDE_CONFIG_DIR" not in env
-
-    def test_acp_env_pin_wins(self, tmp_path):
-        agent = self._agent(["codex-acp"], acp_env={"CODEX_HOME": "/pinned/codex"})
-        state = self._H._state(tmp_path)
-        with patch.dict("os.environ", {}, clear=True):
-            env = self._H._run_start(agent, state, conn=self._H._make_conn())
-        assert env["CODEX_HOME"] == "/pinned/codex"
 
     def test_falls_back_to_workspace_when_not_persisted(self, tmp_path):
         agent = self._agent(["codex-acp"])

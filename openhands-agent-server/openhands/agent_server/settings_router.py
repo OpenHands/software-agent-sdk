@@ -177,13 +177,9 @@ async def update_settings(
     The three ``*_settings_diff`` fields are deep-merged; nested objects merge
     recursively, and a ``null`` value **inside a nested map deletes that entry**
     — the "unset" primitive that lets a client remove a single map key without
-    round-tripping the whole map. To drop one ACP env-var::
+    round-tripping the whole map. To remove one MCP server's header::
 
         PATCH /api/settings
-        {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
-
-    or to remove one MCP server's header::
-
         {"agent_settings_diff":
             {"mcp_config": {"mcpServers": {"svc": {"headers": {"X-Old": null}}}}}}
 

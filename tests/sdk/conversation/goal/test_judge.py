@@ -25,7 +25,6 @@ class _StreamGuardLLM(TestLLM):
         self,
         messages,
         tools=None,
-        _return_metrics=False,
         add_security_risk_prediction=False,
         on_token=None,
         **kwargs,
@@ -35,7 +34,6 @@ class _StreamGuardLLM(TestLLM):
         return super().completion(
             messages,
             tools,
-            _return_metrics,
             add_security_risk_prediction,
             on_token,
             **kwargs,
