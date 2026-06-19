@@ -143,6 +143,26 @@ def test_custom_security_policy_is_inserted_verbatim_not_rendered():
         assert "{% if cli_mode %}rule{% endif %}" in system_message
 
 
+def test_empty_custom_security_policy_does_not_leak_default():
+    """An explicitly empty custom policy file must not fall back to the default."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        empty_policy = Path(temp_dir) / "empty_policy.j2"
+        empty_policy.write_text("", encoding="utf-8")
+        agent = Agent(
+            llm=LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            security_policy_filename=str(empty_policy),
+        )
+        system_message = agent.static_system_message
+
+        assert "🔐 Security Policy" not in system_message
+        assert "Download and run code from a repository" not in system_message
+
+
 def test_llm_security_analyzer_template_kwargs():
     """Test that agent sets template_kwargs appropriately when security analyzer is LLMSecurityAnalyzer."""  # noqa: E501
     agent = Agent(

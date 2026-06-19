@@ -261,7 +261,8 @@ class SecuritySection(_StaticTextSection):
 
     def render(self, ctx: PromptContext) -> str | None:
         content = ctx.template_kwargs.get("security_policy_content")
-        if content:
+        # `is not None`: an explicitly empty custom policy must not fall back to body.
+        if content is not None:
             return _refine(f"<SECURITY>\n\n{content}\n\n</SECURITY>", ctx.platform)
         return self.body
 
