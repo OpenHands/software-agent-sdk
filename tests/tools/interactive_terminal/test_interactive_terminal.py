@@ -296,6 +296,47 @@ def test_write_stdin_session_removed_after_completion(manager):
     assert "completed or was never started" in out or str(sid) in out
 
 
+@_unix_only
+def test_write_stdin_delivers_bytes_without_enter(manager):
+    """write_stdin delivers chars verbatim — no Enter keystroke appended.
+
+    A process blocked on ``sys.stdin.read(4)`` must still be running after
+    ``write_stdin(chars="abc")`` sends only 3 bytes. The terminal line
+    discipline buffers them without a newline, so the process's read does
+    not return. The old behaviour appended Enter, delivering ``"abc\\n"``
+    (4 bytes), which made ``read(4)`` return and the process exit.
+    """
+    cmd = (
+        'python3 -c "import sys; '
+        "sys.stdout.write('GOT:' + repr(sys.stdin.read(4))); "
+        'sys.stdout.flush()"'
+    )
+    _, _, sid, ec, _ = manager.exec_command(cmd, yield_time_ms=2_000)
+    assert sid is not None, "Process should be blocked waiting for 4 stdin bytes"
+    assert ec is None
+
+    # Send 3 bytes with no Enter -> process must still be blocked (no flush).
+    out1, _, sid_after, ec_after, _ = manager.write_stdin(
+        sid, chars="abc", yield_time_ms=2_000
+    )
+    assert sid_after is not None, (
+        "Process must still be running: 'abc' is only 3 bytes and no Enter was "
+        "sent to flush the line discipline. If Enter were appended, read(4) "
+        "would return 'abc\\n' and the process would exit."
+    )
+    assert ec_after is None
+
+    # Complete the read: send 'd\\n' (4th byte + Enter to flush) -> read(4) -> 'abcd'
+    out2, _, sid_final, ec_final, _ = manager.write_stdin(
+        sid, chars="d\n", yield_time_ms=3_000
+    )
+    assert ec_final == 0, (
+        f"Process should finish after 4th byte + Enter; got out={(out1 + out2)!r}"
+    )
+    combined = (out1 + out2).replace("\r", "")
+    assert "GOT:'abcd'" in combined, f"Expected GOT:'abcd' in output, got: {combined!r}"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Integration: full background-monitoring pattern
 # ──────────────────────────────────────────────────────────────────────────────

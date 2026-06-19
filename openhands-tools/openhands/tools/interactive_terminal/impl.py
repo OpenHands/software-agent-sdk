@@ -141,6 +141,7 @@ class InteractiveTerminalManager:
         is_empty_poll = chars == ""
         yield_s = _clamp_yield(yield_time_ms, is_empty_poll=is_empty_poll)
 
+        mapped: str | None = None
         if is_empty_poll:
             action = TerminalAction(command="", is_input=False, timeout=yield_s)
         else:
@@ -149,16 +150,19 @@ class InteractiveTerminalManager:
             if mapped is not None:
                 action = TerminalAction(command=mapped, is_input=True, timeout=yield_s)
             else:
-                # Pass chars as-is.  The tmux send_keys path appends an Enter
-                # keystroke when chars does NOT already end with '\n', matching
-                # the typical shell/REPL pattern where Enter submits the input.
-                # Consequence: chars="abc" delivers "abc\n"; chars="abc\n" delivers
-                # "abc\n" (no double Enter).  If raw bytes without Enter are needed,
-                # end chars with any other character and avoid tmux send_keys.
+                # Deliver chars to the process stdin verbatim — no Enter appended.
+                # This preserves the byte contract: chars="abc" delivers "abc",
+                # chars="abc\n" delivers "abc\n". Callers append "\n" explicitly
+                # when they want Enter, matching Codex's write_stdin semantics.
                 action = TerminalAction(command=chars, is_input=True, timeout=yield_s)
 
+        # Raw (non-special) stdin must reach the process byte-for-byte, so disable
+        # the Enter-append behaviour that TerminalTool uses for interactive prompts.
+        # Special keys ignore append_enter anyway (is_special_key forces enter=False),
+        # and empty polls send nothing, so this only affects the raw-chars path.
+        raw_stdin = not is_empty_poll and mapped is None
         t0 = time.monotonic()
-        obs = session.execute(action)
+        obs = session.execute(action, append_enter=not raw_stdin)
         wall = time.monotonic() - t0
 
         return self._build_result(obs, wall, session, session_id, max_output_tokens)

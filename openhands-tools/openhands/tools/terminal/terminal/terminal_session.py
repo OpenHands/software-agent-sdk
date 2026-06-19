@@ -400,8 +400,21 @@ class TerminalSession(TerminalSessionBase):
         logger.debug(f"COMBINED OUTPUT: {combined_output}")
         return combined_output
 
-    def execute(self, action: TerminalAction) -> TerminalObservation:
-        """Execute a command using the terminal backend."""
+    def execute(
+        self, action: TerminalAction, *, append_enter: bool = True
+    ) -> TerminalObservation:
+        """Execute a command using the terminal backend.
+
+        Args:
+            action: The action to execute.
+            append_enter: Only meaningful when ``action.is_input`` is True and the
+                command is not a special key. When True (default), an Enter
+                keystroke is appended after the text unless it already ends with
+                ``\\n`` — preserving the historical ``TerminalTool`` behaviour for
+                interactive prompts. When False, the text is delivered to the
+                process stdin verbatim with no Enter appended, giving byte-accurate
+                stdin delivery (e.g. for ``write_stdin`` Codex-parity).
+        """
         if not self._initialized:
             raise RuntimeError("Unified session is not initialized")
 
@@ -526,9 +539,13 @@ class TerminalSession(TerminalSessionBase):
             is_special_key = self._is_special_key(command)
             if is_input:
                 logger.debug(f"SENDING INPUT TO RUNNING PROCESS: {command!r}")
+                # Special keys (C-c, C-d, ...) never take Enter. For plain input,
+                # append_enter controls whether an Enter keystroke is appended after
+                # the text — True preserves TerminalTool's interactive-prompt behaviour,
+                # False delivers raw stdin bytes verbatim (write_stdin Codex-parity).
                 self.terminal.send_keys(
                     command,
-                    enter=not is_special_key,
+                    enter=append_enter and not is_special_key,
                 )
             else:
                 # convert command to raw string (for bash terminals)
