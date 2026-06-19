@@ -1362,6 +1362,66 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('FileClient forwards includeHidden to the home and search_subdirs endpoints', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ home: '/workspace' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], next_page_id: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+
+    const client = new FileClient({ host: 'http://example.com' });
+    await expect(client.getHome({ includeHidden: true })).resolves.toEqual({
+      home: '/workspace',
+    });
+    await client.searchSubdirectories('/workspace', { includeHidden: true });
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/file/home?include_hidden=true',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/file/search_subdirs?path=%2Fworkspace&include_hidden=true',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('FileClient omits include_hidden when includeHidden is not set', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ home: '/workspace' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [], next_page_id: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+
+    const client = new FileClient({ host: 'http://example.com' });
+    await client.getHome();
+    await client.searchSubdirectories('/workspace');
+
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('http://example.com/api/file/home');
+    expect((global.fetch as jest.Mock).mock.calls[1][0]).toBe(
+      'http://example.com/api/file/search_subdirs?path=%2Fworkspace'
+    );
+  });
+
   it('ConversationClient wraps agent-canvas conversation endpoints', async () => {
     global.fetch = jest.fn().mockImplementation(() =>
       Promise.resolve(

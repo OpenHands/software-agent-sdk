@@ -1,5 +1,6 @@
 import { HttpClient } from './http-client';
 import type {
+  FileHomeOptions,
   FileHomeResponse,
   FileSearchSubdirsOptions,
   FileSubdirectoryPage,
@@ -38,13 +39,18 @@ export class FileClient {
         path,
         page_id: options.pageId,
         limit: options.limit,
+        include_hidden: options.includeHidden || undefined,
       },
     });
     return response.data;
   }
 
-  async getHome(): Promise<FileHomeResponse> {
-    const response = await this.client.get<FileHomeResponse>('/api/file/home');
+  async getHome(options: FileHomeOptions = {}): Promise<FileHomeResponse> {
+    const response = await this.client.get<FileHomeResponse>('/api/file/home', {
+      params: {
+        include_hidden: options.includeHidden || undefined,
+      },
+    });
     return response.data;
   }
 
