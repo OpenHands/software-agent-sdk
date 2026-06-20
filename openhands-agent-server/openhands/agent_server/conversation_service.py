@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    LaunchedAgentProfile,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -240,6 +241,62 @@ def _prepare_request_workspace(
 logger = logging.getLogger(__name__)
 
 
+def _resolve_agent_from_profile(
+    profile_id: "UUID",
+    cipher: "Cipher | None",
+    mcp_config: "Any",
+) -> "tuple[AgentBase, LaunchedAgentProfile]":
+    """Load and resolve an agent profile by id, returning the built agent + provenance.
+
+    Runs synchronously (call via ``asyncio.to_thread`` from async context).
+
+    Args:
+        mcp_config: Global MCP config already loaded by the caller using the
+            server's cipher.  Passed explicitly so this free function never
+            touches the settings-store singleton (which may not have been
+            initialised with the correct cipher yet).
+
+    Raises:
+        ProfileNotFound: No stored profile has ``profile_id``.
+        DanglingMcpServerRef: A referenced MCP server is absent from the global config.
+        ValueError: Profile load or settings validation failure.
+    """
+    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
+
+    store = AgentProfileStore()
+    profile_name = store.name_for_id(profile_id)
+    if profile_name is None:
+        raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
+
+    try:
+        profile = store.load(profile_name, cipher=cipher)
+    except FileNotFoundError:
+        raise ProfileNotFound(
+            f"Agent profile '{profile_name}' (id={profile_id}) not found"
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Failed to load agent profile '{profile_name}': {exc}"
+        ) from exc
+
+    llm_store = LLMProfileStore()
+    try:
+        settings_config = resolve_agent_profile(
+            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
+
+    agent = settings_config.create_agent()
+    launched = LaunchedAgentProfile(
+        agent_profile_id=profile.id,
+        revision=profile.revision,
+    )
+    return agent, launched
+
+
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -264,7 +321,7 @@ def _compose_conversation_info(
     # The ``acp_model`` fallback is gated on the agent NOT being a live,
     # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
     # authoritative resolved value — including ``None`` when an override couldn't
-    # be applied (unknown provider, or a resume whose ``set_session_model`` the
+    # be applied (unknown provider, or a resume whose model-selection call the
     # server rejected) — so falling back to ``acp_model`` there would re-assert an
     # override the live session isn't actually running. The fallback is only for
     # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
@@ -309,6 +366,7 @@ def _compose_conversation_info(
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
+        launched_agent_profile=stored.launched_agent_profile,
     )
 
 
@@ -612,6 +670,28 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Profile resolution must happen before _prepare_request_workspace (which
+        # asserts request.agent is not None) and before model_dump so the resolved
+        # agent is captured in request_data.
+        launched_agent_profile: LaunchedAgentProfile | None = None
+        if request.agent_profile_id is not None:
+            # get_settings_store() is safe here: get_instance() initialises the
+            # singleton with the server cipher before any conversation can start.
+            from openhands.agent_server.persistence import (
+                PersistedSettings,
+                get_settings_store,
+            )
+
+            settings = get_settings_store().load() or PersistedSettings()
+            mcp_config = settings.agent_settings.mcp_config
+            resolved_agent, launched_agent_profile = await asyncio.to_thread(
+                _resolve_agent_from_profile,
+                request.agent_profile_id,
+                self.cipher,
+                mcp_config,
+            )
+            request = request.model_copy(update={"agent": resolved_agent})
+
         request = _prepare_request_workspace(request, conversation_id)
 
         # Dynamically register tools from client's registry
@@ -674,7 +754,13 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        request_data = request.model_dump(mode="json", context={"expose_secrets": True})
+        # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
+        # above and must not re-trigger the mutual-exclusivity validator.
+        request_data = request.model_dump(
+            mode="json",
+            context={"expose_secrets": True},
+            exclude={"agent_profile_id"},
+        )
 
         # If secrets_encrypted=True, the agent's secrets (e.g., LLM api_key) are
         # cipher-encrypted and need decryption during model validation. Pass the
@@ -686,11 +772,23 @@ class ConversationService:
                     "Set OH_SECRET_KEY environment variable."
                 )
             stored = StoredConversation.model_validate(
-                {"id": conversation_id, **request_data},
+                {
+                    "id": conversation_id,
+                    **request_data,
+                    "launched_agent_profile": (
+                        launched_agent_profile.model_dump(mode="json")
+                        if launched_agent_profile is not None
+                        else None
+                    ),
+                },
                 context={"cipher": self.cipher},
             )
         else:
-            stored = StoredConversation(id=conversation_id, **request_data)
+            stored = StoredConversation(
+                id=conversation_id,
+                launched_agent_profile=launched_agent_profile,
+                **request_data,
+            )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
@@ -1099,6 +1197,11 @@ class ConversationService:
 
     @classmethod
     def get_instance(cls, config: Config) -> "ConversationService":
+        # Initialise the settings-store singleton with the server cipher before
+        # any conversation handler can call get_settings_store() without config.
+        from openhands.agent_server.persistence import get_settings_store
+
+        get_settings_store(config)
         return ConversationService(
             conversations_dir=config.conversations_path,
             webhook_specs=config.webhooks,

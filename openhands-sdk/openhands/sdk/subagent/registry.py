@@ -206,6 +206,10 @@ def agent_definition_to_factory(
     def _factory(llm: "LLM") -> "Agent":
         from openhands.sdk.agent.agent import Agent
         from openhands.sdk.context.agent_context import AgentContext
+        from openhands.sdk.context.condenser import (
+            LLMSummarizingCondenser,
+            default_condenser,
+        )
         from openhands.sdk.tool.registry import list_registered_tools
         from openhands.sdk.tool.spec import Tool
 
@@ -253,11 +257,36 @@ def agent_definition_to_factory(
         if agent_def.mcp_servers:
             mcp_config = {"mcpServers": agent_def.mcp_servers}
 
+        # Sub-agents get a summarizing condenser by default (parity with the
+        # top-level agent) so deep runs auto-compact instead of erroring on context
+        # overflow. The condenser LLM needs a distinct usage_id or its tokens get
+        # deduped out of conversation stats. A NoOpCondenser disables condensation.
+        if agent_def.condenser is not None:
+            condenser = agent_def.condenser
+            if isinstance(condenser, LLMSummarizingCondenser):
+                # Freshen per spawn: a distinct LLM with its own metrics (so
+                # sub-agents don't share/double-count condenser cost) and a
+                # usage_id distinct from the agent's, else its tokens get deduped.
+                cond_llm = condenser.llm
+                usage_id = (
+                    cond_llm.usage_id
+                    if cond_llm.usage_id != llm.usage_id
+                    else "condenser"
+                )
+                fresh_llm = cond_llm.model_copy(update={"usage_id": usage_id})
+                fresh_llm.reset_metrics()
+                condenser = condenser.model_copy(update={"llm": fresh_llm})
+        else:
+            condenser = default_condenser(
+                llm.model_copy(update={"usage_id": "condenser"})
+            )
+
         return Agent(
             llm=llm,
             tools=tools,
             agent_context=agent_context,
             mcp_config=mcp_config,
+            condenser=condenser,
         )
 
     return _factory

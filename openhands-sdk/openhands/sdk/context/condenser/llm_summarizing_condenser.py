@@ -1,6 +1,7 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
+from typing import Final
 
 from pydantic import Field, model_validator
 
@@ -466,3 +467,16 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         logger.error("Hard context reset summarization failed after multiple attempts.")
         return None
+
+
+# Sizing for the standard summarizing condenser. Kept here so the default agent and
+# spawned sub-agents stay in sync.
+_DEFAULT_MAX_SIZE: Final[int] = 80
+_DEFAULT_KEEP_FIRST: Final[int] = 4
+
+
+def default_condenser(llm: LLM) -> LLMSummarizingCondenser:
+    """Standard summarizing condenser used by the default agent and sub-agents."""
+    return LLMSummarizingCondenser(
+        llm=llm, max_size=_DEFAULT_MAX_SIZE, keep_first=_DEFAULT_KEEP_FIRST
+    )

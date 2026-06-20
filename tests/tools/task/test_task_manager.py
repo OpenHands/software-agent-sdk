@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7,6 +8,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.subagent.registry import (
     _reset_registry_for_tests,
@@ -396,6 +398,9 @@ class TestTaskManager:
 def _make_task_with_mock_conv(task_id: str, **conv_kwargs) -> Task:
     """Create a Task with a MagicMock conversation, bypassing Pydantic validation."""
     mock_conv = MagicMock(**conv_kwargs)
+    # Default to a FINISHED run; a non-FINISHED status is now surfaced as an error,
+    # so override state.execution_status to test stuck/paused paths.
+    mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
     return Task.model_construct(
         id=task_id,
         conversation_id=uuid.uuid4(),
@@ -485,6 +490,24 @@ class TestRunTask:
         assert result.error is not None
         assert "agent exploded" in result.error
         assert result.result is None
+
+    def test_non_finished_status_surfaced_as_error(self, tmp_path):
+        """A sub-agent that ends non-FINISHED (e.g. STUCK) is surfaced as an error,
+        not reported as an empty success."""
+        manager, _ = _manager_with_parent(tmp_path)
+
+        task = _make_task_with_mock_conv("task_00000001")
+        assert task.conversation is not None
+        mock_conv = cast(Any, task.conversation)
+        mock_conv.state.execution_status = ConversationExecutionStatus.STUCK
+        mock_conv.state.events = []
+        manager._tasks[task.id] = task
+
+        result = manager._run_task(task=task, prompt="do something")
+
+        assert result.status == TaskStatus.ERROR
+        assert result.result is None
+        assert "stuck" in (result.error or "").lower()
 
     def test_run_evicts_conversation_after_error(self, tmp_path):
         """Even on error, the task's conversation should be evicted (finally block)."""
@@ -942,3 +965,70 @@ class TestTaskManagerPersistence:
         conv_persistence = conv.state.persistence_dir
         assert conv_persistence is not None
         assert str(conv_persistence).startswith(str(manager._persistence_dir))
+
+
+class TestTaskManagerBudget:
+    """The per-subagent cost budget flows from the agent definition / parent
+    into the spawned sub-conversation."""
+
+    def test_budget_from_agent_definition(self, tmp_path):
+        from openhands.sdk.subagent.registry import agent_definition_to_factory
+
+        agent_def = AgentDefinition(
+            name="budgeted", model="inherit", tools=[], max_budget_per_run=4.0
+        )
+        register_agent(
+            name="budgeted",
+            factory_func=agent_definition_to_factory(agent_def),
+            description=agent_def,
+        )
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(subagent_type="budgeted", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 4.0
+
+    def test_budget_inherits_from_parent(self, tmp_path):
+        register_builtins_agents()
+        agent = Agent(llm=_make_llm(), tools=[])
+        parent = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_budget_per_run=7.0,
+        )
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 7.0
+
+
+class TestRunErrorSurfacing:
+    """A sub-agent run that ends in a non-FINISHED status (stuck, paused, run-limit,
+    ...) is surfaced to the parent task rather than reported as an empty success."""
+
+    def test_run_stop_detail_returns_last_error(self):
+        from types import SimpleNamespace
+
+        from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+        err = ConversationErrorEvent(
+            source="environment",
+            code="MaxIterationsReached",
+            detail="Agent reached the maximum iteration limit.",
+        )
+        conv = SimpleNamespace(state=SimpleNamespace(events=[err]))
+        detail = TaskManager._run_stop_detail(
+            cast(LocalConversation, conv), ConversationExecutionStatus.ERROR
+        )
+        assert err.detail in detail
+
+    def test_run_stop_detail_default_mentions_status(self):
+        from types import SimpleNamespace
+
+        conv = SimpleNamespace(state=SimpleNamespace(events=[]))
+        detail = TaskManager._run_stop_detail(
+            cast(LocalConversation, conv), ConversationExecutionStatus.STUCK
+        )
+        assert "stuck" in detail.lower()

@@ -26,6 +26,12 @@ from openhands.sdk.llm.llm_profile_store import (
     ProfileLimitExceeded,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.profiles import (
+    AgentProfileStore,
+    ProfileReferenced,
+    delete_llm_profile,
+    rename_llm_profile,
+)
 
 
 logger = get_logger(__name__)
@@ -227,10 +233,18 @@ async def save_profile(
 async def delete_profile(
     request: Request, name: ProfileName
 ) -> ProfileMutationResponse:
-    """Delete a saved profile (idempotent)."""
+    """Delete a saved profile (idempotent).
+
+    Guarded by the agent-profile FK: returns 409 naming the referrers if any
+    ``AgentProfile`` still cites this LLM profile via ``llm_profile_ref``.
+    """
     store = LLMProfileStore()
-    with _store_errors():
-        store.delete(name)
+    agent_store = AgentProfileStore()
+    try:
+        with _store_errors():
+            delete_llm_profile(agent_store, store, name)
+    except ProfileReferenced as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     if _set_active_profile_if_matches(request, name, None):
         logger.info(f"Cleared active_profile for deleted profile '{name}'")
     logger.info(f"Deleted profile '{name}'")
@@ -249,12 +263,14 @@ async def rename_profile(
     exists. A same-name rename is a verified no-op (still 404s if missing).
 
     If the renamed profile is the currently active profile, the active_profile
-    setting is updated to the new name.
+    setting is updated to the new name. Any ``AgentProfile.llm_profile_ref``
+    citing the old name is cascaded to the new name in lock-step.
     """
     store = LLMProfileStore()
+    agent_store = AgentProfileStore()
     try:
         with _store_errors():
-            store.rename(name, body.new_name)
+            rename_llm_profile(agent_store, store, name, body.new_name)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

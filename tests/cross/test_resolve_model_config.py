@@ -14,9 +14,11 @@ from pydantic import BaseModel, field_validator, model_validator
 run_eval_path = Path(__file__).parent.parent.parent / ".github" / "run-eval"
 sys.path.append(str(run_eval_path))
 from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-found]
+    EXPLICIT_MODELS,
     MODELS,
     check_model,
     find_models_by_id,
+    resolve_model_config,
     run_preflight_check,
 )
 
@@ -214,15 +216,48 @@ def test_all_models_valid_with_pydantic():
     - temperature is between 0.0 and 2.0 (if present)
     - top_p is between 0.0 and 1.0 (if present)
     - reasoning_effort is one of 'low', 'medium', 'high' (if present)
+
+    Validates both explicit entries and family-derived models.
     """
+    # Collect all configs: explicit entries + family-derived models
+    all_configs = {}
+    for model_id in EXPLICIT_MODELS:
+        all_configs[model_id] = resolve_model_config(model_id)
+    # Also validate representative family-derived models (not in EXPLICIT_MODELS)
+    family_derived = [
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
+        "glm-5.2",
+        "kimi-k2-thinking",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+    ]
+    for model_id in family_derived:
+        if model_id not in all_configs:
+            all_configs[model_id] = resolve_model_config(model_id)
+
     # This will raise ValidationError if any model is invalid
-    registry = EvalModelsRegistry(models=MODELS)
-    assert len(registry.models) == len(MODELS)
+    registry = EvalModelsRegistry(models=all_configs)
+    assert len(registry.models) == len(all_configs)
 
 
 def test_find_all_models():
     """Test that find_models_by_id works for all models."""
-    all_model_ids = list(MODELS.keys())
+    # All explicit model IDs + representative family-derived model IDs
+    all_model_ids = list(EXPLICIT_MODELS.keys()) + [
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
+        "glm-5.2",
+        "kimi-k2-thinking",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "claude-opus-4-7",
+        "claude-opus-4-8",
+    ]
     result = find_models_by_id(all_model_ids)
 
     assert len(result) == len(all_model_ids)
@@ -260,7 +295,7 @@ def test_gpt_5_3_codex_config():
 
 def test_glm_5_config():
     """Test that glm-5 has correct configuration."""
-    model = MODELS["glm-5"]
+    model = resolve_model_config("glm-5")
 
     assert model["id"] == "glm-5"
     assert model["display_name"] == "GLM-5"
@@ -270,11 +305,22 @@ def test_glm_5_config():
 
 def test_glm_5_1_config():
     """Test that glm-5.1 has correct configuration."""
-    model = MODELS["glm-5.1"]
+    model = resolve_model_config("glm-5.1")
 
     assert model["id"] == "glm-5.1"
     assert model["display_name"] == "GLM-5.1"
     assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5.1"
+    assert model["llm_config"]["disable_vision"] is True
+
+
+def test_glm_5_2_config():
+    """Test that glm-5.2 resolves automatically via the glm family pattern."""
+    model = resolve_model_config("glm-5.2")
+
+    assert model["id"] == "glm-5.2"
+    assert model["display_name"] == "GLM-5.2"
+    assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5.2"
+    assert model["llm_config"]["temperature"] == 0.0
     assert model["llm_config"]["disable_vision"] is True
 
 
@@ -617,7 +663,7 @@ def test_trinity_large_thinking_config():
 
 def test_claude_opus_4_7_config():
     """Test that claude-opus-4-7 has correct configuration."""
-    model = MODELS["claude-opus-4-7"]
+    model = resolve_model_config("claude-opus-4-7")
 
     assert model["id"] == "claude-opus-4-7"
     assert model["display_name"] == "Claude Opus 4.7"
@@ -646,7 +692,7 @@ def test_gpt_5_5_config():
 
 def test_deepseek_v4_pro_config():
     """Test that deepseek-v4-pro has correct configuration."""
-    model = MODELS["deepseek-v4-pro"]
+    model = resolve_model_config("deepseek-v4-pro")
 
     assert model["id"] == "deepseek-v4-pro"
     assert model["display_name"] == "DeepSeek V4 Pro"
@@ -655,7 +701,7 @@ def test_deepseek_v4_pro_config():
 
 def test_deepseek_v4_flash_config():
     """Test that deepseek-v4-flash has correct configuration."""
-    model = MODELS["deepseek-v4-flash"]
+    model = resolve_model_config("deepseek-v4-flash")
 
     assert model["id"] == "deepseek-v4-flash"
     assert model["display_name"] == "DeepSeek V4 Flash"
@@ -711,7 +757,7 @@ def test_nemotron_3_ultra_550b_a55b_or_paid_config():
 
 def test_claude_opus_4_8_config():
     """Test that claude-opus-4-8 has correct configuration."""
-    model = MODELS["claude-opus-4-8"]
+    model = resolve_model_config("claude-opus-4-8")
 
     assert model["id"] == "claude-opus-4-8"
     assert model["display_name"] == "Claude Opus 4.8"

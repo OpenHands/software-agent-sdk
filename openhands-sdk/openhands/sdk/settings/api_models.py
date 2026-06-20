@@ -33,6 +33,14 @@ from pydantic import BaseModel, Field, SecretStr
 from openhands.sdk.llm.llm_profile_store import PROFILE_NAME_PATTERN
 
 
+# An AgentProfile's stable id is a UUID (the pointer target); reject malformed
+# values at the HTTP layer, mirroring ``active_profile``'s name pattern.
+UUID_PATTERN = (
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
 if TYPE_CHECKING:
     from .model import AgentSettingsConfig, ConversationSettings
 
@@ -68,6 +76,10 @@ class SettingsResponse(BaseModel):
     active_profile: str | None = Field(
         default=None,
         description="Name of the currently active LLM profile, if one is selected.",
+    )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        description="Stable id of the currently active AgentProfile, if one is set.",
     )
     misc_settings: dict[str, Any] = Field(default_factory=dict)
 
@@ -112,6 +124,11 @@ class SettingsUpdateRequest(BaseModel):
         default=None,
         pattern=PROFILE_NAME_PATTERN,
         description="Name of the active LLM profile to persist; null clears it.",
+    )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        pattern=UUID_PATTERN,
+        description="Stable id of the active AgentProfile to persist; null clears it.",
     )
 
 

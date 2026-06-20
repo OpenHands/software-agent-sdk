@@ -390,6 +390,12 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         if self.process is None or self.process.poll() is not None:
             return False
 
+        # Kill descendants while they are still attached to the persistent
+        # PowerShell process. CTRL_BREAK can interrupt the waiting script first,
+        # leaving launched child processes alive but no longer discoverable as
+        # descendants of the shell.
+        terminated_children = self._terminate_child_processes()
+
         sent_ctrl_break = False
         ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", None)
         if platform.system() == "Windows" and ctrl_break_event is not None:
@@ -402,7 +408,7 @@ if ($toStop.Count -gt 0) {{ exit 0 }} else {{ exit 1 }}
         if sent_ctrl_break:
             time.sleep(_INTERRUPT_GRACE_SECONDS)
 
-        terminated_children = self._terminate_child_processes()
+        terminated_children = self._terminate_child_processes() or terminated_children
         sent_ctrl_c_input = False
         if not sent_ctrl_break and not terminated_children:
             try:

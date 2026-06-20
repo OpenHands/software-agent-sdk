@@ -185,7 +185,6 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -937,7 +936,6 @@ def test_conversation_stats_with_live_server(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1093,7 +1091,6 @@ def test_events_not_lost_during_client_disconnection(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1260,7 +1257,6 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1411,7 +1407,6 @@ def test_security_risk_field_with_live_server(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1596,7 +1591,6 @@ def test_hook_config_sent_to_server(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1815,7 +1809,6 @@ def test_agent_final_response_endpoint(server_env, monkeypatch: pytest.MonkeyPat
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -1953,7 +1946,6 @@ def test_remote_state_exposes_invoked_skills(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
@@ -2198,7 +2190,6 @@ def test_interrupt_endpoint_cancels_running_conversation(
         self,
         messages,
         tools,
-        return_metrics=False,
         add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]

@@ -95,18 +95,17 @@ jobs:
                   import os
                   import sys
                   sys.path.insert(0, '.github/run-eval')
-                  from resolve_model_config import MODELS
+                  from resolve_model_config import find_models_by_id
 
                   model_ids = os.environ["MODEL_IDS"].split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
 
+                  # find_models_by_id exits with code 1 and prints a helpful
+                  # message if any model ID cannot be resolved.
+                  resolved = find_models_by_id(model_ids)
+
                   matrix = []
-                  for model_id in model_ids:
-                      if model_id not in MODELS:
-                          available = ", ".join(sorted(MODELS.keys()))
-                          print(f"Error: Model ID '{model_id}' not found. Available: {available}", file=sys.stderr)
-                          sys.exit(1)
-                      model = MODELS[model_id]
+                  for model_id, model in zip(model_ids, resolved):
                       # Create run-suffix from model id (replace special chars with underscore)
                       run_suffix = model_id.replace("-", "_").replace(".", "_") + "_run"
                       matrix.append({
