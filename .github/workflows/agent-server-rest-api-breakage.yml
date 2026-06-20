@@ -161,10 +161,10 @@ jobs:
               env:
                   BASE_REF: ${{ github.event.pull_request.base.sha }}
               run: |
+                  touch rest-api-contract-summary.md
                   uv run --with packaging python .github/scripts/generate_agent_server_rest_api_contract_summary.py \
                       --base-ref "$BASE_REF" \
-                      --output rest-api-contract-summary.md
-                  touch rest-api-contract-summary.md
+                      --output rest-api-contract-summary.md || true
 
             - name: Update REST API contract summary in PR description
               if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
