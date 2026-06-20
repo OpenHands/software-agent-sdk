@@ -287,8 +287,9 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
-        env: Mapping[str, str] | None = None,
         executor: ToolExecutor | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
 
