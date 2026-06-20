@@ -327,3 +327,17 @@ def test_api_remote_workspace_exit_sends_callback(monkeypatch):
         mock_client.post.assert_called_once()
         payload = mock_client.post.call_args.kwargs["json"]
         assert payload["status"] == "COMPLETED"
+
+
+def test_api_remote_workspace_del_on_partial_construction_is_safe():
+    """``__del__`` must not raise on a partially-constructed instance.
+
+    Mirrors the DockerWorkspace guard: if validation fails before
+    ``__pydantic_private__`` is initialised, ``__del__`` -> ``cleanup`` would
+    dereference ``_runtime_id`` and raise ``AttributeError``.
+    """
+    from openhands.workspace import APIRemoteWorkspace
+
+    workspace = object.__new__(APIRemoteWorkspace)
+    assert getattr(workspace, "__pydantic_private__", None) is None
+    workspace.__del__()
