@@ -27,7 +27,9 @@ from openhands.agent_server.persistence.models import (
     PersistedWorkspaces,
     Secrets,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -687,6 +689,8 @@ class FileWorkspacesStore(WorkspacesStore):
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
+_llm_profile_store: LLMProfileStore | None = None
+_agent_profile_store: AgentProfileStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -794,10 +798,59 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
+def get_llm_profile_store(config: Config | None = None) -> LLMProfileStore:
+    """Get the global ``LLMProfileStore`` instance (thread-safe).
+
+    Stored at ``<persistence_dir>/profiles``. Honors ``OH_PERSISTENCE_DIR``
+    via :func:`_get_persistence_dir` so isolated agent-server instances
+    don't read or write the user's `~/.openhands/profiles/` by default.
+
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+    """
+    global _llm_profile_store
+    if _llm_profile_store is not None:
+        return _llm_profile_store
+
+    with _store_lock:
+        if _llm_profile_store is None:
+            _llm_profile_store = LLMProfileStore(
+                base_dir=_get_persistence_dir(config) / "profiles",
+            )
+        return _llm_profile_store
+
+
+def get_agent_profile_store(config: Config | None = None) -> AgentProfileStore:
+    """Get the global ``AgentProfileStore`` instance (thread-safe).
+
+    Stored at ``<persistence_dir>/agent-profiles``. Honors
+    ``OH_PERSISTENCE_DIR`` for the same reason as
+    :func:`get_llm_profile_store`.
+
+    Note:
+        The config parameter is only used on first initialization.
+        Subsequent calls return the existing instance regardless of config.
+    """
+    global _agent_profile_store
+    if _agent_profile_store is not None:
+        return _agent_profile_store
+
+    with _store_lock:
+        if _agent_profile_store is None:
+            _agent_profile_store = AgentProfileStore(
+                base_dir=_get_persistence_dir(config) / "agent-profiles",
+            )
+        return _agent_profile_store
+
+
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
     global _settings_store, _secrets_store, _workspaces_store
+    global _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
         _workspaces_store = None
+        _llm_profile_store = None
+        _agent_profile_store = None

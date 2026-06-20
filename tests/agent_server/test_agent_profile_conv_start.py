@@ -148,8 +148,8 @@ class TestStartConversationRequestValidation:
 # ---------------------------------------------------------------------------
 
 # The helper does local imports inside the function body; patch at the source modules.
-_STORE_PATH = "openhands.sdk.profiles.agent_profile_store.AgentProfileStore"
-_LLM_STORE_PATH = "openhands.sdk.llm.llm_profile_store.LLMProfileStore"
+_STORE_PATH = "openhands.agent_server.persistence.store.get_agent_profile_store"
+_LLM_STORE_PATH = "openhands.agent_server.persistence.store.get_llm_profile_store"
 _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
 
 

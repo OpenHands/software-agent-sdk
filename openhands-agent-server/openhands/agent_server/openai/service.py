@@ -25,7 +25,11 @@ from openhands.agent_server.openai.models import (
     OpenAIResponseMessage,
     OpenAIUsage,
 )
-from openhands.agent_server.persistence import PersistedSettings, get_settings_store
+from openhands.agent_server.persistence import (
+    PersistedSettings,
+    get_llm_profile_store,
+    get_settings_store,
+)
 from openhands.sdk import LLM, Message
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import (
@@ -36,7 +40,6 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.settings import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.workspace import LocalWorkspace
@@ -66,7 +69,7 @@ def _profile_name_from_model(model: str) -> str:
 
 def _load_profile_llm(profile_name: str, config: Config) -> LLM:
     try:
-        return LLMProfileStore().load(profile_name, cipher=config.cipher)
+        return get_llm_profile_store().load(profile_name, cipher=config.cipher)
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -369,7 +372,7 @@ def iter_openai_chat_completion_sse(
 
 async def list_openai_models() -> OpenAIModelListResponse:
     try:
-        profiles = LLMProfileStore().list_summaries()
+        profiles = get_llm_profile_store().list_summaries()
     except TimeoutError:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
