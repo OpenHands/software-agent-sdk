@@ -127,6 +127,16 @@ class DockerWorkspace(RemoteWorkspace):
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_mount_dir(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "mount_dir" in data:
+            raise ValueError(
+                "DockerWorkspace.mount_dir has been removed; use "
+                "volumes=['/host/dir:/workspace'] instead."
+            )
+        return data
+
     @model_validator(mode="after")
     def _validate_server_image(self):
         """Ensure server_image is set when using DockerWorkspace directly."""
@@ -344,6 +354,10 @@ class DockerWorkspace(RemoteWorkspace):
 
     def __del__(self) -> None:
         """Clean up the Docker container when the workspace is destroyed."""
+        try:
+            object.__getattribute__(self, "__pydantic_private__")
+        except AttributeError:
+            return
         self.cleanup()
 
     def cleanup(self) -> None:
