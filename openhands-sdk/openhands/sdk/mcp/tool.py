@@ -271,7 +271,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             DiscriminatedUnionMixin.model_computed_fields.keys()
         )
         sanitized = validated.model_dump(
-            by_alias=True,  # Emit original MCP names (e.g. "kind"), not internal fields.
+            by_alias=True,  # Use MCP arg names (e.g. "kind"), not internal fields.
             exclude_none=True,
             exclude=exclude_fields,
         )
