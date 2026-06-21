@@ -151,17 +151,20 @@ async def download_file_query(
     return await _download_file(path)
 
 
-def _list_home_favorites(home: Path, limit: int = 50) -> list[FileBrowserEntry]:
-    """Top-level visible directories inside the user's home, alphabetised.
+def _list_home_favorites(
+    home: Path, limit: int = 50, include_hidden: bool = False
+) -> list[FileBrowserEntry]:
+    """Top-level directories inside the user's home, alphabetised.
 
-    Hidden entries (names starting with '.') and symlinks are skipped so the
-    list matches what ``search_subdirs`` returns for the same path.
+    Symlinks are skipped. Hidden entries (names starting with '.') are skipped
+    unless ``include_hidden`` is True, so the list matches what
+    ``search_subdirs`` returns for the same path and the same flag.
     """
     entries: list[FileBrowserEntry] = []
     try:
         with os.scandir(home) as scanner:
             for entry in scanner:
-                if entry.name.startswith("."):
+                if not include_hidden and entry.name.startswith("."):
                     continue
                 try:
                     if not entry.is_dir(follow_symlinks=False):
@@ -197,18 +200,24 @@ def _list_root_locations() -> list[FileBrowserEntry]:
 
 
 @file_router.get("/home")
-async def get_home_directory() -> HomeResponse:
+async def get_home_directory(
+    include_hidden: Annotated[
+        bool,
+        Query(description="Include hidden top-level directories in `favorites`"),
+    ] = False,
+) -> HomeResponse:
     """Return the agent-server user's home directory and dynamic sidebar lists.
 
-    ``favorites`` is the set of visible top-level directories actually present
-    in the user's home (so it reflects the real environment instead of a
-    hardcoded list of names that may not exist). ``locations`` is the set of
-    filesystem roots — '/' on POSIX or available drive letters on Windows.
+    ``favorites`` is the set of top-level directories actually present in the
+    user's home (so it reflects the real environment instead of a hardcoded
+    list of names that may not exist). Hidden directories are included only
+    when ``include_hidden`` is True. ``locations`` is the set of filesystem
+    roots — '/' on POSIX or available drive letters on Windows.
     """
     home = Path.home()
     return HomeResponse(
         home=str(home),
-        favorites=_list_home_favorites(home),
+        favorites=_list_home_favorites(home, include_hidden=include_hidden),
         locations=_list_root_locations(),
     )
 
@@ -227,12 +236,17 @@ async def search_subdirs(
         int,
         Query(title="The max number of results in the page", gt=0, lte=100),
     ] = 100,
+    include_hidden: Annotated[
+        bool,
+        Query(title="Include hidden subdirectories (names starting with '.')"),
+    ] = False,
 ) -> SubdirectoryPage:
     """Search / List immediate subdirectories of `path`.
 
-    Used by the GUI's workspace picker. Hidden entries (names starting with '.')
-    and symlinks are skipped. Files are skipped. Returns absolute paths so the
-    GUI can use a result directly as ``workspace.working_dir``.
+    Used by the GUI's workspace picker. Symlinks and files are skipped. Hidden
+    entries (names starting with '.') are skipped unless ``include_hidden`` is
+    True. Returns absolute paths so the GUI can use a result directly as
+    ``workspace.working_dir``.
 
     Results are sorted case-insensitively by name and paginated. ``page_id`` is
     the ``next_page_id`` returned by the previous page (the lowercase name of
@@ -262,7 +276,7 @@ async def search_subdirs(
     try:
         with os.scandir(target) as scanner:
             for entry in scanner:
-                if entry.name.startswith("."):
+                if not include_hidden and entry.name.startswith("."):
                     continue
                 try:
                     if not entry.is_dir(follow_symlinks=False):

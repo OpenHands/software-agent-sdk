@@ -319,6 +319,24 @@ def test_search_subdirs_returns_only_directories_with_absolute_paths(client, tmp
     assert body["next_page_id"] is None
 
 
+def test_search_subdirs_include_hidden_lists_dot_directories(client, tmp_path):
+    """With include_hidden=true, dot-directories are listed (files still skipped)."""
+    (tmp_path / "repo1").mkdir()
+    (tmp_path / ".hidden_dir").mkdir()
+    (tmp_path / "README.md").write_text("hi")
+
+    response = client.get(
+        "/api/file/search_subdirs",
+        params={"path": str(tmp_path), "include_hidden": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    names = [entry["name"] for entry in body["items"]]
+    # Sorted case-insensitively; '.' sorts before alphanumerics.
+    assert names == [".hidden_dir", "repo1"]
+
+
 def test_search_subdirs_relative_path_returns_400(client):
     response = client.get("/api/file/search_subdirs", params={"path": "relative/path"})
     assert response.status_code == 400
@@ -420,6 +438,24 @@ def test_get_home_returns_dynamic_favorites_and_locations(
         {"label": "projects", "path": str(tmp_path / "projects")},
     ]
     assert body["locations"] == [{"label": "/", "path": "/"}]
+
+
+def test_get_home_include_hidden_lists_hidden_favorites(client, tmp_path, monkeypatch):
+    # With include_hidden=true, hidden top-level directories appear in favorites
+    # (files are still excluded).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "projects").mkdir()
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / "readme.txt").write_text("ignored")
+
+    response = client.get("/api/file/home", params={"include_hidden": "true"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["favorites"] == [
+        {"label": ".cache", "path": str(tmp_path / ".cache")},
+        {"label": "projects", "path": str(tmp_path / "projects")},
+    ]
 
 
 @pytest.mark.timeout(20)

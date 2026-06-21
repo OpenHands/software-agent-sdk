@@ -102,6 +102,12 @@ def _normalized_supported_openai_params(model: str | None) -> frozenset[str]:
 REASONING_EFFORT_MODELS: list[str] = [
     # https://www.anthropic.com/news/claude-fable-5
     "claude-fable-5",
+    # LiteLLM recognizes the first-party "anthropic/claude-opus-4-8" id, but not
+    # the Bedrock cross-region inference ids (e.g.
+    # "bedrock/us.anthropic.claude-opus-4-8-v1:0"), which fall through to the
+    # non-reasoning branch and leak temperature/top_p. List explicitly until
+    # LiteLLM ships Bedrock metadata for this model.
+    "claude-opus-4-8",
 ]
 
 
