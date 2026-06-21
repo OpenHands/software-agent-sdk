@@ -440,6 +440,112 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_load_plugin_from_registered_marketplace(self, tmp_path: Path, mock_llm):
+        """Test runtime plugin loading from a registered marketplace."""
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "manual-plugin",
+                    "skills": [{"name": "manual-skill", "content": "Manual skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        conversation.load_plugin("manual-plugin@manual")
+
+        assert conversation.agent.agent_context is not None
+        skills = {
+            skill.name: skill for skill in conversation.agent.agent_context.skills
+        }
+        assert skills["manual-skill"].content == "Manual skill"
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+
+        conversation.close()
+
+    def test_load_plugin_reinitializes_tools_after_agent_ready(
+        self, tmp_path: Path, mock_llm, monkeypatch
+    ):
+        """Test runtime MCP plugins rebuild initialized tool state."""
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "mcp-plugin",
+                    "mcp_config": {
+                        "mcpServers": {"runtime-server": {"command": "runtime"}}
+                    },
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+        conversation._ensure_agent_ready()
+
+        conversation.load_plugin("mcp-plugin")
+
+        assert conversation.agent.mcp_config is not None
+        assert "runtime-server" in conversation.agent.mcp_config["mcpServers"]
+        assert len(mcp_tools_created) == 1
+        assert "runtime-server" in mcp_tools_created[0]["mcpServers"]
+
+        conversation.close()
+
+    def test_load_plugin_requires_registered_marketplaces(
+        self, tmp_path: Path, basic_agent
+    ):
+        """Test runtime plugin loading requires registered marketplaces."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+
+        with pytest.raises(ValueError, match="registered_marketplaces"):
+            conversation.load_plugin("missing-plugin")
+
+        conversation.close()
+
     def test_conversation_with_multiple_plugins(self, tmp_path: Path, basic_agent):
         """Test loading multiple plugins via LocalConversation."""
         plugin1 = create_test_plugin(

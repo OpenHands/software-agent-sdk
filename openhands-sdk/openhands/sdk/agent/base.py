@@ -901,6 +901,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # Drive the traversal from self
         yield from _walk(self)
 
+    def reset_runtime_tools(self) -> None:
+        """Clear initialized runtime tools so they can be rebuilt from config."""
+        self._tools = {}
+        self._initialized = False
+
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:
         """Get the initialized tools map.

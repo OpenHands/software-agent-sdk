@@ -664,34 +664,13 @@ class LocalConversation(BaseConversation):
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
 
-        # Expand ${VAR} placeholders in the source/ref using per-conversation
-        # secrets, so private plugins can be cloned with a token supplied via
-        # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
-        #
-        # SECURITY: secrets only (check_env=False) -- never fold host
-        # environment variables into a URL sent to a remote git host.
-        # Braced-only (support_unbraced=False) avoids mangling a literal "$"
-        # that may legitimately appear in a token/password. expand_defaults
-        # is False so an unknown ${VAR} is left verbatim rather than silently
-        # defaulted inside a URL.
-        get_secret = self._state.secret_registry.get_secret_value
-
-        def _expand_secret_refs(value: str) -> str:
-            return expand_variable_references(
-                value,
-                get_secret=get_secret,
-                check_env=False,
-                support_unbraced=False,
-                expand_defaults=False,
-            )
-
         plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
             registrations = [
                 registration.model_copy(
                     update={
-                        "source": _expand_secret_refs(registration.source),
-                        "ref": _expand_secret_refs(registration.ref)
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
                         if registration.ref
                         else None,
                     }
@@ -731,8 +710,12 @@ class LocalConversation(BaseConversation):
                     fetch_source = spec.source
                     fetch_ref = spec.ref
                 else:
-                    fetch_source = _expand_secret_refs(spec.source)
-                    fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_ref = (
+                        self._expand_plugin_source_ref(spec.ref)
+                        if spec.ref
+                        else spec.ref
+                    )
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
@@ -880,6 +863,127 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
+
+    def _expand_plugin_source_ref(self, value: str) -> str:
+        return expand_variable_references(
+            value,
+            get_secret=self._state.secret_registry.get_secret_value,
+            check_env=False,
+            support_unbraced=False,
+            expand_defaults=False,
+        )
+
+    def _marketplace_registry_from_context(self) -> MarketplaceRegistry:
+        agent_context = self.agent.agent_context
+        if agent_context is None:
+            raise ValueError(
+                "No agent context available. Configure agent_context with "
+                "registered_marketplaces to use load_plugin()."
+            )
+        registrations = agent_context.registered_marketplaces
+        if not registrations:
+            raise ValueError(
+                "No marketplaces registered. Configure registered_marketplaces "
+                "in AgentContext to use load_plugin()."
+            )
+        return MarketplaceRegistry(
+            [
+                registration.model_copy(
+                    update={
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in registrations
+            ]
+        )
+
+    def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
+        existing_config = self._state.hook_config
+        merged_config = (
+            HookConfig.merge([existing_config, plugin_hooks])
+            if existing_config is not None
+            else plugin_hooks
+        )
+        if merged_config is None:
+            return
+
+        hook_persistence_dir = (
+            str(Path(self._state.persistence_dir).parent)
+            if self._state.persistence_dir is not None
+            else None
+        )
+        self._state.hook_config = merged_config
+        self._pending_hook_config = merged_config
+        self._hook_processor, self._on_event = create_hook_callback(
+            hook_config=merged_config,
+            working_dir=str(self.workspace.working_dir),
+            session_id=str(self._state.id),
+            original_callback=self._base_callback,
+            llm_getter=lambda: self.agent.llm,
+            persistence_dir=hook_persistence_dir,
+            visualizer=self._visualizer,
+            conversation_stats=self._state.stats,
+        )
+        self._hook_processor.set_conversation_state(self._state)
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from the conversation's registered marketplaces."""
+        self._ensure_plugins_loaded()
+        spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
+
+        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
+        path, resolved_ref = fetch_plugin_with_resolution(
+            source=fetch_source,
+            ref=fetch_ref,
+            repo_path=spec.repo_path,
+        )
+        plugin = Plugin.load(path)
+        logger.info(
+            f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+            + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+        )
+
+        merged_context = plugin.add_skills_to(self.agent.agent_context)
+        merged_mcp = plugin.add_mcp_config_to(
+            dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+        )
+        if merged_mcp:
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=self._state.secret_registry.get_secret_value,
+                expand_defaults=True,
+            )
+
+        self.agent = self.agent.model_copy(
+            update={
+                "agent_context": merged_context,
+                "mcp_config": merged_mcp,
+            }
+        )
+
+        if plugin.agents:
+            register_plugin_agents(
+                agents=plugin.agents,
+                work_dir=self.workspace.working_dir,
+            )
+        if plugin.hooks and not plugin.hooks.is_empty():
+            self._merge_runtime_plugin_hooks(plugin.hooks)
+
+        resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+        if self._resolved_plugins is None:
+            self._resolved_plugins = []
+        self._resolved_plugins.append(resolved)
+
+        with self._state:
+            self._state.agent = self.agent
+            if self._agent_ready:
+                self.agent.reset_runtime_tools()
+                self.agent.init_state(self._state, on_event=self._on_event)
 
     def _register_file_based_agents(self) -> None:
         """Discover and register file-based agents into the agent registry.
