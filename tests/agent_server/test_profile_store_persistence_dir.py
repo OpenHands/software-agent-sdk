@@ -54,6 +54,42 @@ def test_agent_profile_store_uses_persistence_dir(
     assert store.list() == []
 
 
+@pytest.fixture
+def home_without_persistence_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[Path]:
+    """No ``OH_PERSISTENCE_DIR``; ``Path.home()`` redirected to a tempdir.
+
+    Profile stores hold credentials, so without the env var they must fall
+    back to ``~/.openhands`` rather than a workspace-relative dir.
+    """
+    reset_stores()
+    monkeypatch.delenv("OH_PERSISTENCE_DIR", raising=False)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    try:
+        yield fake_home
+    finally:
+        reset_stores()
+
+
+def test_llm_profile_store_falls_back_to_home(
+    home_without_persistence_env: Path,
+) -> None:
+    store = get_llm_profile_store()
+    assert store.base_dir == home_without_persistence_env / ".openhands" / "profiles"
+
+
+def test_agent_profile_store_falls_back_to_home(
+    home_without_persistence_env: Path,
+) -> None:
+    store = get_agent_profile_store()
+    assert (
+        store.base_dir == home_without_persistence_env / ".openhands" / "agent-profiles"
+    )
+
+
 def test_profile_stores_do_not_read_home_directory(
     isolated_persistence_dir: Path,
 ) -> None:

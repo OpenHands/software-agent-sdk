@@ -708,6 +708,20 @@ def _get_persistence_dir(config: Config | None = None) -> Path:
     return DEFAULT_PERSISTENCE_DIR
 
 
+def _get_profile_persistence_dir() -> Path:
+    """Get the base dir for LLM/agent profile stores.
+
+    Profiles can hold credentials (LLM API keys), so absent
+    ``OH_PERSISTENCE_DIR`` they fall back to the user's ``~/.openhands``
+    rather than the workspace-relative agent-server default, keeping bare
+    local profile secrets in the expected user config directory.
+    """
+    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path.home() / ".openhands"
+
+
 def _get_cipher(config: Config | None = None) -> Cipher | None:
     """Get cipher from config for encrypting secrets."""
     if config is not None:
@@ -798,16 +812,14 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
-def get_llm_profile_store(config: Config | None = None) -> LLMProfileStore:
+def get_llm_profile_store() -> LLMProfileStore:
     """Get the global ``LLMProfileStore`` instance (thread-safe).
 
-    Stored at ``<persistence_dir>/profiles``. Honors ``OH_PERSISTENCE_DIR``
-    via :func:`_get_persistence_dir` so isolated agent-server instances
-    don't read or write the user's `~/.openhands/profiles/` by default.
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
+    Stored at ``<dir>/profiles`` where ``<dir>`` is ``OH_PERSISTENCE_DIR``
+    when set, else ``~/.openhands``. This honors isolated agent-server
+    instances while keeping bare local profile secrets in the user's
+    config directory (never workspace-relative). See
+    :func:`_get_profile_persistence_dir`.
     """
     global _llm_profile_store
     if _llm_profile_store is not None:
@@ -816,21 +828,17 @@ def get_llm_profile_store(config: Config | None = None) -> LLMProfileStore:
     with _store_lock:
         if _llm_profile_store is None:
             _llm_profile_store = LLMProfileStore(
-                base_dir=_get_persistence_dir(config) / "profiles",
+                base_dir=_get_profile_persistence_dir() / "profiles",
             )
         return _llm_profile_store
 
 
-def get_agent_profile_store(config: Config | None = None) -> AgentProfileStore:
+def get_agent_profile_store() -> AgentProfileStore:
     """Get the global ``AgentProfileStore`` instance (thread-safe).
 
-    Stored at ``<persistence_dir>/agent-profiles``. Honors
-    ``OH_PERSISTENCE_DIR`` for the same reason as
+    Stored at ``<dir>/agent-profiles`` where ``<dir>`` is resolved by
+    :func:`_get_profile_persistence_dir`, for the same reason as
     :func:`get_llm_profile_store`.
-
-    Note:
-        The config parameter is only used on first initialization.
-        Subsequent calls return the existing instance regardless of config.
     """
     global _agent_profile_store
     if _agent_profile_store is not None:
@@ -839,7 +847,7 @@ def get_agent_profile_store(config: Config | None = None) -> AgentProfileStore:
     with _store_lock:
         if _agent_profile_store is None:
             _agent_profile_store = AgentProfileStore(
-                base_dir=_get_persistence_dir(config) / "agent-profiles",
+                base_dir=_get_profile_persistence_dir() / "agent-profiles",
             )
         return _agent_profile_store
 
