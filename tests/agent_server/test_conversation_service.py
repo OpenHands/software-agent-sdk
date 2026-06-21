@@ -2604,7 +2604,9 @@ class TestAutoTitle:
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
         with (
-            patch("openhands.agent_server.persistence.store.get_llm_profile_store") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
             ) as mock_generate_title,
@@ -2634,7 +2636,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.agent_server.persistence.store.get_llm_profile_store") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
@@ -2682,7 +2686,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.agent_server.persistence.store.get_llm_profile_store") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,

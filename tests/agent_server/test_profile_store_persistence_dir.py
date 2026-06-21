@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,7 @@ from openhands.agent_server.persistence import (
 
 
 @pytest.fixture
-def isolated_persistence_dir() -> Path:
+def isolated_persistence_dir() -> Iterator[Path]:
     """``OH_PERSISTENCE_DIR`` pointed at a clean tempdir, stores reset."""
     with tempfile.TemporaryDirectory() as tmpdir:
         reset_stores()
