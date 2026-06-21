@@ -1602,6 +1602,29 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_load_plugin(self, mock_ws_client):
+        """load_plugin() POSTs the plugin reference to the server."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.load_plugin("review-bot@team")
+
+        matching_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST"
+            and f"/api/conversations/{conversation_id}/load_plugin" in call[0][1]
+        ]
+        assert len(matching_calls) == 1
+        assert matching_calls[0].kwargs["json"] == {"plugin_ref": "review-bot@team"}
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_update_secrets(self, mock_ws_client):
         """Test updating secrets."""
         # Setup mocks
