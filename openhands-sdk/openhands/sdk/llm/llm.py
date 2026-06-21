@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
 from pydantic import (
     BaseModel,
     ConfigDict,
