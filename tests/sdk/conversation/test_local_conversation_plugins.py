@@ -7,10 +7,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, Conversation
+from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
+from openhands.sdk.marketplace import MarketplaceRegistration
 from openhands.sdk.plugin import PluginSource
 
 
@@ -68,12 +69,198 @@ def create_test_plugin(
     return plugin_dir
 
 
+def create_test_marketplace(
+    marketplace_dir: Path,
+    plugins: list[dict],
+    name: str = "test-marketplace",
+) -> Path:
+    """Helper to create a test marketplace with local plugin entries."""
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+
+    entries = []
+    for plugin in plugins:
+        plugin_name = plugin["name"]
+        create_test_plugin(
+            marketplace_dir / "plugins" / plugin_name,
+            name=plugin_name,
+            skills=plugin.get("skills"),
+            mcp_config=plugin.get("mcp_config"),
+            hooks=plugin.get("hooks"),
+        )
+        entries.append(
+            {
+                "name": plugin_name,
+                "source": f"./plugins/{plugin_name}",
+                "description": f"Test plugin {plugin_name}",
+            }
+        )
+
+    manifest = {
+        "name": name,
+        "owner": {"name": "Test Team"},
+        "plugins": entries,
+    }
+    (manifest_dir / "marketplace.json").write_text(json.dumps(manifest))
+    return marketplace_dir
+
+
 class TestLocalConversationPlugins:
     """Tests for plugin loading in LocalConversation.
 
     Note: Plugins are lazy-loaded on first run()/send_message() call.
     Tests trigger _ensure_plugins_loaded() to verify loading behavior.
     """
+
+    def test_auto_load_marketplace_plugins(self, tmp_path: Path, mock_llm):
+        """Test marketplace registrations auto-load plugins at startup."""
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "auto-plugin",
+                    "skills": [{"name": "auto-skill", "content": "Auto-loaded skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto",
+                        source=str(marketplace_dir),
+                        auto_load="all",
+                    )
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "auto-skill" in skill_names
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+
+        conversation.close()
+
+    def test_registered_only_marketplace_does_not_auto_load(
+        self, tmp_path: Path, mock_llm
+    ):
+        """Test registered marketplaces without auto_load stay resolution-only."""
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "manual-plugin",
+                    "skills": [{"name": "manual-skill", "content": "Manual skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        assert conversation.agent.agent_context.skills == []
+        assert conversation.resolved_plugins is None
+
+        conversation.close()
+
+    def test_explicit_plugins_override_auto_loaded_marketplace_plugins(
+        self, tmp_path: Path, mock_llm
+    ):
+        """Test explicit plugins load after auto-loaded marketplace plugins."""
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "auto-plugin",
+                    "skills": [{"name": "shared", "content": "Auto content"}],
+                }
+            ],
+        )
+        explicit_plugin = create_test_plugin(
+            tmp_path / "explicit-plugin",
+            name="explicit-plugin",
+            skills=[{"name": "shared", "content": "Explicit content"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto",
+                        source=str(marketplace_dir),
+                        auto_load="all",
+                    )
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(explicit_plugin))],
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skills = {s.name: s for s in conversation.agent.agent_context.skills}
+        assert skills["shared"].content == "Explicit content"
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 2
+
+        conversation.close()
+
+    def test_registered_marketplaces_skip_legacy_public_skill_loading(
+        self, tmp_path: Path
+    ):
+        """Test registered marketplaces suppress legacy public skill loading."""
+        with patch(
+            "openhands.sdk.context.agent_context.load_available_skills"
+        ) as mock_load_available_skills:
+            AgentContext(
+                load_public_skills=True,
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="auto",
+                        source=str(tmp_path / "marketplace"),
+                        auto_load="all",
+                    )
+                ],
+            )
+
+        mock_load_available_skills.assert_not_called()
 
     def test_create_conversation_with_plugins(self, tmp_path: Path, basic_agent):
         """Test creating LocalConversation with plugins parameter."""

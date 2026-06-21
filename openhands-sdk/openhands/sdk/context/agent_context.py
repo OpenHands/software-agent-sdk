@@ -19,6 +19,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 from openhands.sdk.skills import (
     Skill,
@@ -108,6 +109,14 @@ class AgentContext(BaseModel):
         description=(
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin resolution. Registrations with "
+            "auto_load='all' are resolved by LocalConversation at startup."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -206,15 +215,16 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
-        if not self.load_user_skills and not self.load_public_skills:
+        """Load user and/or legacy public skills if enabled."""
+        include_public = self.load_public_skills and not self.registered_marketplaces
+        if not self.load_user_skills and not include_public:
             return self
 
         auto_skills = load_available_skills(
             work_dir=None,
             include_user=self.load_user_skills,
             include_project=False,
-            include_public=self.load_public_skills,
+            include_public=include_public,
             marketplace_path=self.marketplace_path,
         )
 
