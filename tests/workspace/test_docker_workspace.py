@@ -270,3 +270,19 @@ def test_apptainer_workspace_startup_uses_health_check_timeout():
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
         ApptainerWorkspace(server_image="test:latest", health_check_timeout=45.0)
         mock_wait.assert_called_once_with(timeout=45.0)
+
+
+def test_docker_workspace_del_on_partial_construction_is_safe():
+    """``__del__`` must not raise on a partially-constructed instance.
+
+    When field validation fails (e.g. a wrong-typed field), pydantic raises
+    before ``__pydantic_private__`` is initialised. The orphaned instance is then
+    garbage collected and ``__del__`` -> ``cleanup`` dereferences ``_container_id``,
+    raising ``AttributeError`` (surfaced as "Exception ignored in __del__").
+    ``ApptainerWorkspace.__del__`` already guards this; ``DockerWorkspace`` must too.
+    """
+    workspace = object.__new__(DockerWorkspace)
+    # A partially-constructed instance has no pydantic private store.
+    assert getattr(workspace, "__pydantic_private__", None) is None
+    # Must be a no-op, not AttributeError.
+    workspace.__del__()

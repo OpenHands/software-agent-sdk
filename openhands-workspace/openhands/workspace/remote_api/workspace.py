@@ -416,7 +416,11 @@ class APIRemoteWorkspace(RemoteWorkspace):
                 pass
 
     def __del__(self) -> None:
-        self.cleanup()
+        # Guard against accessing private attributes during interpreter shutdown
+        # or on partially-constructed instances (e.g. when validation fails
+        # before private attributes are initialised).
+        if getattr(self, "__pydantic_private__", None) is not None:
+            self.cleanup()
 
     def __enter__(self) -> "APIRemoteWorkspace":
         return self

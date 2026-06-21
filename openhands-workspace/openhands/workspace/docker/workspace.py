@@ -361,7 +361,11 @@ class DockerWorkspace(RemoteWorkspace):
 
     def __del__(self) -> None:
         """Clean up the Docker container when the workspace is destroyed."""
-        self.cleanup()
+        # Guard against accessing private attributes during interpreter shutdown
+        # or on partially-constructed instances (e.g. when validation fails
+        # before private attributes are initialised).
+        if getattr(self, "__pydantic_private__", None) is not None:
+            self.cleanup()
 
     def cleanup(self) -> None:
         """Stop and remove the Docker container."""
