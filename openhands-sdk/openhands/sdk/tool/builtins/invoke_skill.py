@@ -8,6 +8,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.skills.execute import render_content_with_commands
+from openhands.sdk.skills.fork import run_skill_forked
 from openhands.sdk.tool.tool import (
     Action,
     DeclaredResources,
@@ -21,6 +22,7 @@ from openhands.sdk.tool.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.skills.skill import Skill
 
 
 class InvokeSkillAction(Action):
@@ -41,10 +43,11 @@ class InvokeSkillObservation(Observation):
 
     @property
     def visualize(self) -> Text:
-        t = Text()
-        t.append(f"[skill: {self.skill_name}]\n", style="bold green")
-        t.append(self.text)
-        return t
+        text = Text()
+        text.append(f"Skill: {self.skill_name}", style="blue")
+        text.append("\n")
+        text.append(self.text)
+        return text
 
 
 TOOL_DESCRIPTION = """Invoke a skill by name.
@@ -94,19 +97,59 @@ class InvokeSkillExecutor(ToolExecutor):
         skills, working_dir = self._get_skills_and_working_dir(conversation)
         name = action.name.strip()
 
-        match = next((s for s in skills if s.name == name), None)
-        if match is None:
-            available = ", ".join(sorted(s.name for s in skills)) or "<none>"
-            return self._error(
-                name, f"Unknown skill '{name}'. Available skills: {available}."
-            )
+        skill = next((s for s in skills if s.name == name), None)
+        if skill is None:
+            return self._unknown_skill_error(name, skills)
 
-        rendered = render_content_with_commands(match.content, working_dir=working_dir)
-        rendered = self._append_skill_location_footer(
-            rendered, match.source, working_dir
+        # A resolved skill came from `skills`, which is only non-empty when
+        # `conversation` is not None. Narrow for the helpers.
+        assert conversation is not None
+
+        if skill.context == "fork":
+            return self._invoke_forked(skill, conversation, working_dir)
+        return self._invoke_inline(skill, conversation, working_dir)
+
+    def _unknown_skill_error(
+        self, name: str, skills: list[Skill]
+    ) -> InvokeSkillObservation:
+        available = ", ".join(sorted(s.name for s in skills)) or "<none>"
+        return self._error(
+            name, f"Unknown skill '{name}'. Available skills: {available}."
         )
-        self._record_invocation(conversation, name)
-        return InvokeSkillObservation.from_text(text=rendered, skill_name=name)
+
+    def _invoke_forked(
+        self,
+        skill: Skill,
+        conversation: BaseConversation,
+        working_dir: Path | None,
+    ) -> InvokeSkillObservation:
+        if working_dir is None:
+            return self._error(
+                skill.name,
+                f"Skill '{skill.name}' has context=fork but the conversation "
+                "has no working_dir; forked skills require a workspace.",
+            )
+        text = run_skill_forked(
+            skill,
+            conversation.state.agent,
+            working_dir,
+            conversation.state.persistence_dir,
+        )
+        self._record_invocation(conversation, skill.name)
+        return InvokeSkillObservation.from_text(text=text, skill_name=skill.name)
+
+    def _invoke_inline(
+        self,
+        skill: Skill,
+        conversation: BaseConversation,
+        working_dir: Path | None,
+    ) -> InvokeSkillObservation:
+        rendered = render_content_with_commands(skill.content, working_dir=working_dir)
+        rendered = self._append_skill_location_footer(
+            rendered, skill.source, working_dir
+        )
+        self._record_invocation(conversation, skill.name)
+        return InvokeSkillObservation.from_text(text=rendered, skill_name=skill.name)
 
     @staticmethod
     def _append_skill_location_footer(
