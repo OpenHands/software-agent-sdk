@@ -348,17 +348,6 @@ class EventService:
 
         events = self._conversation._state.events
 
-        # Fast path: with no filters, the count is just the sequence length
-        # and we can avoid reading any event payloads from disk.
-        if (
-            kind is None
-            and source is None
-            and body is None
-            and timestamp__gte is None
-            and timestamp__lt is None
-        ):
-            return len(events)
-
         # Convert datetime to ISO string for comparison (ISO strings are comparable)
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None

@@ -42,6 +42,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationEvent,
 )
+from openhands.sdk.io.local import LocalFileStore
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
@@ -133,6 +134,50 @@ def mock_conversation_with_timestamped_events():
     conversation._state = state
 
     return conversation
+
+
+def _message_event(event_id: str, text: str, timestamp: str) -> MessageEvent:
+    return MessageEvent(
+        id=event_id,
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text=text)]),
+        timestamp=timestamp,
+    )
+
+
+def _event_log_with_unreadable_middle(
+    fs, unreadable_payload: str | bytes
+) -> tuple[EventLog, MessageEvent, MessageEvent, str]:
+    event0 = _message_event(
+        "00000000-0000-0000-0000-000000000001",
+        "first",
+        "2026-06-16T09:00:00",
+    )
+    unreadable_event_id = "00000000-0000-0000-0000-000000000002"
+    event2 = _message_event(
+        "00000000-0000-0000-0000-000000000003",
+        "third",
+        "2026-06-16T09:00:02",
+    )
+    unreadable_path = f"events/event-00001-{unreadable_event_id}.json"
+    fs.write(
+        f"events/event-00000-{event0.id}.json",
+        event0.model_dump_json(exclude_none=True),
+    )
+    fs.write(unreadable_path, unreadable_payload)
+    fs.write(
+        f"events/event-00002-{event2.id}.json",
+        event2.model_dump_json(exclude_none=True),
+    )
+    return EventLog(fs), event0, event2, unreadable_path
+
+
+def _attach_event_log(event_service, event_log: EventLog) -> None:
+    conversation = MagicMock(spec=Conversation)
+    state = MagicMock(spec=ConversationState)
+    state.events = event_log
+    conversation._state = state
+    event_service._conversation = conversation
 
 
 class TestEventServiceSearchEvents:
@@ -316,38 +361,16 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 5  # All available events
         assert result.next_page_id is None
 
+    @pytest.mark.parametrize("unreadable_payload", ["", "{not-json", "{}"])
     @pytest.mark.asyncio
-    async def test_search_events_skips_empty_event_files(self, event_service):
-        """Unreadable persisted events should not abort event pagination."""
+    async def test_search_events_skips_unreadable_event_files(
+        self, event_service, unreadable_payload
+    ):
         fs = InMemoryFileStore()
-        event0 = MessageEvent(
-            id="00000000-0000-0000-0000-000000000001",
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="first")]),
-            timestamp="2026-06-16T09:00:00",
+        event_log, event0, event2, _ = _event_log_with_unreadable_middle(
+            fs, unreadable_payload
         )
-        missing_event_id = "00000000-0000-0000-0000-000000000002"
-        event2 = MessageEvent(
-            id="00000000-0000-0000-0000-000000000003",
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="third")]),
-            timestamp="2026-06-16T09:00:02",
-        )
-        fs.write(
-            f"events/event-00000-{event0.id}.json",
-            event0.model_dump_json(exclude_none=True),
-        )
-        fs.write(f"events/event-00001-{missing_event_id}.json", "")
-        fs.write(
-            f"events/event-00002-{event2.id}.json",
-            event2.model_dump_json(exclude_none=True),
-        )
-
-        conversation = MagicMock(spec=Conversation)
-        state = MagicMock(spec=ConversationState)
-        state.events = EventLog(fs)
-        conversation._state = state
-        event_service._conversation = conversation
+        _attach_event_log(event_service, event_log)
 
         result = await event_service.search_events(limit=10)
 
@@ -355,41 +378,31 @@ class TestEventServiceSearchEvents:
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
-    async def test_count_events_skips_empty_event_files(self, event_service):
-        """Filtered event counts should skip unreadable persisted events."""
+    async def test_search_events_skips_missing_event_files(self, event_service):
         fs = InMemoryFileStore()
-        event0 = MessageEvent(
-            id="00000000-0000-0000-0000-000000000001",
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="first")]),
-            timestamp="2026-06-16T09:00:00",
+        event_log, event0, event2, unreadable_path = _event_log_with_unreadable_middle(
+            fs, "will be deleted"
         )
-        missing_event_id = "00000000-0000-0000-0000-000000000002"
-        event2 = MessageEvent(
-            id="00000000-0000-0000-0000-000000000003",
-            source="user",
-            llm_message=Message(role="user", content=[TextContent(text="third")]),
-            timestamp="2026-06-16T09:00:02",
-        )
-        fs.write(
-            f"events/event-00000-{event0.id}.json",
-            event0.model_dump_json(exclude_none=True),
-        )
-        fs.write(f"events/event-00001-{missing_event_id}.json", "")
-        fs.write(
-            f"events/event-00002-{event2.id}.json",
-            event2.model_dump_json(exclude_none=True),
-        )
+        fs.delete(unreadable_path)
+        _attach_event_log(event_service, event_log)
 
-        conversation = MagicMock(spec=Conversation)
-        state = MagicMock(spec=ConversationState)
-        state.events = EventLog(fs)
-        conversation._state = state
-        event_service._conversation = conversation
+        result = await event_service.search_events(limit=10)
 
-        count = await event_service.count_events(source="user")
+        assert [event.id for event in result.items] == [event0.id, event2.id]
+        assert result.next_page_id is None
 
-        assert count == 2
+    @pytest.mark.asyncio
+    async def test_search_events_skips_non_utf8_event_files(
+        self, event_service, tmp_path
+    ):
+        fs = LocalFileStore(str(tmp_path))
+        event_log, event0, event2, _ = _event_log_with_unreadable_middle(fs, b"\xff")
+        _attach_event_log(event_service, event_log)
+
+        result = await event_service.search_events(limit=10)
+
+        assert [event.id for event in result.items] == [event0.id, event2.id]
+        assert result.next_page_id is None
 
     @pytest.mark.asyncio
     async def test_search_events_zero_limit(
@@ -681,6 +694,15 @@ class TestEventServiceCountEvents:
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")
         assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_skips_unreadable_event_files(self, event_service):
+        fs = InMemoryFileStore()
+        event_log, _, _, _ = _event_log_with_unreadable_middle(fs, "")
+        _attach_event_log(event_service, event_log)
+
+        assert await event_service.count_events() == 2
+        assert await event_service.count_events(source="user") == 2
 
     @pytest.mark.asyncio
     async def test_count_events_timestamp_gte_filter(
