@@ -71,6 +71,10 @@ INITIAL_STATE_PUSH_TIMEOUT_SECONDS = 0.5
 logger = get_logger(__name__)
 
 
+class InactiveServiceError(ValueError):
+    """Raised when an operation targets an inactive event service."""
+
+
 @dataclass
 class EventService:
     """
@@ -1372,7 +1376,7 @@ class EventService:
     async def load_plugin(self, plugin_ref: str) -> None:
         """Load a marketplace plugin into the active conversation."""
         if self._conversation is None:
-            raise ValueError("inactive_service")
+            raise InactiveServiceError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.load_plugin, plugin_ref)
 

@@ -12,7 +12,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, InactiveServiceError
 from openhands.agent_server.models import (
     ACPConversationInfo,
     ConversationInfo,
@@ -2234,6 +2234,30 @@ def test_load_conversation_plugin_conversation_not_found(
         )
 
         assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_inactive_service_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps inactive runtime state to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = InactiveServiceError(
+        "inactive_service"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "inactive_service" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
