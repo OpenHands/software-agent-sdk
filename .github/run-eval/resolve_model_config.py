@@ -69,7 +69,11 @@ FAMILIES: list[tuple[re.Pattern, dict[str, Any]]] = [
             "proxy_prefix": "litellm_proxy/openrouter/z-ai/",
             "display_name": lambda mid: "GLM-" + mid.removeprefix("glm-"),
             "llm_config": {
-                "temperature": 0.0,
+                # Zhipu/z.ai recommends temperature 1.0 for the GLM-5.2, 5.1, 5,
+                # 4.7, 4.6 series (range [0.0, 1.0]; default 1.0). GLM-5.x are
+                # reasoning models and 0.0 degrades reasoning quality.
+                # https://docs.z.ai/api-reference/llm/chat-completion
+                "temperature": 1.0,
                 # OpenRouter GLM models are text-only despite LiteLLM reporting
                 # vision support. See #2110 (GLM-5), #1898 (GLM-4.7).
                 "disable_vision": True,
@@ -120,6 +124,21 @@ def _resolve_family(model_id: str) -> dict[str, Any] | None:
 # (variant proxy strings, model-specific quirks, or families without a clean
 # pattern). Models that match a FAMILIES pattern do NOT need to be listed here.
 EXPLICIT_MODELS: dict[str, dict[str, Any]] = {
+    # glm-5.2-fireworks: GLM-5.2 served via Fireworks AI instead of the family
+    # default (openrouter/z-ai), which has been returning malformed/empty
+    # responses and breaking GLM-5.2 eval runs. The LiteLLM proxy registers
+    # this as a short model_name alias (litellm_proxy/glm-5.2-fireworks) that
+    # routes to fireworks_ai/accounts/fireworks/models/glm-5p2, so it cannot be
+    # derived from the ^glm- family prefix. See All-Hands-AI/infra#1436.
+    "glm-5.2-fireworks": {
+        "id": "glm-5.2-fireworks",
+        "display_name": "GLM-5.2 (Fireworks)",
+        "llm_config": {
+            "model": "litellm_proxy/glm-5.2-fireworks",
+            "temperature": 1.0,
+            "disable_vision": True,
+        },
+    },
     "claude-sonnet-4-5-20250929": {
         "id": "claude-sonnet-4-5-20250929",
         "display_name": "Claude Sonnet 4.5",
