@@ -30,6 +30,31 @@ export interface VerifiedModelsResponse {
   models: Record<string, string[]>;
 }
 
+export interface LLMSubscriptionStatusResponse {
+  vendor: string;
+  connected: boolean;
+  account_email: string | null;
+  expires_at: number | null;
+}
+
+export interface LLMSubscriptionDeviceStartResponse {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string | null;
+  expires_at: number;
+  interval_seconds: number;
+}
+
+export interface LLMSubscriptionDevicePollRequest {
+  device_code: string;
+}
+
+export interface LLMSubscriptionModelsResponse {
+  vendor: string;
+  models: string[];
+}
+
 export interface SettingsSchema {
   model_name: string;
   sections: Array<Record<string, unknown>>;
