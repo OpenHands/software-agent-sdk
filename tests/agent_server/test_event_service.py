@@ -1791,6 +1791,32 @@ class TestEventServiceSaveMeta:
         assert isinstance(loaded.agent, ACPAgent)
         assert loaded.agent.acp_model == "new-model"
 
+    @pytest.mark.asyncio
+    async def test_switch_acp_model_inactive_service_raises_value_error(self, tmp_path):
+        """An inactive service (no live conversation) raises the shared
+        ``inactive_service`` ValueError — consistent with the other
+        event-service methods — which the router maps to 400. It is no longer a
+        RuntimeError: the SDK now defers (rather than rejects) a switch before
+        the first run(), so the only failure mode here is a closed/never-started
+        service.
+        """
+        from openhands.sdk.agent import ACPAgent
+
+        stored = StoredConversation(
+            id=uuid4(),
+            agent=ACPAgent(acp_command=["echo", "test"], acp_model="old-model"),
+            workspace=LocalWorkspace(working_dir=str(tmp_path)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+        )
+        service = EventService(stored=stored, conversations_dir=tmp_path)
+        # _conversation defaults to None (service not started).
+        assert service._conversation is None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await service.switch_acp_model("new-model")
+
 
 class TestEventServiceStartWithRunningStatus:
     """Test cases for EventService.start handling of RUNNING execution status."""

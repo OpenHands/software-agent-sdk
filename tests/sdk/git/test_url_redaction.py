@@ -1,6 +1,16 @@
 """Tests for URL credential redaction utilities."""
 
-from openhands.sdk.git.utils import redact_url_credentials  # re-exported for compat
+import logging
+import subprocess
+from unittest.mock import patch
+
+import pytest
+
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import (
+    redact_url_credentials,
+    run_git_command,
+)  # re-exported for compat
 from openhands.sdk.plugin.types import PluginSource, ResolvedPluginSource
 from openhands.sdk.utils.redact import (
     redact_url_credentials as redact_url_credentials_central,
@@ -195,3 +205,66 @@ class TestRedactUrlCredentialsCentralModule:
         assert (
             redact_url_credentials_central("https://t@host/r") == "https://****@host/r"
         )
+
+
+CREDENTIAL_URL = "https://oauth2:SUPERSECRET@github.com/o/r.git"
+REDACTED_URL = "https://****@github.com/o/r.git"
+
+
+class TestRunGitCommandCredentialRedaction:
+    """Credentials must not leak into GitCommandError.command on any error path."""
+
+    def _args(self):
+        return ["git", "clone", CREDENTIAL_URL, "/tmp/x"]
+
+    def test_nonzero_returncode_redacts_command(self):
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr="fatal: repo not found"
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(self._args())
+        assert CREDENTIAL_URL not in exc_info.value.command
+        assert REDACTED_URL in exc_info.value.command
+
+    def test_timeout_expired_redacts_command(self):
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=self._args(), timeout=30),
+        ):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(self._args())
+        assert CREDENTIAL_URL not in exc_info.value.command
+        assert REDACTED_URL in exc_info.value.command
+
+    def test_file_not_found_redacts_command(self):
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(["git-not-on-path", "clone", CREDENTIAL_URL, "/tmp/x"])
+        assert CREDENTIAL_URL not in exc_info.value.command
+        assert REDACTED_URL in exc_info.value.command
+
+    def test_stderr_credentials_redacted_on_exception(self):
+        """Credentials echoed in stderr must not leak onto GitCommandError.stderr."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(self._args())
+        assert "SUPERSECRET" not in exc_info.value.stderr
+        assert REDACTED_URL in exc_info.value.stderr
+
+    def test_stderr_credentials_redacted_in_log(self, caplog):
+        """Credentials echoed in stderr must not leak into the error log line."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(GitCommandError):
+                    run_git_command(self._args())
+        assert "SUPERSECRET" not in caplog.text
+        assert REDACTED_URL in caplog.text

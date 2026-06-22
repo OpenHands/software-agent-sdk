@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -120,22 +119,11 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
-
-# Shared message for the no-op ``_return_metrics`` deprecation (Q1 of #3341).
-# Metrics are always returned via ``LLMResponse.metrics``; the parameter has no
-# effect and is scheduled for removal after the standard 5-minor-release runway.
-# NOTE: ``deprecated_in`` / ``removed_in`` must be passed as string literals at
-# each call site — ``check_deprecations.py`` reads them via static AST analysis
-# and cannot resolve module-level constants.
-_RETURN_METRICS_DETAILS: Final[str] = (
-    "The _return_metrics parameter has no effect; metrics are always available "
-    "via LLMResponse.metrics. Stop passing it."
-)
 
 __all__ = ["LLM"]
 
@@ -291,6 +279,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
     )
 
+    # OpenRouter uses HTTP-Referer as the app identity for rankings.
+    # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
     )
@@ -1296,7 +1286,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         **kwargs,
@@ -1309,9 +1298,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Args:
             messages: List of conversation messages.
             tools: Optional list of tools available to the model.
-            _return_metrics: Deprecated and ignored; metrics are always returned
-                via ``LLMResponse.metrics``. Scheduled for removal in
-                ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas.
             on_token: Optional callback for streaming tokens.
             **kwargs: Additional arguments passed to the LLM API.
@@ -1335,13 +1321,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(response.content)
             ```
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.completion(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -1416,7 +1395,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
         **kwargs,
@@ -1426,13 +1404,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.acompletion(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -1512,7 +1483,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         **kwargs,
@@ -1526,8 +1496,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model
             include: Optional list of fields to include in response
             store: Whether to store the conversation
-            _return_metrics: Deprecated and ignored; metrics are always returned
-                via ``LLMResponse.metrics``. Scheduled for removal in ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
@@ -1536,13 +1504,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.responses(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
@@ -1662,7 +1623,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
         **kwargs,
@@ -1672,13 +1632,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.aresponses(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
@@ -1939,6 +1892,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> dict[str, Any]:
         """Build the keyword arguments for a litellm (a)completion call."""
+        provider = self._infer_litellm_provider()
+        assert_vertex_sdk_available(provider)
+
         # When streaming, request usage in the final chunk so that detailed
         # token breakdowns (prompt_tokens_details with cached_tokens, etc.) are
         # not silently discarded by litellm's streaming handler.

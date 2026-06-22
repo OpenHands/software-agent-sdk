@@ -4,7 +4,7 @@ import contextlib
 import copy
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -66,7 +66,10 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
 from openhands.sdk.skills import load_available_skills, merge_skills_by_name
-from openhands.sdk.skills.utils import expand_mcp_variables
+from openhands.sdk.skills.utils import (
+    expand_mcp_variables,
+    expand_variable_references,
+)
 from openhands.sdk.subagent import (
     AgentDefinition,
     register_file_agents,
@@ -84,6 +87,29 @@ ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
 ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
+    """Whether the agent's own step already emitted a typed ConversationErrorEvent.
+
+    ACPAgent surfaces a detailed, classified ``ConversationErrorEvent``
+    (``source="agent"``) from its step/init and then re-raises so the run loop
+    tears down.  Without this guard the run loop's generic ``except`` would emit a
+    second, less-informative event (``code=type(exc).__name__``, ``detail=str(exc)``)
+    as the *latest* error — clobbering the agent's rich one in clients that show the
+    most recent error.  Regular agents never self-emit (all their error events are
+    ``source="environment"``), so only the ACP duplicate is suppressed.
+
+    ``since`` should be the number of events that existed at the start of the current
+    ``run()``/``arun()`` call.  Scoping the scan to events added *during this run*
+    prevents a stale source="agent" event from a prior run from suppressing the error
+    event for an unrelated exception in a subsequent run on the same conversation.
+    """
+    for i in range(len(events) - 1, since - 1, -1):
+        event = events[i]
+        if isinstance(event, ConversationErrorEvent):
+            return event.source == "agent"
+    return False
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -642,15 +668,43 @@ class LocalConversation(BaseConversation):
             logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
             self._resolved_plugins = []
 
+            # Expand ${VAR} placeholders in the source/ref using per-conversation
+            # secrets, so private plugins can be cloned with a token supplied via
+            # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
+            #
+            # SECURITY: secrets only (check_env=False) -- never fold host
+            # environment variables into a URL sent to a remote git host.
+            # Braced-only (support_unbraced=False) avoids mangling a literal "$"
+            # that may legitimately appear in a token/password. expand_defaults
+            # is False so an unknown ${VAR} is left verbatim rather than silently
+            # defaulted inside a URL.
+            get_secret = self._state.secret_registry.get_secret_value
+
+            def _expand_secret_refs(value: str) -> str:
+                return expand_variable_references(
+                    value,
+                    get_secret=get_secret,
+                    check_env=False,
+                    support_unbraced=False,
+                    expand_defaults=False,
+                )
+
             for spec in self._plugin_specs:
+                fetch_source = _expand_secret_refs(spec.source)
+                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
-                    source=spec.source,
-                    ref=spec.ref,
+                    source=fetch_source,
+                    ref=fetch_ref,
                     repo_path=spec.repo_path,
                 )
 
-                # Store resolved ref for persistence
+                # Store resolved ref for persistence. Build this from the
+                # ORIGINAL spec (not the expanded values) so the persisted
+                # record keeps the ${VAR} placeholder rather than the raw
+                # secret. from_plugin_source() additionally redacts any inline
+                # credentials. Resume re-fetches via the resolved commit SHA.
                 resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
                 self._resolved_plugins.append(resolved)
 
@@ -990,33 +1044,46 @@ class LocalConversation(BaseConversation):
         self.switch_llm(cached)
 
     def switch_acp_model(self, model: str) -> None:
-        """Switch the model on a running ACP conversation (mid-conversation).
+        """Switch the model on an ACP conversation.
 
         Unlike :meth:`switch_llm`, which swaps OpenHands' own LLM object, this
-        issues a protocol-level ``session/set_model`` call to the ACP
-        subprocess so the new model applies to subsequent turns of the *same*
-        session, preserving conversation context. ``switch_llm`` would not
+        targets the model the ACP subprocess runs. ``switch_llm`` would not
         affect an ACP conversation, since the subprocess owns its own model.
+
+        Behaves differently depending on whether a live session exists yet:
+
+        * **Live session** (after the first ``run()``): issues a protocol-level
+          ``session/set_model`` call so the new model applies to subsequent
+          turns of the *same* session, preserving conversation context.
+        * **No live session yet** (created but not yet run): there is nothing to
+          switch live, so the new value is only persisted. Session creation on
+          the first ``run()`` then honors it — ``_maybe_set_session_model``
+          issues a one-shot ``set_session_model`` for every built-in provider
+          (codex, gemini, and claude-code) — so the first turn runs on the
+          switched model rather than silently using the construction-time one.
 
         Args:
             model: Provider-specific model id to switch to.
 
         Raises:
             ValueError: If the conversation's agent is not an :class:`ACPAgent`,
-                or the provider does not support runtime model switching, or
-                the ACP server rejects the switch.
-            RuntimeError: If the ACP session is not yet initialized.
-            TimeoutError: If the ACP server does not respond within
-                ``acp_prompt_timeout`` seconds.
+                or (for a live switch) the provider does not support runtime
+                model switching, or the ACP server rejects the switch.
+            TimeoutError: If a live switch's ``session/set_model`` round-trip
+                exceeds ``acp_prompt_timeout`` seconds.
         """
         if not isinstance(self.agent, ACPAgent):
             raise ValueError(
                 "switch_acp_model is only supported for ACP conversations."
             )
         with self._state:
-            # Perform the live protocol switch first; if it fails we leave the
-            # persisted state untouched.
-            self.agent.set_acp_model(model)
+            # With a live session, perform the protocol switch first; if it
+            # fails we leave the persisted state untouched. Without one (pre
+            # first run()), there is nothing to switch live — skip the call and
+            # just persist; session creation applies the value (see docstring).
+            live = self.agent.has_live_acp_session
+            if live:
+                self.agent.set_acp_model(model)
             # Persist the switched model as the authoritative value. ``acp_model``
             # is frozen, so we replace the agent with a copy carrying the new
             # value. This matters on two counts the in-place mutation missed:
@@ -1027,14 +1094,17 @@ class LocalConversation(BaseConversation):
             #      and the resumed session model from ``acp_model`` on reload, so
             #      it must hold the switched value, not the construction-time one.
             #
-            # model_copy is shallow, so the copy shares the live ACP runtime
+            # model_copy is shallow, so a live copy shares the ACP runtime
             # (_conn/_executor/_process) with the old agent. Disarm the old
             # agent's finalizer before dropping it: otherwise ACPAgent.__del__
             # -> close() on the discarded agent would tear down the session the
             # copy now owns, leaving the next turn pointing at a dead connection.
+            # Pre-session there is no runtime to hand off, so release_runtime is
+            # unnecessary (the discarded agent's close() is already a no-op).
             old_agent = self.agent
             new_agent = old_agent.model_copy(update={"acp_model": model})
-            old_agent.release_runtime()
+            if live:
+                old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``
             # calls; ``self._state.agent`` is what the autosave path serializes
             # to base_state.json. Update both so the running conversation and the
@@ -1152,6 +1222,7 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -1276,14 +1347,19 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
 
-                # Add an error event
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Add an error event — unless the agent already surfaced a typed,
+                # detailed one for this failure (e.g. ACPAgent._emit_turn_error),
+                # which a generic str(e) duplicate would otherwise clobber.
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
@@ -1350,6 +1426,7 @@ class LocalConversation(BaseConversation):
             )
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
@@ -1735,13 +1812,18 @@ class LocalConversation(BaseConversation):
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
                 self._state.agent_state = updated_agent_state
                 self._state.execution_status = ConversationExecutionStatus.ERROR
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Skip the generic event if the agent already surfaced a typed,
+                # detailed one for this failure (see _agent_already_surfaced_error).
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e

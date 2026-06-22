@@ -165,7 +165,9 @@ class AgentContext(BaseModel):
         :class:`StartConversationRequest` (whose
         ``_populate_agent_from_settings`` validator runs *without*
         cipher context) and get injected into the agent's system prompt
-        as-is — same bug class that affected ``ACPAgent.acp_env``.
+        as-is — same bug class as any secret-bearing dict field that
+        round-trips without a matching decryption validator (e.g. MCP
+        ``env`` / ``headers``).
 
         ``SecretSource`` entries are dict-shaped on the wire (Pydantic
         models), so they're skipped by :func:`validate_secret_dict`'s

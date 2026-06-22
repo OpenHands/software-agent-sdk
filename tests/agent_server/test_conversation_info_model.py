@@ -156,7 +156,7 @@ def test_cold_read_falls_back_to_acp_model_override():
 
 def test_live_agent_does_not_fall_back_to_unapplied_override():
     """Live initialized agent whose override was NOT applied (e.g. a resume whose
-    ``set_session_model`` the server rejected): ``current_model_id`` is the
+    model-selection call the server rejected): ``current_model_id`` is the
     authoritative ``None`` and must NOT fall back to ``acp_model`` — that would
     re-assert an override the live session isn't running.
     """
@@ -205,13 +205,13 @@ def test_available_models_lifted_from_acp_agent():
 def test_available_models_empty_when_server_omits_them():
     """Servers that don't surface the UNSTABLE ``models`` capability yield []."""
     agent = ACPAgent(acp_command=["echo", "test"])
-    agent._current_model_id = "gpt-5.5/xhigh"
+    agent._current_model_id = "gpt-5.5"
     state = _make_state(agent)
     stored = _make_stored(state)
 
     info = _compose_conversation_info(stored, state)
 
-    assert info.current_model_id == "gpt-5.5/xhigh"
+    assert info.current_model_id == "gpt-5.5"
     assert info.available_models == []
 
 

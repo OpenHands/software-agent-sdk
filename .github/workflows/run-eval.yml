@@ -26,7 +26,8 @@ on:
             sdk_ref:
                 description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: v1.28.0
+                default: v1.29.0
+
 
 
 
@@ -349,14 +350,25 @@ jobs:
                     MODELS_INPUT="$DEFAULT_MODEL"
                   fi
                   MODELS=$(printf '%s' "$MODELS_INPUT" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
+
+                  # Validate model IDs using find_models_by_id (supports family-derived models)
                   ALLOWED_LIST=$(echo "$ALLOWED_MODEL_IDS_JSON" | jq -r '.[]')
-                  for MODEL in ${MODELS//,/ }; do
-                    if ! echo "$ALLOWED_LIST" | grep -Fx "$MODEL" >/dev/null; then
-                      echo "Model ID '$MODEL' not found in models.json" >&2
-                      echo "Available models: $(echo "$ALLOWED_LIST" | paste -sd, -)" >&2
-                      exit 1
-                    fi
-                  done
+                  MODEL_IDS_VALIDATED=$(MODELS="$MODELS" uv run python << 'EOF'
+                  import os, sys
+                  sys.path.insert(0, '.github/run-eval')
+                  from resolve_model_config import find_models_by_id
+                  models = os.environ.get("MODELS", "")
+                  model_ids = [m.strip() for m in models.split(",") if m.strip()]
+                  # find_models_by_id exits with code 1 and prints available models
+                  # if any ID cannot be resolved (including family-pattern matches).
+                  find_models_by_id(model_ids)
+                  print(",".join(model_ids))
+                  EOF
+                  )
+                  if [ $? -ne 0 ]; then
+                    echo "Available models: $(echo "$ALLOWED_LIST" | paste -sd, -)" >&2
+                    exit 1
+                  fi
 
                   # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
                   SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')

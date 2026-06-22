@@ -28,6 +28,9 @@ from openhands.sdk.llm.message import (  # re-export
     TextContent as TextContent,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.profiles.agent_profile import (
+    LaunchedAgentProfile as LaunchedAgentProfile,
+)
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -78,6 +81,10 @@ class StoredConversation(StartConversationRequest):
     Extends StartConversationRequest with server-assigned fields.
     """
 
+    # agent_profile_id is resolved into launched_agent_profile at creation; exclude from
+    # the persistence payload so it does not re-appear in meta.json.
+    agent_profile_id: UUID | None = Field(default=None, exclude=True)
+
     id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
@@ -85,6 +92,15 @@ class StoredConversation(StartConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    launched_agent_profile: LaunchedAgentProfile | None = Field(
+        default=None,
+        description=(
+            "Provenance snapshot of the agent profile that launched this "
+            "conversation. Set at creation when `agent_profile_id` is supplied; "
+            "``None`` for conversations started directly with `agent` or "
+            "`agent_settings`."
+        ),
+    )
 
 
 class _ConversationInfoBase(BaseModel):
@@ -223,15 +239,25 @@ class _ConversationInfoBase(BaseModel):
     supports_runtime_model_switch: bool = Field(
         default=False,
         description=(
-            "Whether a live, mid-conversation model switch (via "
-            "``session/set_model``) will be attempted for this conversation — "
+            "Whether a live, mid-conversation model switch will be attempted "
+            "for this conversation — "
             "tells the inline picker whether to offer a live-switch control. "
             "Mirrors the SDK's switch gate: ``True`` for known switch-capable "
-            "providers; ``True`` for unknown/custom ACP servers too, since "
-            "OpenHands attempts the switch optimistically rather than refusing "
-            "(a rejection then surfaces as an error). ``False`` for native "
+            "providers; ``False`` for unknown/custom ACP servers because their "
+            "generic config writes are not guaranteed live-switch primitives. "
+            "``False`` for native "
             "OpenHands agents, for a known provider that declares no support, "
             "and before the conversation has started a session."
+        ),
+    )
+    launched_agent_profile: LaunchedAgentProfile | None = Field(
+        default=None,
+        description=(
+            "Provenance snapshot of the agent profile that launched this "
+            "conversation. Set at creation when the conversation was started via "
+            "``agent_profile_id``; ``None`` for conversations started directly "
+            "with ``agent`` or ``agent_settings``. Clients use this to identify "
+            "which agent profile is current without fragile settings-comparison."
         ),
     )
 
@@ -471,6 +497,15 @@ class AskAgentResponse(BaseModel):
     """Response containing the agent's answer."""
 
     response: str = Field(description="The agent's response to the question")
+
+
+class StartGoalRequest(BaseModel):
+    """Payload to start a ``/goal`` loop inside a conversation."""
+
+    objective: str = Field(description="The goal objective to pursue and audit.")
+    max_iterations: int = Field(
+        default=10, ge=1, description="Maximum audit rounds before giving up."
+    )
 
 
 class AgentResponseResult(BaseModel):

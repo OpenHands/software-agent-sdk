@@ -24,6 +24,7 @@ from pydantic import (
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
+from openhands.sdk.context.prompts.presets import create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
@@ -106,6 +107,12 @@ _SOUL_PATH = os.path.join(os.path.expanduser("~"), ".openhands", "SOUL.md")
 _DEFAULT_SOUL = (
     "You are OpenHands agent, a helpful AI assistant that can interact"
     " with a computer to solve tasks."
+)
+
+# Built-in prompt dir. The registry only stands in for the default prompt here; a
+# subclass with its own prompts/system_prompt.j2 keeps the Jinja render path.
+_BUILTIN_PROMPT_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "prompts")
 )
 
 
@@ -456,20 +463,35 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
-        When ``system_prompt`` is set, that string is returned verbatim,
-        bypassing Jinja2 template rendering entirely.
+        The default prompt is assembled from the typed section registry
+        (``create_registry``). Escape hatches keep the Jinja render path: an inline
+        ``system_prompt`` is returned verbatim; a custom/absolute
+        ``system_prompt_filename`` renders through ``render_template``; a subclass
+        with its own ``prompt_dir`` still renders its default-named template; and a
+        custom ``security_policy_filename`` renders so its policy file is included.
 
         Returns:
-            The rendered system prompt template without dynamic context.
+            The static system prompt without dynamic context.
         """
         if self.system_prompt is not None:
             return self.system_prompt
 
-        return render_template(
-            prompt_dir=self.prompt_dir,
-            template_name=self.system_prompt_filename,
-            **self._resolved_template_kwargs(),
-        )
+        # Escape hatch: custom/absolute filename, a subclass with its own
+        # prompt_dir, or a custom security policy. The registry reproduces only
+        # the built-in default prompt (default template + default policy); a
+        # non-default security_policy_filename must keep the Jinja include path.
+        if (
+            self.system_prompt_filename != "system_prompt.j2"
+            or os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR
+            or self.security_policy_filename != "security_policy.j2"
+        ):
+            return render_template(
+                prompt_dir=self.prompt_dir,
+                template_name=self.system_prompt_filename,
+                **self._resolved_template_kwargs(),
+            )
+
+        return create_registry().build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -583,15 +605,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         cross-conversation cache sharing. Instead, it is sent as a second content
         block (without a cache marker) inside the system message.
 
+        Assembled from the dynamic-tier sections of the default registry.
+
         Returns:
             The dynamic context string, or None if no context is configured.
         """
         if not self.agent_context:
             return None
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-        )
+        return create_registry().build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
