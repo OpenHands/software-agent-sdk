@@ -97,7 +97,7 @@ class MarketplaceRegistry:
         return [
             registration
             for registration in self._registrations.values()
-            if registration.auto_load == "all"
+            if registration.auto_load
         ]
 
     def get_marketplace(self, name: str) -> tuple[Marketplace, Path]:

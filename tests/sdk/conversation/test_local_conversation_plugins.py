@@ -133,7 +133,7 @@ class TestLocalConversationPlugins:
                     MarketplaceRegistration(
                         name="auto",
                         source=str(marketplace_dir),
-                        auto_load="all",
+                        auto_load=True,
                     )
                 ]
             ),
@@ -153,6 +153,152 @@ class TestLocalConversationPlugins:
         assert len(conversation.resolved_plugins) == 1
 
         conversation.close()
+
+    def test_auto_load_marketplace_expands_registration_secret_refs(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "auto-plugin",
+                    "skills": [{"name": "auto-skill", "content": "Auto-loaded skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="private",
+                        source="https://${MARKETPLACE_TOKEN}@example.com/catalog.git",
+                        ref="${MARKETPLACE_REF}",
+                        repo_path="catalogs/team",
+                        auto_load=True,
+                    )
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+        conversation.update_secrets(
+            {
+                "MARKETPLACE_TOKEN": "token-value",
+                "MARKETPLACE_REF": "release-branch",
+            }
+        )
+
+        with patch(
+            "openhands.sdk.marketplace.registry.fetch_plugin_with_resolution",
+            return_value=(marketplace_dir, "abc123"),
+        ) as mock_fetch:
+            conversation._ensure_plugins_loaded()
+
+        mock_fetch.assert_called_once_with(
+            source="https://token-value@example.com/catalog.git",
+            ref="release-branch",
+            repo_path="catalogs/team",
+        )
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "auto-skill"
+        ]
+        conversation.close()
+
+    def test_auto_load_marketplace_continues_after_fetch_failure(
+        self, tmp_path: Path, mock_llm, caplog: pytest.LogCaptureFixture
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "auto-plugin",
+                    "skills": [{"name": "auto-skill", "content": "Auto-loaded skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="broken",
+                        source=str(tmp_path / "missing-marketplace"),
+                        auto_load=True,
+                    ),
+                    MarketplaceRegistration(
+                        name="working",
+                        source=str(marketplace_dir),
+                        auto_load=True,
+                    ),
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        with caplog.at_level(
+            "WARNING", logger="openhands.sdk.conversation.impl.local_conversation"
+        ):
+            conversation._ensure_plugins_loaded()
+
+        assert (
+            "Failed to load marketplace 'broken'; continuing without it" in caplog.text
+        )
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "auto-skill"
+        ]
+        conversation.close()
+
+    def test_auto_load_marketplace_duplicate_names_fail(self, tmp_path: Path, mock_llm):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "auto-plugin",
+                    "skills": [{"name": "auto-skill", "content": "Auto-loaded skill"}],
+                }
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="duplicate",
+                        source=str(marketplace_dir),
+                        auto_load=True,
+                    ),
+                    MarketplaceRegistration(
+                        name="duplicate",
+                        source=str(marketplace_dir),
+                        auto_load=True,
+                    ),
+                ]
+            ),
+        )
+        conversation = LocalConversation(
+            agent=agent, workspace=workspace, visualizer=None
+        )
+
+        try:
+            with pytest.raises(ValueError, match="Duplicate marketplace registration"):
+                conversation._ensure_plugins_loaded()
+        finally:
+            conversation.close()
 
     def test_registered_only_marketplace_does_not_auto_load(
         self, tmp_path: Path, mock_llm
@@ -220,7 +366,7 @@ class TestLocalConversationPlugins:
                     MarketplaceRegistration(
                         name="auto",
                         source=str(marketplace_dir),
-                        auto_load="all",
+                        auto_load=True,
                     )
                 ]
             ),
@@ -255,7 +401,7 @@ class TestLocalConversationPlugins:
                     MarketplaceRegistration(
                         name="auto",
                         source=str(tmp_path / "marketplace"),
-                        auto_load="all",
+                        auto_load=True,
                     )
                 ],
             )

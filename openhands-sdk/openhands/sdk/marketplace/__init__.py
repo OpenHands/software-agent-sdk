@@ -26,7 +26,9 @@ Example marketplace.json:
 from importlib import import_module
 from typing import Any
 
-from openhands.sdk.marketplace.registration import MarketplaceRegistration
+from openhands.sdk.marketplace.registration import (
+    MarketplaceRegistration as MarketplaceRegistration,
+)
 
 
 _TYPE_EXPORTS = {
@@ -49,26 +51,7 @@ _REGISTRY_EXPORTS = {
 }
 
 
-__all__ = [
-    # Constants
-    "MARKETPLACE_MANIFEST_DIRS",
-    "MARKETPLACE_MANIFEST_FILE",
-    # Marketplace classes
-    "Marketplace",
-    "MarketplaceEntry",
-    "MarketplaceOwner",
-    "MarketplacePluginEntry",
-    "MarketplacePluginSource",
-    "MarketplaceMetadata",
-    "MarketplaceRegistration",
-    # Marketplace registry
-    "FetchedMarketplace",
-    "MarketplaceRegistry",
-    "PluginResolutionError",
-    "AmbiguousPluginError",
-    "PluginNotFoundError",
-    "MarketplaceNotFoundError",
-]
+__all__ = sorted(_TYPE_EXPORTS | _REGISTRY_EXPORTS | {"MarketplaceRegistration"})
 
 
 def __getattr__(name: str) -> Any:

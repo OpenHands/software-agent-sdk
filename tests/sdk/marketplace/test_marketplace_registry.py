@@ -39,14 +39,14 @@ def test_marketplace_registration_accepts_all_fields() -> None:
         source="github:example/marketplaces",
         ref="v1.0.0",
         repo_path="marketplaces/team",
-        auto_load="all",
+        auto_load=True,
     )
 
     assert registration.name == "team"
     assert registration.source == "github:example/marketplaces"
     assert registration.ref == "v1.0.0"
     assert registration.repo_path == "marketplaces/team"
-    assert registration.auto_load == "all"
+    assert registration.auto_load
 
 
 @pytest.mark.parametrize(
@@ -79,7 +79,7 @@ def test_get_auto_load_registrations(tmp_path: Path) -> None:
     auto_registration = MarketplaceRegistration(
         name="auto",
         source=source,
-        auto_load="all",
+        auto_load=True,
     )
     manual_registration = MarketplaceRegistration(name="manual", source=source)
 

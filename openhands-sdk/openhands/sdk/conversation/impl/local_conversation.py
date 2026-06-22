@@ -685,7 +685,7 @@ class LocalConversation(BaseConversation):
                 expand_defaults=False,
             )
 
-        plugins_to_load: list[PluginSource] = []
+        plugins_to_load: list[tuple[PluginSource, bool]] = []
         if merged_context is not None and merged_context.registered_marketplaces:
             registrations = [
                 registration.model_copy(
@@ -712,20 +712,27 @@ class LocalConversation(BaseConversation):
                 for entry in marketplace.plugins:
                     source, ref, repo_path = marketplace.resolve_plugin_source(entry)
                     plugins_to_load.append(
-                        PluginSource(source=source, ref=ref, repo_path=repo_path)
+                        (
+                            PluginSource(source=source, ref=ref, repo_path=repo_path),
+                            True,
+                        )
                     )
 
         if self._plugin_specs:
-            plugins_to_load.extend(self._plugin_specs)
+            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
 
         # Load plugins if specified or registered for auto-load
         if plugins_to_load:
             logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            for spec in plugins_to_load:
-                fetch_source = _expand_secret_refs(spec.source)
-                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+            for spec, source_refs_expanded in plugins_to_load:
+                if source_refs_expanded:
+                    fetch_source = spec.source
+                    fetch_ref = spec.ref
+                else:
+                    fetch_source = _expand_secret_refs(spec.source)
+                    fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
