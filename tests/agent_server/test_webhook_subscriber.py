@@ -824,7 +824,12 @@ class TestWebhookSubscriberErrorHandling:
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        assert mock_sleep.call_count == 2
+        retry_sleeps = [
+            call.args[0]
+            for call in mock_sleep.await_args_list
+            if call.args and call.args[0] == webhook_spec.retry_delay
+        ]
+        assert len(retry_sleeps) == 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -858,7 +863,12 @@ class TestWebhookSubscriberErrorHandling:
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        assert mock_sleep.call_count == 2
+        retry_sleeps = [
+            call.args[0]
+            for call in mock_sleep.await_args_list
+            if call.args and call.args[0] == webhook_spec.retry_delay
+        ]
+        assert len(retry_sleeps) == 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
