@@ -96,28 +96,6 @@ def test_gemini_2_5_pro_without_reasoning_effort_preserves_temp_and_top_p():
     assert out.get("top_p") == 1.0
 
 
-def test_glm_uses_default_temperature_when_unset():
-    llm = LLM(model="litellm_proxy/glm-5.2-fireworks")
-    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-
-    assert llm.temperature is None
-    assert out.get("temperature") == 1.0
-
-
-def test_glm_preserves_explicit_temperature():
-    llm = LLM(model="litellm_proxy/glm-5.2-fireworks", temperature=0.0)
-    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
-
-    assert out.get("temperature") == 0.0
-
-
-def test_glm_preserves_user_call_temperature():
-    llm = LLM(model="litellm_proxy/glm-5.2-fireworks")
-    out = select_chat_options(llm, user_kwargs={"temperature": 0.2}, has_tools=True)
-
-    assert out.get("temperature") == 0.2
-
-
 def test_non_reasoning_model_preserves_temp_and_top_p():
     llm = DummyLLM(model="gpt-4o", temperature=0.6, top_p=0.7)
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)

@@ -44,8 +44,6 @@ if sigalrm := getattr(signal, "SIGALRM", None):
 # Keep this list in sync with SDK LLM config parameters that are SDK-internal.
 SDK_ONLY_PARAMS = {"disable_vision", "inline_image_urls"}
 
-GLM_DEFAULT_TEMPERATURE = 1.0
-
 
 def _humanize_parts(model_id: str, prefix: str) -> str:
     """Capitalize each hyphen-separated part after stripping ``prefix``.
@@ -75,7 +73,7 @@ FAMILIES: list[tuple[re.Pattern, dict[str, Any]]] = [
                 # 4.7, 4.6 series (range [0.0, 1.0]; default 1.0). GLM-5.x are
                 # reasoning models and 0.0 degrades reasoning quality.
                 # https://docs.z.ai/api-reference/llm/chat-completion
-                "temperature": GLM_DEFAULT_TEMPERATURE,
+                "temperature": 1.0,
                 # OpenRouter GLM models are text-only despite LiteLLM reporting
                 # vision support. See #2110 (GLM-5), #1898 (GLM-4.7).
                 "disable_vision": True,
@@ -137,7 +135,7 @@ EXPLICIT_MODELS: dict[str, dict[str, Any]] = {
         "display_name": "GLM-5.2 (Fireworks)",
         "llm_config": {
             "model": "litellm_proxy/glm-5.2-fireworks",
-            "temperature": GLM_DEFAULT_TEMPERATURE,
+            "temperature": 1.0,
             "disable_vision": True,
         },
     },

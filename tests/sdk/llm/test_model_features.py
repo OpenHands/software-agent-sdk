@@ -23,19 +23,6 @@ def test_model_matches(name, pattern, expected):
 
 
 @pytest.mark.parametrize(
-    "model,expected_temperature",
-    [
-        ("glm-5.2", 1.0),
-        ("litellm_proxy/openrouter/z-ai/glm-5.2", 1.0),
-        ("litellm_proxy/glm-5.2-fireworks", 1.0),
-        ("gpt-4o", None),
-    ],
-)
-def test_default_temperature(model, expected_temperature):
-    assert get_features(model).default_temperature == expected_temperature
-
-
-@pytest.mark.parametrize(
     "model,expected_reasoning",
     [
         ("o1-2024-12-17", True),

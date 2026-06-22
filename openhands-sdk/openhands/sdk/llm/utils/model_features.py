@@ -53,7 +53,6 @@ class ModelFeatures:
     force_string_serializer: bool
     send_reasoning_content: bool
     supports_prompt_cache_retention: bool
-    default_temperature: float | None
     # True when the model's API rejects http(s) image URLs and only accepts
     # base64 ``data:`` URLs. See REQUIRES_INLINE_IMAGE_DATA_MODELS.
     requires_inline_image_data: bool
@@ -184,21 +183,6 @@ PROMPT_CACHE_RETENTION_MODELS: list[str] = [
     "!azure/",
 ]
 
-DEFAULT_TEMPERATURE_MODELS: dict[str, float] = {
-    # Zhipu/z.ai recommends temperature 1.0 for the GLM-5.2, 5.1, 5,
-    # 4.7, 4.6 series (range [0.0, 1.0]; default 1.0).
-    # https://docs.z.ai/api-reference/llm/chat-completion
-    "glm": 1.0,
-}
-
-
-def _default_temperature(model: str | None) -> float | None:
-    for pattern, temperature in DEFAULT_TEMPERATURE_MODELS.items():
-        if model_matches(model or "", [pattern]):
-            return temperature
-    return None
-
-
 SUPPORTS_STOP_WORDS_FALSE_MODELS: list[str] = [
     # o-series families don't support stop words
     "o1",
@@ -277,7 +261,6 @@ def get_features(model: str) -> ModelFeatures:
         supports_prompt_cache_retention=apply_ordered_model_rules(
             model, PROMPT_CACHE_RETENTION_MODELS
         ),
-        default_temperature=_default_temperature(model),
         requires_inline_image_data=model_matches(
             model, REQUIRES_INLINE_IMAGE_DATA_MODELS
         ),
