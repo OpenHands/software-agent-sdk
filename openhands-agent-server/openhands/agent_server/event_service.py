@@ -22,6 +22,7 @@ from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
@@ -206,7 +207,7 @@ class EventService:
             return False
         return True
 
-    def _get_searchable_event(self, events, index: int) -> Event | None:
+    def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
         try:
             return events[index]
         except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
@@ -347,6 +348,17 @@ class EventService:
             raise ValueError("inactive_service")
 
         events = self._conversation._state.events
+
+        # Fast path: with no filters, the count is just the sequence length
+        # and we can avoid reading any event payloads from disk.
+        if (
+            kind is None
+            and source is None
+            and body is None
+            and timestamp__gte is None
+            and timestamp__lt is None
+        ):
+            return len(events)
 
         # Convert datetime to ISO string for comparison (ISO strings are comparable)
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None

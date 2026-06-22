@@ -696,12 +696,14 @@ class TestEventServiceCountEvents:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_count_events_skips_unreadable_event_files(self, event_service):
+    async def test_count_events_skips_unreadable_event_files_when_filtering(
+        self, event_service
+    ):
         fs = InMemoryFileStore()
         event_log, _, _, _ = _event_log_with_unreadable_middle(fs, "")
         _attach_event_log(event_service, event_log)
 
-        assert await event_service.count_events() == 2
+        assert await event_service.count_events() == 3
         assert await event_service.count_events(source="user") == 2
 
     @pytest.mark.asyncio
