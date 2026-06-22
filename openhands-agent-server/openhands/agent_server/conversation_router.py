@@ -21,6 +21,7 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
+from openhands.agent_server.event_service import InactiveServiceError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -519,6 +520,11 @@ async def load_conversation_plugin(
     except PluginResolutionError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except InactiveServiceError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
     except ValueError as e:
