@@ -109,6 +109,13 @@ def test_docker_dev_workspace_has_build_fields():
     assert "target" in DockerDevWorkspace.model_fields
 
 
+def test_removed_mount_dir_input_fails_loudly():
+    with pytest.raises(ValidationError, match="mount_dir has been removed"):
+        DockerWorkspace.model_validate(
+            {"server_image": "test:latest", "mount_dir": "/tmp/old"}
+        )
+
+
 def test_cleanup_without_image_deletion(mock_docker_workspace):
     """Test that cleanup with cleanup_image=False does not delete the image."""
     workspace, mock_exec = mock_docker_workspace(cleanup_image=False)

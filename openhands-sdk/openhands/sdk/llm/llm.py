@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -280,6 +279,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
     )
 
+    # OpenRouter uses HTTP-Referer as the app identity for rankings.
+    # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
     )

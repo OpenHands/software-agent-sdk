@@ -17,17 +17,17 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
+    get_agent_profile_store,
+    get_llm_profile_store,
     get_settings_store,
 )
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import (
     PROFILE_NAME_PATTERN,
-    LLMProfileStore,
     ProfileLimitExceeded,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
-    AgentProfileStore,
     ProfileReferenced,
     delete_llm_profile,
     rename_llm_profile,
@@ -140,7 +140,7 @@ async def list_profiles(request: Request) -> ProfileListResponse:
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     with _store_errors():
         summaries = store.list_summaries()
 
@@ -162,7 +162,7 @@ async def get_profile(request: Request, name: ProfileName) -> ProfileDetailRespo
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
 
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     try:
         with _store_errors():
             llm = store.load(name, cipher=cipher)
@@ -206,7 +206,7 @@ async def save_profile(
     """
     cipher = get_cipher(request)
     llm = decrypt_incoming_llm_secrets(body.llm, cipher) if cipher else body.llm
-    store = LLMProfileStore()
+    store = get_llm_profile_store()
     try:
         with _store_errors():
             store.save(
@@ -238,8 +238,8 @@ async def delete_profile(
     Guarded by the agent-profile FK: returns 409 naming the referrers if any
     ``AgentProfile`` still cites this LLM profile via ``llm_profile_ref``.
     """
-    store = LLMProfileStore()
-    agent_store = AgentProfileStore()
+    store = get_llm_profile_store()
+    agent_store = get_agent_profile_store()
     try:
         with _store_errors():
             delete_llm_profile(agent_store, store, name)
@@ -266,8 +266,8 @@ async def rename_profile(
     setting is updated to the new name. Any ``AgentProfile.llm_profile_ref``
     citing the old name is cascaded to the new name in lock-step.
     """
-    store = LLMProfileStore()
-    agent_store = AgentProfileStore()
+    store = get_llm_profile_store()
+    agent_store = get_agent_profile_store()
     try:
         with _store_errors():
             rename_llm_profile(agent_store, store, name, body.new_name)
@@ -323,7 +323,7 @@ async def activate_profile(
     config = get_config(request)
 
     # Load the profile
-    profile_store = LLMProfileStore()
+    profile_store = get_llm_profile_store()
     try:
         with _store_errors():
             llm = profile_store.load(name, cipher=cipher)
