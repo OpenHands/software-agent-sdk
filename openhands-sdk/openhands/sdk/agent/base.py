@@ -250,9 +250,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description=(
             "Security policy filename. A custom policy file's contents are inserted "
             "verbatim (NOT rendered as a Jinja template). Can be either:\n"
-            "- A relative filename (e.g., 'security_policy.j2') loaded from the "
-            "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "- A relative filename (e.g., 'custom_security_policy.md') loaded from "
+            "the agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.md')\n"
             "- Empty string to disable security policy"
         ),
     )
