@@ -2,8 +2,8 @@
 
 ``create_registry()`` registers the static-tier sections in the exact order
 ``agent/prompts/system_prompt.j2`` emits them, so ``registry.build(ctx).static``
-reproduces ``AgentBase.static_system_message``. The dynamic-tier sections
-(``system_message_suffix.j2``) are appended separately. It will gain a ``preset``
+reproduces ``AgentBase.static_system_message``. The dynamic-tier sections are
+appended separately. It will gain a ``preset``
 flag to select among prompt variants (interactive, planning, ...) over the same
 engine; today it returns the default composition.
 """
@@ -62,7 +62,7 @@ def create_registry() -> PromptRegistry:
     r.register(TroubleshootingSection())
     r.register(ProcessManagementSection())
     r.register(ModelSpecificSection())  # guard: model_family resolved
-    # dynamic tier -- ported verbatim from system_message_suffix.j2 (#3610)
+    # dynamic tier (#3610)
     r.register(DateTimeSection())
     r.register(RepoContextSection())  # guard: gated repo skills present
     r.register(AvailableSkillsSection())  # guard: available_skills_prompt
