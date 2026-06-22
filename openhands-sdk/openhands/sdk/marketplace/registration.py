@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath, PureWindowsPath
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,7 +26,7 @@ class MarketplaceRegistration(BaseModel):
             "Only relevant for git sources."
         ),
     )
-    auto_load: bool = Field(
+    auto_load: bool | Literal["all"] = Field(
         default=False,
         description="Whether to load all marketplace plugins at conversation start.",
     )
