@@ -23,6 +23,14 @@ Example marketplace.json:
 ```
 """
 
+from openhands.sdk.marketplace.registry import (
+    AmbiguousPluginError,
+    FetchedMarketplace,
+    MarketplaceNotFoundError,
+    MarketplaceRegistry,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
 from openhands.sdk.marketplace.types import (
     MARKETPLACE_MANIFEST_DIRS,
     MARKETPLACE_MANIFEST_FILE,
@@ -32,6 +40,7 @@ from openhands.sdk.marketplace.types import (
     MarketplaceOwner,
     MarketplacePluginEntry,
     MarketplacePluginSource,
+    MarketplaceRegistration,
 )
 
 
@@ -46,4 +55,12 @@ __all__ = [
     "MarketplacePluginEntry",
     "MarketplacePluginSource",
     "MarketplaceMetadata",
+    "MarketplaceRegistration",
+    # Marketplace registry
+    "FetchedMarketplace",
+    "MarketplaceRegistry",
+    "PluginResolutionError",
+    "AmbiguousPluginError",
+    "PluginNotFoundError",
+    "MarketplaceNotFoundError",
 ]
