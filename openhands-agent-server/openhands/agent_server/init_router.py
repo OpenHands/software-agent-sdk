@@ -211,18 +211,9 @@ class InitService:
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
 
-            # Build a BashEventService from the merged config so the bash
-            # events websocket (and any other consumer) sees the per-user
-            # bash_events_dir delivered by /api/init, not the import-time
-            # default.
             bash_svc = BashEventService(bash_events_dir=new_config.bash_events_dir)
             await bash_svc.__aenter__()
             self._entered_bash_service = bash_svc
-            # Reset the module-level bash singleton so bash_router (which
-            # uses the module-level default) also sees the new instance.
-            from openhands.agent_server import bash_service as bash_mod
-
-            bash_mod._bash_event_service = bash_svc
 
             await service.__aenter__()
             self._entered_service = service

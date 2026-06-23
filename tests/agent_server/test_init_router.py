@@ -159,11 +159,6 @@ class TestInitServiceTransitions:
                 app.state.bash_event_service.bash_events_dir
                 == tmp_path / "user" / "bash"
             )
-            # And the module-level default is also refreshed so bash_router
-            # (which reads the module-level singleton) uses the new dir.
-            from openhands.agent_server import bash_service as bash_mod
-
-            assert bash_mod._bash_event_service is app.state.bash_event_service
         finally:
             await svc.teardown()
             _reset_conversation_singleton()
@@ -226,11 +221,10 @@ class TestInitServiceTransitions:
 
     @pytest.mark.asyncio
     async def test_init_bash_service_uses_user_supplied_dir(self, tmp_path):
-        """The bash events websocket and bash_router must observe the
-        bash_events_dir supplied via /api/init, not the import-time default."""
+        """After /api/init, app.state.bash_event_service uses the
+        bash_events_dir supplied in the InitRequest."""
         _reset_conversation_singleton()
         _reset_bash_singleton()
-        from openhands.agent_server import bash_service as bash_mod
         from openhands.agent_server.bash_service import BashEventService
 
         base = Config(
@@ -240,9 +234,6 @@ class TestInitServiceTransitions:
         )
         app = SimpleNamespace(state=SimpleNamespace(config=base))
         svc = InitService(app, base_config=base)  # type: ignore[arg-type]
-
-        # Make sure no stale module-level instance leaks in from elsewhere.
-        bash_mod._bash_event_service = None
 
         user_dir = tmp_path / "user" / "bash"
         await svc.initialize(
@@ -255,9 +246,6 @@ class TestInitServiceTransitions:
             bash_svc = app.state.bash_event_service
             assert isinstance(bash_svc, BashEventService)
             assert bash_svc.bash_events_dir == user_dir
-            # bash_router reads through get_default_bash_event_service(),
-            # which uses the module-level cache, so it must be refreshed too.
-            assert bash_mod.get_default_bash_event_service().bash_events_dir == user_dir
         finally:
             await svc.teardown()
             _reset_conversation_singleton()

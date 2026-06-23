@@ -235,10 +235,6 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         logger.info("Server initialization complete - ready to serve requests")
 
         bash_svc = get_default_bash_event_service()
-        # Register on app.state so the websocket handlers (and any other
-        # per-request code) see the same instance configured at startup
-        # rather than the module-level default that may have been built
-        # at import time from a different config.
         api.state.bash_event_service = bash_svc
 
         async with service:

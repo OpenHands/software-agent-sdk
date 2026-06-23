@@ -50,11 +50,6 @@ from openhands.sdk.utils.paging import page_iterator
 
 
 sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
-# Module-level defaults for the case where ``app.state`` does not have a
-# service registered (e.g. unit tests, library usage without a lifespan).
-# In normal operation the per-app instances registered on ``app.state`` at
-# lifespan time (or by ``POST /api/init`` in deferred-init mode) take
-# precedence; see ``_get_conversation_service`` and ``_get_bash_event_service``.
 conversation_service = get_default_conversation_service()
 bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
@@ -283,9 +278,6 @@ async def events_socket(
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    # Resolve the per-app ConversationService (set by the lifespan or by
-    # POST /api/init) so deferred-init mode uses the up-to-date instance
-    # rather than the module-level singleton captured at import time.
     conv_service = _get_conversation_service(websocket)
     event_service = await conv_service.get_event_service(conversation_id)
     if event_service is None:
@@ -417,11 +409,7 @@ async def bash_events_socket(
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
-    # Resolve the per-app BashEventService (set by the lifespan or by
-    # POST /api/init) so deferred-init mode uses the up-to-date instance
-    # rather than the module-level singleton captured at import time.
     bash_service = _get_bash_event_service(websocket)
-
     logger.info("Bash Websocket Connected")
     try:
         subscriber_id = await bash_service.subscribe_to_events(

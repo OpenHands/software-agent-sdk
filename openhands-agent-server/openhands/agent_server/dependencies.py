@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyCookie, APIKeyHeader
 
+from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
@@ -59,18 +60,22 @@ def check_workspace_session(
     raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
-def get_conversation_service(request: Request):
-    """Get the conversation service from app state.
-
-    This dependency ensures that the conversation service is properly initialized
-    through the application lifespan context manager.
-    """
-
+def get_conversation_service(request: Request) -> ConversationService:
     service = getattr(request.app.state, "conversation_service", None)
     if service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Conversation service is not available",
+        )
+    return service
+
+
+def get_bash_event_service(request: Request) -> BashEventService:
+    service = getattr(request.app.state, "bash_event_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Bash event service is not available",
         )
     return service
 
