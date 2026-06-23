@@ -1,0 +1,142 @@
+name: Endpoint Audit
+
+on:
+  push:
+    branches: [ '**' ]
+
+# Needed so the audit can post its report as a comment on the PR.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # Verify the client doesn't call endpoints the agent-server no longer exposes.
+  # The audit diffs the client's HTTP surface against the live server's OpenAPI
+  # spec. See scripts/endpoint-audit.mjs.
+  endpoint-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AGENT_SERVER_PORT: 8010
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Single source of truth: package.json's config.agentServerImage.
+      - name: Resolve agent-server image
+        run: echo "AGENT_SERVER_IMAGE=$(node -p "require('./package.json').config.agentServerImage")" >> "$GITHUB_ENV"
+
+      - name: Start agent-server (ground-truth OpenAPI spec)
+        run: |
+          docker pull "${AGENT_SERVER_IMAGE}"
+          docker run -d --name agent-server -p ${AGENT_SERVER_PORT}:8000 \
+            -e LOG_JSON=true "${AGENT_SERVER_IMAGE}"
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:${AGENT_SERVER_PORT}/health && break
+            echo "waiting for agent-server ($i)..."; sleep 2
+          done
+
+      - name: Endpoint audit (report-only — client vs agent-server drift)
+        run: npm run audit:endpoints
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: endpoint-audit
+          path: .audit/
+          # .audit/ is a dot-directory; upload-artifact@v4 skips hidden paths by default.
+          include-hidden-files: true
+
+      # Post the report as a single, self-updating comment on the PR. Runs even
+      # when the audit gate fails (the report is written before the gate), so
+      # reviewers see the mismatches that failed the check.
+      - name: Comment audit report on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = '.audit/endpoint-audit.json';
+            if (!fs.existsSync(reportPath)) {
+              core.warning(`No audit report at ${reportPath}; skipping PR comment.`);
+              return;
+            }
+            const r = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            const list = (items) =>
+              items && items.length ? items.map((i) => `- \`${i}\``).join('\n') : '_none_';
+            const marker = '<!-- endpoint-audit-report -->';
+            const NO_BACKEND = '(no known backend)';
+            const offContract = r.mismatch || [];
+            const byBackend = r.byBackend || {};
+            const status = offContract.length
+              ? `❌ ${offContract.length} off-contract call(s) — not on the agent-server`
+              : '✅ All client calls are on the agent-server';
+            const backendSections = Object.keys(byBackend)
+              .sort()
+              .map((name) => {
+                const heading =
+                  name === NO_BACKEND
+                    ? `#### ⛔ ${name} — served by no backend we can see (${byBackend[name].length})`
+                    : `#### ↗️ served by \`${name}\` (${byBackend[name].length})`;
+                return [heading, '', list(byBackend[name]), ''].join('\n');
+              })
+              .join('\n');
+            const classifiers =
+              r.classifiers && r.classifiers.length ? ` · classifiers: ${r.classifiers.join(', ')}` : '';
+            const summary = [
+              '| Category | Count |',
+              '| --- | ---: |',
+              `| ❌ Off-contract (not on agent-server) | ${offContract.length} |`,
+              ...Object.keys(byBackend)
+                .sort()
+                .map((name) =>
+                  name === NO_BACKEND
+                    ? `| &nbsp;&nbsp;⛔ no known backend | ${byBackend[name].length} |`
+                    : `| &nbsp;&nbsp;↗️ served by \`${name}\` | ${byBackend[name].length} |`
+                ),
+              `| ➕ Missing API (agent-server has, client lacks) | ${(r.missingApi || []).length} |`,
+              `| agent-server endpoints | ${r.agentServer} |`,
+              `| client endpoints | ${r.client} |`,
+            ].join('\n');
+            const body = [
+              marker,
+              '## Endpoint audit',
+              '',
+              `**${status}**${classifiers}`,
+              '',
+              summary,
+              '',
+              `### ❌ Not on agent-server (gated, ${offContract.length})`,
+              '',
+              offContract.length ? backendSections : '_none_',
+              `### ➕ Missing API — agent-server exposes it, client does not implement (${(r.missingApi || []).length})`,
+              '',
+              list(r.missingApi),
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Stop agent-server
+        if: always()
+        run: docker rm -f agent-server || true
