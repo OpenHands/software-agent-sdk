@@ -14,8 +14,6 @@ export { SkillsClient } from './client/skills-client';
 export { ToolClient } from './client/tool-client';
 export { VSCodeClient } from './client/vscode-client';
 export { DesktopClient } from './client/desktop-client';
-export { ApiKeysClient } from './client/api-keys-client';
-export { SessionClient } from './client/session-client';
 export { SharedClient } from './client/shared-client';
 export { WorkspacesClient } from './client/workspaces-client';
 export {
@@ -64,8 +62,6 @@ export type { SkillsClientOptions } from './client/skills-client';
 export type { ToolClientOptions } from './client/tool-client';
 export type { VSCodeClientOptions, GetVSCodeUrlOptions } from './client/vscode-client';
 export type { DesktopClientOptions } from './client/desktop-client';
-export type { ApiKeysClientOptions } from './client/api-keys-client';
-export type { SessionClientOptions } from './client/session-client';
 export type { SharedClientOptions, SharedEventSearchOptions } from './client/shared-client';
 export type {
   DeleteWorkspaceResponse,

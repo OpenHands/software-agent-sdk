@@ -12,7 +12,6 @@ import {
 import {
   AgentProfilesClient,
   AgentServerVersionError,
-  ApiKeysClient,
   BashClient,
   clearAgentServerInfoCache,
   CloudProxyClient,
@@ -26,7 +25,6 @@ import {
   MetaProfilesClient,
   ProfilesClient,
   ServerClient,
-  SessionClient,
   SettingsClient,
   SharedClient,
   SkillsClient,
@@ -60,8 +58,6 @@ describe('Auxiliary API clients', () => {
     expect(manager.metaProfiles.apiKey).toBe('secret');
     expect(manager.files).toBeInstanceOf(FileClient);
     expect(manager.workspaces).toBeInstanceOf(WorkspacesClient);
-    expect(manager.apiKeys).toBeInstanceOf(ApiKeysClient);
-    expect(manager.session).toBeInstanceOf(SessionClient);
     expect(manager.shared).toBeInstanceOf(SharedClient);
     expect(manager.hooks).toBeInstanceOf(HooksClient);
     expect(manager.mcp).toBeInstanceOf(MCPClient);
@@ -1934,11 +1930,8 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('ApiKeys Session and Shared clients wrap app endpoints', async () => {
+  it('Shared client wraps app endpoints', async () => {
     const responses = [
-      [{ id: 'key-1', name: 'Key', prefix: 'oh', created_at: 'now', last_used_at: null }],
-      { id: 'key-2', name: 'New', key: 'full', prefix: 'oh', created_at: 'now' },
-      { redirect_url: '/home' },
       [{ id: 'shared-1', created_by_user_id: null, selected_repository: null }],
       { items: [], next_page_id: null },
     ];
@@ -1953,25 +1946,11 @@ describe('Auxiliary API clients', () => {
     }) as typeof fetch;
 
     const options = { host: 'http://example.com' };
-    await new ApiKeysClient(options).listApiKeys();
-    await new ApiKeysClient(options).createApiKey('New');
-    await new ApiKeysClient(options).deleteApiKey('key/2');
-    await new SessionClient(options).acceptTos('/home');
     await new SharedClient(options).getSharedConversation('shared-1');
     await new SharedClient(options).searchSharedEvents({ conversationId: 'shared-1', limit: 50 });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
-      3,
-      'http://example.com/api/keys/key%2F2',
-      expect.objectContaining({ method: 'DELETE' })
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      4,
-      'http://example.com/api/accept_tos',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ redirect_url: '/home' }) })
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      6,
+      2,
       'http://example.com/api/shared-events/search?conversation_id=shared-1&limit=50',
       expect.objectContaining({ method: 'GET' })
     );

@@ -360,9 +360,6 @@ export type {
   MCPTestFailureKind,
   MCPTestFailure,
   MCPTestResponse,
-  ApiKey,
-  CreateApiKeyResponse,
-  AcceptTosResponse,
   SharedConversation,
   EventPage as ApiEventPage,
 } from './models/api';

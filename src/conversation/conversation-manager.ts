@@ -4,7 +4,6 @@
 
 import { HttpClient } from '../client/http-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
-import { ApiKeysClient } from '../client/api-keys-client';
 import { CloudProxyClient } from '../client/cloud-proxy-client';
 import { DesktopClient } from '../client/desktop-client';
 import { FileClient } from '../client/file-client';
@@ -14,7 +13,6 @@ import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
 import { MetaProfilesClient } from '../client/meta-profiles-client';
 import { ServerClient } from '../client/server-client';
-import { SessionClient } from '../client/session-client';
 import { SettingsClient } from '../client/settings-client';
 import { SharedClient } from '../client/shared-client';
 import { SkillsClient } from '../client/skills-client';
@@ -94,8 +92,6 @@ export class ConversationManager {
   public readonly desktop: DesktopClient;
   public readonly files: FileClient;
   public readonly workspaces: WorkspacesClient;
-  public readonly apiKeys: ApiKeysClient;
-  public readonly session: SessionClient;
   public readonly shared: SharedClient;
   public readonly hooks: HooksClient;
   public readonly mcp: MCPClient;
@@ -129,8 +125,6 @@ export class ConversationManager {
     this.desktop = new DesktopClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
-    this.apiKeys = new ApiKeysClient(clientOptions);
-    this.session = new SessionClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
@@ -415,8 +409,6 @@ export class ConversationManager {
     this.desktop.close();
     this.files.close();
     this.workspaces.close();
-    this.apiKeys.close();
-    this.session.close();
     this.shared.close();
     this.hooks.close();
     this.mcp.close();
