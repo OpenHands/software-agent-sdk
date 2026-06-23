@@ -13,7 +13,6 @@ import {
   ConversationStats,
   AgentBase,
   SecretValue,
-  LLM,
 } from '../types/base';
 import { IWorkspace } from '../workspace/base';
 
@@ -130,15 +129,6 @@ export interface IConversation {
    * @param reason - Optional reason for the decision
    */
   sendConfirmationResponse(accept: boolean, reason?: string): Promise<void>;
-
-  /**
-   * Generate a title for the conversation based on message history.
-   *
-   * @param maxLength - Maximum length of the generated title
-   * @param llm - Optional LLM to use for title generation
-   * @returns A generated title for the conversation
-   */
-  generateTitle(maxLength?: number, llm?: LLM): Promise<string>;
 
   /**
    * Set the title of the conversation.

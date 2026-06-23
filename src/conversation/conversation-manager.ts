@@ -14,7 +14,6 @@ import { MCPClient } from '../client/mcp-client';
 import { ProfilesClient } from '../client/profiles-client';
 import { MetaProfilesClient } from '../client/meta-profiles-client';
 import { ServerClient } from '../client/server-client';
-import { SecurityClient } from '../client/security-client';
 import { SessionClient } from '../client/session-client';
 import { SettingsClient } from '../client/settings-client';
 import { SharedClient } from '../client/shared-client';
@@ -95,7 +94,6 @@ export class ConversationManager {
   public readonly desktop: DesktopClient;
   public readonly files: FileClient;
   public readonly workspaces: WorkspacesClient;
-  public readonly security: SecurityClient;
   public readonly apiKeys: ApiKeysClient;
   public readonly session: SessionClient;
   public readonly shared: SharedClient;
@@ -131,7 +129,6 @@ export class ConversationManager {
     this.desktop = new DesktopClient(clientOptions);
     this.files = new FileClient(clientOptions);
     this.workspaces = new WorkspacesClient(clientOptions);
-    this.security = new SecurityClient(clientOptions);
     this.apiKeys = new ApiKeysClient(clientOptions);
     this.session = new SessionClient(clientOptions);
     this.shared = new SharedClient(clientOptions);
@@ -418,7 +415,6 @@ export class ConversationManager {
     this.desktop.close();
     this.files.close();
     this.workspaces.close();
-    this.security.close();
     this.apiKeys.close();
     this.session.close();
     this.shared.close();

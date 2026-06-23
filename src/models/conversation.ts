@@ -110,15 +110,6 @@ export interface CreateACPConversationRequest {
   user_id?: string | null;
 }
 
-export interface GenerateTitleRequest {
-  max_length: number;
-  llm?: unknown;
-}
-
-export interface GenerateTitleResponse {
-  title: string;
-}
-
 export interface UpdateConversationRequest {
   title?: string;
   tags?: Record<string, string>;

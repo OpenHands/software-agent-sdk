@@ -469,13 +469,6 @@ describe('Conversation Integration Tests', () => {
           return await conversation.state.getAgentStatus();
         });
 
-        // Generate title
-        const title = await conversation.generateTitle(50);
-        expect(title).toBeDefined();
-        expect(typeof title).toBe('string');
-        expect(title.length).toBeGreaterThan(0);
-        expect(title.length).toBeLessThanOrEqual(50);
-
         // Cleanup
         await conversation.close();
       },

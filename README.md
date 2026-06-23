@@ -223,7 +223,6 @@ Factory function that creates conversations with OpenHands agents.
 - `pause()` - Pause agent execution
 - `setConfirmationPolicy(policy)` - Set confirmation policy
 - `sendConfirmationResponse(accept, reason?)` - Respond to confirmation requests
-- `generateTitle(maxLength?, llm?)` - Generate a title for the conversation
 - `updateSecrets(secrets)` - Update conversation secrets
 - `startWebSocketClient()` - Start real-time event streaming
 - `stopWebSocketClient()` - Stop real-time event streaming

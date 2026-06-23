@@ -22,10 +22,6 @@ export class SessionClient {
     });
   }
 
-  async unsetProviderTokens(): Promise<void> {
-    await this.client.post('/api/unset-provider-tokens', {});
-  }
-
   async acceptTos(redirectUrl: string): Promise<AcceptTosResponse> {
     const response = await this.client.post<AcceptTosResponse>('/api/accept_tos', {
       redirect_url: redirectUrl,

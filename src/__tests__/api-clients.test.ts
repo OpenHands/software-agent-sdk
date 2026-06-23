@@ -25,7 +25,6 @@ import {
   MCPClient,
   MetaProfilesClient,
   ProfilesClient,
-  SecurityClient,
   ServerClient,
   SessionClient,
   SettingsClient,
@@ -61,7 +60,6 @@ describe('Auxiliary API clients', () => {
     expect(manager.metaProfiles.apiKey).toBe('secret');
     expect(manager.files).toBeInstanceOf(FileClient);
     expect(manager.workspaces).toBeInstanceOf(WorkspacesClient);
-    expect(manager.security).toBeInstanceOf(SecurityClient);
     expect(manager.apiKeys).toBeInstanceOf(ApiKeysClient);
     expect(manager.session).toBeInstanceOf(SessionClient);
     expect(manager.shared).toBeInstanceOf(SharedClient);
@@ -1744,10 +1742,8 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('Security ApiKeys Session and Shared clients wrap app endpoints', async () => {
+  it('ApiKeys Session and Shared clients wrap app endpoints', async () => {
     const responses = [
-      { policy: 'default' },
-      { RISK_SEVERITY: 2 },
       [{ id: 'key-1', name: 'Key', prefix: 'oh', created_at: 'now', last_used_at: null }],
       { id: 'key-2', name: 'New', key: 'full', prefix: 'oh', created_at: 'now' },
       { redirect_url: '/home' },
@@ -1765,28 +1761,25 @@ describe('Auxiliary API clients', () => {
     }) as typeof fetch;
 
     const options = { host: 'http://example.com' };
-    await new SecurityClient(options).getPolicy();
-    await new SecurityClient(options).getRiskSeverity();
     await new ApiKeysClient(options).listApiKeys();
     await new ApiKeysClient(options).createApiKey('New');
     await new ApiKeysClient(options).deleteApiKey('key/2');
     await new SessionClient(options).acceptTos('/home');
-    await new SessionClient(options).unsetProviderTokens();
     await new SharedClient(options).getSharedConversation('shared-1');
     await new SharedClient(options).searchSharedEvents({ conversationId: 'shared-1', limit: 50 });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
-      5,
+      3,
       'http://example.com/api/keys/key%2F2',
       expect.objectContaining({ method: 'DELETE' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      6,
+      4,
       'http://example.com/api/accept_tos',
       expect.objectContaining({ method: 'POST', body: JSON.stringify({ redirect_url: '/home' }) })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
-      9,
+      6,
       'http://example.com/api/shared-events/search?conversation_id=shared-1&limit=50',
       expect.objectContaining({ method: 'GET' })
     );

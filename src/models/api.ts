@@ -396,13 +396,6 @@ export interface MCPTestFailure {
 
 export type MCPTestResponse = MCPTestSuccess | MCPTestFailure;
 
-export interface SecuritySettings {
-  RISK_SEVERITY: number;
-  [key: string]: unknown;
-}
-
-export type SecurityTraceResponse = unknown;
-
 export interface ApiKey {
   id: string;
   name: string;
