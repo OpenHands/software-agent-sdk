@@ -21,7 +21,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
-    LaunchedProfile,
+    LaunchedAgentProfile,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -245,7 +245,7 @@ def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
     mcp_config: "Any",
-) -> "tuple[AgentBase, LaunchedProfile]":
+) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
@@ -261,11 +261,13 @@ def _resolve_agent_from_profile(
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
         ValueError: Profile load or settings validation failure.
     """
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.agent_server.persistence.store import (
+        get_agent_profile_store,
+        get_llm_profile_store,
+    )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
     if profile_name is None:
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
@@ -281,7 +283,7 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    llm_store = LLMProfileStore()
+    llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
             profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
@@ -290,7 +292,10 @@ def _resolve_agent_from_profile(
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc
 
     agent = settings_config.create_agent()
-    launched = LaunchedProfile(profile_id=profile.id, revision=profile.revision)
+    launched = LaunchedAgentProfile(
+        agent_profile_id=profile.id,
+        revision=profile.revision,
+    )
     return agent, launched
 
 
@@ -318,7 +323,7 @@ def _compose_conversation_info(
     # The ``acp_model`` fallback is gated on the agent NOT being a live,
     # initialized one. Once ``init_state`` has fired, ``current_model_id`` is the
     # authoritative resolved value — including ``None`` when an override couldn't
-    # be applied (unknown provider, or a resume whose ``set_session_model`` the
+    # be applied (unknown provider, or a resume whose model-selection call the
     # server rejected) — so falling back to ``acp_model`` there would re-assert an
     # override the live session isn't actually running. The fallback is only for
     # *cold* reads (``init_state`` hasn't fired, PrivateAttrs still empty), where
@@ -363,7 +368,7 @@ def _compose_conversation_info(
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
         client_tools=stored.client_tools,
-        launched_profile=stored.launched_profile,
+        launched_agent_profile=stored.launched_agent_profile,
     )
 
 
@@ -670,7 +675,7 @@ class ConversationService:
         # Profile resolution must happen before _prepare_request_workspace (which
         # asserts request.agent is not None) and before model_dump so the resolved
         # agent is captured in request_data.
-        launched_profile: LaunchedProfile | None = None
+        launched_agent_profile: LaunchedAgentProfile | None = None
         if request.agent_profile_id is not None:
             # get_settings_store() is safe here: get_instance() initialises the
             # singleton with the server cipher before any conversation can start.
@@ -681,7 +686,7 @@ class ConversationService:
 
             settings = get_settings_store().load() or PersistedSettings()
             mcp_config = settings.agent_settings.mcp_config
-            resolved_agent, launched_profile = await asyncio.to_thread(
+            resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
@@ -751,7 +756,7 @@ class ConversationService:
         # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
         # are preserved through the round-trip; the dict is only used in-process to
         # construct StoredConversation, not sent over the network.
-        # agent_profile_id is excluded: it was resolved into `launched_profile`
+        # agent_profile_id is excluded: it was resolved into `launched_agent_profile`
         # above and must not re-trigger the mutual-exclusivity validator.
         request_data = request.model_dump(
             mode="json",
@@ -772,9 +777,9 @@ class ConversationService:
                 {
                     "id": conversation_id,
                     **request_data,
-                    "launched_profile": (
-                        launched_profile.model_dump(mode="json")
-                        if launched_profile is not None
+                    "launched_agent_profile": (
+                        launched_agent_profile.model_dump(mode="json")
+                        if launched_agent_profile is not None
                         else None
                     ),
                 },
@@ -783,7 +788,7 @@ class ConversationService:
         else:
             stored = StoredConversation(
                 id=conversation_id,
-                launched_profile=launched_profile,
+                launched_agent_profile=launched_agent_profile,
                 **request_data,
             )
         event_service = await self._start_event_service(stored)
@@ -1340,9 +1345,11 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
         try:
-            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+            from openhands.agent_server.persistence.store import (
+                get_llm_profile_store,
+            )
 
-            profile_store = LLMProfileStore()
+            profile_store = get_llm_profile_store()
             return profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(

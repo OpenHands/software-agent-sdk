@@ -34,6 +34,7 @@ from openhands.agent_server.models import (
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
+    StartGoalRequest,
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
@@ -290,6 +291,94 @@ async def run_conversation(
                 ),
             )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal",
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation run or goal loop is already running"},
+    },
+)
+async def start_goal_in_conversation(
+    conversation_id: UUID,
+    request: StartGoalRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Start a ``/goal`` loop inside an existing conversation.
+
+    The loop appends messages and starts agent runs in the same conversation
+    history and event stream as the main chat. It does not create a separate
+    conversation for the goal or fork the existing one.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    try:
+        await event_service.start_goal_loop(
+            request.objective, max_iterations=request.max_iterations
+        )
+    except ValueError as e:
+        message = str(e)
+        if message in ("conversation_already_running", "goal_already_running"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation run or goal loop already running.",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal/stop",
+    responses={404: {"description": "Item not found"}},
+)
+async def stop_goal_in_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Stop the active ``/goal`` loop inside this conversation.
+
+    This cancels only the background goal loop, not the conversation itself, and
+    records an ``interrupted`` goal status so ``/goal/resume`` can continue it.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.stop_goal_loop()
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal/resume",
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation run or goal loop is already running"},
+    },
+)
+async def resume_goal_in_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Resume the last interrupted ``/goal`` loop inside this conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    try:
+        await event_service.resume_goal_loop()
+    except ValueError as e:
+        message = str(e)
+        if message in ("conversation_already_running", "goal_already_running"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation run or goal loop already running.",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
     return Success()
 

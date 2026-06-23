@@ -153,14 +153,15 @@ with ManagedAPIServer(
             assert resp.status_code == 200
             data = resp.json()
             execution_status = data.get("execution_status", "unknown")
-            if execution_status in ("stopped", "paused", "error"):
+            # Terminal states per ConversationExecutionStatus.is_terminal().
+            if execution_status in ("finished", "error", "stuck"):
                 break
             logger.info(f"   status: {execution_status} ({elapsed}s elapsed)")
             time.sleep(2)
             elapsed += 2
 
         logger.info(f"✅ Conversation finished — status: {execution_status}")
-        assert execution_status in ("stopped", "paused"), (
+        assert execution_status == "finished", (
             f"Unexpected final status: {execution_status}"
         )
 

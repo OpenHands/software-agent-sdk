@@ -57,7 +57,6 @@ from openhands.sdk.utils.pydantic_secrets import (
     resolve_expose_mode,
     serialize_secret,
     validate_secret,
-    validate_secret_dict,
 )
 from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
@@ -1279,46 +1278,6 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-    acp_env: dict[str, str] = Field(
-        default_factory=dict,
-        description=(
-            "DEPRECATED (removed in 1.29.0): extra environment variables passed "
-            "to the ACP subprocess. Provide arbitrary subprocess env vars through "
-            "the conversation secrets channel (agent_context.secrets / "
-            "StartConversationRequest.secrets, which route through "
-            "state.secret_registry) instead."
-        ),
-        json_schema_extra={
-            SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="ACP environment variables",
-                prominence=SettingProminence.MINOR,
-            ).model_dump(),
-            SETTINGS_SECTION_METADATA_KEY: SettingsSectionMetadata(
-                key="acp",
-                label="ACP (Agent Client Protocol)",
-                variant="acp",
-            ).model_dump(),
-        },
-    )
-
-    @field_validator("acp_env", mode="before")
-    @classmethod
-    def _decrypt_acp_env_values(cls, value: Any, info: ValidationInfo) -> Any:
-        """Decrypt persisted ACP environment values when a cipher is available.
-
-        Legacy plaintext values pass through unchanged so the next save can
-        re-encrypt them, matching MCP env/header handling. The matching
-        on-the-wire validator on :class:`~openhands.sdk.agent.ACPAgent`
-        handles the conversation-start round-trip; both delegate to the
-        shared :func:`validate_secret_dict` helper.
-        """
-        return validate_secret_dict(value, info, description="ACP env")
-
-    @field_serializer("acp_env", when_used="always")
-    def _serialize_acp_env(self, value: dict[str, str], info):
-        """Mask ``acp_env`` values via :func:`serialize_secret`."""
-        return {k: serialize_secret(SecretStr(v), info) for k, v in value.items()}
-
     acp_model: str | None = Field(
         default=None,
         description=(
@@ -1488,7 +1447,7 @@ class ACPAgentSettings(AgentSettingsBase):
 
         Delegates to the :data:`~openhands.sdk.settings.acp_providers.ACP_PROVIDERS`
         registry.  Returns ``None`` for ``'custom'`` servers — users manage
-        credentials entirely via :attr:`acp_env` in that case.
+        credentials entirely via the conversation secrets channel in that case.
         """
         info = self.provider_info
         return info.api_key_env_var if info is not None else None
@@ -1548,36 +1507,6 @@ class ACPAgentSettings(AgentSettingsBase):
                 env[self.base_url_env_var] = base_url_value
 
         return env
-
-    def resolve_acp_env(self) -> dict[str, str]:
-        """Return the user-supplied ACP subprocess env vars.
-
-        Only the explicit :attr:`acp_env` entries — the user-facing
-        arbitrary-env-var input that becomes ``ACPAgent.acp_env``. Provider
-        credentials are **not** folded in here; they ride the conversation
-        secrets channel → ``state.secret_registry`` (the canonical,
-        cipher-protected channel the regular agent uses). At spawn time
-        ``ACPAgent`` injects ``acp_env`` and the registry secrets into the
-        subprocess env.
-
-        .. deprecated:: 1.24.0
-            :attr:`acp_env` is deprecated and will be removed in 1.29.0. Pass
-            arbitrary subprocess env vars through the conversation secrets
-            channel instead.
-        """
-        if self.acp_env:
-            warn_deprecated(
-                "ACPAgentSettings.acp_env",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=(
-                    "Provide arbitrary ACP subprocess env vars through the "
-                    "conversation secrets channel (agent_context.secrets / "
-                    "StartConversationRequest.secrets, which route through "
-                    "state.secret_registry) instead."
-                ),
-            )
-        return dict(self.acp_env)
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
@@ -1687,8 +1616,7 @@ class ACPAgentSettings(AgentSettingsBase):
         which route through ``state.secret_registry``) keyed by the
         provider's env var name (:attr:`api_key_env_var`), exactly like the
         regular agent's credentials, and reach the subprocess from the
-        registry. ``acp_env`` carries only the user's explicit arbitrary
-        env vars (deprecated).
+        registry.
         """
         from openhands.sdk.agent import ACPAgent
 
@@ -1730,12 +1658,6 @@ class ACPAgentSettings(AgentSettingsBase):
             # read it from ConversationInfo.agent.acp_server.
             acp_server=self.acp_server,
             acp_args=list(self.acp_args),
-            # Pass acp_env directly rather than via resolve_acp_env() so the
-            # deprecation warning is not emitted twice on the create_agent path:
-            # _start_acp_server already warns (ACPAgent.acp_env) at spawn, and
-            # resolve_acp_env()'s warning (ACPAgentSettings.acp_env) is reserved
-            # for explicit callers of that public method.
-            acp_env=dict(self.acp_env),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,

@@ -69,13 +69,14 @@ def _deep_merge(
     - Nested dicts are merged recursively.
     - **Inside a nested map** a ``None`` value **removes** that key — the
       "unset" primitive a plain deep-merge lacks. It lets a
-      ``PATCH /api/settings`` diff delete a single map entry (one
-      ``acp_env`` / MCP ``env`` key) without round-tripping the whole map::
+      ``PATCH /api/settings`` diff delete a single map entry (one MCP
+      ``env`` / ``headers`` key) without round-tripping the whole map::
 
-          {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+          {"agent_settings_diff":
+              {"mcp_config": {"mcpServers": {"svc": {"env": {"STALE_KEY": null}}}}}}
 
-    - **At the top level** (a settings *field* like ``confirmation_mode`` or
-      ``acp_env`` itself) a ``None`` is left as-is and flows to model
+    - **At the top level** (a settings *field* like ``confirmation_mode``)
+      a ``None`` is left as-is and flows to model
       validation — exactly as before this primitive existed. So a stray
       ``{"confirmation_mode": null}`` still fails loudly (422) instead of
       silently resetting a field to its default. This scoping is deliberate:

@@ -295,8 +295,8 @@ def test_acp_profile_persists_no_secret_fields() -> None:
     dumped = ACPAgentProfile(name="acp", acp_server="claude-code").model_dump(
         mode="json"
     )
-    # No embedded credential and no acp_env-style secret bag on the profile.
-    for key in ("llm", "api_key", "acp_env", "secrets", "agent_context"):
+    # No embedded credential and no secret bag on the profile.
+    for key in ("llm", "api_key", "secrets", "agent_context"):
         assert key not in dumped
 
 

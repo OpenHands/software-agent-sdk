@@ -4,7 +4,7 @@ import contextlib
 import copy
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
 
@@ -53,6 +53,8 @@ from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registry import MarketplaceRegistry
+from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -75,6 +77,8 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
+from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -86,7 +90,32 @@ logger = get_logger(__name__)
 ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
 ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
+_RUNTIME_MCP_TIMEOUT_SECS = 30
+
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
+
+
+def _agent_already_surfaced_error(events: Sequence[Event], since: int = 0) -> bool:
+    """Whether the agent's own step already emitted a typed ConversationErrorEvent.
+
+    ACPAgent surfaces a detailed, classified ``ConversationErrorEvent``
+    (``source="agent"``) from its step/init and then re-raises so the run loop
+    tears down.  Without this guard the run loop's generic ``except`` would emit a
+    second, less-informative event (``code=type(exc).__name__``, ``detail=str(exc)``)
+    as the *latest* error — clobbering the agent's rich one in clients that show the
+    most recent error.  Regular agents never self-emit (all their error events are
+    ``source="environment"``), so only the ACP duplicate is suppressed.
+
+    ``since`` should be the number of events that existed at the start of the current
+    ``run()``/``arun()`` call.  Scoping the scan to events added *during this run*
+    prevents a stale source="agent" event from a prior run from suppressing the error
+    event for an unrelated exception in a subsequent run on the same conversation.
+    """
+    for i in range(len(events) - 1, since - 1, -1):
+        event = events[i]
+        if isinstance(event, ConversationErrorEvent):
+            return event.source == "agent"
+    return False
 
 
 def _is_acp_prompt_message(event: Event) -> TypeGuard[MessageEvent]:
@@ -640,35 +669,58 @@ class LocalConversation(BaseConversation):
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
 
-        # Load plugins if specified
+        plugins_to_load: list[tuple[PluginSource, bool]] = []
+        if merged_context is not None and merged_context.registered_marketplaces:
+            registrations = [
+                registration.model_copy(
+                    update={
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in merged_context.registered_marketplaces
+            ]
+            registry = MarketplaceRegistry(registrations)
+            for registration in registry.get_auto_load_registrations():
+                try:
+                    marketplace, _ = registry.get_marketplace(registration.name)
+                except Exception:
+                    logger.warning(
+                        "Failed to load marketplace '%s'; continuing without it",
+                        registration.name,
+                        exc_info=True,
+                    )
+                    continue
+                for entry in marketplace.plugins:
+                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
+                    plugins_to_load.append(
+                        (
+                            PluginSource(source=source, ref=ref, repo_path=repo_path),
+                            True,
+                        )
+                    )
+
         if self._plugin_specs:
-            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
+
+        # Load plugins if specified or registered for auto-load
+        if plugins_to_load:
+            logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            # Expand ${VAR} placeholders in the source/ref using per-conversation
-            # secrets, so private plugins can be cloned with a token supplied via
-            # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
-            #
-            # SECURITY: secrets only (check_env=False) -- never fold host
-            # environment variables into a URL sent to a remote git host.
-            # Braced-only (support_unbraced=False) avoids mangling a literal "$"
-            # that may legitimately appear in a token/password. expand_defaults
-            # is False so an unknown ${VAR} is left verbatim rather than silently
-            # defaulted inside a URL.
-            get_secret = self._state.secret_registry.get_secret_value
-
-            def _expand_secret_refs(value: str) -> str:
-                return expand_variable_references(
-                    value,
-                    get_secret=get_secret,
-                    check_env=False,
-                    support_unbraced=False,
-                    expand_defaults=False,
-                )
-
-            for spec in self._plugin_specs:
-                fetch_source = _expand_secret_refs(spec.source)
-                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+            for spec, source_refs_expanded in plugins_to_load:
+                if source_refs_expanded:
+                    fetch_source = spec.source
+                    fetch_ref = spec.ref
+                else:
+                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_ref = (
+                        self._expand_plugin_source_ref(spec.ref)
+                        if spec.ref
+                        else spec.ref
+                    )
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
@@ -688,7 +740,7 @@ class LocalConversation(BaseConversation):
                 # Load the plugin
                 plugin = Plugin.load(path)
                 logger.debug(
-                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
 
@@ -705,7 +757,7 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
 
         # Resolve project skills from the workspace. AgentContext can't do this
         # itself (the workspace path is unknown at validation time), so it is done
@@ -758,7 +810,7 @@ class LocalConversation(BaseConversation):
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
-        if self._plugin_specs or has_mcp_config or project_skills_loaded:
+        if plugins_to_load or has_mcp_config or project_skills_loaded:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -816,6 +868,190 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
+
+    def _expand_plugin_source_ref(self, value: str) -> str:
+        return expand_variable_references(
+            value,
+            get_secret=self._state.secret_registry.get_secret_value,
+            check_env=False,
+            support_unbraced=False,
+            expand_defaults=False,
+        )
+
+    def _marketplace_registry_from_context(self) -> MarketplaceRegistry:
+        agent_context = self.agent.agent_context
+        if agent_context is None:
+            raise ValueError(
+                "No agent context available. Configure agent_context with "
+                "registered_marketplaces to use load_plugin()."
+            )
+        registrations = agent_context.registered_marketplaces
+        if not registrations:
+            raise ValueError(
+                "No marketplaces registered. Configure registered_marketplaces "
+                "in AgentContext to use load_plugin()."
+            )
+        return MarketplaceRegistry(
+            [
+                registration.model_copy(
+                    update={
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in registrations
+            ]
+        )
+
+    def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
+        existing_config = self._state.hook_config
+        merged_config = (
+            HookConfig.merge([existing_config, plugin_hooks])
+            if existing_config is not None
+            else plugin_hooks
+        )
+        if merged_config is None:
+            return
+
+        hook_persistence_dir = (
+            str(Path(self._state.persistence_dir).parent)
+            if self._state.persistence_dir is not None
+            else None
+        )
+        previous_processor = self._hook_processor
+        if previous_processor is not None:
+            previous_processor.run_session_end()
+
+        self._state.hook_config = merged_config
+        self._pending_hook_config = merged_config
+        self._hook_processor, self._on_event = create_hook_callback(
+            hook_config=merged_config,
+            working_dir=str(self.workspace.working_dir),
+            session_id=str(self._state.id),
+            original_callback=self._base_callback,
+            llm_getter=lambda: self.agent.llm,
+            persistence_dir=hook_persistence_dir,
+            visualizer=self._visualizer,
+            conversation_stats=self._state.stats,
+        )
+        self._hook_processor.set_conversation_state(self._state)
+        self._hook_processor.run_session_start()
+
+    def _runtime_mcp_tools_for_plugin(
+        self, plugin_mcp_config: dict[str, Any] | None
+    ) -> list[ToolDefinition]:
+        if not plugin_mcp_config:
+            return []
+        return list(
+            create_mcp_tools(plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS).tools
+        )
+
+    def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
+        agent_context = self.agent.agent_context
+        has_invocable_skills = bool(
+            agent_context
+            and any(
+                skill.is_agentskills_format and not skill.disable_model_invocation
+                for skill in agent_context.skills
+            )
+        )
+        if has_invocable_skills and InvokeSkillTool.name not in self.agent.tools_map:
+            return list(InvokeSkillTool.create(self._state))
+        return []
+
+    def _close_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        for tool in tools:
+            try:
+                tool.as_executable().executor.close()
+            except NotImplementedError:
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "Error closing runtime tool executor for tool '%s': %s",
+                    tool.name,
+                    exc,
+                )
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from the conversation's registered marketplaces."""
+        self._ensure_plugins_loaded()
+        spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
+
+        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
+        path, resolved_ref = fetch_plugin_with_resolution(
+            source=fetch_source,
+            ref=fetch_ref,
+            repo_path=spec.repo_path,
+        )
+        plugin = Plugin.load(path)
+        logger.info(
+            f"Loaded plugin '{plugin.manifest.name}'"
+            + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+        )
+
+        get_secret = self._state.secret_registry.get_secret_value
+        runtime_plugin_mcp = (
+            expand_mcp_variables(
+                plugin.mcp_config,
+                {},
+                get_secret=get_secret,
+                expand_defaults=True,
+            )
+            if plugin.mcp_config
+            else None
+        )
+        merged_context = plugin.add_skills_to(self.agent.agent_context)
+        merged_mcp = plugin.add_mcp_config_to(
+            dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+        )
+        if merged_mcp:
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=get_secret,
+                expand_defaults=True,
+            )
+        runtime_mcp_tools = (
+            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp)
+            if self._agent_ready
+            else []
+        )
+
+        with self._state:
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
+
+            if plugin.agents:
+                register_plugin_agents(
+                    agents=plugin.agents,
+                    work_dir=self.workspace.working_dir,
+                )
+            if plugin.hooks and not plugin.hooks.is_empty():
+                self._merge_runtime_plugin_hooks(plugin.hooks)
+
+            resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+            if self._resolved_plugins is None:
+                self._resolved_plugins = []
+            self._resolved_plugins.append(resolved)
+
+            self._state.agent = self.agent
+            if self._agent_ready:
+                runtime_tools = [
+                    *runtime_mcp_tools,
+                    *self._runtime_skill_tools_for_agent(),
+                ]
+                try:
+                    self.agent.add_runtime_tools(runtime_tools)
+                except Exception:
+                    self._close_runtime_tools(runtime_mcp_tools)
+                    raise
 
     def _register_file_based_agents(self) -> None:
         """Discover and register file-based agents into the agent registry.
@@ -1199,6 +1435,7 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
@@ -1323,14 +1560,19 @@ class LocalConversation(BaseConversation):
             with self._state:
                 self._state.execution_status = ConversationExecutionStatus.ERROR
 
-                # Add an error event
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Add an error event — unless the agent already surfaced a typed,
+                # detailed one for this failure (e.g. ACPAgent._emit_turn_error),
+                # which a generic str(e) duplicate would otherwise clobber.
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
 
             # Re-raise with conversation id and persistence dir for better UX
             raise ConversationRunError(
@@ -1397,6 +1639,7 @@ class LocalConversation(BaseConversation):
             )
 
         iteration = 0
+        _run_start_event_count = len(self._state.events)
         try:
             while True:
                 logger.debug(f"Conversation arun iteration {iteration}")
@@ -1782,13 +2025,18 @@ class LocalConversation(BaseConversation):
                 updated_agent_state.pop(ACP_SUPERSEDE_INFLIGHT_PROMPT, None)
                 self._state.agent_state = updated_agent_state
                 self._state.execution_status = ConversationExecutionStatus.ERROR
-                self._on_event(
-                    ConversationErrorEvent(
-                        source="environment",
-                        code=e.__class__.__name__,
-                        detail=str(e),
+                # Skip the generic event if the agent already surfaced a typed,
+                # detailed one for this failure (see _agent_already_surfaced_error).
+                if not _agent_already_surfaced_error(
+                    self._state.events, _run_start_event_count
+                ):
+                    self._on_event(
+                        ConversationErrorEvent(
+                            source="environment",
+                            code=e.__class__.__name__,
+                            detail=str(e),
+                        )
                     )
-                )
             raise ConversationRunError(
                 self._state.id, e, persistence_dir=self._state.persistence_dir
             ) from e

@@ -164,7 +164,6 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_server",
         "acp_command",
         "acp_args",
-        "acp_env",
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
@@ -1178,19 +1177,6 @@ def test_acp_resolve_provider_env_custom_server_empty() -> None:
         assert settings.resolve_provider_env() == {}
 
 
-def test_acp_resolve_acp_env_returns_only_user_entries() -> None:
-    # Provider creds are no longer folded into acp_env; resolve_acp_env returns
-    # only the user's explicit env vars. The provider api_key now flows through
-    # agent_context.secrets instead (see create_agent).
-    settings = ACPAgentSettings(
-        acp_server="claude-code",
-        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
-        acp_env={"MY_CUSTOM_VAR": "value"},
-    )
-
-    assert settings.resolve_acp_env() == {"MY_CUSTOM_VAR": "value"}
-
-
 def test_acp_create_agent_ignores_llm_credentials() -> None:
     # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
     # longer folded into agent_context.secrets: an LLM-profile base_url would
@@ -1206,13 +1192,11 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
             base_url="https://llm-proxy.example.com",
         ),
         agent_context=context,
-        acp_env={"MY_VAR": "v"},
     )
 
     with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
-    assert agent.acp_env == {"MY_VAR": "v"}
     # The caller's secrets pass through untouched; no provider creds appear.
     assert agent.agent_context is not None
     assert dict(agent.agent_context.secrets or {}) == {"GITHUB_TOKEN": "ghp_test"}
@@ -1229,7 +1213,6 @@ def test_acp_create_agent_credentials_warn_even_without_context() -> None:
     with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
-    assert agent.acp_env == {}
     assert agent.agent_context is None
 
 
@@ -1259,24 +1242,6 @@ def test_acp_create_agent_passes_caller_context_through() -> None:
     agent = settings.create_agent()
 
     assert agent.agent_context is context
-
-
-def test_acp_env_emits_deprecation_warning() -> None:
-    # acp_env is deprecated (removed in 1.29.0); using it warns so callers
-    # migrate to the secret_registry channel before the field is deleted.
-    settings = ACPAgentSettings(acp_server="claude-code", acp_env={"MY_VAR": "v"})
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.acp_env"):
-        assert settings.resolve_acp_env() == {"MY_VAR": "v"}
-
-
-def test_acp_env_empty_does_not_warn() -> None:
-    import warnings
-
-    settings = ACPAgentSettings(acp_server="claude-code")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        settings.resolve_acp_env()
-    assert not [w for w in caught if "acp_env" in str(w.message)]
 
 
 def test_llm_agent_settings_public_alias_removed() -> None:
@@ -1367,62 +1332,6 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 # ---------------------------------------------------------------------------
 # Secret redaction in settings serialization
 # ---------------------------------------------------------------------------
-
-
-def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
-    settings = ACPAgentSettings(
-        acp_command=["echo", "test"],
-        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
-    )
-
-    assert settings.acp_env["OPENAI_API_KEY"] == "sk-real-secret"
-    assert "sk-real-secret" not in settings.model_dump_json()
-    assert settings.model_dump(mode="json")["acp_env"] == {
-        "OPENAI_API_KEY": "**********"
-    }
-
-    exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
-    assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
-
-
-def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
-    """ACP env persistence should mirror other secret-bearing settings.
-
-    The on-disk path encrypts values with a cipher, and loading with the same
-    cipher must recover plaintext so ACP agents receive usable environment
-    variables after settings are read back.
-    """
-    from openhands.sdk.utils.cipher import Cipher
-
-    settings = ACPAgentSettings(
-        acp_command=["echo", "test"],
-        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
-    )
-    cipher = Cipher(secret_key="test-encryption-key")
-
-    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
-    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
-
-    assert encrypted_value.startswith("gAAAA")
-    assert "sk-real-secret" not in json.dumps(dumped)
-
-    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
-    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
-
-    restored_from_persisted = validate_agent_settings(
-        dumped, context={"cipher": cipher}
-    )
-    assert isinstance(restored_from_persisted, ACPAgentSettings)
-    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
-
-    legacy_plaintext = ACPAgentSettings.model_validate(
-        {
-            "acp_command": ["echo", "test"],
-            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
-        },
-        context={"cipher": cipher},
-    )
-    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:

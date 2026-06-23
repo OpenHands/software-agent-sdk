@@ -281,8 +281,7 @@ def test_acp_resolves_to_settings_without_credentials(
     assert settings.acp_args == ["--flag"]
     assert settings.mcp_config is not None
     assert list(settings.mcp_config.mcpServers.keys()) == ["fetch"]
-    # No credential is injected; the deprecated channels stay empty.
-    assert settings.acp_env == {}
+    # No credential is injected; the deprecated llm channel stays empty.
     assert settings.llm.api_key is None
     assert isinstance(settings.create_agent(), ACPAgent)
 

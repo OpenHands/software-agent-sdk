@@ -209,20 +209,20 @@ class ACPAgentProfile(AgentProfileBase):
     )
 
 
-class LaunchedProfile(BaseModel):
-    """Provenance snapshot recorded when a profile launches a conversation.
+class LaunchedAgentProfile(BaseModel):
+    """Provenance snapshot recorded when an agent profile launches a conversation.
 
     Stored on ``StoredConversation`` and projected onto ``ConversationInfo`` so
-    ts-client ``deriveSwitchPlan`` can identify which profile is current without
-    fragile settings-comparison. See #3720.
+    ts-client ``deriveSwitchPlan`` can identify which agent profile is current
+    without fragile settings-comparison. See #3720.
     """
 
-    profile_id: UUID = Field(
-        description="Stable id of the profile that launched the conversation."
+    agent_profile_id: UUID = Field(
+        description="Stable id of the agent profile that launched the conversation.",
     )
     revision: int = Field(
         ge=0,
-        description="Revision of the profile at launch time.",
+        description="Revision of the agent profile at launch time.",
     )
 
 

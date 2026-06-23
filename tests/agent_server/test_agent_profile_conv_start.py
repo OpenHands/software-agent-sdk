@@ -1,10 +1,10 @@
-"""Tests for agent_profile_id at conversation start + LaunchedProfile provenance.
+"""Tests for agent_profile_id at conversation start + LaunchedAgentProfile provenance.
 
 Covers:
 - start-from-profile (OpenHands + ACP paths)
 - mutual-exclusivity validation (SDK layer)
 - unknown-id 404 / dangling-ref 422 (router layer)
-- LaunchedProfile provenance round-trip through StoredConversation
+- LaunchedAgentProfile provenance round-trip through StoredConversation
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationInfo,
-    LaunchedProfile,
+    LaunchedAgentProfile,
     StartConversationRequest,
     StoredConversation,
 )
@@ -148,8 +148,8 @@ class TestStartConversationRequestValidation:
 # ---------------------------------------------------------------------------
 
 # The helper does local imports inside the function body; patch at the source modules.
-_STORE_PATH = "openhands.sdk.profiles.agent_profile_store.AgentProfileStore"
-_LLM_STORE_PATH = "openhands.sdk.llm.llm_profile_store.LLMProfileStore"
+_STORE_PATH = "openhands.agent_server.persistence.store.get_agent_profile_store"
+_LLM_STORE_PATH = "openhands.agent_server.persistence.store.get_llm_profile_store"
 _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
 
 
@@ -190,7 +190,7 @@ class TestResolveAgentFromProfile:
             )
 
         assert result_agent is agent
-        assert launched.profile_id == profile.id
+        assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
 
     def test_dangling_mcp_server_ref_propagates(self):
@@ -239,7 +239,7 @@ class TestResolveAgentFromProfile:
             )
 
         assert result_agent is acp_agent
-        assert launched.profile_id == profile.id
+        assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
 
 
@@ -250,11 +250,15 @@ class TestResolveAgentFromProfile:
 
 class TestConversationServiceStartFromProfile:
     @pytest.mark.asyncio
-    async def test_start_from_profile_stamps_launched_profile_on_stored(self, tmp_path):
-        """_start_conversation passes launched_profile to StoredConversation."""
+    async def test_start_from_profile_stamps_launched_agent_profile_on_stored(
+        self, tmp_path
+    ):
+        """_start_conversation passes launched_agent_profile to StoredConversation."""
         profile_id = uuid4()
         agent = _make_agent()
-        launched_profile = LaunchedProfile(profile_id=profile_id, revision=5)
+        launched_agent_profile = LaunchedAgentProfile(
+            agent_profile_id=profile_id, revision=5
+        )
         request = StartConversationRequest(
             agent_profile_id=profile_id,
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
@@ -270,7 +274,7 @@ class TestConversationServiceStartFromProfile:
 
         with patch(
             "openhands.agent_server.conversation_service._resolve_agent_from_profile",
-            return_value=(agent, launched_profile),
+            return_value=(agent, launched_agent_profile),
         ):
             service = ConversationService(conversations_dir=tmp_path)
             service._event_services = {}
@@ -281,7 +285,7 @@ class TestConversationServiceStartFromProfile:
                 mock_es = AsyncMock(spec=EventService)
                 mock_es.get_state.return_value = mock_state
                 mock_es.stored = MagicMock(
-                    launched_profile=launched_profile,
+                    launched_agent_profile=launched_agent_profile,
                     client_tools=[],
                     title=None,
                     metrics=None,
@@ -299,9 +303,9 @@ class TestConversationServiceStartFromProfile:
 
         stored = captured.get("stored")
         assert stored is not None, "StoredConversation was not captured"
-        assert stored.launched_profile is not None
-        assert stored.launched_profile.profile_id == profile_id
-        assert stored.launched_profile.revision == 5
+        assert stored.launched_agent_profile is not None
+        assert stored.launched_agent_profile.agent_profile_id == profile_id
+        assert stored.launched_agent_profile.revision == 5
         # The resolved agent (not None) must be present
         assert stored.agent is not None
 
@@ -385,31 +389,31 @@ class TestConversationRouterProfileErrors:
 
 
 # ---------------------------------------------------------------------------
-# Provenance round-trip: LaunchedProfile survives serialization
+# Provenance round-trip: LaunchedAgentProfile survives serialization
 # ---------------------------------------------------------------------------
 
 
-class TestLaunchedProfileRoundTrip:
-    def test_launched_profile_survives_stored_conversation_round_trip(self):
-        """LaunchedProfile survives model_dump/model_validate round-trip."""
+class TestLaunchedAgentProfileRoundTrip:
+    def test_launched_agent_profile_survives_stored_conversation_round_trip(self):
+        """LaunchedAgentProfile survives model_dump/model_validate round-trip."""
         profile_id = uuid4()
-        lp = LaunchedProfile(profile_id=profile_id, revision=7)
+        lp = LaunchedAgentProfile(agent_profile_id=profile_id, revision=7)
         stored = StoredConversation(
             id=uuid4(),
             agent=_make_agent(),
             workspace=LocalWorkspace(working_dir="/tmp"),
-            launched_profile=lp,
+            launched_agent_profile=lp,
         )
 
         dumped = stored.model_dump(mode="json")
-        assert dumped["launched_profile"] is not None
-        assert dumped["launched_profile"]["profile_id"] == str(profile_id)
-        assert dumped["launched_profile"]["revision"] == 7
+        assert dumped["launched_agent_profile"] is not None
+        assert dumped["launched_agent_profile"]["agent_profile_id"] == str(profile_id)
+        assert dumped["launched_agent_profile"]["revision"] == 7
 
         reloaded = StoredConversation.model_validate({"id": str(stored.id), **dumped})
-        assert reloaded.launched_profile is not None
-        assert reloaded.launched_profile.profile_id == profile_id
-        assert reloaded.launched_profile.revision == 7
+        assert reloaded.launched_agent_profile is not None
+        assert reloaded.launched_agent_profile.agent_profile_id == profile_id
+        assert reloaded.launched_agent_profile.revision == 7
 
     def test_stored_conversation_without_profile_has_none(self):
         stored = StoredConversation(
@@ -417,14 +421,14 @@ class TestLaunchedProfileRoundTrip:
             agent=_make_agent(),
             workspace=LocalWorkspace(working_dir="/tmp"),
         )
-        assert stored.launched_profile is None
+        assert stored.launched_agent_profile is None
 
     def test_agent_profile_id_excluded_from_stored_conversation_persistence(self):
         """Regression: agent_profile_id must NOT appear in StoredConversation payload.
 
         StartConversationRequest.model_dump() includes agent_profile_id for HTTP
         transport.  _start_conversation excludes it before building StoredConversation
-        (the field is resolved into launched_profile); this test verifies that a
+        (the field is resolved into launched_agent_profile); this test verifies that a
         StoredConversation built from a resolved request contains neither the raw
         profile UUID nor re-exposes it.
         """
@@ -443,9 +447,9 @@ class TestLaunchedProfileRoundTrip:
         dumped = stored.model_dump(mode="json")
         assert "agent_profile_id" not in dumped
 
-    def test_launched_profile_in_conversation_info(self):
+    def test_launched_agent_profile_in_conversation_info(self):
         profile_id = uuid4()
-        lp = LaunchedProfile(profile_id=profile_id, revision=3)
+        lp = LaunchedAgentProfile(agent_profile_id=profile_id, revision=3)
         now = datetime.now(UTC)
         info = ConversationInfo(
             id=uuid4(),
@@ -454,11 +458,11 @@ class TestLaunchedProfileRoundTrip:
             execution_status=ConversationExecutionStatus.IDLE,
             created_at=now,
             updated_at=now,
-            launched_profile=lp,
+            launched_agent_profile=lp,
         )
-        assert info.launched_profile is not None
-        assert info.launched_profile.profile_id == profile_id
-        assert info.launched_profile.revision == 3
+        assert info.launched_agent_profile is not None
+        assert info.launched_agent_profile.agent_profile_id == profile_id
+        assert info.launched_agent_profile.revision == 3
 
     def test_conversation_info_without_profile_is_none(self):
         now = datetime.now(UTC)
@@ -470,22 +474,22 @@ class TestLaunchedProfileRoundTrip:
             created_at=now,
             updated_at=now,
         )
-        assert info.launched_profile is None
+        assert info.launched_agent_profile is None
 
-    def test_launched_profile_survives_json_serialization(self, tmp_path):
+    def test_launched_agent_profile_survives_json_serialization(self, tmp_path):
         """Simulate meta.json round-trip: dump → write → read → validate."""
         profile_id = uuid4()
-        lp = LaunchedProfile(profile_id=profile_id, revision=5)
+        lp = LaunchedAgentProfile(agent_profile_id=profile_id, revision=5)
         stored = StoredConversation(
             id=uuid4(),
             agent=_make_agent(),
             workspace=LocalWorkspace(working_dir=str(tmp_path)),
-            launched_profile=lp,
+            launched_agent_profile=lp,
         )
         meta_file = tmp_path / "meta.json"
         meta_file.write_text(stored.model_dump_json())
 
         reloaded = StoredConversation.model_validate_json(meta_file.read_text())
-        assert reloaded.launched_profile is not None
-        assert reloaded.launched_profile.profile_id == profile_id
-        assert reloaded.launched_profile.revision == 5
+        assert reloaded.launched_agent_profile is not None
+        assert reloaded.launched_agent_profile.agent_profile_id == profile_id
+        assert reloaded.launched_agent_profile.revision == 5

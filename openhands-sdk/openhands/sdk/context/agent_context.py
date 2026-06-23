@@ -19,6 +19,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 from openhands.sdk.skills import (
     Skill,
@@ -111,6 +112,14 @@ class AgentContext(BaseModel):
         ),
         json_schema_extra={"acp_compatible": True},
     )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin resolution. Registrations with "
+            "auto_load=True are resolved by LocalConversation at startup."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
     load_project_skills: bool = Field(
         default=False,
         description=(
@@ -165,7 +174,9 @@ class AgentContext(BaseModel):
         :class:`StartConversationRequest` (whose
         ``_populate_agent_from_settings`` validator runs *without*
         cipher context) and get injected into the agent's system prompt
-        as-is — same bug class that affected ``ACPAgent.acp_env``.
+        as-is — same bug class as any secret-bearing dict field that
+        round-trips without a matching decryption validator (e.g. MCP
+        ``env`` / ``headers``).
 
         ``SecretSource`` entries are dict-shaped on the wire (Pydantic
         models), so they're skipped by :func:`validate_secret_dict`'s
@@ -204,15 +215,18 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
-        if not self.load_user_skills and not self.load_public_skills:
+        """Load user and/or legacy public skills if enabled."""
+        # Any marketplace registration opts the context out of the legacy
+        # public-skills path, even when the registration is resolution-only.
+        include_public = self.load_public_skills and not self.registered_marketplaces
+        if not self.load_user_skills and not include_public:
             return self
 
         auto_skills = load_available_skills(
             work_dir=None,
             include_user=self.load_user_skills,
             include_project=False,
-            include_public=self.load_public_skills,
+            include_public=include_public,
             marketplace_path=self.marketplace_path,
         )
 
