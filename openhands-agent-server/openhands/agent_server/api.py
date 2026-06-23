@@ -234,6 +234,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
+        bash_svc = get_default_bash_event_service()
+        api.state.bash_event_service = bash_svc
+
         async with service:
             api.state.conversation_service = service
 
@@ -241,7 +244,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
-                    get_default_bash_event_service().run_retention_cleanup_loop(
+                    bash_svc.run_retention_cleanup_loop(
                         config.bash_events_retention_seconds
                     )
                 )
