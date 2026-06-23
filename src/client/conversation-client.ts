@@ -14,6 +14,7 @@ import type {
   ForkConversationRequest,
   SetConfirmationPolicyRequest,
   SetSecurityAnalyzerRequest,
+  StartGoalRequest,
   UpdateConversationRequest,
   UpdateSecretsRequest,
 } from '../models/conversation';
@@ -172,6 +173,48 @@ export class ConversationClient {
   async runConversation(conversationId: string): Promise<Success> {
     const response = await this.client.post<Success>(
       `/api/conversations/${conversationId}/run`,
+      {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Start a `/goal` loop inside an existing conversation. The loop runs in the
+   * conversation's own history and event stream (it does not fork). The server
+   * returns 409 if a run or goal loop is already active and 400 for an invalid
+   * objective (e.g. empty); a missing conversation yields 404.
+   */
+  async startGoal(conversationId: string, request: StartGoalRequest): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal`,
+      request
+    );
+    return response.data;
+  }
+
+  /**
+   * Stop the active `/goal` loop in this conversation. Cancels only the
+   * background goal loop (not the conversation) and records an `interrupted`
+   * status so {@link resumeGoal} can continue it. Succeeds even when no loop is
+   * running; a missing conversation yields 404.
+   */
+  async stopGoal(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal/stop`,
+      {}
+    );
+    return response.data;
+  }
+
+  /**
+   * Resume the last interrupted `/goal` loop in this conversation. The server
+   * returns 409 if a run or goal loop is already active and 400 when there is
+   * no resumable goal (none started, or it already completed); a missing
+   * conversation yields 404.
+   */
+  async resumeGoal(conversationId: string): Promise<Success> {
+    const response = await this.client.post<Success>(
+      `/api/conversations/${conversationId}/goal/resume`,
       {}
     );
     return response.data;

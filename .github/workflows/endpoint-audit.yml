@@ -3,6 +3,10 @@ name: Endpoint Audit
 on:
   push:
     branches: [ '**' ]
+  # Required for the "Comment audit report on PR" step: it is gated on
+  # github.event_name == 'pull_request' and relies on the PR context
+  # (context.issue.number), neither of which exists on a push event.
+  pull_request:
 
 # Needed so the audit can post its report as a comment on the PR.
 permissions:

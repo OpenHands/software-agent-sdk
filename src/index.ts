@@ -267,6 +267,7 @@ export type {
   ACPConversationSearchResponse,
   AskAgentRequest,
   AskAgentResponse,
+  StartGoalRequest,
   SetSecurityAnalyzerRequest,
   SetConfirmationPolicyRequest,
   ConversationEventSearchOptions,

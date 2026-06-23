@@ -1,4 +1,5 @@
 import { Agent, ConversationManager, HttpError, Workspace } from '../../index';
+import { ConversationClient } from '../../clients';
 import { getServerTestConfig } from './test-config';
 import {
   deleteWorkspaceFile,
@@ -310,6 +311,82 @@ describe('Deterministic API Integration Tests', () => {
         expect(status).toBe(400);
       } finally {
         await manager.deleteConversation(conversation.id).catch(() => undefined);
+      }
+    },
+    config.testTimeout
+  );
+
+  it(
+    'exercises the /goal, /goal/resume, and /goal/stop routes without an LLM',
+    async () => {
+      // Contract guards for the goal endpoints (software-agent-sdk #3770,
+      // released in v1.29.0 — the pinned image). These deliberately stay off
+      // the happy path so they need neither a real LLM nor a background loop:
+      //   - start with an empty objective is rejected by GoalController -> 400
+      //   - resume with nothing to continue -> 400 ("no_resumable_goal")
+      //   - stop with no active loop is a no-op Success -> 200
+      // A 400/200 (not a 404) proves each route exists on the image AND that
+      // the client targets the right path/method/body — client<->server
+      // contract drift the mocked unit tests cannot catch.
+      const conversation = await manager.createConversation(createDummyAgent(), {
+        workingDir: config.agentWorkspaceDir,
+      });
+      try {
+        let startStatus: number | undefined;
+        try {
+          await conversation.startGoal('');
+        } catch (error) {
+          expect(error).toBeInstanceOf(HttpError);
+          startStatus = (error as HttpError).status;
+        }
+        expect(startStatus).toBe(400);
+
+        let resumeStatus: number | undefined;
+        try {
+          await conversation.resumeGoal();
+        } catch (error) {
+          expect(error).toBeInstanceOf(HttpError);
+          resumeStatus = (error as HttpError).status;
+        }
+        expect(resumeStatus).toBe(400);
+
+        // Stopping when no goal loop is running is a no-op Success, not an error.
+        await expect(conversation.stopGoal()).resolves.toBeUndefined();
+      } finally {
+        await manager.deleteConversation(conversation.id).catch(() => undefined);
+      }
+    },
+    config.testTimeout
+  );
+
+  it(
+    'returns 404 from the goal endpoints for an unknown conversation',
+    async () => {
+      // A well-formed but non-existent conversation UUID parses as the path
+      // param and reaches each handler, which must answer 404. This is distinct
+      // from a 422 (malformed UUID) or 405 (wrong method on a missing route),
+      // so it confirms the route templates resolve and the not-found branch is
+      // wired for all three goal endpoints.
+      const client = new ConversationClient({ host: config.agentServerUrl });
+      const missingId = '00000000-0000-0000-0000-000000000000';
+      try {
+        const calls: Array<() => Promise<unknown>> = [
+          () => client.startGoal(missingId, { objective: 'noop' }),
+          () => client.resumeGoal(missingId),
+          () => client.stopGoal(missingId),
+        ];
+        for (const call of calls) {
+          let status: number | undefined;
+          try {
+            await call();
+          } catch (error) {
+            expect(error).toBeInstanceOf(HttpError);
+            status = (error as HttpError).status;
+          }
+          expect(status).toBe(404);
+        }
+      } finally {
+        client.close();
       }
     },
     config.testTimeout

@@ -154,6 +154,23 @@ export interface AskAgentRequest {
   question: string;
 }
 
+/**
+ * Payload to start a `/goal` loop inside a conversation.
+ *
+ * Mirrors the agent-server's `StartGoalRequest`. The loop appends messages and
+ * runs the agent in the same conversation history/event stream as the main
+ * chat; it does not fork or create a separate conversation.
+ */
+export interface StartGoalRequest {
+  /** The goal objective to pursue and audit. Must not be empty server-side. */
+  objective: string;
+  /**
+   * Maximum audit rounds before giving up. Server requires `>= 1` and defaults
+   * to `10` when omitted.
+   */
+  max_iterations?: number;
+}
+
 export interface AskAgentResponse {
   response: string;
 }
