@@ -53,6 +53,7 @@ from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -663,35 +664,75 @@ class LocalConversation(BaseConversation):
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
 
-        # Load plugins if specified
+        # Expand ${VAR} placeholders in the source/ref using per-conversation
+        # secrets, so private plugins can be cloned with a token supplied via
+        # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
+        #
+        # SECURITY: secrets only (check_env=False) -- never fold host
+        # environment variables into a URL sent to a remote git host.
+        # Braced-only (support_unbraced=False) avoids mangling a literal "$"
+        # that may legitimately appear in a token/password. expand_defaults
+        # is False so an unknown ${VAR} is left verbatim rather than silently
+        # defaulted inside a URL.
+        get_secret = self._state.secret_registry.get_secret_value
+
+        def _expand_secret_refs(value: str) -> str:
+            return expand_variable_references(
+                value,
+                get_secret=get_secret,
+                check_env=False,
+                support_unbraced=False,
+                expand_defaults=False,
+            )
+
+        plugins_to_load: list[tuple[PluginSource, bool]] = []
+        if merged_context is not None and merged_context.registered_marketplaces:
+            registrations = [
+                registration.model_copy(
+                    update={
+                        "source": _expand_secret_refs(registration.source),
+                        "ref": _expand_secret_refs(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in merged_context.registered_marketplaces
+            ]
+            registry = MarketplaceRegistry(registrations)
+            for registration in registry.get_auto_load_registrations():
+                try:
+                    marketplace, _ = registry.get_marketplace(registration.name)
+                except Exception:
+                    logger.warning(
+                        "Failed to load marketplace '%s'; continuing without it",
+                        registration.name,
+                        exc_info=True,
+                    )
+                    continue
+                for entry in marketplace.plugins:
+                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
+                    plugins_to_load.append(
+                        (
+                            PluginSource(source=source, ref=ref, repo_path=repo_path),
+                            True,
+                        )
+                    )
+
         if self._plugin_specs:
-            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
+
+        # Load plugins if specified or registered for auto-load
+        if plugins_to_load:
+            logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            # Expand ${VAR} placeholders in the source/ref using per-conversation
-            # secrets, so private plugins can be cloned with a token supplied via
-            # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
-            #
-            # SECURITY: secrets only (check_env=False) -- never fold host
-            # environment variables into a URL sent to a remote git host.
-            # Braced-only (support_unbraced=False) avoids mangling a literal "$"
-            # that may legitimately appear in a token/password. expand_defaults
-            # is False so an unknown ${VAR} is left verbatim rather than silently
-            # defaulted inside a URL.
-            get_secret = self._state.secret_registry.get_secret_value
-
-            def _expand_secret_refs(value: str) -> str:
-                return expand_variable_references(
-                    value,
-                    get_secret=get_secret,
-                    check_env=False,
-                    support_unbraced=False,
-                    expand_defaults=False,
-                )
-
-            for spec in self._plugin_specs:
-                fetch_source = _expand_secret_refs(spec.source)
-                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+            for spec, source_refs_expanded in plugins_to_load:
+                if source_refs_expanded:
+                    fetch_source = spec.source
+                    fetch_ref = spec.ref
+                else:
+                    fetch_source = _expand_secret_refs(spec.source)
+                    fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
@@ -728,7 +769,7 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
 
         # Resolve project skills from the workspace. AgentContext can't do this
         # itself (the workspace path is unknown at validation time), so it is done
@@ -781,7 +822,7 @@ class LocalConversation(BaseConversation):
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
-        if self._plugin_specs or has_mcp_config or project_skills_loaded:
+        if plugins_to_load or has_mcp_config or project_skills_loaded:
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
