@@ -61,11 +61,11 @@ def client(temp_profiles_dir, temp_agent_profiles_dir, temp_settings_dir, monkey
     # FK guard on delete/rename).
     with (
         patch(
-            "openhands.agent_server.profiles_router.LLMProfileStore",
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
             lambda: LLMProfileStore(base_dir=temp_profiles_dir),
         ),
         patch(
-            "openhands.agent_server.profiles_router.AgentProfileStore",
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
             lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
         ),
     ):
@@ -747,11 +747,11 @@ def client_with_cipher(
 
     with (
         patch(
-            "openhands.agent_server.profiles_router.LLMProfileStore",
+            "openhands.agent_server.profiles_router.get_llm_profile_store",
             lambda: LLMProfileStore(base_dir=temp_profiles_dir),
         ),
         patch(
-            "openhands.agent_server.profiles_router.AgentProfileStore",
+            "openhands.agent_server.profiles_router.get_agent_profile_store",
             lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
         ),
     ):

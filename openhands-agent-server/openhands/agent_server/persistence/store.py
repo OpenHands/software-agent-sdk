@@ -27,7 +27,9 @@ from openhands.agent_server.persistence.models import (
     PersistedWorkspaces,
     Secrets,
 )
+from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -687,6 +689,8 @@ class FileWorkspacesStore(WorkspacesStore):
 _settings_store: FileSettingsStore | None = None
 _secrets_store: FileSecretsStore | None = None
 _workspaces_store: FileWorkspacesStore | None = None
+_llm_profile_store: LLMProfileStore | None = None
+_agent_profile_store: AgentProfileStore | None = None
 _store_lock = threading.Lock()
 
 
@@ -702,6 +706,20 @@ def _get_persistence_dir(config: Config | None = None) -> Path:
         return config.conversations_path.parent / ".openhands"
 
     return DEFAULT_PERSISTENCE_DIR
+
+
+def _get_profile_persistence_dir() -> Path:
+    """Get the base dir for LLM/agent profile stores.
+
+    Profiles can hold credentials (LLM API keys), so absent
+    ``OH_PERSISTENCE_DIR`` they fall back to the user's ``~/.openhands``
+    rather than the workspace-relative agent-server default, keeping bare
+    local profile secrets in the expected user config directory.
+    """
+    env_dir = os.environ.get("OH_PERSISTENCE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    return Path.home() / ".openhands"
 
 
 def _get_cipher(config: Config | None = None) -> Cipher | None:
@@ -794,10 +812,53 @@ def get_workspaces_store(config: Config | None = None) -> FileWorkspacesStore:
         return _workspaces_store
 
 
+def get_llm_profile_store() -> LLMProfileStore:
+    """Get the global ``LLMProfileStore`` instance (thread-safe).
+
+    Stored at ``<dir>/profiles`` where ``<dir>`` is ``OH_PERSISTENCE_DIR``
+    when set, else ``~/.openhands``. This honors isolated agent-server
+    instances while keeping bare local profile secrets in the user's
+    config directory (never workspace-relative). See
+    :func:`_get_profile_persistence_dir`.
+    """
+    global _llm_profile_store
+    if _llm_profile_store is not None:
+        return _llm_profile_store
+
+    with _store_lock:
+        if _llm_profile_store is None:
+            _llm_profile_store = LLMProfileStore(
+                base_dir=_get_profile_persistence_dir() / "profiles",
+            )
+        return _llm_profile_store
+
+
+def get_agent_profile_store() -> AgentProfileStore:
+    """Get the global ``AgentProfileStore`` instance (thread-safe).
+
+    Stored at ``<dir>/agent-profiles`` where ``<dir>`` is resolved by
+    :func:`_get_profile_persistence_dir`, for the same reason as
+    :func:`get_llm_profile_store`.
+    """
+    global _agent_profile_store
+    if _agent_profile_store is not None:
+        return _agent_profile_store
+
+    with _store_lock:
+        if _agent_profile_store is None:
+            _agent_profile_store = AgentProfileStore(
+                base_dir=_get_profile_persistence_dir() / "agent-profiles",
+            )
+        return _agent_profile_store
+
+
 def reset_stores() -> None:
     """Reset global store instances (for testing)."""
     global _settings_store, _secrets_store, _workspaces_store
+    global _llm_profile_store, _agent_profile_store
     with _store_lock:
         _settings_store = None
         _secrets_store = None
         _workspaces_store = None
+        _llm_profile_store = None
+        _agent_profile_store = None

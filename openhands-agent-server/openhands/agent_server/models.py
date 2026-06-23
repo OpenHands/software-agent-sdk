@@ -499,6 +499,15 @@ class AskAgentResponse(BaseModel):
     response: str = Field(description="The agent's response to the question")
 
 
+class StartGoalRequest(BaseModel):
+    """Payload to start a ``/goal`` loop inside a conversation."""
+
+    objective: str = Field(description="The goal objective to pursue and audit.")
+    max_iterations: int = Field(
+        default=10, ge=1, description="Maximum audit rounds before giving up."
+    )
+
+
 class AgentResponseResult(BaseModel):
     """The agent's final response for a conversation.
 

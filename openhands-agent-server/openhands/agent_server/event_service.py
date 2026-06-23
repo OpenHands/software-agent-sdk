@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
@@ -17,9 +19,20 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
-from openhands.sdk import LLM, AgentBase, Event, Message, get_logger
+from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.events_list_base import EventsListBase
+from openhands.sdk.conversation.goal import (
+    GoalController,
+    GoalDone,
+    GoalOutcome,
+    GoalStatus,
+    GoalStatusName,
+    GoalStep,
+    GoalVerdict,
+)
+from openhands.sdk.conversation.goal.prompts import RESUME_PROMPT
 from openhands.sdk.conversation.impl.local_conversation import (
     ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID,
     ACP_SUPERSEDE_INFLIGHT_PROMPT,
@@ -92,6 +105,9 @@ class EventService:
     _lease_task: asyncio.Task | None = field(default=None, init=False)
     _external_lease_renewal: bool = field(default=False, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    # Background task for a /goal loop that is running inside this conversation.
+    _goal_loop_task: asyncio.Task | None = field(default=None, init=False)
+    _goal_loop_outcome: GoalOutcome | None = field(default=None, init=False)
 
     @property
     def conversation_dir(self):
@@ -204,6 +220,18 @@ class EventService:
             return False
         return True
 
+    def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
+        try:
+            return events[index]
+        except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
+            logger.warning(
+                "Skipping unreadable event at index %d for conversation %s (%s)",
+                index,
+                self.stored.id,
+                type(exc).__name__,
+            )
+            return None
+
     def _search_events_sync(
         self,
         page_id: str | None = None,
@@ -259,7 +287,8 @@ class EventService:
                     start_index = None
             else:
                 for i in range(total):
-                    if events[i].id == page_id:
+                    event = self._get_searchable_event(events, i)
+                    if event is not None and event.id == page_id:
                         start_index = i
                         break
         if start_index is None:
@@ -273,7 +302,9 @@ class EventService:
         items: list[Event] = []
         next_page_id: str | None = None
         for i in indices:
-            event = events[i]
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if not self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
@@ -347,7 +378,10 @@ class EventService:
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
-        for event in events:
+        for i in range(len(events)):
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
@@ -447,9 +481,15 @@ class EventService:
         )
         return results
 
-    async def send_message(self, message: Message, run: bool = False):
+    async def send_message(
+        self, message: Message, run: bool = False, _from_goal_loop: bool = False
+    ):
         if not self._conversation:
             raise ValueError("inactive_service")
+        # A normal user message supersedes any active /goal loop in this
+        # conversation. The goal loop's own messages pass _from_goal_loop=True.
+        if not _from_goal_loop:
+            await self.stop_goal_loop()
         explicit_interrupt_generation = self._explicit_interrupt_generation
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.send_message, message)
@@ -989,6 +1029,248 @@ class EventService:
             # Create task but don't await it - runs in background
             self._run_task = asyncio.create_task(_run_and_publish())
 
+    async def start_goal_loop(
+        self,
+        objective: str,
+        *,
+        judge_llm: LLM | None = None,
+        max_iterations: int = 10,
+    ) -> None:
+        """Start a ``/goal`` loop inside this conversation.
+
+        Sends the objective, runs the agent, and judges completion after each
+        run, re-prompting until the goal is done or ``max_iterations`` is
+        reached. All work stays in this conversation's event history and stream,
+        exactly like a normal run; this does not create another conversation.
+
+        Args:
+            objective: The goal to pursue and audit against.
+            judge_llm: LLM that grades completion. Defaults to the agent's LLM.
+            max_iterations: Hard cap on audit rounds before giving up.
+
+        Raises:
+            ValueError: If the service is inactive, a goal loop is already
+                running, no judge LLM is available, or the objective is empty.
+        """
+        if not self._conversation or self._closing:
+            raise ValueError("inactive_service")
+        if judge_llm is None:
+            judge_llm = getattr(self._conversation.agent, "llm", None)
+        if judge_llm is None:
+            raise ValueError("no_judge_llm")
+        # GoalController validates the objective/max_iterations (raises ValueError).
+        controller = GoalController(objective, judge_llm, max_iterations=max_iterations)
+        # Under _run_lock, atomically refuse a concurrent goal loop or active
+        # conversation run; otherwise /goal could judge an unrelated transcript.
+        async with self._run_lock:
+            if self._closing:
+                raise ValueError("inactive_service")
+            if self._goal_loop_task is not None and not self._goal_loop_task.done():
+                raise ValueError("goal_already_running")
+            # _run_task first: a live run holds the state lock across its step,
+            # so reading execution status would block behind it.
+            if (self._run_task is not None and not self._run_task.done()) or (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ValueError("conversation_already_running")
+            # Re-check after the await above: close() runs without _run_lock, so
+            # it may have begun teardown meanwhile (mirrors run()'s post-status
+            # _closing re-check) -- avoid spawning a task close() won't cancel.
+            if self._closing:
+                raise ValueError("inactive_service")
+            self._goal_loop_outcome = None
+            self._goal_loop_task = asyncio.create_task(self._run_goal_loop(controller))
+
+    async def _run_goal_loop(
+        self, controller: GoalController, *, resume: bool = False
+    ) -> None:
+        """Drive one active ``/goal`` loop inside this conversation.
+
+        Reuses the SDK's transport-agnostic ``GoalController`` for decisions;
+        this method owns only I/O: sending messages, awaiting each run, judging
+        off the event loop, and publishing goal-status updates.
+        """
+        conversation = self._conversation
+        if conversation is None:
+            return
+        loop = asyncio.get_running_loop()
+
+        def _snapshot_and_judge() -> GoalStep:
+            # Snapshot events under the conversation lock, then judge (an LLM
+            # call) with the lock released -- both on this worker thread.
+            with conversation._state:
+                events = list(conversation._state.events)
+            return controller.on_run_finished(events)
+
+        def _user(text: str) -> Message:
+            return Message(role="user", content=[TextContent(text=text)])
+
+        async def _emit_status(
+            *,
+            active: bool,
+            status: GoalStatusName,
+            verdict: GoalVerdict | None = None,
+        ) -> None:
+            # Persist + publish a goal-status update so a UI can render a chip.
+            # ConversationStateUpdateEvent is not LLM-convertible, so it never
+            # enters the agent's or the judge's context.
+            event = ConversationStateUpdateEvent(
+                key="goal",
+                value=GoalStatus(
+                    active=active,
+                    status=status,
+                    iteration=controller.iteration,
+                    max_iterations=controller.max_iterations,
+                    objective=controller.objective,
+                    verdict=verdict,
+                ).model_dump(),
+            )
+
+            def _persist() -> None:
+                with conversation._state:
+                    conversation._on_event(event)
+
+            await loop.run_in_executor(None, _persist)
+
+        try:
+            await _emit_status(active=True, status="running")
+            nudge = RESUME_PROMPT if resume else controller.start()
+            await self.send_message(_user(nudge), run=False, _from_goal_loop=True)
+            while True:
+                try:
+                    await self.run()
+                except ValueError as e:
+                    if str(e) != "conversation_already_running":
+                        raise
+                run_task = self._run_task
+                if run_task is not None:
+                    await asyncio.wait({run_task})
+                status = await self._get_execution_status()
+                if status in (
+                    ConversationExecutionStatus.PAUSED,
+                    ConversationExecutionStatus.ERROR,
+                    ConversationExecutionStatus.STUCK,
+                ):
+                    logger.info("Goal loop halted early: status=%s", status)
+                    await _emit_status(active=False, status="interrupted")
+                    return
+                step = await loop.run_in_executor(None, _snapshot_and_judge)
+                if isinstance(step, GoalDone):
+                    self._goal_loop_outcome = step.outcome
+                    await _emit_status(
+                        active=False,
+                        status=step.outcome.status,
+                        verdict=step.outcome.verdict,
+                    )
+                    logger.info(
+                        "Goal %s after %d round(s)",
+                        step.outcome.status,
+                        step.outcome.iterations,
+                    )
+                    return
+                # Carry the round's verdict so a UI can show per-round judge
+                # feedback (score + what's missing), not just the final one.
+                await _emit_status(active=True, status="running", verdict=step.verdict)
+                await self.send_message(
+                    _user(step.followup), run=False, _from_goal_loop=True
+                )
+        except asyncio.CancelledError:
+            logger.info("Goal loop cancelled")
+            # Explicit stop or user interjection: record a resumable
+            # interrupted status, except during service teardown.
+            if not self._closing:
+                with suppress(Exception):
+                    await _emit_status(active=False, status="interrupted")
+            raise
+        except Exception:
+            logger.exception("Goal loop failed")
+            # An unexpected failure (judge LLM error, controller bug, ...) leaves
+            # the loop dead: record an interrupted status (resumable) so the UI
+            # doesn't show it running. Skip during close(), like the cancel path.
+            if not self._closing:
+                with suppress(Exception):
+                    await _emit_status(active=False, status="interrupted")
+        finally:
+            self._goal_loop_task = None
+
+    async def stop_goal_loop(self) -> bool:
+        """Cancel the active ``/goal`` loop inside this conversation.
+
+        Returns True if a loop was active. Unlike ``interrupt()``, this targets
+        the background goal loop itself and records an ``interrupted`` status so
+        :meth:`resume_goal_loop` can continue it later.
+        """
+        task = self._goal_loop_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        return True
+
+    def _last_goal_loop_status(self) -> dict | None:
+        """Return the most recent goal-status payload, or None if there is none."""
+        conversation = self._conversation
+        if conversation is None:
+            return None
+        with conversation._state:
+            for event in reversed(list(conversation._state.events)):
+                if (
+                    isinstance(event, ConversationStateUpdateEvent)
+                    and event.key == "goal"
+                ):
+                    return event.value if isinstance(event.value, dict) else None
+        return None
+
+    async def resume_goal_loop(
+        self, *, judge_llm: LLM | None = None, max_iterations: int | None = None
+    ) -> None:
+        """Resume the last interrupted ``/goal`` loop in this conversation.
+
+        Reconstructs the loop from the last persisted goal-status event and
+        continues from the iteration it had reached. This works within a session
+        and across a server restart because goal-status events are persisted.
+
+        Raises:
+            ValueError: If the service is inactive, a goal loop is already
+                running, no judge LLM is available, or there is no resumable goal
+                loop because none was started or it already completed/capped.
+        """
+        if not self._conversation or self._closing:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        last = await loop.run_in_executor(None, self._last_goal_loop_status)
+        if last is None or last.get("status") in ("complete", "capped"):
+            raise ValueError("no_resumable_goal")
+        if judge_llm is None:
+            judge_llm = getattr(self._conversation.agent, "llm", None)
+        if judge_llm is None:
+            raise ValueError("no_judge_llm")
+        controller = GoalController(
+            last["objective"],
+            judge_llm,
+            max_iterations=max_iterations or int(last["max_iterations"]),
+        )
+        controller.iteration = int(last["iteration"])
+        # Same busy guard as start_goal_loop: refuse a goal loop or active run.
+        async with self._run_lock:
+            if self._closing:
+                raise ValueError("inactive_service")
+            if self._goal_loop_task is not None and not self._goal_loop_task.done():
+                raise ValueError("goal_already_running")
+            if (self._run_task is not None and not self._run_task.done()) or (
+                await self._get_execution_status()
+                == ConversationExecutionStatus.RUNNING
+            ):
+                raise ValueError("conversation_already_running")
+            if self._closing:  # see start_goal_loop: close() may have begun teardown
+                raise ValueError("inactive_service")
+            self._goal_loop_outcome = None
+            self._goal_loop_task = asyncio.create_task(
+                self._run_goal_loop(controller, resume=True)
+            )
+
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
             try:
@@ -1109,6 +1391,15 @@ class EventService:
         self._explicit_interrupt_generation += 1
         self._rerun_requested = False
         self._acp_internal_rerun_requested = False
+
+        # Cancel any in-progress /goal loop first so it cannot start a new run
+        # while we drain the current one below.
+        if self._goal_loop_task is not None and not self._goal_loop_task.done():
+            self._goal_loop_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._goal_loop_task
+        self._goal_loop_task = None
+
         if self._lease_task is not None:
             self._lease_task.cancel()
             with suppress(asyncio.CancelledError):

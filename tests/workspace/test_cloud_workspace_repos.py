@@ -1,5 +1,6 @@
 """Tests for repository cloning and skill loading in OpenHandsCloudWorkspace."""
 
+import logging
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -124,6 +125,18 @@ class TestRepoSource:
         """Test that URLs with dashes are allowed."""
         repo = RepoSource(url="my-org/my-repo", provider="github")
         assert repo.url == "my-org/my-repo"
+
+    def test_http_url_credentials_redacted_in_warning(self, caplog):
+        """The http->https normalization warning must not leak embedded creds."""
+        with caplog.at_level(logging.WARNING):
+            repo = RepoSource(url="http://oauth2:SUPERSECRET@github.com/owner/repo.git")
+        # The credential never reaches the logs...
+        assert "SUPERSECRET" not in caplog.text
+        assert "oauth2" not in caplog.text
+        assert "Converting HTTP URL to HTTPS" in caplog.text
+        assert "http://****@github.com/owner/repo.git" in caplog.text
+        # ...but normalization still happens on the stored value.
+        assert repo.url == "https://oauth2:SUPERSECRET@github.com/owner/repo.git"
 
 
 class TestProviderDetection:
@@ -366,6 +379,30 @@ class TestCloneRepos:
             assert result.success_count == 0
             assert len(result.failed_repos) == 1
             assert result.repo_mappings == {}
+
+    @patch("subprocess.run")
+    def test_clone_failure_redacts_credentials_in_stderr(self, mock_run, caplog):
+        """A failing clone must not leak the auth token echoed back in stderr."""
+        token = "ghp_supersecrettoken"
+        # git often echoes the authenticated remote URL back in stderr on failure.
+        leaky_stderr = (
+            f"fatal: Authentication failed for "
+            f"'https://{token}@github.com/owner/repo.git/'"
+        )
+        mock_run.return_value = MagicMock(returncode=1, stderr=leaky_stderr)
+
+        def token_fetcher(name: str) -> str | None:
+            return token if name == "github_token" else None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repos = [RepoSource(url="owner/repo", provider="github")]
+            with caplog.at_level(logging.WARNING):
+                result = clone_repos(repos, Path(tmpdir), token_fetcher=token_fetcher)
+
+        assert result.success_count == 0
+        assert token not in caplog.text
+        assert "[clone] Failed:" in caplog.text
+        assert "https://****@github.com/owner/repo.git" in caplog.text
 
     @patch("subprocess.run")
     def test_clone_with_token_fetcher(self, mock_run):

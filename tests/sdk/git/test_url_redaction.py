@@ -1,5 +1,6 @@
 """Tests for URL credential redaction utilities."""
 
+import logging
 import subprocess
 from unittest.mock import patch
 
@@ -242,3 +243,28 @@ class TestRunGitCommandCredentialRedaction:
                 run_git_command(["git-not-on-path", "clone", CREDENTIAL_URL, "/tmp/x"])
         assert CREDENTIAL_URL not in exc_info.value.command
         assert REDACTED_URL in exc_info.value.command
+
+    def test_stderr_credentials_redacted_on_exception(self):
+        """Credentials echoed in stderr must not leak onto GitCommandError.stderr."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with pytest.raises(GitCommandError) as exc_info:
+                run_git_command(self._args())
+        assert "SUPERSECRET" not in exc_info.value.stderr
+        assert REDACTED_URL in exc_info.value.stderr
+
+    def test_stderr_credentials_redacted_in_log(self, caplog):
+        """Credentials echoed in stderr must not leak into the error log line."""
+        leaky_stderr = f"fatal: Authentication failed for '{CREDENTIAL_URL}/'"
+        completed = subprocess.CompletedProcess(
+            args=self._args(), returncode=128, stdout="", stderr=leaky_stderr
+        )
+        with patch("subprocess.run", return_value=completed):
+            with caplog.at_level(logging.ERROR):
+                with pytest.raises(GitCommandError):
+                    run_git_command(self._args())
+        assert "SUPERSECRET" not in caplog.text
+        assert REDACTED_URL in caplog.text

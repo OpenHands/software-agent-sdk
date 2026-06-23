@@ -30,9 +30,10 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
+    get_agent_profile_store,
+    get_llm_profile_store,
     get_settings_store,
 )
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     ACPAgentProfile,
@@ -318,7 +319,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     with _store_errors():
         existing = store.list()
 
@@ -347,7 +348,7 @@ async def get_agent_profile(
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             profile = store.load(name, cipher=cipher)
@@ -408,7 +409,7 @@ async def save_agent_profile(
     # secret once rather than double-encrypting the token.
     profile = _decrypt_profile_mcp_tools(profile, cipher)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
     # keeps the namesake's id and bumps revision; create mints a fresh id,
     # ignoring any client-supplied one. The lock spans read + mint + save so two
@@ -448,7 +449,7 @@ async def delete_agent_profile(
     If the deleted profile was the active one, ``active_agent_profile_id`` is
     cleared.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
 
     with _store_errors():
@@ -485,7 +486,7 @@ async def rename_agent_profile(
     survives the rename untouched. Returns 404 if the source is missing, 409 if
     ``new_name`` is taken.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             store.rename(name, body.new_name)
@@ -520,7 +521,7 @@ async def activate_agent_profile(
     ``/activate``, this does **not** write ``agent_settings`` (the
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     with _store_errors():
         known_ids = {
             str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
@@ -574,7 +575,7 @@ async def materialize_agent_profile(
     """
     cipher = get_cipher(request)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             profile = store.load(name, cipher=cipher)
@@ -592,7 +593,7 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    llm_store = LLMProfileStore()
+    llm_store = get_llm_profile_store()
     return resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,

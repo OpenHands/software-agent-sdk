@@ -416,7 +416,7 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
     FastAPI's default 422 response includes the raw request ``input`` in each
     validation error dict.  If the request contained secret-bearing fields
-    (e.g. ``agent.llm.api_key``, ``agent.acp_env``), those values would be
+    (e.g. ``agent.llm.api_key``, MCP server ``env``), those values would be
     echoed back to the caller.  This helper redacts them.
 
     Args:
@@ -449,7 +449,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
 
         FastAPI's default 422 handler echoes the raw request body inside the
         ``detail[].input`` field.  When the request contains secrets (e.g.
-        ``agent.llm.api_key``, ``agent.acp_env``), this would leak credentials
+        ``agent.llm.api_key``, MCP server ``env``), this would leak credentials
         in the error response.  We intercept the error, redact secret-bearing
         fields, and return a safe 422 response.
 

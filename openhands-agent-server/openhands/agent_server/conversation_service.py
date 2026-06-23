@@ -261,11 +261,13 @@ def _resolve_agent_from_profile(
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
         ValueError: Profile load or settings validation failure.
     """
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.agent_server.persistence.store import (
+        get_agent_profile_store,
+        get_llm_profile_store,
+    )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
     if profile_name is None:
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
@@ -281,7 +283,7 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    llm_store = LLMProfileStore()
+    llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
             profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
@@ -1343,9 +1345,11 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
         try:
-            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+            from openhands.agent_server.persistence.store import (
+                get_llm_profile_store,
+            )
 
-            profile_store = LLMProfileStore()
+            profile_store = get_llm_profile_store()
             return profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
