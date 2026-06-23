@@ -245,14 +245,14 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <PR_DESCRIPTION_HUMAN_CHECK>
-# Human-only PR description fields
+# Human-only PR description fields in PR template
 
-The `HUMAN:` section and the `A human has tested these changes.` checkbox in
-PR descriptions are reserved for human contributors only. AI agents
-MUST NOT add to, edit, move, remove, or check these fields. If the PR description
-CI fails because these fields are missing, empty, or unchecked, stop and ask the
-human user to update them in their own words. If the fields were already updated
-by a human, report the exact validator error rather than editing them yourself.
+Use the PR template. The `HUMAN:` section in PR descriptions is reserved for human
+contributors only. AI agents MUST NOT edit, move, or remove this field, only
+set the placeholder. If the PR description CI fails because this field is missing
+or empty, stop and ask the human user to update it in their own words. If
+the field was already updated by a human, report the exact validator error rather
+than editing it yourself.
 </PR_DESCRIPTION_HUMAN_CHECK>
 
 
