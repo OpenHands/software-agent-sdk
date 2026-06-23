@@ -182,7 +182,8 @@ def generate_markdown_report(consolidated: ConsolidatedResults) -> str:
     if artifacts_available:
         report_lines.extend(
             [
-                "## 📁 Detailed Logs & Artifacts",
+                "<details>",
+                "<summary>📁 Detailed Logs & Artifacts</summary>",
                 "",
                 (
                     "Click the links below to access detailed agent/LLM logs showing "
@@ -221,6 +222,9 @@ def generate_markdown_report(consolidated: ConsolidatedResults) -> str:
             generate_detailed_results(consolidated.model_results),
         ]
     )
+
+    if artifacts_available:
+        report_lines.extend(["", "</details>"])
 
     return "\n".join(report_lines)
 
