@@ -1167,7 +1167,7 @@ describe('Auxiliary API clients', () => {
     );
 
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://example.com/api/acp/conversations',
+      'http://example.com/api/conversations',
       expect.objectContaining({
         method: 'POST',
       })
