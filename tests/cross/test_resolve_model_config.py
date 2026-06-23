@@ -320,7 +320,23 @@ def test_glm_5_2_config():
     assert model["id"] == "glm-5.2"
     assert model["display_name"] == "GLM-5.2"
     assert model["llm_config"]["model"] == "litellm_proxy/openrouter/z-ai/glm-5.2"
-    assert model["llm_config"]["temperature"] == 0.0
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["disable_vision"] is True
+
+
+def test_glm_5_2_fireworks_config():
+    """glm-5.2-fireworks is an explicit entry overriding the glm family prefix.
+
+    The family pattern would route it to litellm_proxy/openrouter/z-ai/glm-5.2-fireworks
+    (the broken OpenRouter/z-ai path); the explicit entry points at the short
+    LiteLLM proxy alias registered in All-Hands-AI/infra#1436 instead.
+    """
+    model = resolve_model_config("glm-5.2-fireworks")
+
+    assert model["id"] == "glm-5.2-fireworks"
+    assert model["display_name"] == "GLM-5.2 (Fireworks)"
+    assert model["llm_config"]["model"] == "litellm_proxy/glm-5.2-fireworks"
+    assert model["llm_config"]["temperature"] == 1.0
     assert model["llm_config"]["disable_vision"] is True
 
 
