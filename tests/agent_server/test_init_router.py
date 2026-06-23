@@ -246,6 +246,41 @@ class TestEndToEndOverLifespan:
             finally:
                 _reset_conversation_singleton()
 
+    def test_root_path_updates_from_init_web_url(self, tmp_path):
+        """When /api/init delivers a ``web_url``, the FastAPI ``root_path``
+        must be re-derived from it so OpenAPI/Swagger/ReDoc URLs reflect the
+        external mount path (e.g. behind a reverse proxy)."""
+        _reset_conversation_singleton()
+        cfg = Config(
+            deferred_init=True,
+            conversations_path=tmp_path / "convs",
+            bash_events_dir=tmp_path / "bash",
+        )
+        app = create_app(cfg)
+        with TestClient(app) as client:
+            try:
+                # Dormant server has no web_url → empty root_path.
+                assert app.root_path == ""
+
+                resp = client.post(
+                    "/api/init",
+                    json={
+                        "web_url": "https://example.com/agent-server-123/agent-server/",
+                        "conversations_path": str(tmp_path / "u" / "convs"),
+                        "bash_events_dir": str(tmp_path / "u" / "bash"),
+                    },
+                )
+                assert resp.status_code == 200
+
+                # The FastAPI app's root_path must now match the prefix from
+                # the per-user web_url so OpenAPI doc URLs and Swagger asset
+                # links are correct under the reverse-proxy mount path.
+                assert app.root_path == "/agent-server-123/agent-server", (
+                    f"root_path was not updated after /api/init: {app.root_path!r}"
+                )
+            finally:
+                _reset_conversation_singleton()
+
     def test_init_api_key_required_when_configured(self, tmp_path):
         _reset_conversation_singleton()
         cfg = Config(

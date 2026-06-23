@@ -213,6 +213,11 @@ class InitService:
             self._entered_service = service
             self._app.state.config = new_config
             self._app.state.conversation_service = service
+            # Re-derive root_path from the merged config so Doc URLS are valid
+            from openhands.agent_server.api import _get_root_path
+
+            new_root_path = _get_root_path(new_config)
+            self._app.root_path = new_root_path
             mark_initialization_complete()
             self._state = "ready"
             logger.info("deferred_init: server transitioned to ready")
