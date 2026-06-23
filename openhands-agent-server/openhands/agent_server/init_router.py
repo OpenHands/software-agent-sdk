@@ -229,17 +229,13 @@ class InitService:
             self._app.state.config = new_config
             self._app.state.conversation_service = service
             self._app.state.bash_event_service = bash_svc
-            # FastAPI sets root_path once at construction; dormant servers
-            # boot without a web_url, so re-derive it from the merged config
-            # so OpenAPI / Swagger / ReDoc URLs and ASGI scope root_path
-            # reflect the per-user mount path. Stand-in test apps may not
-            # expose ``root_path``; skip the update in that case.
+
+            # Re-derive root_path from the merged config so Doc URLS are valid
             from openhands.agent_server.api import _get_root_path
 
             new_root_path = _get_root_path(new_config)
-            current_root_path = getattr(self._app, "root_path", None)
-            if current_root_path is not None and current_root_path != new_root_path:
-                self._app.root_path = new_root_path
+            self._app.root_path = new_root_path
+
             mark_initialization_complete()
             self._state = "ready"
             logger.info("deferred_init: server transitioned to ready")
