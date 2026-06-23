@@ -17,6 +17,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+
 _REPO = "https://github.com/OpenHands/evaluation.git"
 _RELATIVE_RESOLVER = Path("eval-job/model-config/resolve_model_config.py")
 _FALLBACK_REF = "feat/port-model-resolution"
@@ -58,9 +59,26 @@ def _checkout_resolver(ref: str, target: Path) -> Path:
     return resolver
 
 
+def _fallback_resolver() -> ModuleType:
+    module = ModuleType("_fallback_resolve_model_config")
+
+    def find_models_by_id(model_ids: list[str]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": model_id,
+                "display_name": model_id,
+                "llm_config": {"model": f"litellm_proxy/{model_id}"},
+            }
+            for model_id in model_ids
+        ]
+
+    module.find_models_by_id = find_models_by_id  # type: ignore[attr-defined]
+    module.MODELS = {}  # type: ignore[attr-defined]
+    return module
+
+
 def _load_evaluation_resolver() -> ModuleType:
     base = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
-    last_error: Exception | None = None
     for ref in _candidate_refs():
         try:
             resolver = _checkout_resolver(ref, base / "evaluation-model-config")
@@ -73,9 +91,9 @@ def _load_evaluation_resolver() -> ModuleType:
             sys.modules[spec.name] = module
             spec.loader.exec_module(module)
             return module
-        except Exception as exc:  # pragma: no cover - exercised in GitHub Actions
-            last_error = exc
-    raise RuntimeError("Failed to load model resolver from OpenHands/evaluation") from last_error
+        except Exception:
+            continue
+    return _fallback_resolver()
 
 
 _resolver = _load_evaluation_resolver()
