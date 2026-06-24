@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import subprocess
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -520,3 +522,180 @@ async def test_upload_does_not_block_event_loop_on_slow_storage(tmp_path, monkey
         f"upload (expected ≥ {expected_min}); event loop is blocked by "
         f"sync f.write() at file_router.py:65."
     )
+
+
+# =============================================================================
+# Archive Tests - GET /api/file/archive (AGE-1871)
+# =============================================================================
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    """A small nested workspace tree under ``tmp_path/project``."""
+    root = tmp_path / "project"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
+    (root / "README.md").write_text("# project\n", encoding="utf-8")
+    (root / "empty").mkdir()
+    return root
+
+
+def _git(args, cwd):
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.dev", "-c", "user.name=t", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_archive_tar_gz_contains_nested_files_and_manifest(client, workspace):
+    resp = client.get("/api/file/archive", params={"path": str(workspace)})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/gzip"
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        names = set(tar.getnames())
+    assert "src/main.py" in names
+    assert "README.md" in names
+    assert "archive_manifest.json" in names
+
+
+def test_archive_zip_contains_nested_files_and_manifest(client, workspace):
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "zip"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        names = set(zf.namelist())
+        manifest = zf.read("archive_manifest.json").decode("utf-8")
+    assert "src/main.py" in names
+    assert "README.md" in names
+    assert '"file_count": 2' in manifest
+
+
+def test_archive_empty_directory_succeeds(client, tmp_path):
+    empty = tmp_path / "empty-ws"
+    empty.mkdir()
+
+    resp = client.get("/api/file/archive", params={"path": str(empty)})
+
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        # Only the manifest — no workspace files.
+        assert tar.getnames() == ["archive_manifest.json"]
+
+
+def test_archive_does_not_follow_symlink_outside_root(client, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP SECRET", encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "ok.txt").write_text("ok", encoding="utf-8")
+    (root / "escape.txt").symlink_to(secret)
+
+    resp = client.get("/api/file/archive", params={"path": str(root)})
+
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        names = set(tar.getnames())
+        contents = b"".join(
+            tar.extractfile(m).read()  # type: ignore[union-attr]
+            for m in tar.getmembers()
+            if m.isfile()
+        )
+    assert "ok.txt" in names
+    assert "escape.txt" not in names
+    assert b"TOP SECRET" not in contents
+
+
+def test_archive_missing_path_returns_404(client, tmp_path):
+    resp = client.get("/api/file/archive", params={"path": str(tmp_path / "nope")})
+    assert resp.status_code == 404
+
+
+def test_archive_file_path_returns_400(client, tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("x", encoding="utf-8")
+
+    resp = client.get("/api/file/archive", params={"path": str(f)})
+
+    assert resp.status_code == 400
+    assert "not a directory" in resp.json()["detail"].lower()
+
+
+def test_archive_relative_path_returns_400(client):
+    resp = client.get("/api/file/archive", params={"path": "relative/dir"})
+    assert resp.status_code == 400
+    assert "absolute" in resp.json()["detail"].lower()
+
+
+def test_archive_rejects_dashed_base_ref(client, workspace):
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(workspace), "format": "git-delta", "base_ref": "-x"},
+    )
+    assert resp.status_code == 400
+
+
+def test_archive_cleans_up_temp_file(client, workspace, tmp_path, monkeypatch):
+    # Force the archive temp file into an isolated dir we can inspect.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    resp = client.get("/api/file/archive", params={"path": str(workspace)})
+
+    assert resp.status_code == 200
+    # The BackgroundTask unlinks the archive once the response is fully sent.
+    assert list(scratch.iterdir()) == []
+
+
+def test_git_delta_new_repo_lists_files_as_additions(client, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "new_file.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/x-patch")
+    patch = resp.content.decode("utf-8")
+    assert "new_file.py" in patch
+    assert "new file mode" in patch
+
+
+def test_git_delta_captures_modifications_and_untracked_vs_head(client, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "a.txt").write_text("original\n", encoding="utf-8")
+    _git(["add", "-A"], root)
+    _git(["commit", "-m", "init"], root)
+    # Mutate a tracked file and add an untracked one after the commit.
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+    (root / "b.txt").write_text("brand new\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(root), "format": "git-delta", "base_ref": "HEAD"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    patch = resp.content.decode("utf-8")
+    assert "a.txt" in patch
+    assert "b.txt" in patch
+    assert "changed" in patch
+
+
+def test_git_delta_on_non_repo_returns_400(client, workspace):
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "git-delta"}
+    )
+    assert resp.status_code == 400
+    assert "git repositor" in resp.json()["detail"].lower()

@@ -1,8 +1,13 @@
 import asyncio
+import io
+import json
 import os
+import subprocess
+import tarfile
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -20,6 +25,12 @@ from starlette.background import BackgroundTask
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.models import Success
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
+from openhands.sdk.git.utils import (
+    GIT_EMPTY_TREE_HASH,
+    get_valid_ref,
+    validate_git_repository,
+)
 from openhands.sdk.logger import get_logger
 
 
@@ -132,6 +143,166 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+
+
+ArchiveFormat = Literal["tar.gz", "zip", "git-delta"]
+
+ARCHIVE_MANIFEST_NAME = "archive_manifest.json"
+
+_ARCHIVE_SUFFIX: dict[str, str] = {
+    "tar.gz": ".tar.gz",
+    "zip": ".zip",
+    "git-delta": ".patch",
+}
+
+_ARCHIVE_MEDIA_TYPE: dict[str, str] = {
+    "tar.gz": "application/gzip",
+    "zip": "application/zip",
+    "git-delta": "text/x-patch",
+}
+
+
+def _collect_workspace_files(root: Path) -> list[tuple[Path, Path]]:
+    """Regular files under ``root`` as ``(absolute_path, arcname)``, sorted.
+
+    ``os.walk(followlinks=False)`` never descends into symlinked directories,
+    and symlinked files are skipped, so a symlink cannot pull a file from
+    outside ``root`` into the archive and there is no risk of a symlink cycle.
+    """
+    files: list[tuple[Path, Path]] = []
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames:
+            abs_path = Path(dirpath) / name
+            if abs_path.is_symlink():
+                continue
+            files.append((abs_path, abs_path.relative_to(root)))
+    files.sort(key=lambda pair: str(pair[1]))
+    return files
+
+
+def _build_archive_manifest(
+    root: Path, fmt: ArchiveFormat, files: list[tuple[Path, Path]]
+) -> bytes:
+    """Deterministic JSON manifest embedded at the archive root.
+
+    No timestamp is included so the manifest is reproducible for an identical
+    tree; callers that persist the archive record the capture time alongside
+    the stored object.
+    """
+    total_bytes = 0
+    for abs_path, _arcname in files:
+        try:
+            total_bytes += abs_path.stat().st_size
+        except OSError:
+            continue
+    manifest = {
+        "format": fmt,
+        "source": str(root),
+        "file_count": len(files),
+        "total_bytes": total_bytes,
+    }
+    return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+
+
+def _create_tar_gz_archive(
+    files: list[tuple[Path, Path]], manifest: bytes, output_path: Path
+) -> None:
+    try:
+        with tarfile.open(output_path, "w:gz") as tar:
+            for abs_path, arcname in files:
+                tar.add(abs_path, arcname=str(arcname), recursive=False)
+            info = tarfile.TarInfo(name=ARCHIVE_MANIFEST_NAME)
+            info.size = len(manifest)
+            tar.addfile(info, io.BytesIO(manifest))
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+def _create_zip_archive(
+    files: list[tuple[Path, Path]], manifest: bytes, output_path: Path
+) -> None:
+    try:
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            for abs_path, arcname in files:
+                archive.write(abs_path, str(arcname))
+            archive.writestr(ARCHIVE_MANIFEST_NAME, manifest)
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> None:
+    """Write a git patch capturing the full working-tree delta against a base.
+
+    The delta covers tracked modifications, new (untracked) files, and
+    deletions relative to ``base_ref`` (defaulting to the auto-detected
+    comparison ref — origin branch, merge-base, or the empty tree for a fresh
+    repo). A throwaway index (``GIT_INDEX_FILE``) is used so the repository's
+    real index is never touched.
+    """
+    validate_git_repository(root)
+    ref = get_valid_ref(root, base_ref) or GIT_EMPTY_TREE_HASH
+    index_path = output_path.with_name(output_path.name + ".index")
+    env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
+    try:
+        # Seed the scratch index from the base ref, stage the entire working
+        # tree on top of it, then diff: the result is everything that changed
+        # between the base and the workspace's current state.
+        subprocess.run(
+            ["git", "read-tree", ref],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=True,
+            timeout=300,
+        )
+        result = subprocess.run(
+            ["git", "diff", "--binary", "--cached", ref],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=True,
+            timeout=300,
+        )
+        output_path.write_bytes(result.stdout)
+    except subprocess.CalledProcessError as e:
+        output_path.unlink(missing_ok=True)
+        stderr = e.stderr.decode("utf-8", "replace") if e.stderr else ""
+        raise GitCommandError(
+            message="Failed to generate git delta",
+            command=e.cmd if isinstance(e.cmd, list) else [str(e.cmd)],
+            exit_code=e.returncode,
+            stderr=stderr.strip(),
+        ) from e
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    finally:
+        index_path.unlink(missing_ok=True)
+
+
+def _build_workspace_archive(
+    root: Path, fmt: ArchiveFormat, base_ref: str | None, output_path: Path
+) -> None:
+    """Build the requested archive of ``root`` at ``output_path`` (blocking)."""
+    if fmt == "git-delta":
+        _create_git_delta(root, base_ref, output_path)
+        return
+    files = _collect_workspace_files(root)
+    manifest = _build_archive_manifest(root, fmt, files)
+    if fmt == "tar.gz":
+        _create_tar_gz_archive(files, manifest, output_path)
+    else:
+        _create_zip_archive(files, manifest, output_path)
 
 
 @file_router.post("/upload")
@@ -330,4 +501,100 @@ async def download_trajectory(
         filename=temp_file.name,
         media_type="application/octet-stream",
         background=BackgroundTask(temp_file.unlink),
+    )
+
+
+@file_router.get("/archive")
+async def archive_directory(
+    path: Annotated[
+        str, Query(description="Absolute path of the directory to archive")
+    ],
+    format: Annotated[
+        ArchiveFormat,
+        Query(
+            description=(
+                "Archive format: 'tar.gz' (default) or 'zip' for a full file "
+                "archive, or 'git-delta' for a git patch of the working-tree "
+                "changes against a base ref (requires a git repository)."
+            )
+        ),
+    ] = "tar.gz",
+    base_ref: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Only for format='git-delta': base ref to diff against. "
+                "Defaults to the auto-detected comparison ref (origin branch, "
+                "merge-base, or the empty tree for a fresh repo)."
+            )
+        ),
+    ] = None,
+) -> FileResponse:
+    """Archive a workspace directory for persistence before runtime deletion.
+
+    Produces a downloadable archive of ``path``. Symlinks are never followed
+    out of the requested directory, so the archive cannot include files from
+    outside it. The temporary archive is created outside ``path`` and removed
+    after the response is sent.
+    """
+    update_last_execution_time()
+
+    target = Path(path)
+    if not target.is_absolute():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path must be absolute",
+        )
+    if not target.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Directory not found",
+        )
+    if not target.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Path is not a directory",
+        )
+    if base_ref is not None and base_ref.startswith("-"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="base_ref must not start with '-'",
+        )
+
+    target = target.resolve()
+    # Build the archive outside the workspace so it is never included in itself
+    # and leaves nothing behind in the archived tree.
+    fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[format])
+    os.close(fd)
+    output_path = Path(tmp_name)
+
+    try:
+        await asyncio.to_thread(
+            _build_workspace_archive, target, format, base_ref, output_path
+        )
+    except GitRepositoryError as e:
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Not a git repository: {e}",
+        )
+    except GitCommandError as e:
+        output_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate git delta: {e}",
+        )
+    except Exception as e:
+        output_path.unlink(missing_ok=True)
+        logger.error(f"Failed to archive {target}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to archive directory: {str(e)}",
+        )
+
+    return FileResponse(
+        path=output_path,
+        filename=f"{target.name}{_ARCHIVE_SUFFIX[format]}",
+        media_type=_ARCHIVE_MEDIA_TYPE[format],
+        background=BackgroundTask(output_path.unlink, missing_ok=True),
     )
