@@ -547,15 +547,16 @@ async def archive_directory(
     path: Annotated[
         str, Query(description="Absolute path of the directory to archive")
     ],
-    format: Annotated[
+    archive_format: Annotated[
         ArchiveFormat,
         Query(
+            alias="format",
             description=(
                 "Archive format: 'git-delta' for a git patch of the working-tree "
                 "changes against a base ref (requires a git repository); 'tar.gz' "
                 "for a full gzip tarball of the entire directory (works on "
                 "non-git directories too)."
-            )
+            ),
         ),
     ] = "git-delta",
     base_ref: Annotated[
@@ -629,13 +630,13 @@ async def archive_directory(
     ) + (exclude or [])
     # Build the archive outside the workspace so it is never included in itself
     # and leaves nothing behind in the archived tree.
-    fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[format])
+    fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[archive_format])
     os.close(fd)
     output_path = Path(tmp_name)
 
     base_commit = ""
     try:
-        if format == "git-delta":
+        if archive_format == "git-delta":
             base_commit = await asyncio.to_thread(
                 _create_git_delta, target, base_ref, output_path, effective_excludes
             )
@@ -679,8 +680,8 @@ async def archive_directory(
 
     return FileResponse(
         path=output_path,
-        filename=f"{target.name}{_ARCHIVE_SUFFIX[format]}",
-        media_type=_ARCHIVE_MEDIA_TYPE[format],
+        filename=f"{target.name}{_ARCHIVE_SUFFIX[archive_format]}",
+        media_type=_ARCHIVE_MEDIA_TYPE[archive_format],
         headers=headers,
         background=BackgroundTask(output_path.unlink, missing_ok=True),
     )
