@@ -28,7 +28,11 @@ _SESSION_API_KEY_HEADER = APIKeyHeader(name="X-Session-API-Key", auto_error=Fals
 _AUTHORIZATION_HEADER = HTTPBearer(auto_error=False)
 
 
-def create_openai_api_key_dependency(config: Config):
+def check_openai_api_key(
+    request: Request,
+    session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
+    authorization: HTTPAuthorizationCredentials | None = Depends(_AUTHORIZATION_HEADER),
+) -> None:
     """Accept the same session key through OpenHands and OpenAI auth shapes.
 
     ``X-Session-API-Key`` preserves compatibility with existing agent-server
@@ -37,24 +41,19 @@ def create_openai_api_key_dependency(config: Config):
     ``config.session_api_keys``; this does not introduce a second credential
     system. When no session keys are configured, the local server remains
     unauthenticated like the existing agent-server API.
+
+    Reads config from ``request.app.state`` at request time so that keys
+    delivered via ``POST /api/init`` take effect immediately.
     """
-
-    def check_openai_api_key(
-        session_api_key: str | None = Depends(_SESSION_API_KEY_HEADER),
-        authorization: HTTPAuthorizationCredentials | None = Depends(
-            _AUTHORIZATION_HEADER
-        ),
-    ) -> None:
-        if not config.session_api_keys:
-            return
-        bearer_token = authorization.credentials if authorization else None
-        if session_api_key in config.session_api_keys:
-            return
-        if bearer_token in config.session_api_keys:
-            return
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-
-    return check_openai_api_key
+    config: Config = request.app.state.config
+    if not config.session_api_keys:
+        return
+    bearer_token = authorization.credentials if authorization else None
+    if session_api_key in config.session_api_keys:
+        return
+    if bearer_token in config.session_api_keys:
+        return
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
 
 def _get_config(request: Request) -> Config:

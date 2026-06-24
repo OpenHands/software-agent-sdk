@@ -29,8 +29,8 @@ from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
 from openhands.agent_server.dependencies import (
-    create_session_api_key_dependency,
-    create_workspace_session_dependency,
+    check_session_api_key,
+    check_workspace_session,
 )
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
@@ -47,7 +47,7 @@ from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
-    create_openai_api_key_dependency,
+    check_openai_api_key,
     openai_router,
 )
 from openhands.agent_server.plugins_router import plugins_router
@@ -235,6 +235,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
+        bash_svc = get_default_bash_event_service()
+        api.state.bash_event_service = bash_svc
+
         async with service:
             api.state.conversation_service = service
 
@@ -242,7 +245,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
-                    get_default_bash_event_service().run_retention_cleanup_loop(
+                    bash_svc.run_retention_cleanup_loop(
                         config.bash_events_retention_seconds
                     )
                 )
@@ -311,12 +314,8 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
     return None
 
 
-def _add_api_routes(app: FastAPI, config: Config) -> None:
-    """Add all API routes to the FastAPI application.
-
-    Args:
-        app: FastAPI application instance to add routes to.
-    """
+def _add_api_routes(app: FastAPI) -> None:
+    """Add all API routes to the FastAPI application."""
     app.include_router(server_details_router)
 
     # The /api/init endpoint bypasses both the session-key auth and the
@@ -331,12 +330,14 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
-    dependencies = []
-    if config.session_api_keys:
-        dependencies.append(Depends(create_session_api_key_dependency(config)))
-    # Dormant gate: when ``deferred_init`` is True this 503s every /api/*
-    # route until POST /api/init completes. No-op for non-deferred deployments.
-    dependencies.append(Depends(require_initialized))
+    # check_session_api_key reads config from request.app.state at request time,
+    # so keys delivered via POST /api/init are honoured without re-registering routes.
+    dependencies = [
+        Depends(check_session_api_key),
+        # Dormant gate: 503s every /api/* route until POST /api/init completes.
+        # No-op for non-deferred deployments.
+        Depends(require_initialized),
+    ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
@@ -361,22 +362,16 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(auth_router)
     app.include_router(api_router)
 
-    openai_dependencies = []
-    if config.session_api_keys:
-        openai_dependencies.append(Depends(create_openai_api_key_dependency(config)))
-    app.include_router(openai_router, dependencies=openai_dependencies)
+    app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
     # The cookie is required so that <iframe src> / <img src> embeds of
     # workspace artifacts work — browsers cannot attach custom headers to
     # those requests.
-    workspace_dependencies = []
-    if config.session_api_keys:
-        workspace_dependencies.append(
-            Depends(create_workspace_session_dependency(config))
-        )
-    workspace_api_router = APIRouter(prefix="/api", dependencies=workspace_dependencies)
+    workspace_api_router = APIRouter(
+        prefix="/api", dependencies=[Depends(check_workspace_session)]
+    )
     workspace_api_router.include_router(workspace_router)
     app.include_router(workspace_api_router)
 
@@ -594,7 +589,7 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = _create_fastapi_instance(config)
     app.state.config = config
 
-    _add_api_routes(app, config)
+    _add_api_routes(app)
     _setup_static_files(app, config)
     app.add_middleware(
         CORSDispatcher,
