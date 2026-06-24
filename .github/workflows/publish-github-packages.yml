@@ -1,10 +1,16 @@
-name: Publish to GitHub Packages (Manual)
+name: Publish to GitHub Packages
+
+# Publishes to GitHub Packages on a published Release (release-please creates it
+# with the App token, so `release: published` fires). workflow_dispatch
+# re-publishes a version for recovery. npmjs.org publishing: see npm-publish.yml.
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish (without v prefix)'
+        description: 'Version to publish (no leading "v"), e.g. 1.25.0'
         required: true
         type: string
 
@@ -15,12 +21,16 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Skip pre-releases on the release trigger; a manual dispatch always runs.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      !github.event.release.prerelease
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js for GitHub Packages
         uses: actions/setup-node@v4
         with:
           node-version: 20.x
@@ -34,15 +44,31 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Extract and set version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET_VERSION="${{ github.event.inputs.version }}"
+          else
+            TARGET_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Publishing version: $TARGET_VERSION (current package.json: $CURRENT_VERSION)"
+          if [ "$CURRENT_VERSION" = "$TARGET_VERSION" ]; then
+            echo "package.json already matches target version; skipping npm version"
+          else
+            npm version "$TARGET_VERSION" --no-git-tag-version
+          fi
+
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PACKAGE_VERSION" != "$TARGET_VERSION" ]; then
+            echo "Error: package.json version ($PACKAGE_VERSION) doesn't match target ($TARGET_VERSION)"
+            exit 1
+          fi
+          echo "✓ Version $PACKAGE_VERSION matches target"
+
       - name: Build package
         run: npm run build
-
-      - name: Extract version from input
-        id: version
-        run: echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-
-      - name: Update package version
-        run: npm version ${{ steps.version.outputs.VERSION }} --no-git-tag-version
 
       - name: Publish to GitHub Packages
         run: npm publish --access public

@@ -4,34 +4,41 @@ This document explains how to publish the OpenHands TypeScript Client.
 
 ## Overview
 
-The package is published to **two registries** on every version tag:
+Releases are driven by
+[release-please](https://github.com/googleapis/release-please): the version is
+derived from **Conventional-Commit PR titles**, and merging the release PR
+release-please maintains cuts the GitHub Release. The package is then published
+to **two registries**:
 
 | Registry | Workflow | Auth |
 |----------|----------|------|
 | **npm** (`registry.npmjs.org`) | `.github/workflows/npm-publish.yml` | OIDC trusted publishing |
-| **GitHub Packages** (`npm.pkg.github.com`) | `.github/workflows/release.yml` | `GITHUB_TOKEN` |
+| **GitHub Packages** (`npm.pkg.github.com`) | `.github/workflows/publish-github-packages.yml` | `GITHUB_TOKEN` |
+
+The full process, prerequisites, and the centralized reusable workflows
+([`OpenHands/release-actions`](https://github.com/OpenHands/release-actions)) are
+documented in [`.github/workflows/README-RELEASE.md`](.github/workflows/README-RELEASE.md).
 
 ## Automated Publishing (Recommended)
 
 ### Prerequisites
 
 - **npm trusted publishing**: The `@openhands/typescript-client` package on npmjs.org must have the `OpenHands/typescript-client` repository configured as a trusted publisher (see [npm docs](https://docs.npmjs.com/trusted-publishers/)).
+- **`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`**: The release GitHub App credentials — configured as **organization secrets** and inherited org-wide, so there is nothing to create. release-please authors the PR/tag/release with this App token so the `release: published` publish jobs fire.
+- **Squash-merge with `PR_TITLE`**: a one-time repo setting so release-please reads each PR title as the commit. See README-RELEASE.md for the `gh api` command.
 - **GitHub Token**: Automatically provided by GitHub Actions as `GITHUB_TOKEN` for GitHub Packages.
 
 ### Publishing Process
 
-1. **Create and push a version tag**:
+1. **Merge PRs with conventional titles** (`feat:`, `fix:`, …). `pr.yml` lints the title and labels the PR; the labels drive the next version and the release notes.
 
-   ```bash
-   git tag v1.23.3
-   git push origin v1.23.3
-   ```
+2. **Merge the release PR.** release-please keeps a `chore(main): release X.Y.Z` PR up to date; merging it bumps `package.json`/`package-lock.json`, tags `vX.Y.Z`, and creates the GitHub Release.
 
-2. **Two GitHub Actions run automatically**:
-   - `npm-publish.yml`: Tests → builds → publishes to **npm** with provenance
-   - `release.yml`: Tests → builds → publishes to **GitHub Packages** → creates a GitHub Release
+3. **On publish, the automation runs** (triggered by `release: published`):
+   - `npm-publish.yml`: publishes to **npm** with provenance.
+   - `publish-github-packages.yml`: publishes to **GitHub Packages**.
 
-Only these two workflows should run on version tags. The manual publish workflow (`.github/workflows/publish-github-packages.yml`) is for explicit `workflow_dispatch` recovery only and must not also run on tag pushes, otherwise it can race the release workflow and fail with a duplicate-version conflict.
+Both publish workflows can also be run manually with a `version` input for recovery if a publish job fails after the GitHub Release is created.
 
 ## Manual Publishing
 
@@ -114,6 +121,7 @@ Common issues:
 
 ## Workflow Files
 
-- `.github/workflows/npm-publish.yml`: Tag-triggered npm (npmjs.org) publish workflow (OIDC trusted publishing)
-- `.github/workflows/release.yml`: Tag-triggered GitHub Packages publish + GitHub Release workflow
-- `.github/workflows/publish-github-packages.yml`: Manual GitHub Packages recovery workflow (`workflow_dispatch` only)
+- `.github/workflows/pr.yml`: Lints PR titles (Conventional Commits) and applies `type:` labels. Calls `release-actions/.github/workflows/pr-title.yml@main`.
+- `.github/workflows/release.yml`: Runs release-please on push to `main` — maintains the release PR and, on its merge, creates the GitHub Release `vX.Y.Z`. Calls `release-actions/.github/workflows/release-please.yml@main`.
+- `.github/workflows/npm-publish.yml`: `release: published` / manual npmjs.org publish workflow (OIDC trusted publishing).
+- `.github/workflows/publish-github-packages.yml`: `release: published` / manual GitHub Packages publish workflow.
