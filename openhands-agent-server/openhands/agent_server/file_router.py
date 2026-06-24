@@ -1,9 +1,6 @@
 import asyncio
-import io
-import json
 import os
 import subprocess
-import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
@@ -146,91 +143,15 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
         raise
 
 
-ArchiveFormat = Literal["tar.gz", "zip", "git-delta"]
-
-ARCHIVE_MANIFEST_NAME = "archive_manifest.json"
+ArchiveFormat = Literal["git-delta"]
 
 _ARCHIVE_SUFFIX: dict[str, str] = {
-    "tar.gz": ".tar.gz",
-    "zip": ".zip",
     "git-delta": ".patch",
 }
 
 _ARCHIVE_MEDIA_TYPE: dict[str, str] = {
-    "tar.gz": "application/gzip",
-    "zip": "application/zip",
     "git-delta": "text/x-patch",
 }
-
-
-def _collect_workspace_files(root: Path) -> list[tuple[Path, Path]]:
-    """Regular files under ``root`` as ``(absolute_path, arcname)``, sorted.
-
-    ``os.walk(followlinks=False)`` never descends into symlinked directories,
-    and symlinked files are skipped, so a symlink cannot pull a file from
-    outside ``root`` into the archive and there is no risk of a symlink cycle.
-    """
-    files: list[tuple[Path, Path]] = []
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
-        for name in filenames:
-            abs_path = Path(dirpath) / name
-            if abs_path.is_symlink():
-                continue
-            files.append((abs_path, abs_path.relative_to(root)))
-    files.sort(key=lambda pair: str(pair[1]))
-    return files
-
-
-def _build_archive_manifest(
-    root: Path, fmt: ArchiveFormat, files: list[tuple[Path, Path]]
-) -> bytes:
-    """Deterministic JSON manifest embedded at the archive root.
-
-    No timestamp is included so the manifest is reproducible for an identical
-    tree; callers that persist the archive record the capture time alongside
-    the stored object.
-    """
-    total_bytes = 0
-    for abs_path, _arcname in files:
-        try:
-            total_bytes += abs_path.stat().st_size
-        except OSError:
-            continue
-    manifest = {
-        "format": fmt,
-        "source": str(root),
-        "file_count": len(files),
-        "total_bytes": total_bytes,
-    }
-    return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-
-
-def _create_tar_gz_archive(
-    files: list[tuple[Path, Path]], manifest: bytes, output_path: Path
-) -> None:
-    try:
-        with tarfile.open(output_path, "w:gz") as tar:
-            for abs_path, arcname in files:
-                tar.add(abs_path, arcname=str(arcname), recursive=False)
-            info = tarfile.TarInfo(name=ARCHIVE_MANIFEST_NAME)
-            info.size = len(manifest)
-            tar.addfile(info, io.BytesIO(manifest))
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
-
-
-def _create_zip_archive(
-    files: list[tuple[Path, Path]], manifest: bytes, output_path: Path
-) -> None:
-    try:
-        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for abs_path, arcname in files:
-                archive.write(abs_path, str(arcname))
-            archive.writestr(ARCHIVE_MANIFEST_NAME, manifest)
-    except Exception:
-        output_path.unlink(missing_ok=True)
-        raise
 
 
 # Heavy / generated directories that bloat a delta without helping eval replay.
@@ -336,25 +257,6 @@ def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> st
         )
     except GitCommandError:
         return ""
-
-
-def _build_workspace_archive(
-    root: Path, fmt: ArchiveFormat, base_ref: str | None, output_path: Path
-) -> str | None:
-    """Build the requested archive of ``root`` at ``output_path`` (blocking).
-
-    Returns the git-delta base commit SHA (or "" if none), and None for the
-    tar.gz / zip formats.
-    """
-    if fmt == "git-delta":
-        return _create_git_delta(root, base_ref, output_path)
-    files = _collect_workspace_files(root)
-    manifest = _build_archive_manifest(root, fmt, files)
-    if fmt == "tar.gz":
-        _create_tar_gz_archive(files, manifest, output_path)
-    else:
-        _create_zip_archive(files, manifest, output_path)
-    return None
 
 
 @file_router.post("/upload")
@@ -565,12 +467,11 @@ async def archive_directory(
         ArchiveFormat,
         Query(
             description=(
-                "Archive format: 'tar.gz' (default) or 'zip' for a full file "
-                "archive, or 'git-delta' for a git patch of the working-tree "
+                "Archive format: 'git-delta' for a git patch of the working-tree "
                 "changes against a base ref (requires a git repository)."
             )
         ),
-    ] = "tar.gz",
+    ] = "git-delta",
     base_ref: Annotated[
         str | None,
         Query(
@@ -622,7 +523,7 @@ async def archive_directory(
 
     try:
         base_commit = await asyncio.to_thread(
-            _build_workspace_archive, target, format, base_ref, output_path
+            _create_git_delta, target, base_ref, output_path
         )
     except GitRepositoryError as e:
         output_path.unlink(missing_ok=True)
