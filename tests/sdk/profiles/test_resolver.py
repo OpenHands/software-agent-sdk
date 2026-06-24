@@ -474,6 +474,66 @@ def test_acp_blank_command_resolves_empty_list(
     assert settings.acp_args == []
 
 
+def test_acp_skill_refs_filter_into_agent_context_prompt(
+    llm_store: LLMProfileStore,
+) -> None:
+    # ACP agents receive the selected skills as prompt context via
+    # agent_context.to_acp_prompt_context — skill_refs honors that too.
+    profile = ACPAgentProfile(
+        name="acp", acp_server="claude-code", skill_refs=["gamma", "alpha"]
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.agent_context is not None
+    # Ref order preserved; ACP has no embedded skills to compose.
+    assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
+    # ACP convention: no injected datetime (unlike the OpenHands agent).
+    assert settings.agent_context.current_datetime is None
+
+
+def test_acp_skill_refs_none_includes_all_discovered(
+    llm_store: LLMProfileStore,
+) -> None:
+    profile = ACPAgentProfile(name="acp", acp_server="claude-code", skill_refs=None)
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.agent_context is not None
+    assert {s.name for s in settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
+
+
+def test_acp_skill_refs_empty_leaves_agent_context_none(
+    llm_store: LLMProfileStore,
+) -> None:
+    # No selected skills => no agent_context, preserving the unchanged
+    # "no prompt context" ACP behavior.
+    profile = ACPAgentProfile(name="acp", acp_server="claude-code", skill_refs=[])
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.agent_context is None
+
+
 # --------------------------------------------------------------------------- #
 # Dry-run
 # --------------------------------------------------------------------------- #
@@ -612,6 +672,27 @@ def test_dry_run_acp_reports_credential_channels_by_role(
     assert diag.acp_base_url_secret_name == "OPENAI_BASE_URL"
     assert diag.acp_file_secret_names == ["CODEX_AUTH_JSON"]
     assert diag.resolved_settings is not None
+
+
+def test_dry_run_acp_reports_skill_refs(
+    llm_store: LLMProfileStore,
+) -> None:
+    # skill_refs diagnostics are reported for ACP profiles too (the field is on
+    # the shared base).
+    profile = ACPAgentProfile(
+        name="acp", acp_server="codex", skill_refs=["alpha", "missing"]
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert diag.skill_refs == ["alpha", "missing"]
+    assert diag.resolved_skills == ["alpha"]
+    assert diag.dangling_skill_refs == ["missing"]
+    assert diag.valid is True
 
 
 def test_dry_run_acp_custom_server_has_no_credential_channels(

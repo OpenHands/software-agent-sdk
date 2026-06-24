@@ -284,11 +284,12 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    # Only OpenHands profiles carry ``skill_refs``; ACP profiles delegate skills
-    # to their subprocess, so skip the (potentially network-bound) discovery.
-    available_skills = (
-        discover_profile_skills() if profile.agent_kind == "openhands" else None
-    )
+    # Both variants honor ``skill_refs`` (OpenHands -> agent_context, ACP ->
+    # the prompt skill catalog). Skip the potentially network-bound discovery
+    # only when the profile explicitly selects no discovered skills
+    # (``skill_refs == []``) — the filter would drop everything anyway, and an
+    # OpenHands profile's embedded ``skills`` still apply.
+    available_skills = None if profile.skill_refs == [] else discover_profile_skills()
 
     llm_store = get_llm_profile_store()
     try:

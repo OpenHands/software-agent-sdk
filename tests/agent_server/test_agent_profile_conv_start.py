@@ -234,7 +234,7 @@ class TestResolveAgentFromProfile:
             patch(_STORE_PATH) as MockStore,
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
-            patch(_DISCOVER_PATH) as MockDiscover,
+            patch(_DISCOVER_PATH, return_value=[]) as MockDiscover,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -250,7 +250,38 @@ class TestResolveAgentFromProfile:
         assert result_agent is acp_agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
-        # ACP profiles carry no skill_refs, so discovery is skipped entirely.
+        # ACP profiles also honor skill_refs (default None = all discovered), so
+        # discovery runs and the catalog is threaded into the resolver.
+        MockDiscover.assert_called_once()
+        assert MockResolve.call_args.kwargs["available_skills"] == []
+
+    def test_acp_profile_with_empty_skill_refs_skips_discovery(self):
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+        from openhands.sdk.agent.acp_agent import ACPAgent
+
+        profile = _make_acp_profile()
+        profile = profile.model_copy(update={"skill_refs": []})
+        acp_agent = MagicMock(spec=ACPAgent)
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH) as MockDiscover,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = acp_agent
+            MockResolve.return_value = mock_config
+
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config=None)
+
+        # skill_refs == [] selects no discovered skills, so the (network-bound)
+        # discovery is skipped and the resolver gets available_skills=None.
         MockDiscover.assert_not_called()
         assert MockResolve.call_args.kwargs["available_skills"] is None
 

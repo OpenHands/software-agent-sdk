@@ -226,6 +226,9 @@ def _build_seed_profile(
             ),
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
+            # Conservative seed: don't start injecting the discovered skill
+            # catalog into an existing ACP run. Users opt in via the editor.
+            skill_refs=[],
         )
     context = agent_settings.agent_context
     # Faithful skill mapping: the seed keeps the global agent's explicitly
@@ -604,11 +607,12 @@ async def materialize_agent_profile(
     mcp_config = settings.agent_settings.mcp_config
 
     # Discover skills off the event loop so the dry-run can report which
-    # ``skill_refs`` resolve vs. dangle (OpenHands only; ACP carries none).
+    # ``skill_refs`` resolve vs. dangle. Both variants honor skill_refs; skip
+    # discovery only when the profile explicitly selects none (skill_refs == []).
     available_skills = (
-        await asyncio.to_thread(discover_profile_skills)
-        if profile.agent_kind == "openhands"
-        else None
+        None
+        if profile.skill_refs == []
+        else await asyncio.to_thread(discover_profile_skills)
     )
 
     llm_store = get_llm_profile_store()

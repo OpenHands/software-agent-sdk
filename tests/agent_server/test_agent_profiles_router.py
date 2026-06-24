@@ -542,6 +542,9 @@ def test_seed_preserves_acp_fields(client):
     assert prof["acp_server"] == "codex"
     assert prof["acp_model"] == "gpt-5.5"
     assert prof["acp_args"] == ["--foo", "--bar"]
+    # Conservative ACP seed: skill_refs=[] so an existing ACP run doesn't start
+    # receiving the discovered skill catalog until the user opts in.
+    assert prof["skill_refs"] == []
 
 
 # ── Cipher: skills[].mcp_tools secret round-trip ────────────────────────────

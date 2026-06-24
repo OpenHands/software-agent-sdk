@@ -103,6 +103,7 @@ def test_acp_profile_round_trips() -> None:
         acp_command="codex-acp",
         acp_args=["--flag"],
         mcp_server_refs=None,
+        skill_refs=["pdf-tools"],
     )
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
 
@@ -114,6 +115,8 @@ def test_acp_profile_round_trips() -> None:
     assert reloaded.acp_command == "codex-acp"
     assert reloaded.acp_args == ["--flag"]
     assert reloaded.mcp_server_refs is None
+    # skill_refs lives on the shared base, so ACP profiles round-trip it too.
+    assert reloaded.skill_refs == ["pdf-tools"]
 
 
 def test_acp_profile_minimal_defaults() -> None:

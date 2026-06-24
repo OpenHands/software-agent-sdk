@@ -89,6 +89,23 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
+    # null = all of the server-discovered skills; [] = none; a non-null list
+    # filters discovery to the named keys. null and [] are deliberately
+    # distinct, mirroring ``mcp_server_refs``. On the base because skills are
+    # prompt-only context that *both* variants consume: the OpenHands agent
+    # renders them into its system prompt, and the ACP subprocess receives the
+    # same skill catalog via ``agent_context.to_acp_prompt_context``.
+    skill_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which of the server-discovered skills to expose in the agent's "
+            "prompt, selected by name (mirrors ``mcp_server_refs`` over "
+            "``mcp_config``). null = all discovered; [] = none; a non-null "
+            "list = filter to the named skills. For OpenHands profiles, any "
+            "explicitly embedded ``skills`` are always included on top of the "
+            "filtered set."
+        ),
+    )
 
 
 class OpenHandsAgentProfile(AgentProfileBase):
@@ -123,20 +140,6 @@ class OpenHandsAgentProfile(AgentProfileBase):
     skills: list[Skill] = Field(
         default_factory=list,
         description="Skills that extend the agent's context.",
-    )
-    # null = all of the server-discovered skills; [] = none; a non-null list
-    # filters discovery to the named keys. null and [] are deliberately
-    # distinct, mirroring ``mcp_server_refs``.
-    skill_refs: list[str] | None = Field(
-        default=None,
-        description=(
-            "Which of the server-discovered skills to expose, selected by "
-            "name (mirrors ``mcp_server_refs`` over ``mcp_config``). null = "
-            "all discovered; [] = none; a non-null list = filter to the named "
-            "skills. Any explicitly embedded ``skills`` are always included on "
-            "top of the filtered set, so the catalog selector and embedded "
-            "skills compose."
-        ),
     )
     system_message_suffix: str | None = Field(
         default=None,
