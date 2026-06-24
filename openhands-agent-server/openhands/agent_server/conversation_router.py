@@ -21,7 +21,6 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import InactiveServiceError
 from openhands.agent_server.models import (
     INCLUDE_SKILLS_PARAM_TITLE,
     AgentResponseResult,
@@ -44,6 +43,7 @@ from openhands.agent_server.models import (
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.marketplace.registry import PluginResolutionError
+from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.workspace import LocalWorkspace
@@ -522,12 +522,7 @@ async def load_conversation_plugin(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
-    except InactiveServiceError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    except ValueError as e:
+    except (PluginFetchError, FileNotFoundError, ValueError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),

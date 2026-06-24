@@ -15,7 +15,7 @@ import pytest_asyncio
 
 from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
-from openhands.agent_server.event_service import EventService, InactiveServiceError
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -1367,7 +1367,7 @@ class TestEventServiceSendMessage:
         """Runtime plugin loads require an active conversation."""
         event_service._conversation = None
 
-        with pytest.raises(InactiveServiceError, match="inactive_service"):
+        with pytest.raises(ValueError, match="inactive_service"):
             await event_service.load_plugin("plugin@team")
 
 

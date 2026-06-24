@@ -12,7 +12,7 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
-from openhands.agent_server.event_service import EventService, InactiveServiceError
+from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ACPConversationInfo,
     ConversationInfo,
@@ -28,6 +28,7 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.marketplace.registry import PluginNotFoundError
+from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from openhands.sdk.workspace import LocalWorkspace
@@ -2218,6 +2219,50 @@ def test_load_conversation_plugin_not_found(
         client.app.dependency_overrides.clear()
 
 
+def test_load_conversation_plugin_fetch_error_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps plugin fetch failures to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = PluginFetchError("fetch failed")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "fetch failed" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_file_not_found_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps plugin load failures to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = FileNotFoundError("missing plugin dir")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "missing plugin dir" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_load_conversation_plugin_conversation_not_found(
     client, mock_conversation_service, sample_conversation_id
 ):
@@ -2243,9 +2288,7 @@ def test_load_conversation_plugin_inactive_service_returns_400(
 ):
     """The /load_plugin endpoint maps inactive runtime state to 400."""
     mock_conversation_service.get_event_service.return_value = mock_event_service
-    mock_event_service.load_plugin.side_effect = InactiveServiceError(
-        "inactive_service"
-    )
+    mock_event_service.load_plugin.side_effect = ValueError("inactive_service")
     client.app.dependency_overrides[get_conversation_service] = lambda: (
         mock_conversation_service
     )
