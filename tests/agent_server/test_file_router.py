@@ -2,7 +2,9 @@
 
 import asyncio
 import io
+import json
 import subprocess
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -751,4 +753,120 @@ def test_git_delta_new_repo_has_no_base_commit_header(client, tmp_path):
 
     assert resp.status_code == 200, resp.text
     # Empty-tree base (no commits) is not a replayable commit, so no header.
+    assert "x-archive-base-commit" not in resp.headers
+
+
+# =============================================================================
+# Archive Tests - format=tar.gz (full-workspace archive)
+# =============================================================================
+
+
+def _tar_members(content: bytes) -> list[str]:
+    with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as tar:
+        return tar.getnames()
+
+
+def test_tar_gz_on_non_git_directory_succeeds(client, workspace):
+    # The key differentiator: git-delta 400s on a non-git dir, tar.gz captures
+    # the whole tree.
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/gzip")
+    names = _tar_members(resp.content)
+    assert f"{workspace.name}/src/main.py" in names
+    assert f"{workspace.name}/README.md" in names
+    assert f"{workspace.name}/archive_manifest.json" in names
+
+
+def test_tar_gz_default_excludes_drop_node_modules(client, tmp_path):
+    root = tmp_path / "plain"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "node_modules" / "pkg").mkdir(parents=True)
+    (root / "node_modules" / "pkg" / "junk.js").write_text("// big\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert f"{root.name}/src/main.py" in names
+    assert not any("node_modules" in n for n in names)
+
+
+def test_tar_gz_exclude_param_extends_defaults(client, tmp_path):
+    root = tmp_path / "plain"
+    (root / "keep").mkdir(parents=True)
+    (root / "keep" / "a.txt").write_text("keep\n", encoding="utf-8")
+    (root / "secrets").mkdir()
+    (root / "secrets" / "token.txt").write_text("shh\n", encoding="utf-8")
+    # A default-excluded dir to confirm defaults still apply alongside the param.
+    (root / "__pycache__").mkdir()
+    (root / "__pycache__" / "x.pyc").write_text("bytecode\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(root), "format": "tar.gz", "exclude": "secrets"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert f"{root.name}/keep/a.txt" in names
+    assert not any("secrets" in n for n in names)
+    # Defaults still apply alongside the extra pattern.
+    assert not any("__pycache__" in n for n in names)
+
+
+def test_tar_gz_captures_gitignored_and_non_repo_files(client, tmp_path):
+    # tar.gz is byte-for-byte: it captures files git-delta would miss, including
+    # gitignored authored files (the dir need not even be a git repo).
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    (root / "ignored.txt").write_text("authored but gitignored\n", encoding="utf-8")
+    (root / "tracked.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert f"{root.name}/ignored.txt" in names
+    assert f"{root.name}/tracked.py" in names
+
+
+def test_tar_gz_manifest_records_format_and_excludes(client, workspace):
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(workspace), "format": "tar.gz", "exclude": "*.bin"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        member = tar.extractfile(f"{workspace.name}/archive_manifest.json")
+        assert member is not None
+        manifest = json.loads(member.read().decode("utf-8"))
+
+    assert manifest["format"] == "tar.gz"
+    assert manifest["source"] == workspace.name
+    assert manifest["file_count"] >= 2
+    # The applied excludes = defaults + the caller-supplied pattern.
+    assert "*.bin" in manifest["excludes"]
+    assert "node_modules/" in manifest["excludes"]
+
+
+def test_tar_gz_ignores_base_ref_without_error(client, workspace):
+    # base_ref applies only to git-delta; tar.gz must not error on it.
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(workspace), "format": "tar.gz", "base_ref": "HEAD"},
+    )
+
+    assert resp.status_code == 200, resp.text
     assert "x-archive-base-commit" not in resp.headers

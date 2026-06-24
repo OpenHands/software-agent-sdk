@@ -1,9 +1,13 @@
 import asyncio
+import fnmatch
+import io
+import json
 import os
 import subprocess
+import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -143,22 +147,28 @@ def _create_zip_from_directory(source_dir: Path, output_path: Path) -> None:
         raise
 
 
-ArchiveFormat = Literal["git-delta"]
+ArchiveFormat = Literal["git-delta", "tar.gz"]
 
 _ARCHIVE_SUFFIX: dict[str, str] = {
     "git-delta": ".patch",
+    "tar.gz": ".tar.gz",
 }
 
 _ARCHIVE_MEDIA_TYPE: dict[str, str] = {
     "git-delta": "text/x-patch",
+    "tar.gz": "application/gzip",
 }
 
+ARCHIVE_MANIFEST_NAME = "archive_manifest.json"
 
-# Heavy / generated directories that bloat a delta without helping eval replay.
-# Applied via a scratch ``core.excludesFile`` so they are skipped even when the
-# repo itself does not ``.gitignore`` them (the repo's own .gitignore still
-# applies on top of this).
-_GIT_DELTA_DEFAULT_EXCLUDES = (
+
+# Heavy / generated directories that bloat an archive without helping eval
+# replay. For git-delta they are applied via a scratch ``core.excludesFile`` so
+# they are skipped even when the repo itself does not ``.gitignore`` them (the
+# repo's own .gitignore still applies on top of this). For tar.gz they prune the
+# walk. Shared by both formats and always applied (the ``exclude`` query param
+# only adds to these).
+_DEFAULT_ARCHIVE_EXCLUDES = (
     "node_modules/",
     ".venv/",
     "venv/",
@@ -174,17 +184,19 @@ _GIT_DELTA_DEFAULT_EXCLUDES = (
 )
 
 
-def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> str:
+def _create_git_delta(
+    root: Path, base_ref: str | None, output_path: Path, excludes: list[str]
+) -> str:
     """Write a git patch capturing the working-tree delta against a base.
 
     The delta covers tracked modifications, new (untracked) files, and
     deletions relative to ``base_ref`` (defaulting to the auto-detected
     comparison ref — origin branch, merge-base, or the empty tree for a fresh
     repo). A throwaway index (``GIT_INDEX_FILE``) is used so the repository's
-    real index is never touched. Heavy generated/dependency directories
-    (``_GIT_DELTA_DEFAULT_EXCLUDES``, e.g. ``node_modules/``) are excluded —
-    on top of the repo's own ``.gitignore`` — so the delta stays compact for
-    eval replay even if such a directory is present but not git-ignored.
+    real index is never touched. ``excludes`` (the default archive excludes plus
+    any caller-supplied patterns) are applied via a scratch ``core.excludesFile``
+    — on top of the repo's own ``.gitignore`` — so the delta stays compact for
+    eval replay even when such a directory is present but not git-ignored.
 
     Returns the full base commit SHA the patch applies against, or "" when the
     base is the empty tree (fresh repo) or cannot resolve to a commit.
@@ -198,7 +210,7 @@ def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> st
         raise ValueError(f"base_ref {base_ref!r} could not be resolved") from e
     index_path = output_path.with_name(output_path.name + ".index")
     excludes_path = output_path.with_name(output_path.name + ".excludes")
-    excludes_path.write_text("\n".join(_GIT_DELTA_DEFAULT_EXCLUDES) + "\n")
+    excludes_path.write_text("\n".join(excludes) + "\n")
     env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
     try:
         # Seed the scratch index from the base ref, stage the working tree on
@@ -257,6 +269,77 @@ def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> st
         )
     except GitCommandError:
         return ""
+
+
+def _path_is_excluded(rel: PurePosixPath, patterns: list[str]) -> bool:
+    """True if any component of ``rel`` matches any glob in ``patterns``.
+
+    Patterns are matched per path component with ``fnmatch`` (a trailing ``/``,
+    used to denote directory excludes, is stripped first). Dependency-free so no
+    new package is pulled in.
+    """
+    stripped = [p.rstrip("/") for p in patterns]
+    for part in rel.parts:
+        for pattern in stripped:
+            if fnmatch.fnmatch(part, pattern):
+                return True
+    return False
+
+
+def _build_archive_manifest(
+    source: str, file_count: int, total_bytes: int, excludes: list[str]
+) -> bytes:
+    """Deterministic (timestamp-free) JSON manifest embedded in a tar.gz."""
+    manifest = {
+        "format": "tar.gz",
+        "source": source,
+        "file_count": file_count,
+        "total_bytes": total_bytes,
+        "excludes": excludes,
+    }
+    return json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+
+
+def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -> None:
+    """Stream a gzip tarball of ``root`` to ``output_path``.
+
+    Walks ``root`` without following symlinks, pruning excluded directories so
+    they are never descended into, and adds regular files only (symlinks are
+    skipped — same safety posture as the rest of the endpoint). Files are added
+    one at a time so the archive is never held in memory. A deterministic
+    manifest member (``ARCHIVE_MANIFEST_NAME``) records what was captured.
+    """
+    file_count = 0
+    total_bytes = 0
+    try:
+        with tarfile.open(output_path, "w:gz") as tar:
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                base = PurePosixPath(Path(dirpath).relative_to(root).as_posix())
+                # Prune excluded directories in place so we never descend them.
+                dirnames[:] = [
+                    d for d in dirnames if not _path_is_excluded(base / d, excludes)
+                ]
+                for name in filenames:
+                    rel = base / name
+                    if _path_is_excluded(rel, excludes):
+                        continue
+                    file_path = Path(dirpath) / name
+                    if file_path.is_symlink() or not file_path.is_file():
+                        continue
+                    arcname = f"{root.name}/{rel}"
+                    tar.add(file_path, arcname=arcname, recursive=False)
+                    file_count += 1
+                    total_bytes += file_path.stat().st_size
+
+            manifest = _build_archive_manifest(
+                root.name, file_count, total_bytes, excludes
+            )
+            info = tarfile.TarInfo(f"{root.name}/{ARCHIVE_MANIFEST_NAME}")
+            info.size = len(manifest)
+            tar.addfile(info, io.BytesIO(manifest))
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
 
 
 @file_router.post("/upload")
@@ -468,7 +551,9 @@ async def archive_directory(
         Query(
             description=(
                 "Archive format: 'git-delta' for a git patch of the working-tree "
-                "changes against a base ref (requires a git repository)."
+                "changes against a base ref (requires a git repository); 'tar.gz' "
+                "for a full gzip tarball of the entire directory (works on "
+                "non-git directories too)."
             )
         ),
     ] = "git-delta",
@@ -478,7 +563,18 @@ async def archive_directory(
             description=(
                 "Only for format='git-delta': base ref to diff against. "
                 "Defaults to the auto-detected comparison ref (origin branch, "
-                "merge-base, or the empty tree for a fresh repo)."
+                "merge-base, or the empty tree for a fresh repo). Ignored for "
+                "format='tar.gz'."
+            )
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        Query(
+            description=(
+                "Additional glob patterns to exclude (repeatable, e.g. "
+                "?exclude=foo&exclude=*.bin). Added on top of the built-in "
+                "default excludes, which always apply."
             )
         ),
     ] = None,
@@ -515,16 +611,25 @@ async def archive_directory(
         )
 
     target = target.resolve()
+    # Defaults always apply; the param only adds patterns (safe-by-default so
+    # the archive cannot explode on a heavy directory).
+    effective_excludes = list(_DEFAULT_ARCHIVE_EXCLUDES) + (exclude or [])
     # Build the archive outside the workspace so it is never included in itself
     # and leaves nothing behind in the archived tree.
     fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[format])
     os.close(fd)
     output_path = Path(tmp_name)
 
+    base_commit = ""
     try:
-        base_commit = await asyncio.to_thread(
-            _create_git_delta, target, base_ref, output_path
-        )
+        if format == "git-delta":
+            base_commit = await asyncio.to_thread(
+                _create_git_delta, target, base_ref, output_path, effective_excludes
+            )
+        else:
+            await asyncio.to_thread(
+                _create_tar_gz_archive, target, output_path, effective_excludes
+            )
     except GitRepositoryError as e:
         output_path.unlink(missing_ok=True)
         raise HTTPException(
