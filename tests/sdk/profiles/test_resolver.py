@@ -183,6 +183,7 @@ def test_skill_refs_none_includes_all_discovered(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert {s.name for s in settings.agent_context.skills} == {
         "alpha",
         "beta",
@@ -201,6 +202,7 @@ def test_skill_refs_empty_includes_none(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.agent_context.skills == []
 
 
@@ -217,6 +219,7 @@ def test_skill_refs_filters_to_named_subset_in_ref_order(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
 
 
@@ -235,6 +238,7 @@ def test_skill_refs_dangling_is_silently_dropped_not_raised(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["alpha"]
 
 
@@ -254,6 +258,7 @@ def test_embedded_skills_compose_with_filtered_discovered(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["embedded", "beta"]
 
 
@@ -273,6 +278,7 @@ def test_embedded_skill_wins_name_conflict_over_discovered(
         available_skills=_discovered_skills(),
         cipher=None,
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     skills = settings.agent_context.skills
     assert [s.name for s in skills] == ["alpha"]
     # Embedded definition is authoritative on a name collision.
@@ -293,6 +299,7 @@ def test_no_available_skills_yields_embedded_only(
     settings = resolve_agent_profile(
         profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
     )
+    assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["embedded"]
 
 
