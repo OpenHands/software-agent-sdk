@@ -151,6 +151,9 @@ class TestStartConversationRequestValidation:
 _STORE_PATH = "openhands.agent_server.persistence.store.get_agent_profile_store"
 _LLM_STORE_PATH = "openhands.agent_server.persistence.store.get_llm_profile_store"
 _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
+# Skill discovery is patched so OpenHands-profile resolves don't hit the
+# network (load_all_skills loads public skills from GitHub).
+_DISCOVER_PATH = "openhands.agent_server.conversation_service.discover_profile_skills"
 
 
 class TestResolveAgentFromProfile:
@@ -176,6 +179,7 @@ class TestResolveAgentFromProfile:
             patch(_STORE_PATH) as MockStore,
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]) as MockDiscover,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -192,6 +196,9 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
+        # OpenHands profiles trigger skill discovery, threaded into the resolver.
+        MockDiscover.assert_called_once()
+        assert MockResolve.call_args.kwargs["available_skills"] == []
 
     def test_dangling_mcp_server_ref_propagates(self):
         from openhands.agent_server.conversation_service import (
@@ -203,6 +210,7 @@ class TestResolveAgentFromProfile:
             patch(_STORE_PATH) as MockStore,
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH, return_value=[]),
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -226,6 +234,7 @@ class TestResolveAgentFromProfile:
             patch(_STORE_PATH) as MockStore,
             patch(_LLM_STORE_PATH),
             patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH) as MockDiscover,
         ):
             store_inst = MockStore.return_value
             store_inst.name_for_id.return_value = profile.name
@@ -241,6 +250,9 @@ class TestResolveAgentFromProfile:
         assert result_agent is acp_agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
+        # ACP profiles carry no skill_refs, so discovery is skipped entirely.
+        MockDiscover.assert_not_called()
+        assert MockResolve.call_args.kwargs["available_skills"] is None
 
 
 # ---------------------------------------------------------------------------

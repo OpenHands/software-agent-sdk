@@ -9,6 +9,7 @@ from openhands.agent_server.skills_service import (
     ExposedUrlData,
     SkillLoadResult,
     create_sandbox_skill,
+    discover_profile_skills,
     load_all_skills,
     load_org_skills_from_url,
     merge_skills,
@@ -408,6 +409,32 @@ class TestLoadAllSkills:
         shared = [s for s in result.skills if s.name == "shared"]
         assert len(shared) == 1
         assert shared[0].content == "agents"
+
+
+class TestDiscoverProfileSkills:
+    """Tests for discover_profile_skills (AgentProfile.skill_refs catalog)."""
+
+    _LOAD_ALL = "openhands.agent_server.skills_service.load_all_skills"
+
+    def test_returns_merged_user_and_public_skills(self):
+        skills = [Skill(name="a", content="x"), Skill(name="b", content="y")]
+        with patch(self._LOAD_ALL) as mock_load:
+            mock_load.return_value = SkillLoadResult(skills=skills, sources={})
+            result = discover_profile_skills()
+
+        assert result == skills
+        # Only the deterministic, no-extra-context sources are discovered.
+        assert mock_load.call_args.kwargs == {
+            "load_public": True,
+            "load_user": True,
+            "load_org": False,
+            "load_project": False,
+        }
+
+    def test_degrades_to_empty_on_failure(self):
+        # A discovery failure must not block conversation start / materialize.
+        with patch(self._LOAD_ALL, side_effect=RuntimeError("network down")):
+            assert discover_profile_skills() == []
 
 
 class TestSyncPublicSkills:

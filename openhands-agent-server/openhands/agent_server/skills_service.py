@@ -390,6 +390,33 @@ def load_all_skills(
     return SkillLoadResult(skills=all_skills, sources=sources)
 
 
+def discover_profile_skills() -> list[Skill]:
+    """Best-effort skill catalog for ``AgentProfile.skill_refs`` resolution.
+
+    Returns the merged user + public skills — the deterministic, no-extra-context
+    sources of :func:`load_all_skills` — that ``resolve_agent_profile`` filters by
+    name (#3868). Org / project / sandbox skills need auth or workspace context
+    not available at profile-resolve time and are a follow-up; they still layer
+    in later via the ``AgentContext`` / ``LocalConversation`` project-skill paths.
+
+    Best-effort: ``load_all_skills`` guards each source internally, and any
+    unexpected failure degrades to an empty catalog rather than blocking
+    conversation start or the materialize preview.
+    """
+    try:
+        return list(
+            load_all_skills(
+                load_public=True,
+                load_user=True,
+                load_org=False,
+                load_project=False,
+            ).skills
+        )
+    except Exception:
+        logger.warning("Skill discovery failed; resolving profile with no skills")
+        return []
+
+
 def sync_public_skills() -> tuple[bool, str]:
     """Force refresh of public skills from GitHub repository.
 

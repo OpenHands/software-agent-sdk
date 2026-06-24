@@ -38,8 +38,10 @@ def test_openhands_profile_round_trips() -> None:
         llm_profile_ref="default",
         revision=3,
         mcp_server_refs=["fetch"],
+        skill_refs=["pdf-tools"],
         system_message_suffix="be terse",
         enable_sub_agents=True,
+        enable_switch_llm_tool=False,
         tool_concurrency_limit=4,
     )
     reloaded = validate_agent_profile(profile.model_dump(mode="json"))
@@ -51,7 +53,44 @@ def test_openhands_profile_round_trips() -> None:
     assert reloaded.llm_profile_ref == "default"
     assert reloaded.revision == 3
     assert reloaded.mcp_server_refs == ["fetch"]
+    assert reloaded.skill_refs == ["pdf-tools"]
+    assert reloaded.enable_switch_llm_tool is False
     assert reloaded.tool_concurrency_limit == 4
+
+
+def test_openhands_profile_new_field_defaults() -> None:
+    """``enable_switch_llm_tool`` defaults True (global parity); ``skill_refs``
+    defaults None (all discovered)."""
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    assert profile.enable_switch_llm_tool is True
+    assert profile.skill_refs is None
+    # An older persisted payload without the fields still validates and adopts
+    # the defaults.
+    reloaded = validate_agent_profile(
+        {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
+    )
+    assert isinstance(reloaded, OpenHandsAgentProfile)
+    assert reloaded.enable_switch_llm_tool is True
+    assert reloaded.skill_refs is None
+
+
+def test_skill_refs_empty_vs_null_are_distinct() -> None:
+    """``[]`` (none) and ``None`` (all discovered) must survive round-trip
+    distinctly, mirroring ``mcp_server_refs``."""
+    none_ref = validate_agent_profile(
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="default", skill_refs=None
+        ).model_dump(mode="json")
+    )
+    empty_ref = validate_agent_profile(
+        OpenHandsAgentProfile(
+            name="oh", llm_profile_ref="default", skill_refs=[]
+        ).model_dump(mode="json")
+    )
+    assert isinstance(none_ref, OpenHandsAgentProfile)
+    assert isinstance(empty_ref, OpenHandsAgentProfile)
+    assert none_ref.skill_refs is None
+    assert empty_ref.skill_refs == []
 
 
 def test_acp_profile_round_trips() -> None:

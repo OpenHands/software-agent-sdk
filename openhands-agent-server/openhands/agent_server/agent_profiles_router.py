@@ -11,6 +11,7 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 (never raises on dangling refs — those appear in the body).
 """
 
+import asyncio
 import copy
 import shlex
 from collections.abc import Iterator
@@ -34,6 +35,7 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     ACPAgentProfile,
@@ -226,15 +228,23 @@ def _build_seed_profile(
             mcp_server_refs=None,
         )
     context = agent_settings.agent_context
+    # Faithful skill mapping: the seed keeps the global agent's explicitly
+    # embedded skills, and ``skill_refs`` mirrors whether the global was set to
+    # auto-load discovered skills — ``None`` (all discovered) when it was,
+    # ``[]`` (none) when it relied on embedded skills only — so the migrated
+    # profile resolves to the same skill set the user already had.
+    auto_discovers = context.load_user_skills or context.load_public_skills
     return OpenHandsAgentProfile(
         name=SEED_PROFILE_NAME,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
         skills=list(context.skills),
+        skill_refs=None if auto_discovers else [],
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=_profile_verification(agent_settings.verification),
         enable_sub_agents=agent_settings.enable_sub_agents,
+        enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )
@@ -593,10 +603,19 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
+    # Discover skills off the event loop so the dry-run can report which
+    # ``skill_refs`` resolve vs. dangle (OpenHands only; ACP carries none).
+    available_skills = (
+        await asyncio.to_thread(discover_profile_skills)
+        if profile.agent_kind == "openhands"
+        else None
+    )
+
     llm_store = get_llm_profile_store()
     return resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,
+        available_skills=available_skills,
         cipher=cipher,
     )

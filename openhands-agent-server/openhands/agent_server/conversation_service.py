@@ -28,6 +28,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.skills_service import discover_profile_skills
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -283,10 +284,20 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
+    # Only OpenHands profiles carry ``skill_refs``; ACP profiles delegate skills
+    # to their subprocess, so skip the (potentially network-bound) discovery.
+    available_skills = (
+        discover_profile_skills() if profile.agent_kind == "openhands" else None
+    )
+
     llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=available_skills,
+            cipher=cipher,
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc

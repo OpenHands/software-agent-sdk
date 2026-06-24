@@ -496,6 +496,7 @@ def test_seed_preserves_openhands_fields(client):
         json={
             "agent_settings_diff": {
                 "enable_sub_agents": True,
+                "enable_switch_llm_tool": False,
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -509,8 +510,12 @@ def test_seed_preserves_openhands_fields(client):
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
     assert prof["enable_sub_agents"] is True
+    assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
+    # No agent_context skills configured + default auto-load off => skill_refs
+    # is the "none discovered" sentinel, so the seed resolves to embedded only.
+    assert prof["skill_refs"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
@@ -788,6 +793,36 @@ def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
     assert body["valid"] is False
     assert body["dangling_mcp_server_refs"] == ["missing-server"]
     assert body["resolved_settings"] is None
+
+
+def test_materialize_reports_resolved_and_dangling_skill_refs(
+    client_with_llm_store, store, llm_store
+):
+    """skill_refs are resolved against the discovered catalog; a stale ref is a
+    soft signal (reported, valid stays True)."""
+    from openhands.sdk.skills import Skill
+
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(
+        OpenHandsAgentProfile(
+            name="p",
+            llm_profile_ref="base-llm",
+            skill_refs=["known", "stale"],
+        )
+    )
+
+    with patch(
+        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        return_value=[Skill(name="known", content="x")],
+    ):
+        response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is True
+    assert body["skill_refs"] == ["known", "stale"]
+    assert body["resolved_skills"] == ["known"]
+    assert body["dangling_skill_refs"] == ["stale"]
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):

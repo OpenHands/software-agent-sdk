@@ -128,6 +128,175 @@ def test_missing_llm_ref_raises_profile_not_found(
 
 
 # --------------------------------------------------------------------------- #
+# enable_switch_llm_tool (#3856)
+# --------------------------------------------------------------------------- #
+
+
+def test_enable_switch_llm_tool_defaults_true_threads_through(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    # Defaults True to match the global agent settings default.
+    assert settings.enable_switch_llm_tool is True
+
+
+def test_enable_switch_llm_tool_false_threads_through(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
+    )
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.enable_switch_llm_tool is False
+
+
+# --------------------------------------------------------------------------- #
+# skill_refs filter over discovered skills (#3868)
+# --------------------------------------------------------------------------- #
+
+
+def _discovered_skills() -> list[Skill]:
+    return [
+        Skill(name="alpha", content="a"),
+        Skill(name="beta", content="b"),
+        Skill(name="gamma", content="c"),
+    ]
+
+
+def test_skill_refs_none_includes_all_discovered(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=None
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert {s.name for s in settings.agent_context.skills} == {
+        "alpha",
+        "beta",
+        "gamma",
+    }
+
+
+def test_skill_refs_empty_includes_none(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default", skill_refs=[])
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert settings.agent_context.skills == []
+
+
+def test_skill_refs_filters_to_named_subset_in_ref_order(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["gamma", "alpha"]
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
+
+
+def test_skill_refs_dangling_is_silently_dropped_not_raised(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    # Unlike mcp_server_refs, a dangling skill ref does not raise (discovery is
+    # non-deterministic); the stale ref is dropped and reported by the dry-run.
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert [s.name for s in settings.agent_context.skills] == ["alpha"]
+
+
+def test_embedded_skills_compose_with_filtered_discovered(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        skills=[Skill(name="embedded", content="x")],
+        skill_refs=["beta"],
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert [s.name for s in settings.agent_context.skills] == ["embedded", "beta"]
+
+
+def test_embedded_skill_wins_name_conflict_over_discovered(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        skills=[Skill(name="alpha", content="EMBEDDED")],
+        skill_refs=["alpha"],
+    )
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    skills = settings.agent_context.skills
+    assert [s.name for s in skills] == ["alpha"]
+    # Embedded definition is authoritative on a name collision.
+    assert skills[0].content == "EMBEDDED"
+
+
+def test_no_available_skills_yields_embedded_only(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    # available_skills=None (no discovery run) → only embedded skills reach the
+    # agent, regardless of skill_refs.
+    profile = OpenHandsAgentProfile(
+        name="oh",
+        llm_profile_ref="default",
+        skills=[Skill(name="embedded", content="x")],
+        skill_refs=None,
+    )
+    settings = resolve_agent_profile(
+        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+    )
+    assert [s.name for s in settings.agent_context.skills] == ["embedded"]
+
+
+# --------------------------------------------------------------------------- #
 # MCP composition
 # --------------------------------------------------------------------------- #
 
@@ -342,6 +511,43 @@ def test_dry_run_reports_dangling_llm_and_mcp(
     assert len(diag.errors) == 2
     # Invalid => no resolved settings produced.
     assert diag.resolved_settings is None
+
+
+def test_dry_run_reports_resolved_and_dangling_skill_refs(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert diag.skill_refs == ["alpha", "missing"]
+    assert diag.resolved_skills == ["alpha"]
+    assert diag.dangling_skill_refs == ["missing"]
+    # A dangling skill ref is a soft signal: it must NOT flip validity.
+    assert diag.valid is True
+    assert diag.errors == []
+
+
+def test_dry_run_skill_refs_null_resolves_all_discovered(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert diag.skill_refs is None
+    assert set(diag.resolved_skills) == {"alpha", "beta", "gamma"}
+    assert diag.dangling_skill_refs == []
 
 
 def test_dry_run_total_on_llm_store_transient_error(

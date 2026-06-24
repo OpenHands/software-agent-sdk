@@ -124,6 +124,20 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default_factory=list,
         description="Skills that extend the agent's context.",
     )
+    # null = all of the server-discovered skills; [] = none; a non-null list
+    # filters discovery to the named keys. null and [] are deliberately
+    # distinct, mirroring ``mcp_server_refs``.
+    skill_refs: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which of the server-discovered skills to expose, selected by "
+            "name (mirrors ``mcp_server_refs`` over ``mcp_config``). null = "
+            "all discovered; [] = none; a non-null list = filter to the named "
+            "skills. Any explicitly embedded ``skills`` are always included on "
+            "top of the filtered set, so the catalog selector and embedded "
+            "skills compose."
+        ),
+    )
     system_message_suffix: str | None = Field(
         default=None,
         description="Optional suffix appended to the system prompt.",
@@ -139,6 +153,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
     enable_sub_agents: bool = Field(
         default=False,
         description="Enable sub-agent delegation via TaskToolSet.",
+    )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles. Defaults True to match the global agent settings "
+            "default (AgentSettingsConfig.enable_switch_llm_tool)."
+        ),
     )
     tool_concurrency_limit: int = Field(
         default=1,
