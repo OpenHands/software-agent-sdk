@@ -21,6 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
@@ -51,6 +52,10 @@ from openhands.sdk.skills.utils import (
 )
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.path import to_posix_path
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 
 
 logger = get_logger(__name__)
@@ -391,30 +396,38 @@ def load_all_skills(
 
 
 def discover_profile_skills() -> list[Skill]:
-    """Best-effort skill catalog for ``AgentProfile.skill_refs`` resolution.
+    """Skill catalog for ``AgentProfile.skill_refs`` resolution (#3868).
 
-    Returns the merged user + public skills — the deterministic, no-extra-context
-    sources of :func:`load_all_skills` — that ``resolve_agent_profile`` filters by
-    name (#3868). Org / project / sandbox skills need auth or workspace context
-    not available at profile-resolve time and are a follow-up; they still layer
-    in later via the ``AgentContext`` / ``LocalConversation`` project-skill paths.
-
-    Best-effort: ``load_all_skills`` guards each source internally, and any
-    unexpected failure degrades to an empty catalog rather than blocking
-    conversation start or the materialize preview.
+    Returns the merged user + public skills — the deterministic sources of
+    :func:`load_all_skills` that ``resolve_agent_profile`` filters by name. Org /
+    project skills need auth / workspace context unavailable at resolve time (a
+    follow-up). ``load_all_skills`` already absorbs and logs benign per-source
+    failures, so this does not swallow errors: an unexpected failure propagates
+    rather than silently resolving the profile to a zero-skill agent.
     """
-    try:
-        return list(
-            load_all_skills(
-                load_public=True,
-                load_user=True,
-                load_org=False,
-                load_project=False,
-            ).skills
-        )
-    except Exception:
-        logger.warning("Skill discovery failed; resolving profile with no skills")
-        return []
+    return list(
+        load_all_skills(
+            load_public=True,
+            load_user=True,
+            load_org=False,
+            load_project=False,
+        ).skills
+    )
+
+
+def discover_profile_skills_if_needed(
+    profile: "OpenHandsAgentProfile | ACPAgentProfile",
+) -> list[Skill] | None:
+    """Discover the skill catalog a profile needs, or ``None`` to skip discovery.
+
+    ``skill_refs == []`` selects no discovered skills, so the (potentially
+    network-bound) discovery is skipped and the resolver receives ``None``. Any
+    other value — ``None`` (all discovered) or a name list — needs the catalog.
+    Centralizes the skip guard shared by conversation start and the dry-run.
+    """
+    if profile.skill_refs == []:
+        return None
+    return discover_profile_skills()
 
 
 def sync_public_skills() -> tuple[bool, str]:

@@ -153,7 +153,9 @@ _LLM_STORE_PATH = "openhands.agent_server.persistence.store.get_llm_profile_stor
 _RESOLVE_PATH = "openhands.sdk.profiles.resolver.resolve_agent_profile"
 # Skill discovery is patched so OpenHands-profile resolves don't hit the
 # network (load_all_skills loads public skills from GitHub).
-_DISCOVER_PATH = "openhands.agent_server.conversation_service.discover_profile_skills"
+# conversation_service calls discover_profile_skills_if_needed, which looks up
+# discover_profile_skills in skills_service — patch it at the source.
+_DISCOVER_PATH = "openhands.agent_server.skills_service.discover_profile_skills"
 
 
 class TestResolveAgentFromProfile:

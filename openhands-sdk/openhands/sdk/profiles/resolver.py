@@ -32,6 +32,7 @@ from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -53,6 +54,9 @@ if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
     from openhands.sdk.llm.llm_profile_store import LLMProfileStore
     from openhands.sdk.utils.cipher import Cipher
+
+
+logger = get_logger(__name__)
 
 
 class ProfileNotFound(Exception):
@@ -100,10 +104,8 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_mcp_servers: list[str] = Field(default_factory=list)
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
 
-    # Skill selection (both variants). ``dangling_skill_refs`` is a soft
-    # signal — unlike MCP refs it does NOT flip ``valid`` (see
-    # :func:`_compute_skill_filter`) — so the editor can flag a stale selection
-    # without blocking materialize/launch.
+    # Skill selection (both variants). ``dangling_skill_refs`` is a soft signal:
+    # unlike MCP refs it does NOT flip ``valid`` (see :func:`_compute_skill_filter`).
     skill_refs: list[str] | None = None
     resolved_skills: list[str] = Field(default_factory=list)
     dangling_skill_refs: list[str] = Field(default_factory=list)
@@ -152,16 +154,12 @@ def _compute_skill_filter(
 ) -> tuple[list[Skill], list[str], list[str]]:
     """Resolve ``skill_refs`` against the server-discovered skills.
 
-    Mirrors :func:`_compute_mcp_filter`: ``None`` → passthrough (all discovered
-    skills); a non-null list filters to the named skills, preserving the *ref*
-    order so the editor's selection order is honored. Returns
-    ``(filtered_skills, resolved_names, dangling_names)``.
-
-    Unlike MCP refs (resolved against the user's stored config), a dangling
-    skill ref is *not* an error: skills discovery is non-deterministic (public /
-    org sources load over the network and can change between edits), so a stale
-    ref silently drops out here and is surfaced as a soft diagnostic by the
-    dry-run instead of failing conversation start.
+    Mirrors :func:`_compute_mcp_filter`: ``None`` → all discovered skills; a
+    non-null list filters to the named skills in ref order. Returns
+    ``(filtered_skills, resolved_names, dangling_names)``. Unlike a dangling MCP
+    ref, a dangling skill ref is a soft signal, not an error: discovery is
+    non-deterministic, so a stale ref is dropped (and logged / reported by the
+    dry-run) rather than failing conversation start.
     """
     available = list(available_skills or [])
     if refs is None:
@@ -247,21 +245,16 @@ def _build_openhands_settings(
     llm: LLM,
     mcp_config: MCPConfig | None,
     cipher: Cipher | None,
-    available_skills: list[Skill] | None,
+    filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``OpenHandsAgentSettings`` from a profile + LLM.
 
-    The agent's skills are the union of the profile's explicitly embedded
-    ``skills`` (decrypted) and the server-discovered skills selected by
-    ``skill_refs``. Embedded skills are authoritative on a name conflict, so the
-    catalog selector composes with hand-authored skills rather than shadowing
-    them.
+    Skills are the profile's embedded ``skills`` (decrypted) composed with
+    ``filtered_skills`` (the ``skill_refs`` selection); embedded skills win on a
+    name conflict, so the catalog selector composes with hand-authored skills.
     """
     embedded = _decrypt_skill_mcp_tools(profile.skills, cipher)
-    filtered_discovered, _, _ = _compute_skill_filter(
-        available_skills, profile.skill_refs
-    )
-    skills = merge_skills_by_name(embedded, filtered_discovered)
+    skills = merge_skills_by_name(embedded, filtered_skills)
     payload = {
         "schema_version": AGENT_SETTINGS_SCHEMA_VERSION,
         "agent_kind": "openhands",
@@ -284,28 +277,19 @@ def _build_openhands_settings(
 def _build_acp_settings(
     profile: ACPAgentProfile,
     mcp_config: MCPConfig | None,
-    available_skills: list[Skill] | None,
+    filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
 
-    The profile stores ``acp_command`` as a single shell string; the settings
-    field is a token list, so a non-empty command is split with :func:`shlex.split`.
-    No credential is set — provider creds ride ``state.secret_registry`` (#3720).
-
-    ``skill_refs`` is honored here too: ACP agents receive the selected skills as
-    prompt-only context (``agent_context.to_acp_prompt_context`` renders the same
-    ``<available_skills>`` catalog the OpenHands agent gets). An ``agent_context``
-    is built only when the filter yields skills — empty stays ``None`` so a
-    skill-free ACP profile keeps the unchanged "no context" prompt. ``skills``
-    discovered server-side carry no secret, so no cipher is needed.
-    ``current_datetime=None`` matches ACP's own context convention (it does not
-    inject a timestamp the way the OpenHands agent does).
-
-    Enforces the launch invariant that ``resolve_acp_command`` checks at
-    ``create_agent`` time: a ``custom`` server has no default command, so one
-    must be supplied. Surfacing it here keeps the resolved settings actually
-    executable (and the dry-run verdict honest) instead of deferring the failure
-    to conversation start.
+    ``acp_command`` is stored as a shell string and split into the settings'
+    token list. No credential is set — provider creds ride
+    ``state.secret_registry`` (#3720). ``filtered_skills`` (the ``skill_refs``
+    selection) become prompt-only context via ``agent_context``; an empty
+    selection keeps ``agent_context=None`` (the unchanged "no context" prompt),
+    and ``current_datetime=None`` matches ACP's convention of not injecting a
+    timestamp. A ``custom`` server has no default command, so one must be
+    supplied — the same invariant ``resolve_acp_command`` enforces at
+    ``create_agent``, surfaced here so the resolved settings stay executable.
     """
     command = shlex.split(profile.acp_command) if profile.acp_command else []
     if profile.acp_server == "custom" and not command:
@@ -313,7 +297,6 @@ def _build_acp_settings(
             "acp_command is required when acp_server='custom' — there is no "
             "default launch command to fall back to"
         )
-    filtered_skills, _, _ = _compute_skill_filter(available_skills, profile.skill_refs)
     agent_context = (
         AgentContext(skills=filtered_skills, current_datetime=None)
         if filtered_skills
@@ -362,6 +345,19 @@ def resolve_agent_profile(
     if dangling:
         raise DanglingMcpServerRef(dangling)
 
+    filtered_skills, _, dangling_skills = _compute_skill_filter(
+        available_skills, profile.skill_refs
+    )
+    if dangling_skills:
+        # Soft drop (see _compute_skill_filter), but make it observable so a
+        # stale/renamed skill selection isn't lost silently at launch.
+        logger.warning(
+            "Profile %r: dropping unresolved skill_refs not in the discovered "
+            "catalog: %s",
+            profile.name,
+            ", ".join(dangling_skills),
+        )
+
     if isinstance(profile, OpenHandsAgentProfile):
         try:
             llm = llm_store.load(profile.llm_profile_ref, cipher=cipher)
@@ -370,10 +366,10 @@ def resolve_agent_profile(
                 f"LLM profile {profile.llm_profile_ref!r} not found"
             ) from e
         return _build_openhands_settings(
-            profile, llm, filtered_mcp, cipher, available_skills
+            profile, llm, filtered_mcp, cipher, filtered_skills
         )
 
-    return _build_acp_settings(profile, filtered_mcp, available_skills)
+    return _build_acp_settings(profile, filtered_mcp, filtered_skills)
 
 
 def resolve_agent_profile_dry_run(
@@ -404,11 +400,9 @@ def resolve_agent_profile_dry_run(
             "MCP server(s) not configured: " + ", ".join(dangling)
         )
 
-    # Skill selection report (both variants — ``skill_refs`` is on the base).
-    # Dangling refs are recorded but do NOT add an error (see
-    # _compute_skill_filter), so a stale selection is shown to the editor
-    # without flipping ``valid``.
-    _, resolved_skills, dangling_skills = _compute_skill_filter(
+    # Skill selection report (both variants). Computed once and reused by the
+    # settings build below; dangling refs are recorded but don't add an error.
+    filtered_skills, resolved_skills, dangling_skills = _compute_skill_filter(
         available_skills, profile.skill_refs
     )
     diagnostics.skill_refs = profile.skill_refs
@@ -457,10 +451,10 @@ def resolve_agent_profile_dry_run(
                         "OpenHands profile marked valid without a resolved LLM"
                     )
                 settings = _build_openhands_settings(
-                    profile, llm, filtered_mcp, cipher, available_skills
+                    profile, llm, filtered_mcp, cipher, filtered_skills
                 )
             else:
-                settings = _build_acp_settings(profile, filtered_mcp, available_skills)
+                settings = _build_acp_settings(profile, filtered_mcp, filtered_skills)
             # No expose context => secrets redacted (mcp env/headers, llm api_key).
             diagnostics.resolved_settings = settings.model_dump(mode="json")
         except Exception as e:

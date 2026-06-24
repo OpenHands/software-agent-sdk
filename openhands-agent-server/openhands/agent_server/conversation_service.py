@@ -28,7 +28,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.skills_service import discover_profile_skills
+from openhands.agent_server.skills_service import discover_profile_skills_if_needed
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -284,12 +284,15 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    # Both variants honor ``skill_refs`` (OpenHands -> agent_context, ACP ->
-    # the prompt skill catalog). Skip the potentially network-bound discovery
-    # only when the profile explicitly selects no discovered skills
-    # (``skill_refs == []``) — the filter would drop everything anyway, and an
-    # OpenHands profile's embedded ``skills`` still apply.
-    available_skills = None if profile.skill_refs == [] else discover_profile_skills()
+    # Both variants honor ``skill_refs``; the helper skips discovery when it
+    # selects none. A genuine discovery failure fails the launch loudly rather
+    # than silently producing a zero-skill agent.
+    try:
+        available_skills = discover_profile_skills_if_needed(profile)
+    except Exception as exc:
+        raise ValueError(
+            f"Skill discovery failed for profile '{profile_name}': {exc}"
+        ) from exc
 
     llm_store = get_llm_profile_store()
     try:

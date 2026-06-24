@@ -513,13 +513,31 @@ def test_seed_preserves_openhands_fields(client):
     assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
-    # No agent_context skills configured + default auto-load off => skill_refs
-    # is the "none discovered" sentinel, so the seed resolves to embedded only.
+    # The seed embeds the global's resolved skills and selects no further
+    # discovery (skill_refs=[]), so it resolves to exactly that skill set.
     assert prof["skill_refs"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
+
+
+def test_seed_clears_skill_refs_even_when_global_autoloads(client):
+    """A global that auto-loads skills still seeds skill_refs=[] (embedded
+    snapshot), not None.
+
+    skill_refs=None would re-discover user+public at resolve time and inject
+    skills a partial-source global never had; the embedded snapshot of
+    context.skills is the faithful mapping regardless of source flags.
+    """
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_context": {"load_user_skills": True}}},
+    )
+    client.get("/api/agent-profiles")  # triggers the seed
+
+    prof = client.get("/api/agent-profiles/default").json()["profile"]
+    assert prof["skill_refs"] == []
 
 
 def test_seed_preserves_acp_fields(client):
@@ -815,7 +833,7 @@ def test_materialize_reports_resolved_and_dangling_skill_refs(
     )
 
     with patch(
-        "openhands.agent_server.agent_profiles_router.discover_profile_skills",
+        "openhands.agent_server.skills_service.discover_profile_skills",
         return_value=[Skill(name="known", content="x")],
     ):
         response = client_with_llm_store.post("/api/agent-profiles/p/materialize")

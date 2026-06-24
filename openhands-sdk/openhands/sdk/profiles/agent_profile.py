@@ -89,12 +89,8 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
-    # null = all of the server-discovered skills; [] = none; a non-null list
-    # filters discovery to the named keys. null and [] are deliberately
-    # distinct, mirroring ``mcp_server_refs``. On the base because skills are
-    # prompt-only context that *both* variants consume: the OpenHands agent
-    # renders them into its system prompt, and the ACP subprocess receives the
-    # same skill catalog via ``agent_context.to_acp_prompt_context``.
+    # null and [] are deliberately distinct (mirrors ``mcp_server_refs``). On the
+    # base because both variants consume skills as prompt context.
     skill_refs: list[str] | None = Field(
         default=None,
         description=(

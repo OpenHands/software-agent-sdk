@@ -4,17 +4,21 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from openhands.agent_server.skills_service import (
     SANDBOX_WORKER_URL_PREFIX,
     ExposedUrlData,
     SkillLoadResult,
     create_sandbox_skill,
     discover_profile_skills,
+    discover_profile_skills_if_needed,
     load_all_skills,
     load_org_skills_from_url,
     merge_skills,
     sync_public_skills,
 )
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.skills import Skill
 
 
@@ -431,10 +435,39 @@ class TestDiscoverProfileSkills:
             "load_project": False,
         }
 
-    def test_degrades_to_empty_on_failure(self):
-        # A discovery failure must not block conversation start / materialize.
-        with patch(self._LOAD_ALL, side_effect=RuntimeError("network down")):
-            assert discover_profile_skills() == []
+    def test_propagates_unexpected_failure(self):
+        # load_all_skills absorbs benign per-source failures internally; an
+        # unexpected failure propagates rather than silently resolving to a
+        # zero-skill agent (the caller surfaces it loudly).
+        with patch(self._LOAD_ALL, side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                discover_profile_skills()
+
+
+class TestDiscoverProfileSkillsIfNeeded:
+    """Tests for the skip-discovery guard shared by start + dry-run."""
+
+    _DISCOVER = "openhands.agent_server.skills_service.discover_profile_skills"
+
+    def test_empty_skill_refs_skips_discovery(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=[])
+        with patch(self._DISCOVER) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) is None
+            mock_discover.assert_not_called()
+
+    def test_null_skill_refs_discovers(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=None)
+        skills = [Skill(name="a", content="x")]
+        with patch(self._DISCOVER, return_value=skills) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) == skills
+            mock_discover.assert_called_once()
+
+    def test_named_skill_refs_discovers(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=["a"])
+        skills = [Skill(name="a", content="x")]
+        with patch(self._DISCOVER, return_value=skills) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) == skills
+            mock_discover.assert_called_once()
 
 
 class TestSyncPublicSkills:
