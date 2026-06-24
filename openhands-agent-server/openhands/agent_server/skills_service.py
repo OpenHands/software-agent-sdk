@@ -382,20 +382,27 @@ def load_all_skills(
     sources["sandbox"] = len(sandbox_skills)
     skill_lists.append(sandbox_skills)
 
+    auto_load_registrations = [
+        registration
+        for registration in registered_marketplaces or []
+        if registration.auto_load
+    ]
+
     marketplace_skills: list[Skill] = []
-    if load_public and registered_marketplaces:
-        marketplace_skills = load_registered_marketplace_skills(registered_marketplaces)
+    if load_public and auto_load_registrations:
+        marketplace_skills = load_registered_marketplace_skills(auto_load_registrations)
     sources["registered_marketplaces"] = len(marketplace_skills)
     skill_lists.append(marketplace_skills)
 
     # 2-3. Load legacy public + user skills via helper (no project yet — org sits
-    # between). Registered marketplaces replace legacy public skills, while user
-    # skills keep their existing precedence above the public marketplace tier.
+    # between). Auto-load registered marketplaces replace legacy public skills,
+    # while user skills keep their existing precedence above the public marketplace
+    # tier.
     sdk_base = load_available_skills(
         work_dir=None,
         include_user=load_user,
         include_project=False,
-        include_public=load_public and not registered_marketplaces,
+        include_public=load_public and not auto_load_registrations,
         marketplace_path=marketplace_path,
     )
     sources["sdk_base"] = len(sdk_base)

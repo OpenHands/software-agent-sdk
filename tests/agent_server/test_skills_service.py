@@ -275,7 +275,7 @@ class TestLoadAllSkills:
                     MarketplaceRegistration(
                         name="test",
                         source=str(marketplace_dir),
-                        auto_load="all",
+                        auto_load=True,
                     )
                 ],
             )
@@ -287,10 +287,33 @@ class TestLoadAllSkills:
         assert result.sources["registered_marketplaces"] == 2
         assert mock_avail.call_args_list[0].kwargs["include_public"] is False
 
+    def test_load_all_skills_non_auto_registered_marketplaces_keep_legacy_public(
+        self, tmp_path: Path
+    ):
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
+
+        with patch(
+            self._PATCH_TARGET, side_effect=[{"public-skill": public_skill}, {}]
+        ) as mock_avail:
+            result = load_all_skills(
+                load_public=True,
+                load_user=False,
+                load_project=False,
+                load_org=False,
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ],
+            )
+
+        assert [skill.name for skill in result.skills] == ["public-skill"]
+        assert result.sources["registered_marketplaces"] == 0
+        assert mock_avail.call_args_list[0].kwargs["include_public"] is True
+
     def test_load_registered_marketplace_skills_uses_auto_load_registrations(
         self, tmp_path: Path
     ):
-        """Only registrations marked auto_load='all' contribute plugin skills."""
+        """Only registrations marked auto_load=True contribute plugin skills."""
         marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
 
         skills = load_registered_marketplace_skills(
@@ -298,7 +321,7 @@ class TestLoadAllSkills:
                 MarketplaceRegistration(
                     name="test",
                     source=str(marketplace_dir),
-                    auto_load="all",
+                    auto_load=True,
                 ),
                 MarketplaceRegistration(name="manual", source=str(marketplace_dir)),
             ]
@@ -323,7 +346,7 @@ class TestLoadAllSkills:
                         source="github:example/marketplaces",
                         ref="feature-branch",
                         repo_path="catalogs/public",
-                        auto_load="all",
+                        auto_load=True,
                     )
                 ]
             )

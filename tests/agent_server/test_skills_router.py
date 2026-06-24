@@ -154,7 +154,7 @@ class TestGetSkillsEndpoint:
                             "source": "https://github.com/org/marketplace",
                             "ref": "main",
                             "repo_path": "marketplace",
-                            "auto_load": "all",
+                            "auto_load": True,
                         }
                     ]
                 },
@@ -167,7 +167,7 @@ class TestGetSkillsEndpoint:
             assert registrations[0].source == "https://github.com/org/marketplace"
             assert registrations[0].ref == "main"
             assert registrations[0].repo_path == "marketplace"
-            assert registrations[0].auto_load == "all"
+            assert registrations[0].auto_load is True
 
     def test_get_skills_with_sandbox_config(self, client):
         """Test skills request with sandbox configuration."""
