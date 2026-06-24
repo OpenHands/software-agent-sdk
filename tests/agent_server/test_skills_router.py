@@ -228,6 +228,39 @@ class TestGetSkillsEndpoint:
             "team",
         ]
 
+    def test_get_skills_server_manual_marketplace_keeps_public_skills(self):
+        config = Config(
+            session_api_keys=[],
+            registered_marketplaces=[
+                MarketplaceRegistration(
+                    name="manual",
+                    source="https://github.com/org/manual-marketplace",
+                )
+            ],
+        )
+        client = TestClient(create_app(config), raise_server_exceptions=False)
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
+
+        with patch(
+            "openhands.agent_server.skills_service.load_available_skills",
+            side_effect=[{"public-skill": public_skill}, {}],
+        ) as mock_load_available:
+            response = client.post(
+                "/api/skills",
+                json={
+                    "load_user": False,
+                    "load_project": False,
+                    "load_org": False,
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert [skill["name"] for skill in data["skills"]] == ["public-skill"]
+        assert data["sources"]["registered_marketplaces"] == 0
+        assert data["sources"]["sdk_base"] == 1
+        assert mock_load_available.call_args_list[0].kwargs["include_public"] is True
+
     def test_get_skills_request_marketplace_overrides_server_default(self):
         """Request registrations override same-named server defaults."""
         config = Config(

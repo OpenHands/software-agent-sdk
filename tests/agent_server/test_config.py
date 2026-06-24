@@ -15,7 +15,7 @@ def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_pat
                     "source": "https://github.com/org/marketplace",
                     "ref": "main",
                     "repo_path": "marketplace",
-                    "auto_load": "all",
+                    "auto_load": True,
                 }
             ]
         ),
@@ -29,4 +29,4 @@ def test_load_config_reads_registered_marketplaces_from_env(monkeypatch, tmp_pat
     assert registration.source == "https://github.com/org/marketplace"
     assert registration.ref == "main"
     assert registration.repo_path == "marketplace"
-    assert registration.auto_load == "all"
+    assert registration.auto_load is True
