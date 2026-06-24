@@ -162,12 +162,13 @@ _ARCHIVE_MEDIA_TYPE: dict[str, str] = {
 ARCHIVE_MANIFEST_NAME = "archive_manifest.json"
 
 
-# Heavy / generated directories that bloat an archive without helping eval
-# replay. For git-delta they are applied via a scratch ``core.excludesFile`` so
-# they are skipped even when the repo itself does not ``.gitignore`` them (the
-# repo's own .gitignore still applies on top of this). For tar.gz they prune the
-# walk. Shared by both formats and always applied (the ``exclude`` query param
-# only adds to these).
+# Heavy / generated directories that usually bloat an archive without helping
+# eval replay. These are the default excludes, not a minimum exclusion set:
+# callers can disable them with ``use_default_excludes=false`` when they need a
+# full workspace capture. For git-delta they are applied via a scratch
+# ``core.excludesFile`` so they are skipped even when the repo itself does not
+# ``.gitignore`` them (the repo's own .gitignore still applies on top of this).
+# For tar.gz they prune the walk.
 _DEFAULT_ARCHIVE_EXCLUDES = (
     "node_modules/",
     ".venv/",
@@ -193,10 +194,10 @@ def _create_git_delta(
     deletions relative to ``base_ref`` (defaulting to the auto-detected
     comparison ref — origin branch, merge-base, or the empty tree for a fresh
     repo). A throwaway index (``GIT_INDEX_FILE``) is used so the repository's
-    real index is never touched. ``excludes`` (the default archive excludes plus
-    any caller-supplied patterns) are applied via a scratch ``core.excludesFile``
-    — on top of the repo's own ``.gitignore`` — so the delta stays compact for
-    eval replay even when such a directory is present but not git-ignored.
+    real index is never touched. ``excludes`` are applied via a scratch
+    ``core.excludesFile`` — on top of the repo's own ``.gitignore`` — so callers
+    can keep the delta compact by default while still disabling the default
+    archive excludes when they intentionally want a fuller capture.
 
     Returns the full base commit SHA the patch applies against, or "" when the
     base is the empty tree (fresh repo) or cannot resolve to a commit.
@@ -214,7 +215,7 @@ def _create_git_delta(
     env = {**os.environ, "GIT_INDEX_FILE": str(index_path)}
     try:
         # Seed the scratch index from the base ref, stage the working tree on
-        # top of it (skipping the default excludes), then diff. The ``-- .``
+        # top of it (skipping the requested excludes), then diff. The ``-- .``
         # pathspec scopes staging and the diff to the requested directory, so a
         # ``path`` that is a subdirectory of a larger repo yields only that
         # subtree's delta rather than the whole repository's.
@@ -568,13 +569,25 @@ async def archive_directory(
             )
         ),
     ] = None,
+    use_default_excludes: Annotated[
+        bool,
+        Query(
+            description=(
+                "Whether to apply the built-in default exclude patterns "
+                "(node_modules/, .venv/, caches, build outputs, etc.). Defaults "
+                "to true for compact archives; set false to allow a full "
+                "workspace capture, including fat directories."
+            )
+        ),
+    ] = True,
     exclude: Annotated[
         list[str] | None,
         Query(
             description=(
                 "Additional glob patterns to exclude (repeatable, e.g. "
-                "?exclude=foo&exclude=*.bin). Added on top of the built-in "
-                "default excludes, which always apply."
+                "?exclude=foo&exclude=*.bin). Combined with the built-in "
+                "default excludes when use_default_excludes=true; used by "
+                "itself when use_default_excludes=false."
             )
         ),
     ] = None,
@@ -611,9 +624,9 @@ async def archive_directory(
         )
 
     target = target.resolve()
-    # Defaults always apply; the param only adds patterns (safe-by-default so
-    # the archive cannot explode on a heavy directory).
-    effective_excludes = list(_DEFAULT_ARCHIVE_EXCLUDES) + (exclude or [])
+    effective_excludes = (
+        list(_DEFAULT_ARCHIVE_EXCLUDES) if use_default_excludes else []
+    ) + (exclude or [])
     # Build the archive outside the workspace so it is never included in itself
     # and leaves nothing behind in the archived tree.
     fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[format])

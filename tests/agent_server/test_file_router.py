@@ -659,6 +659,31 @@ def test_git_delta_excludes_node_modules_even_when_not_gitignored(client, tmp_pa
     assert "node_modules" not in patch
 
 
+def test_git_delta_can_disable_default_excludes(client, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "node_modules" / "pkg").mkdir(parents=True)
+    (root / "node_modules" / "pkg" / "big.js").write_text(
+        "// intentionally captured\n", encoding="utf-8"
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "git-delta",
+            "use_default_excludes": "false",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    patch = resp.content.decode("utf-8")
+    assert "app.py" in patch
+    assert "node_modules/pkg/big.js" in patch
+
+
 def test_git_delta_scoped_to_requested_subdirectory(client, tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
@@ -796,6 +821,34 @@ def test_tar_gz_default_excludes_drop_node_modules(client, tmp_path):
     names = _tar_members(resp.content)
     assert f"{root.name}/src/main.py" in names
     assert not any("node_modules" in n for n in names)
+
+
+def test_tar_gz_can_disable_default_excludes(client, tmp_path):
+    root = tmp_path / "plain"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "node_modules" / "pkg").mkdir(parents=True)
+    (root / "node_modules" / "pkg" / "junk.js").write_text("// big\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "tar.gz",
+            "use_default_excludes": "false",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert f"{root.name}/src/main.py" in names
+    assert f"{root.name}/node_modules/pkg/junk.js" in names
+
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        member = tar.extractfile(f"{root.name}/archive_manifest.json")
+        assert member is not None
+        manifest = json.loads(member.read().decode("utf-8"))
+    assert "node_modules/" not in manifest["excludes"]
 
 
 def test_tar_gz_exclude_param_extends_defaults(client, tmp_path):
