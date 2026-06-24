@@ -29,6 +29,7 @@ from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import (
     GIT_EMPTY_TREE_HASH,
     get_valid_ref,
+    run_git_command,
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
@@ -252,7 +253,7 @@ _GIT_DELTA_DEFAULT_EXCLUDES = (
 )
 
 
-def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> None:
+def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> str:
     """Write a git patch capturing the working-tree delta against a base.
 
     The delta covers tracked modifications, new (untracked) files, and
@@ -263,6 +264,9 @@ def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> No
     (``_GIT_DELTA_DEFAULT_EXCLUDES``, e.g. ``node_modules/``) are excluded —
     on top of the repo's own ``.gitignore`` — so the delta stays compact for
     eval replay even if such a directory is present but not git-ignored.
+
+    Returns the full base commit SHA the patch applies against, or "" when the
+    base is the empty tree (fresh repo) or cannot resolve to a commit.
     """
     validate_git_repository(root)
     try:
@@ -322,20 +326,35 @@ def _create_git_delta(root: Path, base_ref: str | None, output_path: Path) -> No
         index_path.unlink(missing_ok=True)
         excludes_path.unlink(missing_ok=True)
 
+    if ref == GIT_EMPTY_TREE_HASH:
+        return ""
+    # Resolve the base to a full commit SHA so the artifact is self-describing.
+    try:
+        return run_git_command(
+            ["git", "--no-pager", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            root,
+        )
+    except GitCommandError:
+        return ""
+
 
 def _build_workspace_archive(
     root: Path, fmt: ArchiveFormat, base_ref: str | None, output_path: Path
-) -> None:
-    """Build the requested archive of ``root`` at ``output_path`` (blocking)."""
+) -> str | None:
+    """Build the requested archive of ``root`` at ``output_path`` (blocking).
+
+    Returns the git-delta base commit SHA (or "" if none), and None for the
+    tar.gz / zip formats.
+    """
     if fmt == "git-delta":
-        _create_git_delta(root, base_ref, output_path)
-        return
+        return _create_git_delta(root, base_ref, output_path)
     files = _collect_workspace_files(root)
     manifest = _build_archive_manifest(root, fmt, files)
     if fmt == "tar.gz":
         _create_tar_gz_archive(files, manifest, output_path)
     else:
         _create_zip_archive(files, manifest, output_path)
+    return None
 
 
 @file_router.post("/upload")
@@ -602,7 +621,7 @@ async def archive_directory(
     output_path = Path(tmp_name)
 
     try:
-        await asyncio.to_thread(
+        base_commit = await asyncio.to_thread(
             _build_workspace_archive, target, format, base_ref, output_path
         )
     except GitRepositoryError as e:
@@ -631,9 +650,18 @@ async def archive_directory(
             detail=f"Failed to archive directory: {str(e)}",
         )
 
+    headers: dict[str, str] | None = None
+    if base_commit:
+        # Make a git-delta self-describing so consumers can replay the patch.
+        headers = {
+            "X-Archive-Base-Commit": base_commit,
+            "X-Archive-Base-Ref": base_ref or "auto",
+        }
+
     return FileResponse(
         path=output_path,
         filename=f"{target.name}{_ARCHIVE_SUFFIX[format]}",
         media_type=_ARCHIVE_MEDIA_TYPE[format],
+        headers=headers,
         background=BackgroundTask(output_path.unlink, missing_ok=True),
     )

@@ -768,3 +768,63 @@ def test_git_delta_on_non_repo_returns_400(client, workspace):
     )
     assert resp.status_code == 400
     assert "git repositor" in resp.json()["detail"].lower()
+
+
+def test_git_delta_response_includes_base_commit_header(client, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "a.txt").write_text("original\n", encoding="utf-8")
+    _git(["add", "-A"], root)
+    _git(["commit", "-m", "init"], root)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # Working-tree change so the delta is non-empty.
+    (root / "a.txt").write_text("changed\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(root), "format": "git-delta", "base_ref": "HEAD"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-archive-base-commit"] == head_sha
+    assert resp.headers["x-archive-base-ref"] == "HEAD"
+
+
+def test_git_delta_new_repo_has_no_base_commit_header(client, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "new_file.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    # Empty-tree base (no commits) is not a replayable commit, so no header.
+    assert "x-archive-base-commit" not in resp.headers
+
+
+def test_archive_tar_gz_has_no_base_commit_header(client, workspace):
+    resp = client.get("/api/file/archive", params={"path": str(workspace)})
+
+    assert resp.status_code == 200, resp.text
+    assert "x-archive-base-commit" not in resp.headers
+    assert "x-archive-base-ref" not in resp.headers
+
+
+def test_archive_zip_has_no_base_commit_header(client, workspace):
+    resp = client.get(
+        "/api/file/archive", params={"path": str(workspace), "format": "zip"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "x-archive-base-commit" not in resp.headers
+    assert "x-archive-base-ref" not in resp.headers
