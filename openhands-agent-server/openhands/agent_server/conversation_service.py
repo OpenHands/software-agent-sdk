@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import logging
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -261,11 +262,13 @@ def _resolve_agent_from_profile(
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
         ValueError: Profile load or settings validation failure.
     """
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.agent_server.persistence.store import (
+        get_agent_profile_store,
+        get_llm_profile_store,
+    )
     from openhands.sdk.profiles.resolver import ProfileNotFound, resolve_agent_profile
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     profile_name = store.name_for_id(profile_id)
     if profile_name is None:
         raise ProfileNotFound(f"Agent profile with id '{profile_id}' not found")
@@ -281,7 +284,7 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
-    llm_store = LLMProfileStore()
+    llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
             profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
@@ -1343,9 +1346,11 @@ class AutoTitleSubscriber(Subscriber):
             return None
 
         try:
-            from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+            from openhands.agent_server.persistence.store import (
+                get_llm_profile_store,
+            )
 
-            profile_store = LLMProfileStore()
+            profile_store = get_llm_profile_store()
             return profile_store.load(profile_name, cipher=self.service.cipher)
         except (FileNotFoundError, ValueError) as e:
             logger.warning(
@@ -1363,6 +1368,12 @@ class WebhookSubscriber(Subscriber):
     session_api_key: str | None = None
     queue: list[Event] = field(default_factory=list)
     _flush_timer: asyncio.Task | None = field(default=None, init=False)
+    # Per-instance sleep seam so tests override delays without patching the
+    # global asyncio.sleep. default_factory (not default) keeps it an instance
+    # attribute, else the function would be descriptor-bound as a method.
+    _sleep: Callable[[float], Awaitable[None]] = field(
+        default_factory=lambda: asyncio.sleep, init=False
+    )
 
     async def __call__(self, event: Event):
         """Add event to queue and post to webhook when buffer size is reached."""
@@ -1433,7 +1444,7 @@ class WebhookSubscriber(Subscriber):
             except Exception as e:
                 logger.warning(f"Webhook post attempt {attempt + 1} failed: {e}")
                 if attempt < self.spec.num_retries:
-                    await asyncio.sleep(self.spec.retry_delay)
+                    await self._sleep(self.spec.retry_delay)
                 else:
                     logger.error(
                         f"Failed to post events to webhook {events_url} "
@@ -1458,7 +1469,7 @@ class WebhookSubscriber(Subscriber):
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""
         try:
-            await asyncio.sleep(self.spec.flush_delay)
+            await self._sleep(self.spec.flush_delay)
             # Only flush if there are events in the queue
             if self.queue:
                 await self._post_events()
@@ -1475,6 +1486,10 @@ class ConversationWebhookSubscriber:
 
     spec: WebhookSpec
     session_api_key: str | None = None
+    # Per-instance sleep seam; see WebhookSubscriber._sleep.
+    _sleep: Callable[[float], Awaitable[None]] = field(
+        default_factory=lambda: asyncio.sleep, init=False
+    )
 
     async def post_conversation_info(self, conversation_info: BaseModel):
         """Post conversation info to the webhook immediately (no batching)."""
@@ -1512,7 +1527,7 @@ class ConversationWebhookSubscriber:
                     f"Conversation webhook post attempt {attempt + 1} failed: {e}"
                 )
                 if attempt < self.spec.num_retries:
-                    await asyncio.sleep(self.spec.retry_delay)
+                    await self._sleep(self.spec.retry_delay)
                 else:
                     # Log response content for debugging failures
                     response_content = (

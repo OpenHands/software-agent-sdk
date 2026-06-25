@@ -10,13 +10,13 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
     SecretStr,
+    computed_field,
     field_serializer,
     field_validator,
     model_validator,
@@ -280,6 +280,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
     )
 
+    # OpenRouter uses HTTP-Referer as the app identity for rankings.
+    # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
     )
@@ -726,6 +728,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return self._telemetry
 
+    @computed_field(
+        return_type=bool,
+        description=(
+            "Whether this LLM uses subscription-based authentication. "
+            "Serialized so that subscription-specific request handling "
+            "survives transport to a remote agent-server."
+        ),
+    )
     @property
     def is_subscription(self) -> bool:
         """Check if this LLM uses subscription-based authentication.
@@ -738,6 +748,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             bool: True if using subscription-based transport, False otherwise.
         """
         return self._is_subscription
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_is_subscription(cls, data, handler):
+        """Restore the subscription flag when validating serialized data.
+
+        ``is_subscription`` is a computed field backed by the private
+        ``_is_subscription`` attribute, so plain validation would drop it.
+        Without this, an LLM created via ``LLM.subscription_login()`` loses
+        its subscription-specific request handling (streaming exemption,
+        Codex system prompt transform, reasoning-item stripping) after a
+        dump/validate round trip - e.g. when shipped to a remote
+        agent-server.
+        """
+        llm = handler(data)
+        if isinstance(data, dict) and data.get("is_subscription"):
+            llm._is_subscription = True
+        return llm
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics

@@ -6,6 +6,7 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Literal
@@ -900,6 +901,42 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Drive the traversal from self
         yield from _walk(self)
+
+    def _close_tool_executor(self, tool: ToolDefinition) -> None:
+        try:
+            executable_tool = tool.as_executable()
+            executable_tool.executor.close()
+        except NotImplementedError:
+            return
+        except Exception as exc:
+            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
+
+    def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        if not self._initialized:
+            logger.warning(
+                "add_runtime_tools called before agent initialization; "
+                "tools will not be registered"
+            )
+            return
+        for tool in tools:
+            if not isinstance(tool, ToolDefinition):
+                raise ValueError(
+                    f"Tool {tool} is not an instance of 'ToolDefinition'. "
+                    f"Got type: {type(tool)}"
+                )
+
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
+
+        for tool in tools:
+            previous_tool = self._tools.get(tool.name)
+            if previous_tool is not None:
+                self._close_tool_executor(previous_tool)
+            self._tools[tool.name] = tool
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:

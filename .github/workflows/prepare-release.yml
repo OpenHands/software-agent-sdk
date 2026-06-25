@@ -78,19 +78,24 @@ jobs:
                   echo "✅ Branch pushed: $BRANCH_NAME"
 
             - name: Create Pull Request
+              id: create_pr
               env:
                   GH_TOKEN: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
+                  GITHUB_ACTOR: ${{ github.actor }}
                   INPUTS_VERSION: ${{ inputs.version }}
               run: |
                   python3 << 'PY'
                   import os
                   from pathlib import Path
 
+                  actor = os.environ["GITHUB_ACTOR"]
                   version = os.environ["INPUTS_VERSION"]
                   Path("pr_body.txt").write_text(
                       f"""## Release v{version}
 
                   This PR prepares the release for version **{version}**.
+
+                  **Started by:** @{actor}
 
                   ### Release Checklist
                   - [x] Version set to {version}
@@ -126,6 +131,28 @@ jobs:
                   PR_URL=$(gh pr view "$BRANCH_NAME" --json url --jq '.url')
                   echo "🔗 PR URL: $PR_URL"
                   echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+                  echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+
+            - name: Check Slack token availability
+              id: slack_token
+              env:
+                  SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+              run: |
+                  if [ -n "$SLACK_BOT_TOKEN" ]; then
+                    echo "available=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "available=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Notify Slack
+              if: steps.slack_token.outputs.available == 'true'
+              uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+              with:
+                  method: chat.postMessage
+                  token: ${{ secrets.SLACK_BOT_TOKEN }}
+                  payload: |
+                      channel: "#proj-agent"
+                      text: "🛠️ *SDK v${{ inputs.version }} release preparation started*\n\nRelease PR: <${{ steps.create_pr.outputs.pr_url }}|Release v${{ inputs.version }}>\nStarted by: <${{ github.server_url }}/${{ github.actor }}|@${{ github.actor }}>\nRepo: <${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}>"
 
             - name: Summary
               env:

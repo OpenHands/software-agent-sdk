@@ -4,8 +4,8 @@ run-name: >-
     Run Integration Tests ${{ inputs.reason || github.event.label.name || 'scheduled' }}
 
 on:
-    # Use pull_request_target to access secrets even on fork PRs
-    # This is safe because we only run when the 'integration-test' label is added by a maintainer
+    # Use pull_request_target to access secrets even on fork PRs.
+    # Labeled PR runs are gated per job to integration-test and behavior-test.
     pull_request_target:
         types:
             - labeled
@@ -21,7 +21,7 @@ on:
                 default: all
             model_ids:
                 description: >-
-                    Comma-separated model IDs to test (from resolve_model_config.py).
+                    Comma-separated model IDs to test (resolved via OpenHands/evaluation).
                     Example: gpt-5.5,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
@@ -49,11 +49,15 @@ on:
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
-    # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
+    # Default models for scheduled/label-triggered runs (resolved via OpenHands/evaluation)
     DEFAULT_MODEL_IDS: gpt-5.5,deepseek-v4-flash,minimax-m2.7,gemini-3.1-pro
 
 jobs:
     setup-matrix:
+        if: >-
+            github.event_name != 'pull_request_target' ||
+            github.event.label.name == 'integration-test' ||
+            github.event.label.name == 'behavior-test'
         runs-on: ubuntu-latest
         outputs:
             matrix: ${{ steps.resolve-models.outputs.matrix }}
@@ -64,6 +68,17 @@ jobs:
               with:
                   repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  persist-credentials: false
+
+            - name: Checkout evaluation model config
+              uses: actions/checkout@v6
+              with:
+                  repository: OpenHands/evaluation
+                  ref: main
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH || github.token }}
+                  path: .evaluation-model-config
+                  sparse-checkout: |
+                      eval-job/model-config
                   persist-credentials: false
 
             - name: Set up Python
@@ -88,13 +103,13 @@ jobs:
 
                   export MODEL_IDS
 
-                  # Resolve model configs using resolve_model_config.py
-                  # Transform output to matrix format for integration tests
+                  # Resolve model configs using OpenHands/evaluation's model config.
+                  # Transform output to matrix format for integration tests.
                   MATRIX=$(python3 << 'EOF'
                   import json
                   import os
                   import sys
-                  sys.path.insert(0, '.github/run-eval')
+                  sys.path.insert(0, '.evaluation-model-config/eval-job/model-config')
                   from resolve_model_config import find_models_by_id
 
                   model_ids = os.environ["MODEL_IDS"].split(",")

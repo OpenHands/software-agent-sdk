@@ -50,7 +50,7 @@ def client(temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
     config = Config(static_files_path=None, session_api_keys=[], secret_key=None)
     app = create_app(config)
     with patch(
-        "openhands.agent_server.agent_profiles_router.AgentProfileStore",
+        "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
         lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
     ):
         yield TestClient(app)
@@ -569,7 +569,7 @@ def client_with_cipher(
     )
     app = create_app(config)
     with patch(
-        "openhands.agent_server.agent_profiles_router.AgentProfileStore",
+        "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
         lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
     ):
         yield TestClient(app)
@@ -706,11 +706,11 @@ def client_with_llm_store(
     app = create_app(config)
     with (
         patch(
-            "openhands.agent_server.agent_profiles_router.AgentProfileStore",
+            "openhands.agent_server.agent_profiles_router.get_agent_profile_store",
             lambda: AgentProfileStore(base_dir=temp_agent_profiles_dir),
         ),
         patch(
-            "openhands.agent_server.agent_profiles_router.LLMProfileStore",
+            "openhands.agent_server.agent_profiles_router.get_llm_profile_store",
             lambda: LLMProfileStore(base_dir=temp_llm_profiles_dir),
         ),
     ):

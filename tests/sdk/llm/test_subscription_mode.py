@@ -338,3 +338,22 @@ def test_format_messages_reasoning_item_handling(
 
     serialized = json.dumps(input_items, default=str)
     assert ("rs_should_be_stripped" in serialized) == reasoning_id_present
+
+
+def test_is_subscription_survives_serialization_round_trip():
+    """is_subscription must survive model_dump -> model_validate.
+
+    A RemoteConversation serializes the LLM and the agent-server rebuilds it;
+    if the flag is lost, all subscription-specific request handling (streaming
+    exemption, system prompt transform, reasoning item stripping) silently
+    stops applying on the server side.
+    """
+    llm = _make_subscription_llm()
+    restored = LLM.model_validate(llm.model_dump(context={"expose_secrets": True}))
+    assert restored.is_subscription is True
+
+    plain = LLM(model="gpt-4o")
+    restored_plain = LLM.model_validate(
+        plain.model_dump(context={"expose_secrets": True})
+    )
+    assert restored_plain.is_subscription is False
