@@ -2,9 +2,13 @@
 
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from openhands.sdk.conversation.conversation import Conversation
+from openhands.sdk.plugin import PluginSource
+from openhands.sdk.workspace import RemoteWorkspace
 
 
 class TestDefaultConversationTags:
@@ -376,13 +380,7 @@ class TestPluginsTagInConversation:
             assert "https://github.com/OpenHands/review-skill" in plugin_urls
 
     def test_credentials_redacted_in_plugins_tag(self):
-        """A credential in a plugin source must not reach the persisted tag (B3)."""
-        from unittest.mock import MagicMock
-
-        from openhands.sdk.conversation.conversation import Conversation
-        from openhands.sdk.plugin import PluginSource
-        from openhands.sdk.workspace import RemoteWorkspace
-
+        """A credential in a plugin source must not reach the persisted tag."""
         mock_workspace = MagicMock(spec=RemoteWorkspace)
         mock_workspace.default_conversation_tags = {}
 

@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
@@ -101,6 +102,26 @@ def test_install_from_local_path(
 
     metadata = InstallationMetadata.load_from_dir(installation_dir)
     assert mock_extension.name in metadata.extensions
+
+
+def test_update_reclones_with_credentialed_source(
+    manager: InstallationManager[MockExtension],
+    mock_extension_dir: Path,
+    mock_extension: MockExtension,
+):
+    """update() re-clones using the real credential stored in .installed.json
+    (a redacted source there would make a private-extension update fail to clone)."""
+    cred = "https://oauth2:SUPER_SECRET@github.com/org/repo.git"
+    with patch(
+        "openhands.sdk.extensions.installation.manager.fetch_with_resolution",
+        return_value=(mock_extension_dir, "abc123"),
+    ) as mock_fetch:
+        manager.install(source=cred, force=True)  # records cred in .installed.json
+        mock_fetch.reset_mock()
+        manager.update(mock_extension.name)  # re-fetch from the stored source
+
+    assert mock_fetch.call_count == 1
+    assert mock_fetch.call_args.kwargs["source"] == cred
 
 
 def test_install_already_exist_raises_error(

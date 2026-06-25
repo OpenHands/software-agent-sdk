@@ -795,6 +795,40 @@ class TestLocalConversationPlugins:
         # (The actual hook_processor is internal, but we trust the merging works)
         conversation.close()
 
+    def test_plugin_load_log_never_leaks_credentials(
+        self, tmp_path: Path, basic_agent, caplog: pytest.LogCaptureFixture
+    ):
+        """Plugin-load logs must never contain the source credential.
+
+        The serializer only covers model dumps, not f-string log lines, so the
+        load path has to keep the raw source out of its log messages.
+        """
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            skills=[{"name": "s", "content": "c"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[
+                PluginSource(source="https://oauth2:LEAKME@host.example.com/o/r.git")
+            ],
+            visualizer=None,
+        )
+        with patch(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "fetch_plugin_with_resolution",
+            return_value=(plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        ):
+            with caplog.at_level(logging.DEBUG):
+                conversation._ensure_plugins_loaded()
+
+        assert "LEAKME" not in caplog.text
+        conversation.close()
+
     def test_hook_sub_conversations_receive_persistence_base_dir(
         self, tmp_path: Path, basic_agent
     ):

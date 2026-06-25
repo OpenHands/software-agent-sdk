@@ -225,8 +225,8 @@ class TestPluginSourceCredentialRedaction:
         )
 
     def test_cipher_encrypts_at_rest_and_round_trips(self):
-        # Regression guard for the meta.json cleartext blocker: a cipher context
-        # must ENCRYPT (a gAAAAA token, no cleartext) and decrypt back on load.
+        # A cipher context encrypts the source (gAAAAA token, no cleartext) and
+        # decrypts it back on load.
         cipher = Cipher("test-secret-key")
         token = PluginSource(source=self.CRED).model_dump(context={"cipher": cipher})[
             "source"

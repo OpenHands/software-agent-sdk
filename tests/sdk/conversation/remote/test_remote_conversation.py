@@ -255,8 +255,8 @@ class TestRemoteConversation:
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
     def test_remote_conversation_sends_real_plugin_source(self, mock_ws_client):
-        """The create payload must carry the real plugin source (credential +
-        ${VAR} placeholder) so the server can clone a private plugin (B2)."""
+        """The create payload carries the real plugin source (credential and
+        ${VAR} placeholder intact) so the server can clone a private plugin."""
         from openhands.sdk.plugin import PluginSource
 
         conversation_id = str(uuid.uuid4())
