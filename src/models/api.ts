@@ -160,6 +160,19 @@ export interface MarketplaceResponse {
   skills: MarketplaceSkill[];
 }
 
+export interface MarketplacePlugin {
+  name: string;
+  description: string | null;
+  source: string;
+  ref?: string | null;
+  repo_path?: string | null;
+  installed: boolean;
+}
+
+export interface MarketplaceCatalogResponse {
+  plugins: MarketplacePlugin[];
+}
+
 export interface PluginsRequest {
   load_user?: boolean;
   load_project?: boolean;

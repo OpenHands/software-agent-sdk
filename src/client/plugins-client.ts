@@ -3,6 +3,7 @@ import type {
   InstallPluginRequest,
   InstalledPluginInfo,
   InstalledPluginsResponse,
+  MarketplaceCatalogResponse,
   PluginActionResponse,
   PluginsRequest,
   PluginsResponse,
@@ -33,6 +34,11 @@ export class PluginsClient {
 
   async getPlugins(request: PluginsRequest = {}): Promise<PluginsResponse> {
     const response = await this.client.post<PluginsResponse>('/api/plugins', request);
+    return response.data;
+  }
+
+  async getPluginsMarketplace(): Promise<MarketplaceCatalogResponse> {
+    const response = await this.client.get<MarketplaceCatalogResponse>('/api/plugins/marketplace');
     return response.data;
   }
 

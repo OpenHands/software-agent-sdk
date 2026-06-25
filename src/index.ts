@@ -316,6 +316,8 @@ export type {
   RefreshSkillResponse,
   MarketplaceSkill,
   MarketplaceResponse,
+  MarketplacePlugin,
+  MarketplaceCatalogResponse,
   PluginsRequest,
   PluginInfo,
   PluginsResponse,
