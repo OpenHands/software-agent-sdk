@@ -61,6 +61,7 @@ from openhands.sdk.plugin import (
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
+    load_available_plugins,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -662,6 +663,10 @@ class LocalConversation(BaseConversation):
 
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
+        # Names of explicitly-attached plugins (populated in the loop below). Used
+        # to keep explicit attach authoritative over ambient installed/local
+        # plugins (and to avoid double-registering their hooks/agents).
+        explicit_plugin_names: set[str] = set()
 
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
@@ -743,6 +748,7 @@ class LocalConversation(BaseConversation):
                     f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
+                explicit_plugin_names.add(plugin.name)
 
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
@@ -758,6 +764,54 @@ class LocalConversation(BaseConversation):
                     all_plugin_agents.extend(plugin.agents)
 
             logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+
+        # Ambient plugins: enabled installed plugins plus local user/project
+        # plugins, mirroring how installed/local skills already auto-load. These
+        # are additive to the explicit plugins above, de-duplicated by plugin
+        # name. Explicit attach wins: an ambient plugin whose name was already
+        # attached above is skipped (this also avoids double-registering its
+        # hooks/agents). Best-effort — a failure here must not prevent the
+        # conversation from starting.
+        #
+        # Ambient plugins have no pinned commit SHA, so (unlike explicit attach)
+        # they are intentionally NOT recorded in self._resolved_plugins. On
+        # resume they are re-discovered from disk / current enabled state, just
+        # like project skills. Automation/sandbox runs lack the user's installed
+        # and home directories, so discovery naturally yields nothing there.
+        ambient_plugins_loaded = False
+        try:
+            ambient_plugins = load_available_plugins(
+                work_dir=self.workspace.working_dir,
+                include_user=True,
+                include_project=True,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load ambient (installed/local) plugins; "
+                "continuing without them",
+                exc_info=True,
+            )
+            ambient_plugins = {}
+
+        for plugin in ambient_plugins.values():
+            if plugin.name in explicit_plugin_names:
+                logger.debug(
+                    f"Skipping ambient plugin '{plugin.name}' "
+                    "(explicitly attached to this conversation)"
+                )
+                continue
+
+            merged_context = plugin.add_skills_to(merged_context)
+            merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+            has_mcp_config = has_mcp_config or bool(merged_mcp)
+
+            if plugin.hooks and not plugin.hooks.is_empty():
+                all_plugin_hooks.append(plugin.hooks)
+            if plugin.agents:
+                all_plugin_agents.extend(plugin.agents)
+
+            ambient_plugins_loaded = True
+            logger.debug(f"Loaded ambient plugin '{plugin.name}'")
 
         # Resolve project skills from the workspace. AgentContext can't do this
         # itself (the workspace path is unknown at validation time), so it is done
@@ -810,7 +864,12 @@ class LocalConversation(BaseConversation):
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
-        if plugins_to_load or has_mcp_config or project_skills_loaded:
+        if (
+            plugins_to_load
+            or has_mcp_config
+            or project_skills_loaded
+            or ambient_plugins_loaded
+        ):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,

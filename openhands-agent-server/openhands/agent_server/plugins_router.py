@@ -1,9 +1,12 @@
 """Plugins router for OpenHands Agent Server.
 
-HTTP API endpoints for installed-plugin management — install / list /
-enable-disable / uninstall / refresh — plus listing locally-available plugins.
-Mirrors ``skills_router.py``; business logic is delegated to
-``plugins_service.py``.
+HTTP API endpoints for plugin operations. Business logic is delegated to
+``plugins_service.py``; this module mirrors ``skills_router.py`` and stays
+focused on HTTP concerns. It exposes:
+
+* Installed-plugin management — install / list / enable-disable / uninstall /
+  refresh — plus listing locally-available plugins.
+* The plugins-only marketplace catalog.
 """
 
 from typing import Annotated
@@ -12,9 +15,11 @@ from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.plugins_service import (
+    MarketplacePluginInfo,
     service_disable_plugin,
     service_enable_plugin,
     service_get_installed_plugin,
+    service_get_plugins_marketplace_catalog,
     service_install_plugin,
     service_list_available_plugins,
     service_list_installed_plugins,
@@ -162,6 +167,12 @@ class UpdatePluginResponse(BaseModel):
     plugin: InstalledPluginResponse
 
 
+class MarketplaceCatalogResponse(BaseModel):
+    """Response containing the plugins marketplace catalog."""
+
+    plugins: list[MarketplacePluginInfo]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -303,3 +314,20 @@ def refresh_plugin_endpoint(plugin_name: PluginNamePath) -> UpdatePluginResponse
         message=f"Plugin '{plugin_name}' updated",
         plugin=InstalledPluginResponse.from_plugin_info(info),
     )
+
+
+@plugins_router.get("/marketplace", response_model=MarketplaceCatalogResponse)
+def get_marketplace_catalog() -> MarketplaceCatalogResponse:
+    """Get the plugins marketplace catalog with installation status.
+
+    Returns the true plugins (entries whose source lives under ``./plugins/``)
+    from the OpenHands extensions repository marketplace, each with attachable
+    ``PluginSource`` coordinates (``source`` / ``ref`` / ``repo_path``) and an
+    ``installed`` flag. This enables the front-end to render a plugins
+    marketplace with install/installed state and to attach plugins to
+    conversations.
+
+    Returns:
+        MarketplaceCatalogResponse containing the list of available plugins.
+    """
+    return MarketplaceCatalogResponse(plugins=service_get_plugins_marketplace_catalog())

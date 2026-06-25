@@ -1,4 +1,5 @@
 from .classifier import (
+    is_content_policy_violation,
     is_context_window_exceeded,
     is_prompt_cache_too_small,
     looks_like_auth_error,
@@ -11,6 +12,7 @@ from .types import (
     FunctionCallValidationError,
     LLMAuthenticationError,
     LLMBadRequestError,
+    LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMContextWindowTooSmallError,
     LLMError,
@@ -40,6 +42,7 @@ __all__ = [
     "LLMContextWindowExceedError",
     "LLMMalformedConversationHistoryError",
     "LLMContextWindowTooSmallError",
+    "LLMContentPolicyViolationError",
     "LLMAuthenticationError",
     "LLMRateLimitError",
     "LLMTimeoutError",
@@ -48,6 +51,7 @@ __all__ = [
     "UserCancelledError",
     "OperationCancelled",
     # Helpers
+    "is_content_policy_violation",
     "is_context_window_exceeded",
     "is_prompt_cache_too_small",
     "looks_like_auth_error",

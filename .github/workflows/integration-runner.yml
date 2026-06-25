@@ -4,8 +4,8 @@ run-name: >-
     Run Integration Tests ${{ inputs.reason || github.event.label.name || 'scheduled' }}
 
 on:
-    # Use pull_request_target to access secrets even on fork PRs
-    # This is safe because we only run when the 'integration-test' label is added by a maintainer
+    # Use pull_request_target to access secrets even on fork PRs.
+    # Labeled PR runs are gated per job to integration-test and behavior-test.
     pull_request_target:
         types:
             - labeled
@@ -54,6 +54,10 @@ env:
 
 jobs:
     setup-matrix:
+        if: >-
+            github.event_name != 'pull_request_target' ||
+            github.event.label.name == 'integration-test' ||
+            github.event.label.name == 'behavior-test'
         runs-on: ubuntu-latest
         outputs:
             matrix: ${{ steps.resolve-models.outputs.matrix }}
