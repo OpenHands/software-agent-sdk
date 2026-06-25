@@ -116,7 +116,8 @@ class AgentContext(BaseModel):
         default_factory=list,
         description=(
             "Marketplace registrations for plugin resolution. Registrations with "
-            "auto_load=True are resolved by LocalConversation at startup."
+            "auto_load=True or a list of plugin names are resolved by "
+            "LocalConversation at startup."
         ),
         json_schema_extra={"acp_compatible": True},
     )

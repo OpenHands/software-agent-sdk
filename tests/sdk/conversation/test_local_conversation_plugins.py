@@ -165,6 +165,54 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_auto_load_marketplace_plugin_list_selects_plugins(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "formatter",
+                    "skills": [{"name": "formatter-skill", "content": "Format"}],
+                },
+                {
+                    "name": "linter",
+                    "skills": [{"name": "linter-skill", "content": "Lint"}],
+                },
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="selective",
+                        source=str(marketplace_dir),
+                        auto_load=["formatter"],
+                    )
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "formatter-skill"
+        ]
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+
+        conversation.close()
+
     def test_auto_load_marketplace_expands_registration_secret_refs(
         self, tmp_path: Path, mock_llm
     ):

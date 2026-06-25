@@ -699,6 +699,8 @@ class LocalConversation(BaseConversation):
                     )
                     continue
                 for entry in marketplace.plugins:
+                    if not registration.auto_loads_plugin(entry.name):
+                        continue
                     source, ref, repo_path = marketplace.resolve_plugin_source(entry)
                     plugins_to_load.append(
                         (

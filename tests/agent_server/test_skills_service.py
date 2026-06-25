@@ -329,6 +329,23 @@ class TestLoadAllSkills:
 
         assert {skill.name for skill in skills} == {"auto-skill", "manual-skill"}
 
+    def test_load_registered_marketplace_skills_selects_listed_plugins(
+        self, tmp_path: Path
+    ):
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="test",
+                    source=str(marketplace_dir),
+                    auto_load=["manual"],
+                )
+            ]
+        )
+
+        assert [skill.name for skill in skills] == ["manual-skill"]
+
     def test_load_registered_marketplace_skills_uses_registration_fetch_fields(
         self, tmp_path: Path
     ):

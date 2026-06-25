@@ -7,6 +7,9 @@ from pathlib import PurePosixPath, PureWindowsPath
 from pydantic import BaseModel, Field, field_validator
 
 
+AutoLoadConfig = bool | list[str]
+
+
 class MarketplaceRegistration(BaseModel):
     """Registration for a marketplace source used for plugin resolution."""
 
@@ -25,10 +28,19 @@ class MarketplaceRegistration(BaseModel):
             "Only relevant for git sources."
         ),
     )
-    auto_load: bool = Field(
+    auto_load: AutoLoadConfig = Field(
         default=False,
-        description="Whether to load all marketplace plugins at conversation start.",
+        description=(
+            "Whether to load marketplace plugins at conversation start. Use True "
+            "for all plugins, False or [] for none, or a list of plugin names for "
+            "selective loading."
+        ),
     )
+
+    def auto_loads_plugin(self, plugin_name: str) -> bool:
+        if isinstance(self.auto_load, bool):
+            return self.auto_load
+        return plugin_name in self.auto_load
 
     @field_validator("repo_path")
     @classmethod

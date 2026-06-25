@@ -103,8 +103,9 @@ class SkillsRequest(BaseModel):
     registered_marketplaces: list[MarketplaceRegistration] = Field(
         default_factory=list,
         description=(
-            "Marketplace registrations for plugin-based skill loading. When set, "
-            "registrations with auto_load='all' replace legacy public skills."
+            "Marketplace registrations for plugin-based skill loading. Registrations "
+            "with auto_load=True or a list of plugin names replace legacy public "
+            "skills."
         ),
     )
 

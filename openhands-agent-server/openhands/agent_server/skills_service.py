@@ -4,14 +4,14 @@ This module contains the business logic for skill loading and management,
 keeping the router clean and focused on HTTP concerns.
 
 Skill Sources:
-- Public skills: GitHub OpenHands/extensions repository
+- Public skills: registered marketplace plugins or GitHub OpenHands/extensions
 - User skills: ~/.openhands/skills/ and ~/.openhands/microagents/
 - Project skills: {workspace}/.openhands/skills/, .cursorrules, agents.md
 - Organization skills: {org}/.openhands or {org}/openhands-config
 - Sandbox skills: Exposed URLs from sandbox environment
 
 Precedence (later overrides earlier):
-sandbox < public < user < org < project
+sandbox < registered marketplace/public < user < org < project
 """
 
 import json
@@ -314,6 +314,8 @@ def load_registered_marketplace_skills(
             continue
 
         for entry in marketplace.plugins:
+            if not registration.auto_loads_plugin(entry.name):
+                continue
             try:
                 source, ref, repo_path = marketplace.resolve_plugin_source(entry)
                 plugin_path = Plugin.fetch(
@@ -348,7 +350,7 @@ def load_all_skills(
     Skills are loaded from multiple sources and merged with the following
     precedence (later overrides earlier for duplicate names):
     1. Sandbox skills (lowest) - Exposed URLs from sandbox
-    2. Public skills - From GitHub OpenHands/extensions repository
+    2. Registered marketplace skills or public skills legacy fallback
     3. User skills - From ~/.openhands/skills/
     4. Organization skills - From {org}/.openhands or equivalent
     5. Project skills (highest) - From {workspace}/.openhands/skills/
