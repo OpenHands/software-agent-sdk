@@ -492,21 +492,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        # patch("asyncio.sleep") replaces the global, so background tasks
-        # leaked from prior tests (e.g. other subscribers' flush timers) can
-        # also append entries. Filter to the retry_delay we care about.
-        retry_sleeps = [d for d in sleep_calls if d == webhook_spec.retry_delay]
-        assert len(retry_sleeps) == 2  # Sleep between retries
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -540,21 +537,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
-        # patch("asyncio.sleep") replaces the global, so background tasks
-        # leaked from prior tests (e.g. other subscribers' flush timers) can
-        # also append entries. Filter to the retry_delay we care about.
-        retry_sleeps = [d for d in sleep_calls if d == webhook_spec.retry_delay]
-        assert len(retry_sleeps) == 2
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
@@ -819,17 +813,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:2]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        retry_sleeps = [
-            call.args[0]
-            for call in mock_sleep.await_args_list
-            if call.args and call.args[0] == webhook_spec.retry_delay
-        ]
-        assert len(retry_sleeps) == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -858,17 +853,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:1]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        retry_sleeps = [
-            call.args[0]
-            for call in mock_sleep.await_args_list
-            if call.args and call.args[0] == webhook_spec.retry_delay
-        ]
-        assert len(retry_sleeps) == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
@@ -1235,18 +1231,18 @@ class TestConversationWebhookSubscriber:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber.post_conversation_info(conversation_info)
+            await subscriber.post_conversation_info(conversation_info)
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
 
 class TestWebhookSubscriberTimerBehavior:
