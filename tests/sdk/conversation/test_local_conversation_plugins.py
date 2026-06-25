@@ -798,11 +798,8 @@ class TestLocalConversationPlugins:
     def test_plugin_load_log_never_leaks_credentials(
         self, tmp_path: Path, basic_agent, caplog: pytest.LogCaptureFixture
     ):
-        """Plugin-load logs must never contain the source credential.
-
-        The serializer only covers model dumps, not f-string log lines, so the
-        load path has to keep the raw source out of its log messages.
-        """
+        """Plugin-load logs must never contain the source credential (the
+        serializer covers model dumps, not f-string log lines)."""
         plugin_dir = create_test_plugin(
             tmp_path / "plugin",
             name="test-plugin",

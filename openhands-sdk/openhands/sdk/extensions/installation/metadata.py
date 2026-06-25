@@ -156,12 +156,7 @@ class InstallationMetadata(BaseModel):
             return cls()
 
     def save_to_dir(self, installed_dir: Path) -> None:
-        """Save metadata to the installed extensions directory.
-
-        Written with ``expose_secrets`` so the stored ``source`` survives for
-        ``ExtensionManager.update()`` (no cipher in this layer); default dumps
-        still redact.
-        """
+        """Save metadata to the installed extensions directory."""
         metadata_path = self.get_metadata_path(installed_dir)
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(

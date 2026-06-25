@@ -199,22 +199,9 @@ def validate_secret_dict(
 
 
 def serialize_credential_url(source: str, info) -> str:
-    """Serialize a source string that may embed credentials.
-
-    Mirrors :func:`serialize_secret`'s context-driven behaviour, but for a
-    URL-shaped value: in ``redact`` mode only the userinfo is masked
-    (``https://****@host``) so a non-secret source (``github:owner/repo``, a
-    local path, a public URL) survives intact and useful in logs / state.
-
-    - **plaintext** -> the real URL (trusted backend only).
-    - **encrypted** -> Fernet-encrypt via the context ``cipher`` (a ``gAAAAA…``
-      token); raises :class:`MissingCipherError` if encrypted mode is resolved
-      without a cipher (mirrors :func:`serialize_secret`).
-    - **redact** (default, no context) -> :func:`redact_url_credentials`.
-
-    Pair with :func:`validate_credential_url` (a ``field_validator(mode="before")``)
-    so the encrypted-at-rest token is decrypted back on load.
-    """
+    """Serialize a credential-bearing URL by context: the real value under
+    ``expose_secrets``, an encrypted token under a ``cipher``, else only the
+    userinfo redacted (``https://****@host``)."""
     mode = resolve_expose_mode(info.context)
     if mode == "plaintext":
         return source
@@ -232,14 +219,7 @@ def serialize_credential_url(source: str, info) -> str:
 
 
 def validate_credential_url(value: Any, info):
-    """Load-side counterpart of :func:`serialize_credential_url`.
-
-    Decrypts an at-rest Fernet token back to the real URL when a ``cipher`` is
-    in context. No-ops on plaintext, non-token and non-str values, so it is safe
-    as a ``field_validator(mode="before")`` on every construction path. Unlike
-    :func:`validate_secret`, a redacted URL is kept as-is rather than collapsed
-    to ``None`` — a credential-free URL is still a usable source.
-    """
+    """Decrypt an at-rest cipher token back to the URL; no-op without a cipher."""
     cipher: Cipher | None = info.context.get("cipher") if info.context else None
     if cipher is None:
         return value
