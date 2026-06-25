@@ -23,6 +23,7 @@ import {
   LLMMetadataClient,
   MCPClient,
   MetaProfilesClient,
+  PluginsClient,
   ProfilesClient,
   ServerClient,
   SettingsClient,
@@ -533,6 +534,122 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/skills/installed/my%20skill',
       expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('PluginsClient management methods map to the correct endpoints', async () => {
+    const installedPlugin = {
+      name: 'demo-plugin',
+      version: '1.0.0',
+      description: 'A test plugin',
+      enabled: true,
+      source: '/tmp/demo-plugin',
+      resolved_ref: null,
+      repo_path: null,
+      installed_at: '2026-05-12T12:00:00Z',
+      install_path: '/home/.openhands/plugins/installed/demo-plugin',
+    };
+    const availableList = {
+      plugins: [{ name: 'demo-plugin', version: '1.0.0', description: 'A test plugin' }],
+    };
+    const installedList = { plugins: [installedPlugin] };
+    const toggleResponse = { name: 'demo-plugin', enabled: false };
+    const uninstallResponse = { message: "Plugin 'demo-plugin' uninstalled" };
+    const refreshResponse = {
+      message: "Plugin 'demo-plugin' updated",
+      plugin: installedPlugin,
+    };
+
+    const responses = [
+      availableList,
+      installedPlugin,
+      installedList,
+      installedPlugin,
+      toggleResponse,
+      uninstallResponse,
+      refreshResponse,
+    ];
+    global.fetch = jest.fn().mockImplementation(() => {
+      const body = responses.shift();
+      return Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+    }) as typeof fetch;
+
+    const client = new PluginsClient({ host: 'http://example.com' });
+
+    const available = await client.getPlugins({ load_user: true, load_project: false });
+    expect(available.plugins[0].name).toBe('demo-plugin');
+
+    const installed = await client.installPlugin({
+      source: '/tmp/demo-plugin',
+      force: false,
+    });
+    expect(installed.name).toBe('demo-plugin');
+    expect(installed.enabled).toBe(true);
+
+    const list = await client.listInstalledPlugins();
+    expect(list.plugins).toHaveLength(1);
+
+    const got = await client.getInstalledPlugin('demo-plugin');
+    expect(got.name).toBe('demo-plugin');
+
+    const toggled = await client.setPluginEnabled('demo-plugin', false);
+    expect(toggled.enabled).toBe(false);
+
+    const uninstalled = await client.uninstallPlugin('demo-plugin');
+    expect(uninstalled.message).toContain('uninstalled');
+
+    const refreshed = await client.refreshPlugin('demo-plugin');
+    expect(refreshed.message).toContain('updated');
+    expect(refreshed.plugin.name).toBe('demo-plugin');
+
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      1,
+      'http://example.com/api/plugins',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ load_user: true, load_project: false }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://example.com/api/plugins/install',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ source: '/tmp/demo-plugin', force: false }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      3,
+      'http://example.com/api/plugins/installed',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      4,
+      'http://example.com/api/plugins/installed/demo-plugin',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      5,
+      'http://example.com/api/plugins/installed/demo-plugin',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false }),
+      })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      6,
+      'http://example.com/api/plugins/installed/demo-plugin',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+    expect(global.fetch).toHaveBeenNthCalledWith(
+      7,
+      'http://example.com/api/plugins/installed/demo-plugin/refresh',
+      expect.objectContaining({ method: 'POST' })
     );
   });
 
