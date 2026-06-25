@@ -249,7 +249,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     security_policy_filename: str = Field(
         default="security_policy.j2",
         description=(
-            "Security policy filename. A custom policy file's contents are inserted "
+            "Security policy filename. The default 'security_policy.j2' is a "
+            "back-compat sentinel (the file was removed) that selects the built-in "
+            "default policy from the prompt registry -- it is not loaded from disk. "
+            "Any other value names a custom policy file whose contents are inserted "
             "verbatim (NOT rendered as a Jinja template). Can be either:\n"
             "- A relative filename (e.g., 'custom_security_policy.md') loaded from "
             "the agent's prompts directory\n"
@@ -524,8 +527,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def _read_custom_security_policy(self) -> str | None:
         """Raw contents of a custom security policy file -- inserted verbatim, NOT
-        rendered as a Jinja template -- or ``None`` for the default
-        (``security_policy.j2`` sentinel) or disabled (empty) policy.
+        rendered as a Jinja template.
+
+        Returns ``None`` -- so ``SecuritySection`` keeps its built-in default policy
+        -- when ``security_policy_filename`` is the default sentinel
+        ``"security_policy.j2"`` (a string only; the file was removed, so it is never
+        read) or ``""`` (an empty *filename*, which disables the policy). A configured
+        file whose own contents are empty still returns ``""`` (an empty custom
+        policy), not ``None``.
 
         Relative names resolve against ``prompt_dir``; absolute paths are used as-is.
         """
