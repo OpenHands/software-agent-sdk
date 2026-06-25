@@ -283,25 +283,44 @@ def _create_git_delta(
         return ""
 
 
-def _path_is_excluded(
-    rel: PurePosixPath, patterns: list[str], is_dir: bool
-) -> bool:
+def _path_is_excluded(rel: PurePosixPath, patterns: list[str], is_dir: bool) -> bool:
     """True if ``rel`` is excluded by any glob in ``patterns``.
 
-    A trailing ``/`` marks a directory-only pattern: it matches a directory
-    component but never a file's own name, so a ``build/`` pattern prunes a
-    ``build`` directory while keeping a file literally named ``build``. Other
-    patterns match any component. Dependency-free so no new package is pulled in.
+    Mirrors the git-delta path's gitignore semantics so the two formats agree:
+
+    - A trailing ``/`` marks a directory-only pattern: it matches a directory but
+      never a file's own name, so a ``build/`` pattern prunes a ``build``
+      directory while keeping a file literally named ``build``.
+    - A multi-segment pattern (one containing ``/``, e.g. ``secrets/prod``)
+      matches the full relative path or any prefix of it, so it drops both
+      ``secrets/prod`` and everything beneath it.
+    - A bare-name pattern (no ``/``, e.g. ``node_modules`` or ``*.pyc``) matches
+      any single path component, at any depth.
+
+    Dependency-free so no new package is pulled in.
     """
+    rel_str = rel.as_posix()
     parts = rel.parts
     for raw in patterns:
         pattern = raw.rstrip("/")
-        # For a dir-only pattern matched against a file, skip the basename so a
-        # file sharing a directory exclude's name is not dropped.
-        candidates = parts if (is_dir or not raw.endswith("/")) else parts[:-1]
-        for part in candidates:
-            if fnmatch.fnmatch(part, pattern):
+        dir_only = raw.endswith("/")
+        if "/" in pattern:
+            # Multi-segment: anchor against the full relative path, matching the
+            # path itself or anything nested under it (``secrets/prod`` drops
+            # ``secrets/prod`` and ``secrets/prod/key``). A dir-only pattern on a
+            # file still matches if the file lives *under* the excluded dir.
+            if fnmatch.fnmatch(rel_str, pattern) or fnmatch.fnmatch(
+                rel_str, f"{pattern}/*"
+            ):
                 return True
+        else:
+            # Bare name: match any single component. For a dir-only pattern on a
+            # file, skip the basename so a file sharing a directory exclude's
+            # name is not dropped.
+            candidates = parts if (is_dir or not dir_only) else parts[:-1]
+            for part in candidates:
+                if fnmatch.fnmatch(part, pattern):
+                    return True
     return False
 
 
@@ -330,6 +349,8 @@ def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -
     """
     file_count = 0
     total_bytes = 0
+    manifest_arcname = f"{root.name}/{ARCHIVE_MANIFEST_NAME}"
+    manifest_collision = False
     try:
         with tarfile.open(output_path, "w:gz") as tar:
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -356,15 +377,26 @@ def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -
                     except OSError as e:
                         logger.warning(f"Skipping unreadable file {file_path}: {e}")
                         continue
+                    if arcname == manifest_arcname:
+                        manifest_collision = True
                     file_count += 1
                     total_bytes += size
 
-            manifest = _build_archive_manifest(
-                root.name, file_count, total_bytes, excludes
-            )
-            info = tarfile.TarInfo(f"{root.name}/{ARCHIVE_MANIFEST_NAME}")
-            info.size = len(manifest)
-            tar.addfile(info, io.BytesIO(manifest))
+            # Skip our synthetic capture manifest when the workspace already has a
+            # real file at that path: the user's data must win over our metadata.
+            if manifest_collision:
+                logger.warning(
+                    f"Workspace already contains {ARCHIVE_MANIFEST_NAME!r}; "
+                    "preserving the user's file and skipping the synthetic "
+                    "archive manifest."
+                )
+            else:
+                manifest = _build_archive_manifest(
+                    root.name, file_count, total_bytes, excludes
+                )
+                info = tarfile.TarInfo(manifest_arcname)
+                info.size = len(manifest)
+                tar.addfile(info, io.BytesIO(manifest))
     except Exception:
         output_path.unlink(missing_ok=True)
         raise

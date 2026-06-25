@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from openhands.agent_server import file_router as file_router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
-from openhands.agent_server.file_router import _upload_file
+from openhands.agent_server.file_router import ARCHIVE_MANIFEST_NAME, _upload_file
 
 
 @pytest.fixture
@@ -923,3 +923,83 @@ def test_tar_gz_ignores_base_ref_without_error(client, workspace):
 
     assert resp.status_code == 200, resp.text
     assert "x-archive-base-commit" not in resp.headers
+
+
+def test_tar_gz_multi_segment_exclude_drops_nested_dir(client, tmp_path):
+    # A multi-segment exclude (containing '/') must be honored for tar.gz, the
+    # same way git-delta honors it via core.excludesFile. ``secrets/prod`` should
+    # drop only that nested dir, while a same-named dir elsewhere is kept.
+    root = tmp_path / "plain"
+    (root / "secrets" / "prod").mkdir(parents=True)
+    (root / "secrets" / "prod" / "token.txt").write_text("shh\n", encoding="utf-8")
+    (root / "secrets" / "dev").mkdir(parents=True)
+    (root / "secrets" / "dev" / "token.txt").write_text("ok\n", encoding="utf-8")
+    (root / "prod").mkdir()  # same basename, different path: must be kept
+    (root / "prod" / "keep.txt").write_text("keep\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={"path": str(root), "format": "tar.gz", "exclude": "secrets/prod"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    # The nested secrets/prod subtree is gone...
+    assert not any("secrets/prod" in n for n in names)
+    # ...but the sibling secrets/dev and the unrelated top-level prod survive.
+    assert f"{root.name}/secrets/dev/token.txt" in names
+    assert f"{root.name}/prod/keep.txt" in names
+
+
+def test_tar_gz_bare_name_exclude_still_matches_any_component(client, tmp_path):
+    # Bare-name excludes (no '/') must keep matching any path component at any
+    # depth, so the multi-segment support does not regress node_modules-style
+    # pruning.
+    root = tmp_path / "plain"
+    (root / "a" / "node_modules").mkdir(parents=True)
+    (root / "a" / "node_modules" / "junk.js").write_text("// big\n", encoding="utf-8")
+    (root / "keep.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "tar.gz",
+            "use_default_excludes": "false",
+            "exclude": "node_modules",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert not any("node_modules" in n for n in names)
+    assert f"{root.name}/keep.py" in names
+
+
+def test_tar_gz_preserves_user_archive_manifest_file(client, tmp_path, caplog):
+    # If the workspace itself contains a top-level archive_manifest.json, the
+    # synthetic capture manifest must NOT clobber it: the user's bytes win and a
+    # warning is logged.
+    root = tmp_path / "plain"
+    root.mkdir()
+    user_payload = b'{"this": "is the user\'s real file"}'
+    (root / "archive_manifest.json").write_bytes(user_payload)
+    (root / "other.txt").write_text("x\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        resp = client.get(
+            "/api/file/archive", params={"path": str(root), "format": "tar.gz"}
+        )
+
+    assert resp.status_code == 200, resp.text
+    arcname = f"{root.name}/archive_manifest.json"
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        # Exactly one member at the path (no shadowing duplicate).
+        assert [n for n in tar.getnames() if n == arcname] == [arcname]
+        member = tar.extractfile(arcname)
+        assert member is not None
+        assert member.read() == user_payload
+
+    assert any(ARCHIVE_MANIFEST_NAME in record.message for record in caplog.records), (
+        "expected a warning about the archive_manifest.json collision"
+    )
