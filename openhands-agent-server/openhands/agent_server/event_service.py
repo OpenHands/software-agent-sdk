@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from openhands.agent_server.conversation_lease import (
     ConversationLease,
     ConversationOwnershipLostError,
@@ -20,6 +22,7 @@ from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
 from openhands.sdk.conversation.base import BaseConversation
+from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
     GoalController,
     GoalDone,
@@ -217,6 +220,18 @@ class EventService:
             return False
         return True
 
+    def _get_searchable_event(self, events: EventsListBase, index: int) -> Event | None:
+        try:
+            return events[index]
+        except (FileNotFoundError, UnicodeDecodeError, ValidationError) as exc:
+            logger.warning(
+                "Skipping unreadable event at index %d for conversation %s (%s)",
+                index,
+                self.stored.id,
+                type(exc).__name__,
+            )
+            return None
+
     def _search_events_sync(
         self,
         page_id: str | None = None,
@@ -272,7 +287,8 @@ class EventService:
                     start_index = None
             else:
                 for i in range(total):
-                    if events[i].id == page_id:
+                    event = self._get_searchable_event(events, i)
+                    if event is not None and event.id == page_id:
                         start_index = i
                         break
         if start_index is None:
@@ -286,7 +302,9 @@ class EventService:
         items: list[Event] = []
         next_page_id: str | None = None
         for i in indices:
-            event = events[i]
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if not self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
@@ -360,7 +378,10 @@ class EventService:
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
-        for event in events:
+        for i in range(len(events)):
+            event = self._get_searchable_event(events, i)
+            if event is None:
+                continue
             if self._event_matches_filters(
                 event, kind, source, body, timestamp_gte_str, timestamp_lt_str
             ):
@@ -584,10 +605,9 @@ class EventService:
         from callbacks that may run in different threads. Events are emitted through
         the conversation's normal event flow to ensure they are persisted.
         """
-        if self._main_loop and self._main_loop.is_running() and self._conversation:
-            # Capture conversation reference for closure
-            conversation = self._conversation
-
+        main_loop = self._main_loop
+        conversation = self._conversation
+        if main_loop and main_loop.is_running() and conversation:
             # Wrap _on_event with lock acquisition to ensure thread-safe access
             # to conversation state and event log during concurrent operations
             def locked_on_event():
@@ -596,7 +616,7 @@ class EventService:
 
             # Run the locked callback in an executor to ensure the event is
             # both persisted and sent to WebSocket subscribers
-            self._main_loop.run_in_executor(None, locked_on_event)
+            main_loop.run_in_executor(None, locked_on_event)
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
@@ -612,13 +632,16 @@ class EventService:
                 filename: str, log_data: str, uid=usage_id, model=model_name
             ) -> None:
                 """Callback to emit LLM completion logs as events."""
-                event = LLMCompletionLogEvent(
-                    filename=filename,
-                    log_data=log_data,
-                    model_name=model,
-                    usage_id=uid,
-                )
-                self._emit_event_from_thread(event)
+                try:
+                    event = LLMCompletionLogEvent(
+                        filename=filename,
+                        log_data=log_data,
+                        model_name=model,
+                        usage_id=uid,
+                    )
+                    self._emit_event_from_thread(event)
+                except Exception:
+                    logger.exception("Failed to emit LLM completion log event")
 
             llm.telemetry.set_log_completions_callback(log_callback)
 

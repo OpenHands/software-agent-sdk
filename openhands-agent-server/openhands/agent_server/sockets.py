@@ -28,9 +28,13 @@ from fastapi import (
 )
 from starlette.websockets import WebSocketState
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
+from openhands.agent_server.bash_service import (
+    BashEventService,
+    get_default_bash_event_service,
+)
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
+    ConversationService,
     get_default_conversation_service,
 )
 from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
@@ -62,6 +66,38 @@ def _get_config(websocket: WebSocket) -> Config:
     if isinstance(config, Config):
         return config
     return get_default_config()
+
+
+def _get_conversation_service(websocket: WebSocket) -> ConversationService:
+    """Return the ConversationService for this FastAPI app instance.
+
+    Looks up ``app.state.conversation_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton,
+    which keeps the behaviour of existing tests that patch the module-level
+    variable.
+    """
+    service = getattr(websocket.app.state, "conversation_service", None)
+    if isinstance(service, ConversationService):
+        return service
+    return conversation_service
+
+
+def _get_bash_event_service(websocket: WebSocket) -> BashEventService:
+    """Return the BashEventService for this FastAPI app instance.
+
+    Looks up ``app.state.bash_event_service`` at request time so that the
+    service delivered via ``POST /api/init`` (deferred-init / dormant mode)
+    is used instead of the module-level default captured at import. When
+    ``app.state`` is not configured (e.g. when sockets.py is imported as a
+    library without a lifespan), falls back to the module-level singleton.
+    """
+    service = getattr(websocket.app.state, "bash_event_service", None)
+    if isinstance(service, BashEventService):
+        return service
+    return bash_event_service
 
 
 def _resolve_websocket_session_api_key(
@@ -242,7 +278,8 @@ async def events_socket(
         return
 
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    event_service = await conversation_service.get_event_service(conversation_id)
+    conv_service = _get_conversation_service(websocket)
+    event_service = await conv_service.get_event_service(conversation_id)
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
@@ -372,9 +409,10 @@ async def bash_events_socket(
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
+    bash_service = _get_bash_event_service(websocket)
     logger.info("Bash Websocket Connected")
     try:
-        subscriber_id = await bash_event_service.subscribe_to_events(
+        subscriber_id = await bash_service.subscribe_to_events(
             _BashWebSocketSubscriber(websocket)
         )
     except MaxSubscribersError:
@@ -392,7 +430,7 @@ async def bash_events_socket(
         # Resend all existing events if requested
         if effective_mode == "all":
             logger.info("Resending bash events")
-            async for event in page_iterator(bash_event_service.search_bash_events):
+            async for event in page_iterator(bash_service.search_bash_events):
                 await _send_bash_event(event, websocket)
 
         while True:
@@ -401,7 +439,7 @@ async def bash_events_socket(
                 data = await websocket.receive_json()
                 logger.info("Received bash request")
                 request = ExecuteBashRequest.model_validate(data)
-                await bash_event_service.start_bash_command(request)
+                await bash_service.start_bash_command(request)
             except WebSocketDisconnect:
                 logger.info("Bash websocket disconnected")
                 return
@@ -428,7 +466,7 @@ async def bash_events_socket(
                     await _safe_close_websocket(websocket)
                     return
     finally:
-        await bash_event_service.unsubscribe_from_events(subscriber_id)
+        await bash_service.unsubscribe_from_events(subscriber_id)
 
 
 async def _send_event(event: Event, websocket: WebSocket):
