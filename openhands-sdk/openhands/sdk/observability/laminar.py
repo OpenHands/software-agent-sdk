@@ -336,6 +336,29 @@ def end_root_span(root: RootSpan | None) -> None:
     root.end()
 
 
+def start_child_span(
+    root: RootSpan | None,
+    name: str,
+    tags: list[str] | None = None,
+) -> None:
+    """Create and immediately end a child span under a conversation root span."""
+    if root is None or root.span is None:
+        return
+    try:
+        from lmnr import Laminar
+
+        with Laminar.use_span(
+            root.span,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            with Laminar.start_as_current_span(name=name):
+                if tags:
+                    Laminar.set_span_tags(tags)
+    except Exception:
+        logger.debug("Failed to create observability child span", exc_info=True)
+
+
 @contextlib.contextmanager
 def _maybe_use_root_span(args: tuple[Any, ...]) -> Iterator[None]:
     """If the first positional arg owns a ``RootSpan``, re-attach it.

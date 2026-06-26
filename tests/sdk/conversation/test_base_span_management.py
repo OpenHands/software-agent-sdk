@@ -160,8 +160,8 @@ def test_base_conversation_passes_observability_metadata_and_tag_attributes():
         )
 
 
-def test_base_conversation_uses_custom_observability_span_name():
-    """Conversation root span names can be overridden by callers."""
+def test_base_conversation_uses_custom_observability_span_name_as_child_span():
+    """Custom span names are emitted as child spans under the conversation root."""
     conversation = MockConversation()
 
     with (
@@ -170,6 +170,7 @@ def test_base_conversation_uses_custom_observability_span_name():
             return_value=True,
         ),
         patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.start_child_span") as mock_child_span,
     ):
         conversation._start_observability_span(
             "test-session-id",
@@ -177,12 +178,17 @@ def test_base_conversation_uses_custom_observability_span_name():
         )
 
         mock_start_span.assert_called_once_with(
-            "pr_review_evaluation",
+            "conversation",
             session_id="test-session-id",
             user_id=None,
             metadata=None,
             tags=None,
             attributes=None,
+        )
+        mock_child_span.assert_called_once_with(
+            mock_start_span.return_value,
+            "pr_review_evaluation",
+            tags=None,
         )
 
 

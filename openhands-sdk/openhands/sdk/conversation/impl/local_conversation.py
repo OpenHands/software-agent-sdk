@@ -243,7 +243,8 @@ class LocalConversation(BaseConversation):
                   (e.g. a frontend) observing the emitted ActionEvent.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
-            observability_span_name: Optional root span name for observability backends.
+            observability_span_name: Optional child span name for observability
+                  backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially

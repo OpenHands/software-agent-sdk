@@ -712,7 +712,8 @@ class RemoteConversation(BaseConversation):
                       handles execution via callbacks.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
-            observability_span_name: Optional root span name for observability backends.
+            observability_span_name: Optional child span name for observability
+                      backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent

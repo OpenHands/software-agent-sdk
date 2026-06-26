@@ -95,6 +95,7 @@ def test_conversation_factory_forwards_local_observability_span_name(agent):
             return_value=True,
         ),
         patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.start_child_span") as mock_child_span,
         patch("openhands.sdk.conversation.base.end_root_span"),
     ):
         conversation = Conversation(
@@ -104,7 +105,12 @@ def test_conversation_factory_forwards_local_observability_span_name(agent):
         )
         assert isinstance(conversation, LocalConversation)
         mock_start_span.assert_called_once()
-        assert mock_start_span.call_args.args[0] == "pr_review_evaluation"
+        assert mock_start_span.call_args.args[0] == "conversation"
+        mock_child_span.assert_called_once_with(
+            mock_start_span.return_value,
+            "pr_review_evaluation",
+            tags=None,
+        )
         conversation.close()
 
 

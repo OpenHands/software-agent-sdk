@@ -274,7 +274,7 @@ async def test_event_service_start_forwards_tags_to_local_conversation(tmp_path)
 
 @pytest.mark.asyncio
 async def test_event_service_start_forwards_observability_span_name(tmp_path):
-    """EventService.start() must pass stored root span names to LocalConversation."""
+    """EventService.start() must pass stored child span names to LocalConversation."""
     stored = StoredConversation(
         id=uuid4(),
         agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),

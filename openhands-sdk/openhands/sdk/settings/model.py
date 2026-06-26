@@ -800,7 +800,7 @@ class ConversationSettings(BaseModel):
     observability_span_name: ConversationObservabilitySpanName | None = Field(
         default=None,
         exclude=True,
-        description="Name for the conversation root observability span.",
+        description="Optional named child span to emit under the conversation root.",
     )
 
     # --- persisted fields ---------------------------------------------------

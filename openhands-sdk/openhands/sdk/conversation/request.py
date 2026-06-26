@@ -216,9 +216,9 @@ class StartConversationRequest(BaseModel):
     observability_span_name: ConversationObservabilitySpanName = Field(
         default="conversation",
         description=(
-            "Name for the conversation root observability span. Use stable, "
-            "low-cardinality names because observability backends may use span "
-            "names for grouping or signal routing."
+            "Optional named child span to emit under the conversation root. Use "
+            "stable, low-cardinality names because observability backends may use "
+            "span names for grouping or signal routing."
         ),
     )
     autotitle: bool = Field(

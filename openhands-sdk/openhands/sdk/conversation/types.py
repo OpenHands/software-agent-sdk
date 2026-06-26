@@ -130,7 +130,7 @@ ConversationObservabilitySpanName = Annotated[
     str,
     BeforeValidator(_validate_observability_span_name),
 ]
-"""Validated Laminar/OTel root span name for a conversation."""
+"""Validated Laminar/OTel span name for conversation observability."""
 
 
 class StuckDetectionThresholds(BaseModel):
