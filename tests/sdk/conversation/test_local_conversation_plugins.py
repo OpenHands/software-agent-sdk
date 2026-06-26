@@ -597,7 +597,7 @@ class TestLocalConversationPlugins:
         conversation._ensure_agent_ready()
         existing_tools = dict(conversation.agent.tools_map)
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools(config, timeout, on_tools_changed=None):
             mcp_tools_created.append((config, conversation.state.locked()))
             return RuntimeMCPClient()
 
@@ -881,7 +881,7 @@ class TestLocalConversationPlugins:
         # Mock create_mcp_tools to avoid actually starting MCP servers in tests
         mcp_tools_created = []
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools(config, timeout, on_tools_changed=None):
             mcp_tools_created.append(config)
             return []  # Return empty list for testing
 
@@ -1025,7 +1025,7 @@ class TestPluginMcpSecretsExpansion:
         # Mock create_mcp_tools to avoid actually starting MCP servers
         mcp_tools_created = []
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools(config, timeout, on_tools_changed=None):
             mcp_tools_created.append(config)
             return []
 
@@ -1092,7 +1092,7 @@ class TestPluginMcpSecretsExpansion:
         # Mock create_mcp_tools to avoid actually starting MCP servers
         mcp_tools_created = []
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools(config, timeout, on_tools_changed=None):
             mcp_tools_created.append(config)
             return []
 
@@ -1159,7 +1159,7 @@ class TestPluginMcpSecretsExpansion:
         # Mock create_mcp_tools to avoid actually starting MCP servers
         mcp_tools_created = []
 
-        def mock_create_mcp_tools(config, timeout):
+        def mock_create_mcp_tools(config, timeout, on_tools_changed=None):
             mcp_tools_created.append(config)
             return []
 
