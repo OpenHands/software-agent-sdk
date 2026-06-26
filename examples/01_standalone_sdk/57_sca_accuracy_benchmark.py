@@ -60,31 +60,6 @@ Write {n} factual quiz questions about this documentation. Each question must be
 answerable from the text above. Output only the numbered questions, nothing else.\
 """
 
-_JUDGE_SYSTEM = """\
-You are an accuracy judge for documentation Q&A.
-Given a documentation section (ground truth), a question, and a response, \
-score the response as CORRECT, PARTIAL, or INCORRECT.
-
-CORRECT   — response accurately addresses the question using information from the section
-PARTIAL   — response is on-topic but misses key details or is vague
-INCORRECT — response is wrong, contradicts the section, or doesn't address the question
-
-Output ONLY one word: CORRECT, PARTIAL, or INCORRECT.\
-"""
-
-_JUDGE_USER = """\
-Documentation section (ground truth):
-{section}
-
-Question: {question}
-
-Response to judge:
-{response}
-
-Score:\
-"""
-
-
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------

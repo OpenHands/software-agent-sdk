@@ -33,6 +33,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.load import (
     load_project_agents,
+    load_project_root_agents,
     load_user_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -305,8 +306,6 @@ def register_file_agents(work_dir: str | Path) -> list[str]:
     Returns:
         List of agent names that were actually registered.
     """
-    from openhands.sdk.subagent.load import load_project_root_agents
-
     project_agents = load_project_agents(work_dir)
     root_agents = load_project_root_agents(work_dir)
     user_agents = load_user_agents()

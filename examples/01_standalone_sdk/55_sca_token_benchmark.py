@@ -81,6 +81,9 @@ def run_benchmark(agents_md_path: Path, force_xml: bool = False) -> None:
 
     # --- Monolithic agent ---
     monolithic_tokens = count_tokens(content)
+    if monolithic_tokens == 0:
+        console.print("[yellow]File is empty — nothing to benchmark.[/yellow]")
+        return
 
     # --- SCA split: ## headers first, XML tags as fallback (or forced) ---
     sections: list = []

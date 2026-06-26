@@ -347,17 +347,6 @@ def generate_patch_with_tokens(
     return patch, prompt_tokens
 
 
-def generate_patch(
-    instance_id: str,
-    problem_statement: str,
-    relevant_files: list[Path],
-    repo_path: Path,
-    system_prompt: str,
-) -> str:
-    patch, _ = generate_patch_with_tokens(instance_id, problem_statement, relevant_files, repo_path, system_prompt)
-    return patch
-
-
 def _apply_search_replace(raw: str, relevant_files: list[Path], repo_path: Path) -> str:
     """Parse SEARCH/REPLACE blocks, apply to files, return unified diff."""
     block_re = re.compile(
@@ -406,15 +395,17 @@ def _apply_search_replace(raw: str, relevant_files: list[Path], repo_path: Path)
             continue
 
         target.write_text(modified, encoding="utf-8")
-        rel = str(target.relative_to(repo_path))
-        result = subprocess.run(
-            ["git", "diff", "--", rel],
-            cwd=str(repo_path),
-            capture_output=True, text=True,
-        )
-        if result.stdout.strip():
-            patches.append(result.stdout.strip())
-        target.write_text(original, encoding="utf-8")  # restore
+        try:
+            rel = str(target.relative_to(repo_path))
+            result = subprocess.run(
+                ["git", "diff", "--", rel],
+                cwd=str(repo_path),
+                capture_output=True, text=True,
+            )
+            if result.stdout.strip():
+                patches.append(result.stdout.strip())
+        finally:
+            target.write_text(original, encoding="utf-8")  # restore
 
     return "\n".join(patches)
 
@@ -496,8 +487,6 @@ def _run_mode(
         relevant = localize_files(problem, repo_path)
 
         mode_label, system_prompt = get_system_prompt(mode, problem)
-        prompt_tokens = len(system_prompt) // 4  # rough estimate before LLM call
-
         patch, actual_prompt_tokens = generate_patch_with_tokens(
             instance_id, problem, relevant, repo_path, system_prompt
         )

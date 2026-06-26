@@ -84,7 +84,7 @@ def load_project_root_agents(project_dir: str | Path) -> list[AgentDefinition]:
     seen_names: set[str] = set()
 
     for path in sorted(project_dir.iterdir()):
-        if not path.is_file() or path.name.lower() not in _SECTION_SPLIT_FILENAMES:
+        if not path.is_file(follow_symlinks=False) or path.name.lower() not in _SECTION_SPLIT_FILENAMES:
             continue
 
         try:
