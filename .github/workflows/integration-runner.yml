@@ -75,7 +75,7 @@ jobs:
               with:
                   repository: OpenHands/evaluation
                   ref: main
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_EVAL_DISPATCH || github.token }}
+                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PRIVATE }}
                   path: .evaluation-model-config
                   sparse-checkout: |
                       eval-job/model-config
