@@ -1,6 +1,5 @@
 """Test configurable security policy functionality."""
 
-import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -85,10 +84,9 @@ def test_none_security_policy_filename_disables_policy_without_null_public_value
 
 
 def test_custom_security_policy_in_system_message():
-    """Test that custom security policy filename is used in system message."""
-    # Create a temporary directory for test files
+    """A custom security policy file's content is resolved into the system message
+    via the registry (no template copying or Jinja escape hatch)."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a custom policy file with distinctive content
         custom_policy_path = Path(temp_dir) / "custom_policy.j2"
         custom_policy_content = (
             "# 🔐 Custom Test Security Policy\n"
@@ -97,34 +95,6 @@ def test_custom_security_policy_in_system_message():
         )
         custom_policy_path.write_text(custom_policy_content, encoding="utf-8")
 
-        # Copy required template files to temp directory
-        original_prompt_dir = (
-            Path(__file__).parent.parent.parent.parent
-            / "openhands-sdk"
-            / "openhands"
-            / "sdk"
-            / "agent"
-            / "prompts"
-        )
-
-        # Copy system_prompt.j2
-        system_prompt_path = Path(temp_dir) / "system_prompt.j2"
-        original_system_prompt = original_prompt_dir / "system_prompt.j2"
-        shutil.copy2(original_system_prompt, system_prompt_path)
-
-        # Copy security_risk_assessment.j2
-        security_risk_assessment_path = Path(temp_dir) / "security_risk_assessment.j2"
-        original_security_risk_assessment = (
-            original_prompt_dir / "security_risk_assessment.j2"
-        )
-        shutil.copy2(original_security_risk_assessment, security_risk_assessment_path)
-
-        # Copy self_documentation.j2
-        self_documentation_path = Path(temp_dir) / "self_documentation.j2"
-        original_self_documentation = original_prompt_dir / "self_documentation.j2"
-        shutil.copy2(original_self_documentation, self_documentation_path)
-
-        # Create agent with custom security policy using absolute paths for both
         agent = Agent(
             llm=LLM(
                 usage_id="test-llm",
@@ -132,47 +102,65 @@ def test_custom_security_policy_in_system_message():
                 api_key=SecretStr("test-key"),
                 base_url="http://test",
             ),
-            system_prompt_filename=str(system_prompt_path),
             security_policy_filename=str(custom_policy_path),
         )
 
-        # Get system message - this should include our custom policy
         system_message = agent.static_system_message
 
-        # Verify that custom policy content appears in system message
+        # Custom policy content appears...
         assert "Custom Test Security Policy" in system_message
         assert "CUSTOM_RULE" in system_message
         assert "Always test custom policies" in system_message
+        # ...and the built-in default policy does not leak in alongside it.
+        assert "Download and run code from a repository" not in system_message
 
 
-def test_security_policy_template_rendering():
-    """Test that the security policy template renders correctly."""
+def test_custom_security_policy_is_inserted_verbatim_not_rendered():
+    """Custom policy files are injected as raw text -- Jinja syntax is NOT evaluated.
 
-    from openhands.sdk.context.prompts.prompt import render_template
-
-    # Get the prompts directory
-    agent = Agent(
-        llm=LLM(
-            usage_id="test-llm",
-            model="test-model",
-            api_key=SecretStr("test-key"),
-            base_url="http://test",
+    Intentional contract (a security policy should not be a template-injection
+    surface); the legacy ``{% include %}`` path used to render it.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        policy_path = Path(temp_dir) / "custom_policy.j2"
+        policy_path.write_text(
+            "# Policy for {{ model_name }}\n- {% if cli_mode %}rule{% endif %}",
+            encoding="utf-8",
         )
-    )
-    prompt_dir = agent.prompt_dir
+        agent = Agent(
+            llm=LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            security_policy_filename=str(policy_path),
+        )
+        system_message = agent.static_system_message
 
-    # Render the security policy template
-    security_policy = render_template(prompt_dir, "security_policy.j2")
+        # Jinja is left literal, not evaluated.
+        assert "# Policy for {{ model_name }}" in system_message
+        assert "{% if cli_mode %}rule{% endif %}" in system_message
 
-    # Verify the content structure
-    assert security_policy.startswith("# 🔐 Security Policy")
-    assert "## OK to do without Explicit User Consent" in security_policy
-    assert "## Do only with Explicit User Consent" in security_policy
-    assert "## Never Do" in security_policy
 
-    # Verify it's properly formatted (no extra whitespace at start/end)
-    assert not security_policy.startswith(" ")
-    assert not security_policy.endswith(" ")
+def test_empty_custom_security_policy_does_not_leak_default():
+    """An explicitly empty custom policy file must not fall back to the default."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        empty_policy = Path(temp_dir) / "empty_policy.j2"
+        empty_policy.write_text("", encoding="utf-8")
+        agent = Agent(
+            llm=LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            security_policy_filename=str(empty_policy),
+        )
+        system_message = agent.static_system_message
+
+        assert "🔐 Security Policy" not in system_message
+        assert "Download and run code from a repository" not in system_message
 
 
 def test_llm_security_analyzer_template_kwargs():

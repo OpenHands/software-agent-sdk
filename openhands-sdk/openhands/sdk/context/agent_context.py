@@ -16,9 +16,12 @@ from pydantic import (
 )
 
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.section import PromptContext
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.secret import SecretSource, SecretValue
 from openhands.sdk.skills import (
     Skill,
@@ -40,8 +43,8 @@ PROMPT_DIR = pathlib.Path(__file__).parent / "prompts" / "templates"
 
 
 class ResolvedDynamicData(NamedTuple):
-    """Dynamic-tier inputs resolved once, shared by the legacy ``.j2`` renderer and
-    the section registry (skills gated by model family, secrets merged)."""
+    """Dynamic-tier inputs resolved once, fed into the section registry
+    (skills gated by model family, secrets merged)."""
 
     repo_skills: list[Skill]
     available_skills_prompt: str
@@ -108,6 +111,14 @@ class AgentContext(BaseModel):
         description=(
             "Relative marketplace JSON path within the public skills repository. "
             "Set to None to load all public skills without marketplace filtering."
+        ),
+        json_schema_extra={"acp_compatible": True},
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin resolution. Registrations with "
+            "auto_load=True are resolved by LocalConversation at startup."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -206,15 +217,18 @@ class AgentContext(BaseModel):
 
     @model_validator(mode="after")
     def _load_auto_skills(self):
-        """Load user and/or public skills if enabled."""
-        if not self.load_user_skills and not self.load_public_skills:
+        """Load user and/or legacy public skills if enabled."""
+        # Any marketplace registration opts the context out of the legacy
+        # public-skills path, even when the registration is resolution-only.
+        include_public = self.load_public_skills and not self.registered_marketplaces
+        if not self.load_user_skills and not include_public:
             return self
 
         auto_skills = load_available_skills(
             work_dir=None,
             include_user=self.load_user_skills,
             include_project=False,
-            include_public=self.load_public_skills,
+            include_public=include_public,
             marketplace_path=self.marketplace_path,
         )
 
@@ -315,27 +329,16 @@ class AgentContext(BaseModel):
         data = self._resolve_dynamic_data(
             llm_model, llm_model_canonical, additional_secret_infos
         )
-        has_content = (
-            data.repo_skills
-            or self.system_message_suffix
-            or data.secret_infos
-            or data.available_skills_prompt
-            or data.formatted_datetime
+        ctx = PromptContext(
+            now=data.formatted_datetime,
+            repo_skills=tuple((s.name, s.content) for s in data.repo_skills),
+            available_skills_prompt=data.available_skills_prompt or None,
+            custom_suffix=self.system_message_suffix or None,
+            secret_infos=tuple(
+                (info["name"] or "", info["description"]) for info in data.secret_infos
+            ),
         )
-        if has_content:
-            formatted_text = render_template(
-                prompt_dir=str(PROMPT_DIR),
-                template_name="system_message_suffix.j2",
-                repo_skills=data.repo_skills,
-                system_message_suffix=self.system_message_suffix or "",
-                secret_infos=data.secret_infos,
-                available_skills_prompt=data.available_skills_prompt,
-                current_datetime=data.formatted_datetime,
-            ).strip()
-            return formatted_text
-        elif self.system_message_suffix and self.system_message_suffix.strip():
-            return self.system_message_suffix.strip()
-        return None
+        return create_registry().build(ctx).dynamic
 
     def _resolve_dynamic_data(
         self,
@@ -421,9 +424,10 @@ class AgentContext(BaseModel):
         this adapter only emits prompt-only context.  Unsupported AgentContext
         fields are rejected by :meth:`validate_acp_compatibility`.
 
-        The rendering reuses :meth:`get_system_message_suffix` with the same
-        ``system_message_suffix.j2`` template so that ACP agents receive the
-        identical prompt layout as the regular agent.  This includes the
+        The rendering reuses :meth:`get_system_message_suffix`, which assembles
+        the dynamic-tier sections via the shared prompt registry, so that ACP
+        agents receive the identical prompt layout as the regular agent.  This
+        includes the
         ``<CUSTOM_SECRETS>`` block when secrets are present, informing the ACP
         subprocess which environment variables are available.  The actual secret
         values are injected into the subprocess environment by
@@ -443,7 +447,8 @@ class AgentContext(BaseModel):
         """
         self.validate_acp_compatibility()
         # No model-specific skill filtering for ACP — delegate to the shared
-        # renderer which also renders the <CUSTOM_SECRETS> block from secrets.
+        # builder, whose dynamic-tier sections also emit the <CUSTOM_SECRETS>
+        # block from secrets.
         return self.get_system_message_suffix(
             additional_secret_infos=additional_secret_infos
         )

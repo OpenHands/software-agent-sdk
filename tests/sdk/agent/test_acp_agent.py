@@ -305,8 +305,8 @@ class TestACPAgentValidation:
         prompt = context.to_acp_prompt_context()
 
         assert prompt is not None
-        # Reuses the same system_message_suffix.j2 template as the general
-        # agent, so the rendered sections are identical.
+        # Assembled by the same prompt registry the general agent uses, so the
+        # rendered dynamic-tier sections are identical.
         assert "<CURRENT_DATETIME>" in prompt
         assert "2026-04-24T00:00:00" in prompt
         assert "<name>review</name>" in prompt

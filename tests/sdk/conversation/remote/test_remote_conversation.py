@@ -232,6 +232,7 @@ class TestRemoteConversation:
             workspace=self.workspace,
             observability_metadata={"repo": "OpenHands/software-agent-sdk"},
             observability_tags=["sdk", "remote"],
+            observability_span_name="pr_review_evaluation",
             user_id="test-user-42",
         )
 
@@ -249,6 +250,7 @@ class TestRemoteConversation:
             "repo": "OpenHands/software-agent-sdk"
         }
         assert payload["observability_tags"] == ["sdk", "remote"]
+        assert payload["observability_span_name"] == "pr_review_evaluation"
         assert payload["user_id"] == "test-user-42"
 
     @patch(

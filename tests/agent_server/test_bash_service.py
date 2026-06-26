@@ -24,13 +24,9 @@ from openhands.agent_server.server_details_router import (
 
 
 @pytest_asyncio.fixture
-async def bash_service(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[BashEventService]:
+async def bash_service(tmp_path: Path) -> AsyncIterator[BashEventService]:
     service = BashEventService(bash_events_dir=tmp_path / "bash_events")
     async with service:
-        # bash_router holds its service as a module-level global; swap it.
-        monkeypatch.setattr(bash_router_module, "bash_event_service", service)
         yield service
 
 
@@ -38,6 +34,7 @@ async def bash_service(
 async def client(bash_service: BashEventService) -> AsyncIterator[httpx.AsyncClient]:
     app = FastAPI()
     app.state.config = Config()
+    app.state.bash_event_service = bash_service
     app.include_router(server_details_router)
     app.include_router(bash_router_module.bash_router, prefix="/api")
     mark_initialization_complete()

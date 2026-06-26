@@ -2604,7 +2604,9 @@ class TestAutoTitle:
         mock_llm = LLM(model="gpt-3.5-turbo", usage_id="title-llm")
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Profile LLM Title"
             ) as mock_generate_title,
@@ -2634,7 +2636,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
@@ -2682,7 +2686,9 @@ class TestAutoTitle:
         agent_llm = service._conversation.agent.llm
 
         with (
-            patch("openhands.sdk.llm.llm_profile_store.LLMProfileStore") as MockStore,
+            patch(
+                "openhands.agent_server.persistence.store.get_llm_profile_store"
+            ) as MockStore,
             patch(
                 self._GENERATE_TITLE_PATH, return_value="✨ Agent LLM Title"
             ) as mock_generate_title,
@@ -2713,7 +2719,9 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_integration_routes_through_profile_store(self, tmp_path):
+    async def test_autotitle_integration_routes_through_profile_store(
+        self, tmp_path, monkeypatch, request
+    ):
         """End-to-end: profile on disk → LLMProfileStore.load → title LLM call.
 
         Exercises the real wiring from AutoTitleSubscriber through LLMProfileStore
@@ -2771,17 +2779,21 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        # Point LLMProfileStore() (no args) at our tmp dir so the real
-        # _load_title_llm code path finds our on-disk profile.
-        with (
-            patch(
-                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
-            ),
-            patch(
-                "openhands.sdk.llm.llm.LLM.completion",
-                autospec=True,
-                side_effect=fake_completion,
-            ),
+        # Point the agent-server profile store singleton at our tmp dir via
+        # OH_PERSISTENCE_DIR so the real _load_title_llm code path finds our
+        # on-disk profile under `{tmp_path}/profiles`.
+        from openhands.agent_server.persistence import reset_stores
+
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+        reset_stores()
+        # Clear the singleton at teardown even if an assertion raises, so the
+        # stale store (pointing at the soon-deleted tmp_path) can't leak.
+        request.addfinalizer(reset_stores)
+
+        with patch(
+            "openhands.sdk.llm.llm.LLM.completion",
+            autospec=True,
+            side_effect=fake_completion,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))
@@ -2801,7 +2813,9 @@ class TestAutoTitle:
         service.save_meta.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_autotitle_decrypts_cipher_encrypted_title_profile(self, tmp_path):
+    async def test_autotitle_decrypts_cipher_encrypted_title_profile(
+        self, tmp_path, monkeypatch, request
+    ):
         """Regression for #3164: a cipher-encrypted title-LLM profile must be
         decrypted on load so the title LLM sees the plaintext API key, not
         Fernet ciphertext.
@@ -2862,15 +2876,18 @@ class TestAutoTitle:
                 raw_response=raw,
             )
 
-        with (
-            patch(
-                "openhands.sdk.llm.llm_profile_store._DEFAULT_PROFILE_DIR", profile_dir
-            ),
-            patch(
-                "openhands.sdk.llm.llm.LLM.completion",
-                autospec=True,
-                side_effect=fake_completion,
-            ),
+        from openhands.agent_server.persistence import reset_stores
+
+        monkeypatch.setenv("OH_PERSISTENCE_DIR", str(tmp_path))
+        reset_stores()
+        # Clear the singleton at teardown even if an assertion raises, so the
+        # stale store (pointing at the soon-deleted tmp_path) can't leak.
+        request.addfinalizer(reset_stores)
+
+        with patch(
+            "openhands.sdk.llm.llm.LLM.completion",
+            autospec=True,
+            side_effect=fake_completion,
         ):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event("Fix the login bug"))

@@ -86,6 +86,7 @@ class Conversation:
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
     ) -> "LocalConversation": ...
 
     @overload
@@ -114,6 +115,7 @@ class Conversation:
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -142,6 +144,7 @@ class Conversation:
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -199,6 +202,7 @@ class Conversation:
                 client_tools=client_tools,
                 observability_metadata=observability_metadata,
                 observability_tags=observability_tags,
+                observability_span_name=observability_span_name,
             )
 
         return LocalConversation(
@@ -221,4 +225,5 @@ class Conversation:
             client_tools=client_tools,
             observability_metadata=observability_metadata,
             observability_tags=observability_tags,
+            observability_span_name=observability_span_name,
         )

@@ -20,12 +20,10 @@ def test_render_template_with_relative_path():
     )
     agent_prompts_dir = os.path.abspath(agent_prompts_dir)
 
-    # Render a template using relative path
+    # system_prompt_planning.j2 is the surviving built-in Jinja template.
     result = render_template(
         prompt_dir=agent_prompts_dir,
-        template_name="system_prompt.j2",
-        cli_mode=False,
-        security_policy_filename="security_policy.j2",
+        template_name="system_prompt_planning.j2",
     )
 
     # Verify result is a non-empty string
