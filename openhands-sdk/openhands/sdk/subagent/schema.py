@@ -25,6 +25,7 @@ KNOWN_FIELDS: Final[set[str]] = {
     "color",
     "tools",
     "skills",
+    "triggers",
     "max_iteration_per_run",
     "max_budget_per_run",
     "hooks",
@@ -74,6 +75,16 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     else:
         skills = []
     return skills
+
+
+def _extract_triggers(fm: dict[str, object]) -> list[str]:
+    """Extract trigger keywords from frontmatter."""
+    raw = fm.get("triggers", [])
+    if isinstance(raw, str):
+        return [t.strip() for t in raw.split(",") if t.strip()]
+    if isinstance(raw, list):
+        return [str(t) for t in raw]
+    return []
 
 
 def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, Any] | None:
@@ -219,6 +230,16 @@ class AgentDefinition(BaseModel):
         default_factory=list,
         description="Examples of when to use this agent (for triggering)",
     )
+    triggers: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Keywords that signal when this agent is relevant. "
+            "The special value '__always_active__' marks foundational agents "
+            "(testing, build, commit) relevant to every task. "
+            "Auto-derived when loading AGENTS.md-style files via parse_sections(); "
+            "can also be authored manually in frontmatter."
+        ),
+    )
     hooks: HookConfig | None = Field(
         default=None, description="Hook configuration for this agent"
     )
@@ -327,6 +348,7 @@ class AgentDefinition(BaseModel):
         color: str | None = _extract_color(fm)
         tools: list[str] = _extract_tools(fm)
         skills: list[str] = _extract_skills(fm)
+        triggers: list[str] = _extract_triggers(fm)
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
         max_budget_per_run: float | None = _extract_max_budget_per_run(fm)
@@ -348,6 +370,7 @@ class AgentDefinition(BaseModel):
             color=color,
             tools=tools,
             skills=skills,
+            triggers=triggers,
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
             max_budget_per_run=max_budget_per_run,

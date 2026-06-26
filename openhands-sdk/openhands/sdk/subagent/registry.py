@@ -293,31 +293,28 @@ def agent_definition_to_factory(
 
 
 def register_file_agents(work_dir: str | Path) -> list[str]:
-    """Load and register file-based agents from project-level `.agents/agents` and
-    `.openhands/agents`, and user-level `~/.agents/agents` and `~/.openhands/agents`
-    directories.
+    """Load and register file-based agents from all known locations.
 
-    Project-level definitions take priority over user-level ones, and within
-    each level `.agents/` takes priority over `.openhands/`.
+    Priority (highest to lowest for duplicates):
+      1. project-level .agents/agents/*.md and .openhands/agents/*.md
+      2. project-root AGENTS.md-style files (section-split)
+      3. user-level ~/.agents/agents/*.md and ~/.openhands/agents/*.md
 
     Does not overwrite agents already registered programmatically or by plugins.
 
     Returns:
         List of agent names that were actually registered.
     """
+    from openhands.sdk.subagent.load import load_project_root_agents
+
     project_agents = load_project_agents(work_dir)
+    root_agents = load_project_root_agents(work_dir)
     user_agents = load_user_agents()
 
-    # Deduplicate: project wins over user
     seen_names: set[str] = set()
     deduplicated: list[AgentDefinition] = []
 
-    for agent_def in project_agents:
-        if agent_def.name not in seen_names:
-            seen_names.add(agent_def.name)
-            deduplicated.append(agent_def)
-
-    for agent_def in user_agents:
+    for agent_def in project_agents + root_agents + user_agents:
         if agent_def.name not in seen_names:
             seen_names.add(agent_def.name)
             deduplicated.append(agent_def)
@@ -430,10 +427,13 @@ def get_factory_info() -> str:
     if not user_factories:
         return "- No user-registered agents yet. Call register_agent(...) to add custom agents."  # noqa: E501
 
-    def get_agent_info(name, factory):
+    def get_agent_info(name: str, factory: AgentFactory) -> str:
         defn = factory.definition
         tools = f" (tools: {', '.join(defn.tools)})" if defn.tools else ""
-        return f"- **{name}**: {defn.description}{tools}"
+        triggers = (
+            f" [triggers: {', '.join(defn.triggers)}]" if defn.triggers else ""
+        )
+        return f"- **{name}**: {defn.description}{triggers}{tools}"
 
     return "\n".join(
         get_agent_info(name, f) for name, f in sorted(user_factories.items())

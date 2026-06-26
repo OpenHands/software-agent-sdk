@@ -825,3 +825,48 @@ class TestAgentDefinitionMaxBudget:
         md = tmp_path / "a.md"
         md.write_text("---\nname: a\nmax_budget_per_run: 3\n---\n\nPrompt.\n")
         assert "max_budget_per_run" not in AgentDefinition.load(md).metadata
+
+
+class TestTriggers:
+    def test_triggers_default_empty(self):
+        agent = AgentDefinition(name="test")
+        assert agent.triggers == []
+
+    def test_triggers_set_directly(self):
+        agent = AgentDefinition(name="test", triggers=["docker", "container"])
+        assert agent.triggers == ["docker", "container"]
+
+    def test_load_triggers_as_yaml_list(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\ntriggers:\n  - docker\n  - container\n---\n\nPrompt.\n")
+        agent = AgentDefinition.load(md)
+        assert agent.triggers == ["docker", "container"]
+
+    def test_load_triggers_as_comma_string(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\ntriggers: docker, container, image\n---\n\nPrompt.\n")
+        agent = AgentDefinition.load(md)
+        assert agent.triggers == ["docker", "container", "image"]
+
+    def test_load_triggers_as_single_string(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\ntriggers: docker\n---\n\nPrompt.\n")
+        agent = AgentDefinition.load(md)
+        assert agent.triggers == ["docker"]
+
+    def test_load_triggers_absent_is_empty(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\n---\n\nPrompt.\n")
+        agent = AgentDefinition.load(md)
+        assert agent.triggers == []
+
+    def test_load_triggers_not_in_metadata(self, tmp_path: Path):
+        md = tmp_path / "a.md"
+        md.write_text("---\nname: a\ntriggers:\n  - docker\ncustom: val\n---\n\nPrompt.\n")
+        agent = AgentDefinition.load(md)
+        assert "triggers" not in agent.metadata
+        assert agent.metadata.get("custom") == "val"
+
+    def test_always_active_sentinel_accepted(self):
+        agent = AgentDefinition(name="test", triggers=["__always_active__", "build"])
+        assert "__always_active__" in agent.triggers

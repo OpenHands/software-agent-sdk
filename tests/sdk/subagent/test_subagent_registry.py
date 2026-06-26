@@ -47,6 +47,24 @@ def _create_skill_file(skills_dir: Path, name: str, content: str) -> None:
     )
 
 
+def test_register_file_agents_includes_root_agents(tmp_path: Path) -> None:
+    """register_file_agents picks up section-split agents from AGENTS.md at project root."""
+    from openhands.sdk.subagent.registry import register_file_agents, get_agent_factory
+
+    (tmp_path / "AGENTS.md").write_text(
+        "## Docker Setup\nUse docker-compose for all services.\n\n"
+        "## Building and Testing\nRun ./gradlew test.\n"
+    )
+
+    registered = register_file_agents(tmp_path)
+    assert "sca_docker_setup" in registered
+    assert "sca_building_and_testing" in registered
+
+    factory = get_agent_factory("sca_docker_setup")
+    assert factory.definition.name == "sca_docker_setup"
+    assert "docker" in factory.definition.triggers
+
+
 def test_register_file_agents_project_priority(tmp_path: Path) -> None:
     """Project-level agents take priority over user-level agents with same name."""
     # Project .agents/
@@ -955,3 +973,35 @@ def test_factory_explicit_condenser_preserves_distinct_usage_id() -> None:
     agent = factory(_make_test_llm())
     assert isinstance(agent.condenser, LLMSummarizingCondenser)
     assert agent.condenser.llm.usage_id == "my-condenser"
+
+
+def test_get_factory_info_shows_triggers_when_present() -> None:
+    """Triggers appear in brackets in get_factory_info output."""
+    defn = AgentDefinition(
+        name="docker-agent",
+        description="Docker Setup",
+        triggers=["docker", "container", "image"],
+    )
+    register_agent("docker-agent", lambda llm: None, defn)  # type: ignore[arg-type]
+    info = get_factory_info()
+    assert "[triggers: docker, container, image]" in info
+
+
+def test_get_factory_info_no_trigger_annotation_when_empty() -> None:
+    """Agents without triggers have no trigger annotation in output."""
+    defn = AgentDefinition(name="plain-agent", description="A plain agent")
+    register_agent("plain-agent", lambda llm: None, defn)  # type: ignore[arg-type]
+    info = get_factory_info()
+    assert "[triggers:" not in info
+
+
+def test_get_factory_info_shows_always_active_sentinel() -> None:
+    """__always_active__ sentinel is shown verbatim in trigger list."""
+    defn = AgentDefinition(
+        name="build-agent",
+        description="Building and Testing",
+        triggers=["__always_active__", "build", "test"],
+    )
+    register_agent("build-agent", lambda llm: None, defn)  # type: ignore[arg-type]
+    info = get_factory_info()
+    assert "__always_active__" in info
