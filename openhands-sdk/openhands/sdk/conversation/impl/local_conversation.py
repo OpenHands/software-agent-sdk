@@ -57,7 +57,11 @@ from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
 from openhands.sdk.mcp.config import MCPServer, coerce_mcp_config, dump_mcp_config
-from openhands.sdk.mcp.utils import DefaultMCPToolProvider, MCPToolProvider
+from openhands.sdk.mcp.utils import (
+    DefaultMCPToolProvider,
+    MCPToolProvider,
+    ToolsChangedCallback,
+)
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -1099,19 +1103,27 @@ class LocalConversation(BaseConversation):
         self._hook_processor.run_session_start()
 
     def _runtime_mcp_tools(
-        self, mcp_config: dict[str, MCPServer]
+        self,
+        mcp_config: dict[str, MCPServer],
+        *,
+        on_tools_changed: ToolsChangedCallback | None = None,
     ) -> list[ToolDefinition]:
         if not mcp_config:
             return []
         client = self._mcp_tool_provider.create_tools(
-            mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
+            mcp_config,
+            _RUNTIME_MCP_TIMEOUT_SECS,
+            on_tools_changed=on_tools_changed,
         )
         return list(client.tools)
 
     def _runtime_mcp_tools_for_agent(self) -> list[ToolDefinition]:
         if not self.agent.supports_openhands_tools or not self.agent.mcp_config:
             return []
-        return self._runtime_mcp_tools(self.agent.mcp_config)
+        return self._runtime_mcp_tools(
+            self.agent.mcp_config,
+            on_tools_changed=self.agent._on_mcp_tools_changed,
+        )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
         agent_context = self.agent.agent_context

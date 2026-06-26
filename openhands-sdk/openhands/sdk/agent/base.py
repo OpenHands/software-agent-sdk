@@ -825,8 +825,42 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if existing:
             raise ValueError(f"Duplicate tool names found: {existing}")
 
+        # Mutate the tool map in place. ``AgentBase`` is a frozen pydantic
+        # model, so the attribute itself cannot be reassigned; the underlying
+        # dict object is mutable, though. ``tools_map`` returns a snapshot
+        # copy, so readers on other threads (e.g. an MCP client's background
+        # loop triggering this method via a tools/list_changed notification)
+        # never iterate the live dict while it is being mutated.
         for tool in tools:
             self._tools[tool.name] = tool
+
+    def _on_mcp_tools_changed(self, tools: Sequence[ToolDefinition]) -> None:
+        """Handle dynamically advertised MCP tools.
+
+        Invoked on the MCP client's background event-loop thread when an MCP
+        server sends ``notifications/tools/list_changed`` (progressive
+        disclosure, e.g. Datadog's hosted MCP server). Registers the newly
+        added tools so they become callable in subsequent agent steps.
+        """
+        if not self._initialized:
+            logger.warning(
+                "MCP tools/list_changed received before agent initialization; "
+                "skipping registration of %d tools",
+                len(tools),
+            )
+            return
+        try:
+            self.add_runtime_tools(tools)
+            logger.info(
+                "Registered %d dynamically advertised MCP tools: %s",
+                len(tools),
+                ", ".join(t.name for t in tools),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to register dynamically advertised MCP tools",
+                exc_info=True,
+            )
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:
@@ -836,7 +870,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self._initialized:
             raise RuntimeError("Agent not initialized; call _initialize() before use")
-        return self._tools
+        # Return a snapshot copy so callers iterating the result are isolated
+        # from concurrent in-place mutations by ``add_runtime_tools`` (which
+        # may run on an MCP client's background thread when a server sends
+        # ``notifications/tools/list_changed``).
+        return dict(self._tools)
 
     # -- Capability helpers -----------------------------------------------
     # Downstream code should branch on these properties rather than doing
