@@ -569,15 +569,24 @@ async def test_search_conversations_reads_persisted_state_without_startup_hydrat
     async with ConversationService(conversations_dir=conversations_dir) as restarted:
         assert restarted._event_services == {}
 
-        with patch.object(
-            restarted,
-            "_start_event_service",
-            side_effect=AssertionError("search should not hydrate event services"),
+        with (
+            patch.object(
+                restarted,
+                "_start_event_service",
+                side_effect=AssertionError("search should not hydrate event services"),
+            ),
+            patch.object(
+                restarted,
+                "_prepare_persisted_conversation_runtime",
+                side_effect=AssertionError("search should not prepare runtime"),
+            ),
         ):
             result = await restarted.search_conversations()
+            count = await restarted.count_conversations()
 
         assert [item.id for item in result.items] == [conversation_info.id]
         assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
+        assert count == 1
 
 
 class TestConversationServiceSearchConversations:
