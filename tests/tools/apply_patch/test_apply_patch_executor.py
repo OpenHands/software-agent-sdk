@@ -224,6 +224,24 @@ def test_path_escape_with_parent_directory(tmp_ws: Path):
     assert "Absolute or escaping paths" in obs.text
 
 
+def test_reject_sibling_prefix_path_escape(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "workspace-escape" / "owned.txt"
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: ../workspace-escape/owned.txt\n"
+        "+x\n"
+        "*** End Patch"
+    )
+    obs = run_exec(workspace, patch)
+
+    assert obs.is_error
+    assert "Absolute or escaping paths" in obs.text
+    assert not outside.exists()
+
+
 def test_malformed_patch_header_returns_differror(tmp_ws: Path):
     """A patch missing '*** Begin Patch' must return a structured error, not crash.
 

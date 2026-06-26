@@ -3228,3 +3228,25 @@ def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) 
     # Should not raise AttributeError even though self._main_loop is cleared
     event_service._emit_event_from_thread(event)
     assert len(captured_calls) == 1, "run_in_executor should have been called once"
+
+
+def test_llm_log_callback_swallows_emit_failures(
+    event_service: EventService, caplog
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+
+    object.__setattr__(
+        event_service,
+        "_emit_event_from_thread",
+        MagicMock(side_effect=RuntimeError("emit failed")),
+    )
+
+    with caplog.at_level("ERROR"):
+        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+        callbacks[0]("completion.json", "{}")
+
+    emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
+    emit_mock.assert_called_once()
+    assert "Failed to emit LLM completion log event" in caplog.text

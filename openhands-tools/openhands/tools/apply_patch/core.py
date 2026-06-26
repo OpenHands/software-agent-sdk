@@ -386,11 +386,6 @@ def _get_updated_file(text: str, action: PatchAction, path: str) -> str:
                 f"_get_updated_file: {path}: orig_index {orig_index} > "
                 f"chunk.orig_index {chunk.orig_index}"
             )
-        if orig_index > chunk.orig_index:
-            raise DiffError(
-                f"_get_updated_file: {path}: orig_index {orig_index} advanced past "
-                f"chunk.orig_index {chunk.orig_index}"
-            )
         dest_lines.extend(orig_lines[orig_index : chunk.orig_index])
         delta = chunk.orig_index - orig_index
         orig_index += delta
