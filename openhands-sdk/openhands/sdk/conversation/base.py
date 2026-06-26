@@ -18,6 +18,7 @@ from openhands.sdk.observability.laminar import (
     RootSpan,
     end_root_span,
     should_enable_observability,
+    start_child_span,
     start_root_span,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -139,6 +140,7 @@ class BaseConversation(ABC):
     def _start_observability_span(
         self,
         session_id: str,
+        span_name: str = "conversation",
         user_id: str | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
@@ -148,6 +150,7 @@ class BaseConversation(ABC):
 
         Args:
             session_id: The session ID to associate with the trace
+            span_name: Optional child span name to emit under the conversation root.
             user_id: Optional user ID to associate with the trace
             metadata: Optional trace-level metadata to attach to observability backends
             tags: Optional span tags to attach to the conversation root span
@@ -166,12 +169,15 @@ class BaseConversation(ABC):
             tags=tags,
             attributes=_conversation_tag_attributes(conversation_tags),
         )
+        if span_name != "conversation":
+            start_child_span(self._observability_root_span, span_name, tags=tags)
 
     def _end_observability_span(self) -> None:
         """End the observability span if it hasn't been ended already."""
         if self._span_ended:
             return
-        end_root_span(self._observability_root_span)
+        if self._observability_root_span is not None:
+            end_root_span(self._observability_root_span)
         self._observability_root_span = None
         self._span_ended = True
 

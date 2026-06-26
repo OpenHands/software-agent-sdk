@@ -219,11 +219,9 @@ Always provide links to the relevant documentation pages for users who want to l
 
 
 class SecuritySection(_StaticTextSection):
-    """The ``<SECURITY>`` block wrapping the default security policy.
-
-    Guarded by ``security_policy_filename`` (empty string disables it). The body is
-    the default policy; a custom ``security_policy_filename`` would resolve its content
-    into the context instead (a follow-up; not exercised by the snapshot matrix).
+    """The ``<SECURITY>`` block: the built-in default policy, or a custom policy's
+    ``security_policy_content`` when configured. Guarded by ``security_policy_filename``
+    (empty string disables it).
     """
 
     name = "security"
@@ -260,6 +258,13 @@ class SecuritySection(_StaticTextSection):
 
     def guard(self, ctx: PromptContext) -> bool:
         return bool(ctx.template_kwargs.get("security_policy_filename"))
+
+    def render(self, ctx: PromptContext) -> str | None:
+        content = ctx.template_kwargs.get("security_policy_content")
+        # `is not None`: an explicitly empty custom policy must not fall back to body.
+        if content is not None:
+            return _refine(f"<SECURITY>\n\n{content}\n\n</SECURITY>", ctx.platform)
+        return self.body
 
 
 class SecurityRiskAssessmentSection:

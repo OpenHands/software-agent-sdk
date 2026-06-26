@@ -1,14 +1,18 @@
-"""Phase 2 oracle: the default registry reproduces ``static_system_message``.
+"""Phase 2 oracle: the default registry reproduces the legacy dynamic suffix.
+
+The static-tier template (``system_prompt.j2``) has been removed: the registry is the
+only static renderer now, and its output is pinned byte-for-byte by
+``test_prompt_snapshot.py``. The dynamic tier still renders Jinja
+(``system_message_suffix.j2``) live, so it is compared to ``dynamic_context`` here.
 
 The registry canonicalizes inter-section spacing to a single blank line, while the
-legacy template leaves 2--5 blanks around the guarded sections (un-trimmed ``{% if %}``
-tags). :func:`_canonical_gaps` collapses exactly those ``</TAG>``..3+ blanks..``<TAG>``
+legacy suffix leaves 2--5 blanks around guarded sections (un-trimmed ``{% if %}`` tags).
+:func:`_canonical_gaps` collapses exactly those ``</TAG>``..3+ blanks..``<TAG>``
 boundaries, so every section *body* is asserted byte-for-byte; the registry's
 single-blank policy is the only normalized difference.
 """
 
 import re
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -45,7 +49,6 @@ from .test_prompt_snapshot import (
     DYNAMIC_CONTEXT,
     FAMILY_MODELS,
     MATRIX,
-    PLATFORM_CELL,
     Cell,
     _build_agent,
 )
@@ -74,27 +77,6 @@ def _canonical_gaps(text: str) -> str:
 
 def _mask_datetime(text: str) -> str:
     return _DATETIME_LINE.sub("The current date and time is: <NOW>", text)
-
-
-@pytest.mark.parametrize("cell", MATRIX, ids=[c.id for c in MATRIX])
-def test_registry_static_matches_legacy(cell: Cell) -> None:
-    agent = _build_agent(cell)
-    ctx = agent._build_prompt_context()
-    static = create_registry().build(ctx).static
-    assert static == _canonical_gaps(agent.static_system_message)
-
-
-def test_registry_static_matches_legacy_windows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # refine() swaps bash->powershell on win32; ctx.platform is resolved from
-    # sys.platform at build time, so both paths must agree byte-for-byte.
-    monkeypatch.setattr(sys, "platform", "win32")
-    agent = _build_agent(PLATFORM_CELL)
-    ctx = agent._build_prompt_context()
-    static = create_registry().build(ctx).static
-    assert static == _canonical_gaps(agent.static_system_message)
-    assert "powershell" in static
 
 
 def test_default_registry_is_all_static() -> None:

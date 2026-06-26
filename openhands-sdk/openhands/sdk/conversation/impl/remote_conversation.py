@@ -676,6 +676,7 @@ class RemoteConversation(BaseConversation):
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -711,6 +712,8 @@ class RemoteConversation(BaseConversation):
                       handles execution via callbacks.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                      backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -803,6 +806,7 @@ class RemoteConversation(BaseConversation):
                 "observability_tags": observability_tags
                 if observability_tags is not None
                 else [],
+                "observability_span_name": observability_span_name,
                 "user_id": user_id,
             }
             if user_id:
@@ -973,6 +977,7 @@ class RemoteConversation(BaseConversation):
 
         self._start_observability_span(
             str(self._id),
+            span_name=observability_span_name,
             user_id=user_id,
             metadata=observability_metadata,
             tags=observability_tags,

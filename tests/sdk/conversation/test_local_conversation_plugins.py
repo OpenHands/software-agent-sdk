@@ -14,7 +14,12 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.marketplace import MarketplaceRegistration
-from openhands.sdk.plugin import PluginSource
+from openhands.sdk.plugin import (
+    PluginSource,
+    discovery,
+    install_plugin,
+    installed,
+)
 from openhands.sdk.tool.builtins import ThinkTool
 
 
@@ -1354,4 +1359,107 @@ class TestPluginSourceSecretExpansion:
 
         assert captured["ref"] == "v1.2.3"
 
+        conversation.close()
+
+
+class TestAmbientPluginAutoLoad:
+    """Ambient auto-load: enabled installed + local plugins load into a
+    conversation alongside (and below) the explicit-attach path.
+    """
+
+    def _isolate(self, monkeypatch, user_dirs: list[Path], install_store: Path):
+        """Point discovery at test directories instead of the real home."""
+        monkeypatch.setattr(discovery, "USER_PLUGINS_DIRS", user_dirs)
+        monkeypatch.setattr(installed, "DEFAULT_INSTALLED_PLUGINS_DIR", install_store)
+
+    def test_enabled_installed_plugin_auto_loads_into_conversation(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """An installed + enabled plugin loads with no explicit attach.
+
+        The plugin contributes only a skill (no MCP / no explicit specs), so this
+        also covers that a skills-only ambient plugin still updates the agent.
+        """
+        install_store = tmp_path / "installed-store"
+        install_store.mkdir()
+        source = create_test_plugin(
+            tmp_path / "src",
+            name="ambient-plugin",
+            skills=[{"name": "ambient-skill", "content": "Ambient content"}],
+        )
+        install_plugin(str(source), installed_dir=install_store)
+        self._isolate(monkeypatch, [tmp_path / "empty-user"], install_store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent, workspace=workspace, visualizer=None
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "ambient-skill" in skill_names
+        conversation.close()
+
+    def test_explicitly_attached_plugin_overrides_ambient_plugin(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """A same-named explicit plugin wins; the ambient one is skipped entirely."""
+        user_dir = tmp_path / ".agents" / "plugins"
+        create_test_plugin(
+            user_dir / "shared",
+            name="shared",
+            skills=[{"name": "ambient-skill", "content": "Ambient"}],
+        )
+        explicit_src = create_test_plugin(
+            tmp_path / "explicit",
+            name="shared",
+            skills=[{"name": "explicit-skill", "content": "Explicit"}],
+        )
+        install_store = tmp_path / "installed-store"
+        install_store.mkdir()
+        self._isolate(monkeypatch, [user_dir], install_store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(explicit_src))],
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "explicit-skill" in skill_names
+        assert "ambient-skill" not in skill_names
+        conversation.close()
+
+    def test_ambient_plugins_are_not_recorded_in_resolved_plugins(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Ambient plugins load but are not pinned (resume re-discovers them)."""
+        user_dir = tmp_path / ".agents" / "plugins"
+        create_test_plugin(
+            user_dir / "ambient",
+            name="ambient-plugin",
+            skills=[{"name": "ambient-skill", "content": "Ambient"}],
+        )
+        install_store = tmp_path / "installed-store"
+        install_store.mkdir()
+        self._isolate(monkeypatch, [user_dir], install_store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent, workspace=workspace, visualizer=None
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "ambient-skill" in skill_names
+        assert conversation.resolved_plugins is None
         conversation.close()

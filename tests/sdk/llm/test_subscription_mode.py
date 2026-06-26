@@ -5,6 +5,7 @@ Tests cover four bugs that made LLM.subscription_login() unusable:
 2. include/reasoning params cause silent empty output
 3. Streaming output items lost (response.completed has output=[])
 4. Reasoning item IDs cause 404 on follow-up requests (store=false)
+5. Retry path must not add unsupported temperature param
 
 See: https://github.com/OpenHands/software-agent-sdk/issues/2797
 """
@@ -12,13 +13,17 @@ See: https://github.com/OpenHands/software-agent-sdk/issues/2797
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from litellm.types.llms.base import BaseLiteLLMOpenAIResponseObject
+from litellm.types.llms.openai import ResponsesAPIResponse
+from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from openai.types.responses.response_function_tool_call import (
     ResponseFunctionToolCall,
 )
 
+from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import (
     Message,
@@ -50,6 +55,26 @@ def _make_generic_output_item(**kwargs: Any) -> BaseLiteLLMOpenAIResponseObject:
     """Build a BaseLiteLLMOpenAIResponseObject (the type litellm uses for
     streaming output items) with the given attributes."""
     return BaseLiteLLMOpenAIResponseObject.model_construct(**kwargs)
+
+
+def _make_responses_api_response(text: str = "ok") -> ResponsesAPIResponse:
+    return ResponsesAPIResponse(
+        id="resp-1",
+        created_at=1,
+        output=[
+            ResponseOutputMessage(
+                id="msg-1",
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[
+                    ResponseOutputText(type="output_text", text=text, annotations=[])
+                ],
+            )
+        ],
+        model="gpt-5.2-codex",
+        object="response",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +132,41 @@ def test_non_subscription_keeps_structured_param(param: str, check: Any):
     opts = select_responses_options(llm, {}, include=["text.output_text"], store=None)
     assert param in opts
     assert check(opts[param])
+
+
+# ---------------------------------------------------------------------------
+# Bug 5: Retry path must preserve omitted subscription params
+# ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_subscription_retry_does_not_add_temperature(mock_responses: Any):
+    """Subscription mode intentionally omits temperature.
+
+    A retry after LLMNoResponseError must not manufacture temperature=1.0,
+    because the ChatGPT subscription endpoint rejects the parameter.
+    """
+    llm = _make_subscription_llm()
+    llm.num_retries = 2
+    llm.retry_min_wait = 0
+    llm.retry_max_wait = 0
+    llm.stream = True
+
+    mock_responses.side_effect = [
+        LLMNoResponseError("empty response"),
+        _make_responses_api_response("ok"),
+    ]
+
+    # Subscription auth loads OAuth credentials from disk; stub it out so the
+    # test does not depend on a real ChatGPT login being present.
+    with patch.object(llm, "_get_litellm_auth_values", return_value=(None, {})):
+        llm.responses(messages=[Message(role="user", content=[TextContent(text="hi")])])
+
+    assert mock_responses.call_count == 2
+    _, first_kwargs = mock_responses.call_args_list[0]
+    _, second_kwargs = mock_responses.call_args_list[1]
+    assert "temperature" not in first_kwargs
+    assert "temperature" not in second_kwargs
 
 
 # ---------------------------------------------------------------------------

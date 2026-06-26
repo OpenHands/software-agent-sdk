@@ -50,6 +50,7 @@ from openhands.agent_server.openai.router import (
     check_openai_api_key,
     openai_router,
 )
+from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -348,6 +349,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(plugins_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(mcp_router)

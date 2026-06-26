@@ -398,6 +398,7 @@ async def run_chat_completion(
     config: Config,
     conversation_service: ConversationService,
     reusable_conversation_id: UUID | None,
+    observability_overrides: dict[str, object] | None = None,
 ) -> OpenAIChatCompletionResult:
     if request.stream:
         # SSE streaming needs incremental agent-event forwarding; add it separately.
@@ -411,6 +412,8 @@ async def run_chat_completion(
         config=config,
         conversation_id=reusable_conversation_id,
     )
+    if observability_overrides:
+        start_request = start_request.model_copy(update=observability_overrides)
     event_service = None
     conversation_id = reusable_conversation_id
     min_event_count: int | None = None
