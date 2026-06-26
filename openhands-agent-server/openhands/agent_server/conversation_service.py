@@ -13,7 +13,10 @@ import httpx
 from pydantic import BaseModel
 
 from openhands.agent_server.config import Config, WebhookSpec
-from openhands.agent_server.conversation_lease import ConversationLeaseHeldError
+from openhands.agent_server.conversation_lease import (
+    DEFAULT_LEASE_TTL_SECONDS,
+    ConversationLeaseHeldError,
+)
 from openhands.agent_server.event_service import (
     LEASE_RENEW_INTERVAL_SECONDS,
     EventService,
@@ -442,6 +445,7 @@ class ConversationService:
     cipher: Cipher | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -1213,6 +1217,7 @@ class ConversationService:
             ),
             cipher=config.cipher,
             max_concurrent_runs=config.max_concurrent_runs,
+            lease_ttl_seconds=config.lease_ttl_seconds,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -1225,6 +1230,7 @@ class ConversationService:
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
             owner_instance_id=self.owner_instance_id,
+            lease_ttl_seconds=self.lease_ttl_seconds,
         )
         # Lease renewal is handled by the centralized
         # _renew_all_leases_loop task on ConversationService.

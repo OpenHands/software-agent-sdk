@@ -247,6 +247,18 @@ class Config(BaseModel):
             "configuration is delivered later."
         ),
     )
+    lease_ttl_seconds: float = Field(
+        default=45.0,
+        ge=0.0,
+        description=(
+            "How long (in seconds) a conversation ownership lease remains valid "
+            "without renewal. The lease prevents two server instances from "
+            "concurrently owning the same conversation when storage is shared "
+            "across instances. Set to 0 to disable leasing entirely, which is "
+            "appropriate for single-instance deployments where concurrent "
+            "ownership is impossible."
+        ),
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
     @property
