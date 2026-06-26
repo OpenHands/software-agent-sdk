@@ -605,10 +605,9 @@ class EventService:
         from callbacks that may run in different threads. Events are emitted through
         the conversation's normal event flow to ensure they are persisted.
         """
-        if self._main_loop and self._main_loop.is_running() and self._conversation:
-            # Capture conversation reference for closure
-            conversation = self._conversation
-
+        main_loop = self._main_loop
+        conversation = self._conversation
+        if main_loop and main_loop.is_running() and conversation:
             # Wrap _on_event with lock acquisition to ensure thread-safe access
             # to conversation state and event log during concurrent operations
             def locked_on_event():
@@ -617,7 +616,7 @@ class EventService:
 
             # Run the locked callback in an executor to ensure the event is
             # both persisted and sent to WebSocket subscribers
-            self._main_loop.run_in_executor(None, locked_on_event)
+            main_loop.run_in_executor(None, locked_on_event)
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
@@ -633,13 +632,16 @@ class EventService:
                 filename: str, log_data: str, uid=usage_id, model=model_name
             ) -> None:
                 """Callback to emit LLM completion logs as events."""
-                event = LLMCompletionLogEvent(
-                    filename=filename,
-                    log_data=log_data,
-                    model_name=model,
-                    usage_id=uid,
-                )
-                self._emit_event_from_thread(event)
+                try:
+                    event = LLMCompletionLogEvent(
+                        filename=filename,
+                        log_data=log_data,
+                        model_name=model,
+                        usage_id=uid,
+                    )
+                    self._emit_event_from_thread(event)
+                except Exception:
+                    logger.exception("Failed to emit LLM completion log event")
 
             llm.telemetry.set_log_completions_callback(log_callback)
 

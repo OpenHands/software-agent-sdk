@@ -3198,3 +3198,55 @@ async def test_run_false_message_in_cleanup_tail_is_not_run(
         f"(call_count={parent_llm._call_count})"
     )
     assert es._run_task is None
+
+
+def test_emit_event_from_thread_uses_captured_loop(event_service: EventService) -> None:
+    """_emit_event_from_thread must use the captured main_loop, not self._main_loop.
+
+    Before this fix, the method captured _main_loop into a local variable for
+    the if-check but then called self._main_loop.run_in_executor(...) in the
+    body. A concurrent close() setting self._main_loop = None between the
+    check and the call would cause AttributeError. The fix uses main_loop.
+    """
+    captured_calls: list = []
+
+    mock_loop = MagicMock()
+    mock_loop.is_running.return_value = True
+
+    def record_and_null(*args, **kwargs):
+        # Simulate concurrent close() nulling self._main_loop mid-call
+        object.__setattr__(event_service, "_main_loop", None)
+        captured_calls.append(args)
+
+    mock_loop.run_in_executor.side_effect = record_and_null
+
+    event_service._main_loop = mock_loop  # type: ignore[assignment]
+    event_service._conversation = MagicMock()  # type: ignore[assignment]
+
+    event = MagicMock()
+
+    # Should not raise AttributeError even though self._main_loop is cleared
+    event_service._emit_event_from_thread(event)
+    assert len(captured_calls) == 1, "run_in_executor should have been called once"
+
+
+def test_llm_log_callback_swallows_emit_failures(
+    event_service: EventService, caplog
+) -> None:
+    callbacks = []
+    llm = MagicMock(log_completions=True, usage_id="test-usage", model="gpt-4o")
+    llm.telemetry.set_log_completions_callback.side_effect = callbacks.append
+
+    object.__setattr__(
+        event_service,
+        "_emit_event_from_thread",
+        MagicMock(side_effect=RuntimeError("emit failed")),
+    )
+
+    with caplog.at_level("ERROR"):
+        event_service._setup_llm_log_streaming(MagicMock(get_all_llms=lambda: [llm]))
+        callbacks[0]("completion.json", "{}")
+
+    emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
+    emit_mock.assert_called_once()
+    assert "Failed to emit LLM completion log event" in caplog.text
