@@ -217,7 +217,7 @@ def _resolve_git_repo_root(target: Path, max_depth: int = 3) -> Path:
     exists for.
 
     If ``target`` is already a git work-tree, return it unchanged. Otherwise do a
-    bounded breadth-first search of its descendants (skipping hidden and
+    bounded depth-first search of its descendants (skipping hidden and
     vendored directories, and not descending into a repo once found) for git
     work-tree roots. Return the unique match if there is exactly one; if zero or
     several are found, return ``target`` unchanged so the existing not-a-git-repo

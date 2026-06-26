@@ -1158,6 +1158,51 @@ def test_tar_gz_full_capture_still_strips_git_credentials(client, tmp_path):
     assert b"ghs_SECRET" not in resp.content
 
 
+def test_tar_gz_strips_credentials_file_and_reflog_with_tokens(client, tmp_path):
+    # Beyond .git/config: a synthetic .git/ carrying a token in .git/credentials
+    # and in a .git/logs/ reflog must never reach the archive bytes, even in a
+    # full capture. Built by hand (not `git init`) so .git/credentials and
+    # .git/logs/ — which git does not write on init — are exercised directly.
+    root = tmp_path / "project"
+    git_dir = root / ".git"
+    (git_dir / "logs").mkdir(parents=True)
+    (root / "README.md").write_text("# p\n", encoding="utf-8")
+    (git_dir / "config").write_text(
+        '[remote "origin"]\n'
+        "\turl = https://x-access-token:ghs_CONFIGTOK@github.com/o/r\n",
+        encoding="utf-8",
+    )
+    (git_dir / "credentials").write_text(
+        "https://x-access-token:ghs_CREDTOK@github.com\n", encoding="utf-8"
+    )
+    (git_dir / "logs" / "HEAD").write_text(
+        "0 1 t <t@t.dev> 0 +0000\tclone: from "
+        "https://x-access-token:ghs_LOGTOK@github.com/o/r\n",
+        encoding="utf-8",
+    )
+    # A non-credential .git internal must survive: proves the credential files
+    # are stripped specifically, not the whole .git tree.
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "tar.gz",
+            "use_default_excludes": "false",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert not any(n.endswith("/.git/config") for n in names)
+    assert not any(n.endswith("/.git/credentials") for n in names)
+    assert not any("/.git/logs/" in n for n in names)
+    assert any(n.endswith("/.git/HEAD") for n in names)
+    for token in (b"ghs_CONFIGTOK", b"ghs_CREDTOK", b"ghs_LOGTOK"):
+        assert token not in resp.content
+
+
 # =============================================================================
 # Archive Tests - tar.gz empty-dir round-trip + per-segment exclude (infra#1444
 # L4 / L5)
