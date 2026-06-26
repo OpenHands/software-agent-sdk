@@ -170,6 +170,7 @@ ARCHIVE_MANIFEST_NAME = "archive_manifest.json"
 # ``.gitignore`` them (the repo's own .gitignore still applies on top of this).
 # For tar.gz they prune the walk.
 _DEFAULT_ARCHIVE_EXCLUDES = (
+    ".git/",
     "node_modules/",
     ".venv/",
     "venv/",
@@ -183,6 +184,73 @@ _DEFAULT_ARCHIVE_EXCLUDES = (
     "target/",
     "*.pyc",
 )
+
+# Credential-bearing git internals that must NEVER be persisted to a shared
+# archive bucket, even when the caller disables the default excludes for a full
+# capture (``use_default_excludes=false``). A repo cloned with a tokenized
+# remote (``https://x-access-token:TOKEN@github.com/...``) keeps that token in
+# ``.git/config``; reflogs and saved credentials are equally sensitive. These
+# are stripped from every tar.gz regardless of the exclude settings. (git-delta
+# never includes ``.git`` — it is a working-tree diff — so this only matters for
+# the full-archive format.)
+_ALWAYS_EXCLUDE_TAR = (
+    ".git/config",
+    ".git/credentials",
+    ".git/logs/",
+)
+
+# Directory names never worth descending when auto-resolving the repo root under
+# a workspace path: they can legitimately contain vendored/nested git repos that
+# must not be mistaken for the workspace's own repo.
+_ARCHIVE_DESCENT_SKIP = frozenset({"node_modules", "venv", "site-packages", "vendor"})
+
+
+def _resolve_git_repo_root(target: Path, max_depth: int = 3) -> Path:
+    """Resolve the git work-tree to archive under ``target``.
+
+    Callers pass the workspace base (e.g. ``/workspace/project``), but a
+    repository-backed conversation clones into a subdirectory
+    (``{base}/[{group}/]{repo_name}``), so the base itself is usually *not* a git
+    repo. ``git rev-parse`` only searches upward, so archiving the base would
+    400 even though the repo sits one or two levels below it — silently
+    capturing nothing for exactly the repo-backed conversations the archive
+    exists for.
+
+    If ``target`` is already a git work-tree, return it unchanged. Otherwise do a
+    bounded breadth-first search of its descendants (skipping hidden and
+    vendored directories, and not descending into a repo once found) for git
+    work-tree roots. Return the unique match if there is exactly one; if zero or
+    several are found, return ``target`` unchanged so the existing not-a-git-repo
+    handling (HTTP 400) applies rather than guessing.
+    """
+    if (target / ".git").exists():
+        return target
+    found: list[Path] = []
+    frontier: list[tuple[Path, int]] = [(target, 0)]
+    while frontier:
+        current, depth = frontier.pop()
+        if depth >= max_depth:
+            continue
+        try:
+            children = sorted(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.name.startswith(".") or child.name in _ARCHIVE_DESCENT_SKIP:
+                continue
+            try:
+                if child.is_symlink() or not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            if (child / ".git").exists():
+                found.append(child)
+                if len(found) > 1:
+                    # Ambiguous — don't guess which repo to archive.
+                    return target
+            else:
+                frontier.append((child, depth + 1))
+    return found[0] if len(found) == 1 else target
 
 
 def _create_git_delta(
@@ -299,18 +367,20 @@ def _path_is_excluded(rel: PurePosixPath, patterns: list[str], is_dir: bool) -> 
 
     Dependency-free so no new package is pulled in.
     """
-    rel_str = rel.as_posix()
     parts = rel.parts
     for raw in patterns:
         pattern = raw.rstrip("/")
         dir_only = raw.endswith("/")
         if "/" in pattern:
-            # Multi-segment: anchor against the full relative path, matching the
-            # path itself or anything nested under it (``secrets/prod`` drops
-            # ``secrets/prod`` and ``secrets/prod/key``). A dir-only pattern on a
-            # file still matches if the file lives *under* the excluded dir.
-            if fnmatch.fnmatch(rel_str, pattern) or fnmatch.fnmatch(
-                rel_str, f"{pattern}/*"
+            # Multi-segment: anchor against the relative path root and match
+            # per-segment so a ``*`` does NOT cross ``/`` (gitignore semantics,
+            # matching the git-delta path). The pattern matches the path itself
+            # or anything nested under it: ``secrets/prod`` drops ``secrets/prod``
+            # and ``secrets/prod/key``; ``*/test`` drops ``a/test`` but not
+            # ``a/b/test``; ``a/*/c`` drops ``a/x/c``.
+            pattern_parts = pattern.split("/")
+            if len(parts) >= len(pattern_parts) and all(
+                fnmatch.fnmatch(part, pat) for part, pat in zip(parts, pattern_parts)
             ):
                 return True
         else:
@@ -351,6 +421,9 @@ def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -
     total_bytes = 0
     manifest_arcname = f"{root.name}/{ARCHIVE_MANIFEST_NAME}"
     manifest_collision = False
+    # Always strip credential-bearing git internals, even when the caller
+    # disabled the default excludes for a full capture.
+    excludes = list(excludes) + list(_ALWAYS_EXCLUDE_TAR)
     try:
         with tarfile.open(output_path, "w:gz") as tar:
             for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -361,6 +434,15 @@ def _create_tar_gz_archive(root: Path, output_path: Path, excludes: list[str]) -
                     for d in dirnames
                     if not _path_is_excluded(base / d, excludes, is_dir=True)
                 ]
+                # Emit a directory member for every surviving directory so empty
+                # authored directories round-trip (the byte-for-byte full-capture
+                # contract). tar would otherwise only recreate parents implied by
+                # file members, dropping childless directories entirely.
+                dir_arcname = (
+                    root.name if base == PurePosixPath(".") else f"{root.name}/{base}"
+                )
+                if not (Path(dirpath).is_symlink()):
+                    tar.add(dirpath, arcname=dir_arcname, recursive=False)
                 for name in filenames:
                     rel = base / name
                     if _path_is_excluded(rel, excludes, is_dir=False):
@@ -687,17 +769,34 @@ async def archive_directory(
     effective_excludes = (
         list(_DEFAULT_ARCHIVE_EXCLUDES) if use_default_excludes else []
     ) + (exclude or [])
-    # Build the archive outside the workspace so it is never included in itself
-    # and leaves nothing behind in the archived tree.
-    fd, tmp_name = tempfile.mkstemp(suffix=_ARCHIVE_SUFFIX[archive_format])
+    # Build the archive on the same volume as the workspace (its parent dir, so
+    # it is never included in itself) rather than the system temp dir: a large
+    # tar.gz on a tmpfs /tmp would defeat the stream-to-disk OOM fix, and on a
+    # small container root it could trip the pod's ephemeral-storage limit. Fall
+    # back to the default temp location if the parent is not usable.
+    scratch_dir: str | None = None
+    parent = target.parent
+    if parent != target and os.access(parent, os.W_OK):
+        scratch_dir = str(parent)
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=_ARCHIVE_SUFFIX[archive_format], dir=scratch_dir
+    )
     os.close(fd)
     output_path = Path(tmp_name)
 
     base_commit = ""
     try:
         if archive_format == "git-delta":
+            # The caller passes the workspace base, but a repo-backed conversation
+            # clones into a subdirectory; resolve to the actual repo so git-delta
+            # does not 400 on the non-repo parent (and capture nothing).
+            repo_root = await asyncio.to_thread(_resolve_git_repo_root, target)
             base_commit = await asyncio.to_thread(
-                _create_git_delta, target, base_ref, output_path, effective_excludes
+                _create_git_delta,
+                repo_root,
+                base_ref,
+                output_path,
+                effective_excludes,
             )
         else:
             await asyncio.to_thread(

@@ -579,22 +579,20 @@ def test_archive_rejects_dashed_base_ref(client, workspace):
     assert resp.status_code == 400
 
 
-def test_archive_cleans_up_temp_file(client, tmp_path, monkeypatch):
+def test_archive_cleans_up_temp_file(client, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init"], repo)
     (repo / "a.txt").write_text("x\n", encoding="utf-8")
 
-    # Force the archive temp file into an isolated dir we can inspect.
-    scratch = tmp_path / "scratch"
-    scratch.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
-
     resp = client.get("/api/file/archive", params={"path": str(repo)})
 
     assert resp.status_code == 200
-    # The BackgroundTask unlinks the archive once the response is fully sent.
-    assert list(scratch.iterdir()) == []
+    # The scratch archive is built on the workspace volume (the target's parent)
+    # rather than the system temp dir, and the BackgroundTask unlinks it once the
+    # response is fully sent — so nothing is left behind next to the repo.
+    leftovers = [p for p in repo.parent.iterdir() if p.name != "repo"]
+    assert leftovers == []
 
 
 def test_git_delta_new_repo_lists_files_as_additions(client, tmp_path):
@@ -1003,3 +1001,206 @@ def test_tar_gz_preserves_user_archive_manifest_file(client, tmp_path, caplog):
     assert any(ARCHIVE_MANIFEST_NAME in record.message for record in caplog.records), (
         "expected a warning about the archive_manifest.json collision"
     )
+
+
+# =============================================================================
+# Archive Tests - git-delta auto-descend to the repo under the workspace base
+# (AGE-1871 / infra#1444 H1). A repo-backed conversation clones into
+# {base}/{repo_name}, so archiving the base itself must resolve down to the repo
+# instead of 400-ing on the non-repo parent and capturing nothing.
+# =============================================================================
+
+
+def test_git_delta_auto_descends_to_single_repo_under_base(client, tmp_path):
+    # The archive PATH points at the workspace base, but the git repo lives one
+    # level below at {base}/{repo_name}. git-delta must resolve to it.
+    base = tmp_path / "project"
+    repo = base / "my-repo"
+    repo.mkdir(parents=True)
+    _git(["init"], repo)
+    (repo / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(base), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/x-patch")
+    assert "app.py" in resp.content.decode("utf-8")
+
+
+def test_git_delta_auto_descends_two_levels_for_grouped_workspace(client, tmp_path):
+    # Under sandbox grouping the repo is at {base}/{group}/{repo_name} — two
+    # levels below the static base path runtime-api passes. Resolution is
+    # bounded-depth, so it still finds it.
+    base = tmp_path / "project"
+    repo = base / "deadbeef" / "my-repo"
+    repo.mkdir(parents=True)
+    _git(["init"], repo)
+    (repo / "app.py").write_text("y = 2\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(base), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert "app.py" in resp.content.decode("utf-8")
+
+
+def test_git_delta_uses_base_directly_when_base_is_a_repo(client, tmp_path):
+    # If the base IS itself a repo, use it directly without descending (the
+    # resolver short-circuits), so a sibling subdir below it is irrelevant.
+    base = tmp_path / "project"
+    base.mkdir()
+    _git(["init"], base)
+    (base / "top.py").write_text("a = 1\n", encoding="utf-8")
+    (base / "docs").mkdir()
+    (base / "docs" / "guide.md").write_text("# guide\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(base), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    patch = resp.content.decode("utf-8")
+    assert "top.py" in patch
+    assert "guide.md" in patch
+
+
+def test_git_delta_ambiguous_multiple_repos_still_400s(client, tmp_path):
+    # Two candidate repos under the base is ambiguous — do not guess; fall back
+    # to the existing not-a-git-repo behavior (400) rather than archive a random
+    # one.
+    base = tmp_path / "project"
+    for name in ("repo-a", "repo-b"):
+        r = base / name
+        r.mkdir(parents=True)
+        _git(["init"], r)
+        (r / "f.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(base), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 400
+
+
+def test_git_delta_no_repo_under_base_still_400s(client, tmp_path):
+    base = tmp_path / "project"
+    (base / "src").mkdir(parents=True)
+    (base / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(base), "format": "git-delta"}
+    )
+
+    assert resp.status_code == 400
+
+
+# =============================================================================
+# Archive Tests - tar.gz never leaks .git credentials (infra#1444 H2)
+# =============================================================================
+
+
+def test_tar_gz_default_excludes_drop_dot_git(client, tmp_path):
+    # The full-archive default excludes must drop the entire .git tree so a clone
+    # token in .git/config never lands in the shared, indefinitely-retained
+    # archive bucket (and the object DB does not blow up the archive size).
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "README.md").write_text("# p\n", encoding="utf-8")
+    # Simulate a tokenized clone remote persisted by git.
+    _git(
+        ["remote", "add", "origin", "https://x-access-token:ghs_SECRET@github.com/o/r"],
+        root,
+    )
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert not any("/.git/" in n or n.endswith("/.git") for n in names)
+    assert b"ghs_SECRET" not in resp.content
+    assert f"{root.name}/README.md" in names
+
+
+def test_tar_gz_full_capture_still_strips_git_credentials(client, tmp_path):
+    # Even with use_default_excludes=false (a deliberate full capture), the
+    # credential-bearing git internals must never be persisted.
+    root = tmp_path / "project"
+    root.mkdir()
+    _git(["init"], root)
+    (root / "README.md").write_text("# p\n", encoding="utf-8")
+    _git(
+        ["remote", "add", "origin", "https://x-access-token:ghs_SECRET@github.com/o/r"],
+        root,
+    )
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "tar.gz",
+            "use_default_excludes": "false",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    # Full capture keeps most of .git (history/objects) for fidelity...
+    assert any("/.git/" in n for n in names)
+    # ...but never the secrets.
+    assert not any(n.endswith("/.git/config") for n in names)
+    assert not any("/.git/logs/" in n for n in names)
+    assert b"ghs_SECRET" not in resp.content
+
+
+# =============================================================================
+# Archive Tests - tar.gz empty-dir round-trip + per-segment exclude (infra#1444
+# L4 / L5)
+# =============================================================================
+
+
+def test_tar_gz_preserves_empty_directories(client, tmp_path):
+    # An authored-but-empty directory must round-trip (byte-for-byte capture).
+    root = tmp_path / "project"
+    (root / "outputs").mkdir(parents=True)  # empty, no files
+    (root / "src").mkdir()
+    (root / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive", params={"path": str(root), "format": "tar.gz"}
+    )
+
+    assert resp.status_code == 200, resp.text
+    with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        outputs = tar.getmember(f"{root.name}/outputs")
+        assert outputs.isdir()
+
+
+def test_tar_gz_multi_segment_exclude_does_not_cross_slash(client, tmp_path):
+    # A '*' in a multi-segment exclude must not cross '/' (gitignore semantics,
+    # matching git-delta). '*/secret.txt' drops a depth-2 match but keeps a
+    # deeper one.
+    root = tmp_path / "project"
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "secret.txt").write_text("drop\n", encoding="utf-8")
+    (root / "a" / "b").mkdir()
+    (root / "a" / "b" / "secret.txt").write_text("keep\n", encoding="utf-8")
+
+    resp = client.get(
+        "/api/file/archive",
+        params={
+            "path": str(root),
+            "format": "tar.gz",
+            "exclude": "*/secret.txt",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    names = _tar_members(resp.content)
+    assert f"{root.name}/a/secret.txt" not in names
+    assert f"{root.name}/a/b/secret.txt" in names
