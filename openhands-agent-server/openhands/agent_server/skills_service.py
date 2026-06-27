@@ -399,11 +399,17 @@ def discover_profile_skills() -> list[Skill]:
     """Skill catalog for ``AgentProfile.skill_refs`` resolution (#3868).
 
     Returns the merged user + public skills — the deterministic sources of
-    :func:`load_all_skills` that ``resolve_agent_profile`` filters by name. Org /
-    project skills need auth / workspace context unavailable at resolve time (a
-    follow-up). ``load_all_skills`` already absorbs and logs benign per-source
-    failures, so this does not swallow errors: an unexpected failure propagates
-    rather than silently resolving the profile to a zero-skill agent.
+    :func:`load_all_skills` that ``resolve_agent_profile`` filters by name.
+    ``load_all_skills`` already absorbs and logs benign per-source failures, so
+    this does not swallow errors: an unexpected failure propagates rather than
+    silently resolving the profile to a zero-skill agent.
+
+    Org / project skills need auth / workspace context not available at resolve
+    time, so they are not in this catalog (a follow-up). Because the resolver
+    now hard-fails dangling ``skill_refs`` (mirroring MCP), a profile that
+    selects an org/project skill via the picker would fail launch here until the
+    catalog is broadened — the SaaS app-server, which has that context, is
+    expected to supply the fuller catalog the same way it does for the picker.
     """
     return list(
         load_all_skills(

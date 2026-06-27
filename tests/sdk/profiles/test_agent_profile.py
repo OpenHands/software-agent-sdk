@@ -93,6 +93,26 @@ def test_skill_refs_empty_vs_null_are_distinct() -> None:
     assert empty_ref.skill_refs == []
 
 
+def test_acp_profile_skill_refs_defaults_empty() -> None:
+    """ACP profiles default ``skill_refs=[]`` (they own their tooling), unlike
+    OpenHands' ``None``. A payload without the field — incl. one persisted before
+    the field existed — adopts the [] default rather than injecting the catalog."""
+    from openhands.sdk.profiles import ACPAgentProfile
+
+    profile = ACPAgentProfile(name="acp", acp_server="claude-code")
+    assert profile.skill_refs == []
+    reloaded = validate_agent_profile(
+        {"agent_kind": "acp", "name": "acp", "acp_server": "claude-code"}
+    )
+    assert isinstance(reloaded, ACPAgentProfile)
+    assert reloaded.skill_refs == []
+    # null stays an explicit opt-in (all discovered), distinct from the default.
+    explicit_null = ACPAgentProfile(
+        name="acp", acp_server="claude-code", skill_refs=None
+    )
+    assert explicit_null.skill_refs is None
+
+
 def test_acp_profile_round_trips() -> None:
     profile = ACPAgentProfile(
         name="my-acp",

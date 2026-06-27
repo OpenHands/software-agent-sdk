@@ -260,6 +260,7 @@ def _resolve_agent_from_profile(
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
+        DanglingSkillRef: A referenced skill is absent from the discovered catalog.
         ValueError: Profile load or settings validation failure.
     """
     from openhands.agent_server.persistence.store import (

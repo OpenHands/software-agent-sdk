@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import copy
 import shlex
+from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -56,9 +56,6 @@ if TYPE_CHECKING:
     from openhands.sdk.utils.cipher import Cipher
 
 
-logger = get_logger(__name__)
-
-
 class ProfileNotFound(Exception):
     """A referenced profile (e.g. ``llm_profile_ref``) does not exist.
 
@@ -78,6 +75,21 @@ class DanglingMcpServerRef(Exception):
         joined = ", ".join(repr(m) for m in missing)
         super().__init__(
             f"MCP server ref(s) not present in the user's MCP config: {joined}"
+        )
+
+
+class DanglingSkillRef(Exception):
+    """A ``skill_refs`` entry names a skill absent from the discovered catalog.
+
+    The skill analogue of :class:`DanglingMcpServerRef`: the router maps it to
+    HTTP 422. :attr:`missing` carries the offending name(s).
+    """
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        joined = ", ".join(repr(m) for m in missing)
+        super().__init__(
+            f"Skill ref(s) not present in the discovered catalog: {joined}"
         )
 
 
@@ -104,8 +116,8 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_mcp_servers: list[str] = Field(default_factory=list)
     dangling_mcp_server_refs: list[str] = Field(default_factory=list)
 
-    # Skill selection (both variants). ``dangling_skill_refs`` is a soft signal:
-    # unlike MCP refs it does NOT flip ``valid`` (see :func:`_compute_skill_filter`).
+    # Skill selection (both variants). A dangling skill ref flips ``valid`` via
+    # an error, mirroring ``dangling_mcp_server_refs`` (see #3868 / Option A).
     skill_refs: list[str] | None = None
     resolved_skills: list[str] = Field(default_factory=list)
     dangling_skill_refs: list[str] = Field(default_factory=list)
@@ -127,6 +139,27 @@ def _server_names(mcp_config: MCPConfig | None) -> list[str]:
     return list(mcp_config.mcpServers.keys()) if mcp_config is not None else []
 
 
+def _partition_refs(
+    refs: list[str], available: Container[str]
+) -> tuple[list[str], list[str]]:
+    """Split ``refs`` into ``(resolved, dangling)`` by membership in ``available``.
+
+    Order-preserving and de-duplicated: a name repeated in ``refs`` is kept once,
+    in first position. Shared by the MCP and skill filters so both partition
+    identically — in particular both collapse duplicate refs, which the ACP skill
+    path needs (``AgentContext`` rejects duplicate skill names).
+    """
+    seen: set[str] = set()
+    resolved: list[str] = []
+    dangling: list[str] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        (resolved if ref in available else dangling).append(ref)
+    return resolved, dangling
+
+
 def _compute_mcp_filter(
     mcp_config: MCPConfig | None,
     refs: list[str] | None,
@@ -140,10 +173,8 @@ def _compute_mcp_filter(
     if refs is None:
         return mcp_config, _server_names(mcp_config), []
     available = mcp_config.mcpServers if mcp_config is not None else {}
-    resolved = [r for r in refs if r in available]
-    dangling = [r for r in refs if r not in available]
-    refs_set = set(refs)
-    filtered = {k: v for k, v in available.items() if k in refs_set}
+    resolved, dangling = _partition_refs(refs, available)
+    filtered = {k: available[k] for k in resolved}
     filtered_config = MCPConfig(mcpServers=filtered) if filtered else None
     return filtered_config, resolved, dangling
 
@@ -152,23 +183,25 @@ def _compute_skill_filter(
     available_skills: list[Skill] | None,
     refs: list[str] | None,
 ) -> tuple[list[Skill], list[str], list[str]]:
-    """Resolve ``skill_refs`` against the server-discovered skills.
+    """Resolve ``skill_refs`` against the server-discovered skill catalog.
 
-    Mirrors :func:`_compute_mcp_filter`: ``None`` → all discovered skills; a
-    non-null list filters to the named skills in ref order. Returns
-    ``(filtered_skills, resolved_names, dangling_names)``. Unlike a dangling MCP
-    ref, a dangling skill ref is a soft signal, not an error: discovery is
-    non-deterministic, so a stale ref is dropped (and logged / reported by the
-    dry-run) rather than failing conversation start.
+    Mirrors :func:`_compute_mcp_filter`. ``refs is None`` selects all discovered
+    skills; a list filters to the named skills in ref order (duplicates
+    collapsed). Returns ``(filtered_skills, resolved_names, dangling_names)``.
+
+    ``available_skills is None`` means discovery was not run (e.g. an empty
+    ``skill_refs`` skips it) or failed: the catalog is unknown, so refs are
+    neither resolved nor reported dangling and the caller surfaces its own
+    signal. ``available_skills == []`` is a *known-empty* catalog, against which
+    any named ref is dangling.
     """
-    available = list(available_skills or [])
+    if available_skills is None:
+        return [], [], []
+    by_name = {s.name: s for s in available_skills}
     if refs is None:
-        return available, [s.name for s in available], []
-    by_name = {s.name: s for s in available}
-    resolved = [r for r in refs if r in by_name]
-    dangling = [r for r in refs if r not in by_name]
-    filtered = [by_name[r] for r in resolved]
-    return filtered, resolved, dangling
+        return list(by_name.values()), list(by_name), []
+    resolved, dangling = _partition_refs(refs, by_name)
+    return [by_name[r] for r in resolved], resolved, dangling
 
 
 def _decrypt_skill_mcp_tools(skills: list[Skill], cipher: Cipher | None) -> list[Skill]:
@@ -322,7 +355,7 @@ def resolve_agent_profile(
     *,
     llm_store: LLMProfileStore,
     mcp_config: MCPConfig | None,
-    available_skills: list[Skill] | None = None,
+    available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
@@ -332,14 +365,19 @@ def resolve_agent_profile(
     before calling). ``available_skills`` is the server-discovered skill catalog
     that ``skill_refs`` filters by name (the agent-server caller passes the
     result of ``load_all_skills``); it feeds both variants — the OpenHands
-    agent_context and the ACP prompt catalog. ``None`` means no discovery was
-    run, so only an OpenHands profile's embedded ``skills`` reach the agent (an
-    ACP profile gets none). ``cipher`` decrypts the referenced LLM profile and
-    any ``skills[].mcp_tools`` ciphertext.
+    agent_context and the ACP prompt catalog. Like ``mcp_config`` it is a
+    required argument so a caller cannot silently resolve a zero-skill agent by
+    forgetting it, and a ``skill_refs`` entry absent from the catalog raises
+    :class:`DanglingSkillRef` (mirroring the MCP contract) rather than being
+    dropped. ``None`` means discovery was not run (e.g. an empty ``skill_refs``
+    skips it): no catalog is consulted, so only an OpenHands profile's embedded
+    ``skills`` reach the agent (an ACP profile gets none). ``cipher`` decrypts
+    the referenced LLM profile and any ``skills[].mcp_tools`` ciphertext.
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
         DanglingMcpServerRef: an ``mcp_server_refs`` entry is not in ``mcp_config``.
+        DanglingSkillRef: a ``skill_refs`` entry is not in ``available_skills``.
     """
     filtered_mcp, _, dangling = _compute_mcp_filter(mcp_config, profile.mcp_server_refs)
     if dangling:
@@ -349,14 +387,7 @@ def resolve_agent_profile(
         available_skills, profile.skill_refs
     )
     if dangling_skills:
-        # Soft drop (see _compute_skill_filter), but make it observable so a
-        # stale/renamed skill selection isn't lost silently at launch.
-        logger.warning(
-            "Profile %r: dropping unresolved skill_refs not in the discovered "
-            "catalog: %s",
-            profile.name,
-            ", ".join(dangling_skills),
-        )
+        raise DanglingSkillRef(dangling_skills)
 
     if isinstance(profile, OpenHandsAgentProfile):
         try:
@@ -377,14 +408,16 @@ def resolve_agent_profile_dry_run(
     *,
     llm_store: LLMProfileStore,
     mcp_config: MCPConfig | None,
-    available_skills: list[Skill] | None = None,
+    available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentProfileDiagnostics:
     """Compute :class:`AgentProfileDiagnostics` without raising or side effects.
 
     Mirrors :func:`resolve_agent_profile`'s composition but records dangling LLM /
-    MCP refs as diagnostics instead of raising, so the editor / ``/materialize``
-    (#3719) can show a faithful set/missing report with secrets redacted.
+    MCP / skill refs as diagnostics instead of raising, so the editor /
+    ``/materialize`` (#3719) can show a faithful set/missing report with secrets
+    redacted. ``available_skills=None`` (discovery skipped or failed) leaves the
+    catalog unknown, so no skill ref is reported dangling.
     """
     filtered_mcp, resolved, dangling = _compute_mcp_filter(
         mcp_config, profile.mcp_server_refs
@@ -401,13 +434,16 @@ def resolve_agent_profile_dry_run(
         )
 
     # Skill selection report (both variants). Computed once and reused by the
-    # settings build below; dangling refs are recorded but don't add an error.
+    # settings build below; a dangling ref adds an error (mirrors MCP), flipping
+    # ``valid`` at the verdict line below.
     filtered_skills, resolved_skills, dangling_skills = _compute_skill_filter(
         available_skills, profile.skill_refs
     )
     diagnostics.skill_refs = profile.skill_refs
     diagnostics.resolved_skills = resolved_skills
     diagnostics.dangling_skill_refs = dangling_skills
+    if dangling_skills:
+        diagnostics.errors.append("Skill(s) not found: " + ", ".join(dangling_skills))
 
     llm: LLM | None = None
     if isinstance(profile, OpenHandsAgentProfile):

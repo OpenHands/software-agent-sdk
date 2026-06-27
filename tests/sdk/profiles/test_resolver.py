@@ -18,6 +18,7 @@ from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
     DanglingMcpServerRef,
+    DanglingSkillRef,
     OpenHandsAgentProfile,
     ProfileNotFound,
     resolve_agent_profile,
@@ -76,7 +77,11 @@ def test_openhands_resolves_to_settings_with_injected_llm(
         mcp_server_refs=["fetch"],
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
@@ -107,7 +112,11 @@ def test_openhands_copies_skills_and_verification(
     profile.verification.critic_model_name = "critic-x"
 
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["s1"]
@@ -123,7 +132,11 @@ def test_missing_llm_ref_raises_profile_not_found(
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="does-not-exist")
     with pytest.raises(ProfileNotFound):
         resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=None,
+            cipher=None,
         )
 
 
@@ -137,7 +150,11 @@ def test_enable_switch_llm_tool_defaults_true_threads_through(
 ) -> None:
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     # Defaults True to match the global agent settings default.
@@ -151,7 +168,11 @@ def test_enable_switch_llm_tool_false_threads_through(
         name="oh", llm_profile_ref="default", enable_switch_llm_tool=False
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.enable_switch_llm_tool is False
@@ -223,23 +244,57 @@ def test_skill_refs_filters_to_named_subset_in_ref_order(
     assert [s.name for s in settings.agent_context.skills] == ["gamma", "alpha"]
 
 
-def test_skill_refs_dangling_is_silently_dropped_not_raised(
+def test_skill_refs_dangling_raises(
     llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
-    # Unlike mcp_server_refs, a dangling skill ref does not raise (discovery is
-    # non-deterministic); the stale ref is dropped and reported by the dry-run.
+    # Mirroring mcp_server_refs, a skill ref absent from the discovered catalog
+    # hard-fails (DanglingSkillRef) rather than being silently dropped.
     profile = OpenHandsAgentProfile(
         name="oh", llm_profile_ref="default", skill_refs=["alpha", "missing"]
     )
-    settings = resolve_agent_profile(
-        profile,
+    with pytest.raises(DanglingSkillRef) as exc_info:
+        resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=_discovered_skills(),
+            cipher=None,
+        )
+    assert exc_info.value.missing == ["missing"]
+
+
+def test_skill_refs_duplicate_is_deduped(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    # A repeated skill ref collapses to one entry (shared _partition_refs), so
+    # the ACP path — which feeds AgentContext, where duplicate names are
+    # rejected — no longer crashes on a duplicated selection.
+    oh = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["alpha", "alpha"]
+    )
+    oh_settings = resolve_agent_profile(
+        oh,
         llm_store=llm_store,
         mcp_config=mcp_config,
         available_skills=_discovered_skills(),
         cipher=None,
     )
-    assert isinstance(settings, OpenHandsAgentSettings)
-    assert [s.name for s in settings.agent_context.skills] == ["alpha"]
+    assert isinstance(oh_settings, OpenHandsAgentSettings)
+    assert [s.name for s in oh_settings.agent_context.skills] == ["alpha"]
+
+    acp = ACPAgentProfile(
+        name="acp", acp_server="claude-code", skill_refs=["alpha", "alpha"]
+    )
+    acp_settings = resolve_agent_profile(
+        acp,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert isinstance(acp_settings, ACPAgentSettings)
+    assert acp_settings.agent_context is not None
+    assert [s.name for s in acp_settings.agent_context.skills] == ["alpha"]
 
 
 def test_embedded_skills_compose_with_filtered_discovered(
@@ -297,7 +352,11 @@ def test_no_available_skills_yields_embedded_only(
         skill_refs=None,
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     assert [s.name for s in settings.agent_context.skills] == ["embedded"]
@@ -315,7 +374,11 @@ def test_mcp_null_refs_passes_config_through(
         name="oh", llm_profile_ref="default", mcp_server_refs=None
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert settings.mcp_config is mcp_config
     assert settings.mcp_config is not None
@@ -329,7 +392,11 @@ def test_mcp_empty_refs_means_none(
         name="oh", llm_profile_ref="default", mcp_server_refs=[]
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert settings.mcp_config is None
 
@@ -341,7 +408,11 @@ def test_mcp_filter_selects_named_keys(
         name="oh", llm_profile_ref="default", mcp_server_refs=["other"]
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert settings.mcp_config is not None
     assert list(settings.mcp_config.mcpServers.keys()) == ["other"]
@@ -355,7 +426,11 @@ def test_mcp_dangling_ref_raises(
     )
     with pytest.raises(DanglingMcpServerRef) as exc:
         resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=None,
+            cipher=None,
         )
     assert exc.value.missing == ["missing"]
 
@@ -368,7 +443,11 @@ def test_mcp_dangling_when_config_is_none(
     )
     with pytest.raises(DanglingMcpServerRef) as exc:
         resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=None, cipher=None
+            profile,
+            llm_store=llm_store,
+            mcp_config=None,
+            available_skills=None,
+            cipher=None,
         )
     assert exc.value.missing == ["fetch"]
 
@@ -418,7 +497,7 @@ def test_resolver_decrypts_skill_mcp_tools(tmp_path: Path) -> None:
 
     # The resolver holds the cipher and decrypts them for execution.
     settings = resolve_agent_profile(
-        loaded, llm_store=lstore, mcp_config=None, cipher=cipher
+        loaded, llm_store=lstore, mcp_config=None, available_skills=None, cipher=cipher
     )
     assert isinstance(settings, OpenHandsAgentSettings)
     resolved_tools = settings.agent_context.skills[0].mcp_tools
@@ -446,7 +525,11 @@ def test_acp_resolves_to_settings_without_credentials(
         mcp_server_refs=["fetch"],
     )
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, ACPAgentSettings)
     assert settings.acp_server == "codex"
@@ -467,7 +550,11 @@ def test_acp_blank_command_resolves_empty_list(
 ) -> None:
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")
     settings = resolve_agent_profile(
-        profile, llm_store=llm_store, mcp_config=None, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
     )
     assert isinstance(settings, ACPAgentSettings)
     assert settings.acp_command == []
@@ -546,7 +633,11 @@ def test_dry_run_openhands_valid_and_redacted(
         name="oh", llm_profile_ref="default", mcp_server_refs=["fetch"]
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.agent_kind == "openhands"
     assert diag.valid is True
@@ -570,7 +661,11 @@ def test_dry_run_reports_dangling_llm_and_mcp(
         name="oh", llm_profile_ref="nope", mcp_server_refs=["missing"]
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.valid is False
     assert diag.llm_profile_resolved is False
@@ -596,9 +691,10 @@ def test_dry_run_reports_resolved_and_dangling_skill_refs(
     assert diag.skill_refs == ["alpha", "missing"]
     assert diag.resolved_skills == ["alpha"]
     assert diag.dangling_skill_refs == ["missing"]
-    # A dangling skill ref is a soft signal: it must NOT flip validity.
-    assert diag.valid is True
-    assert diag.errors == []
+    # A dangling skill ref flips validity via an error (mirrors MCP).
+    assert diag.valid is False
+    assert any("Skill(s) not found" in e for e in diag.errors)
+    assert diag.resolved_settings is None
 
 
 def test_dry_run_skill_refs_null_resolves_all_discovered(
@@ -631,7 +727,11 @@ def test_dry_run_total_on_llm_store_transient_error(
         name="oh", llm_profile_ref="default", mcp_server_refs=["fetch"]
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.valid is False
     assert diag.llm_profile_resolved is False
@@ -648,12 +748,20 @@ def test_dry_run_verdict_matches_real_resolve(
         name="oh", llm_profile_ref="default", mcp_server_refs=["missing"]
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.valid is False
     with pytest.raises(DanglingMcpServerRef):
         resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=None
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=None,
+            cipher=None,
         )
 
 
@@ -662,7 +770,11 @@ def test_dry_run_acp_reports_credential_channels_by_role(
 ) -> None:
     profile = ACPAgentProfile(name="acp", acp_server="codex")
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=None, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.agent_kind == "acp"
     assert diag.valid is True
@@ -678,7 +790,7 @@ def test_dry_run_acp_reports_skill_refs(
     llm_store: LLMProfileStore,
 ) -> None:
     # skill_refs diagnostics are reported for ACP profiles too (the field is on
-    # the shared base).
+    # the shared base); a dangling ref invalidates the profile, as for OpenHands.
     profile = ACPAgentProfile(
         name="acp", acp_server="codex", skill_refs=["alpha", "missing"]
     )
@@ -692,6 +804,54 @@ def test_dry_run_acp_reports_skill_refs(
     assert diag.skill_refs == ["alpha", "missing"]
     assert diag.resolved_skills == ["alpha"]
     assert diag.dangling_skill_refs == ["missing"]
+    assert diag.valid is False
+    assert any("Skill(s) not found" in e for e in diag.errors)
+
+
+def test_dry_run_skill_verdict_matches_real_resolve(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    # A dangling skill ref: dry-run says invalid, real resolve raises — the same
+    # dry-run/resolve agreement the MCP path has.
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["missing"]
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=_discovered_skills(),
+        cipher=None,
+    )
+    assert diag.valid is False
+    with pytest.raises(DanglingSkillRef):
+        resolve_agent_profile(
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=_discovered_skills(),
+            cipher=None,
+        )
+
+
+def test_dry_run_skill_refs_unknown_catalog_reports_nothing_dangling(
+    llm_store: LLMProfileStore, mcp_config: MCPConfig
+) -> None:
+    # available_skills=None (discovery skipped/failed) → catalog unknown, so a
+    # named ref is NOT reported dangling (the materialize path relies on this so
+    # a discovery failure doesn't mislabel every selected skill as missing).
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=["alpha"]
+    )
+    diag = resolve_agent_profile_dry_run(
+        profile,
+        llm_store=llm_store,
+        mcp_config=mcp_config,
+        available_skills=None,
+        cipher=None,
+    )
+    assert diag.dangling_skill_refs == []
+    assert diag.resolved_skills == []
     assert diag.valid is True
 
 
@@ -702,7 +862,11 @@ def test_dry_run_acp_custom_server_has_no_credential_channels(
         name="acp", acp_server="custom", acp_command="my-acp-server"
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=None, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.acp_api_key_secret_name is None
     assert diag.acp_base_url_secret_name is None
@@ -717,14 +881,22 @@ def test_custom_acp_without_command_is_invalid(
     # strict resolve must raise, rather than deferring the failure to start.
     profile = ACPAgentProfile(name="acp", acp_server="custom")
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=None, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.valid is False
     assert diag.errors
     assert diag.resolved_settings is None
     with pytest.raises(ValueError):
         resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=None, cipher=None
+            profile,
+            llm_store=llm_store,
+            mcp_config=None,
+            available_skills=None,
+            cipher=None,
         )
 
 
@@ -738,7 +910,11 @@ def test_dry_run_normalizes_settings_build_failure(
         name="acp", acp_server="custom", acp_command="unterminated 'quote"
     )
     diag = resolve_agent_profile_dry_run(
-        profile, llm_store=llm_store, mcp_config=None, cipher=None
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
     )
     assert diag.valid is False
     assert diag.errors

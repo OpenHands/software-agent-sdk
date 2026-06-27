@@ -819,8 +819,8 @@ def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
 def test_materialize_reports_resolved_and_dangling_skill_refs(
     client_with_llm_store, store, llm_store
 ):
-    """skill_refs are resolved against the discovered catalog; a stale ref is a
-    soft signal (reported, valid stays True)."""
+    """skill_refs are resolved against the discovered catalog; a stale ref is
+    reported and invalidates the profile (mirrors dangling MCP refs)."""
     from openhands.sdk.skills import Skill
 
     llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
@@ -840,10 +840,11 @@ def test_materialize_reports_resolved_and_dangling_skill_refs(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["valid"] is True
+    assert body["valid"] is False
     assert body["skill_refs"] == ["known", "stale"]
     assert body["resolved_skills"] == ["known"]
     assert body["dangling_skill_refs"] == ["stale"]
+    assert body["resolved_settings"] is None
 
 
 def test_materialize_unknown_name_returns_404(client_with_llm_store):

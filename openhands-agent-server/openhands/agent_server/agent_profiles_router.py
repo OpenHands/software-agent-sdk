@@ -226,8 +226,7 @@ def _build_seed_profile(
             ),
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
-            # Conservative seed: don't start injecting the discovered skill
-            # catalog into an existing ACP run. Users opt in via the editor.
+            # ACP default; explicit for symmetry with the OpenHands seed below.
             skill_refs=[],
         )
     context = agent_settings.agent_context
@@ -235,13 +234,9 @@ def _build_seed_profile(
         name=SEED_PROFILE_NAME,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
-        # AgentContext._load_auto_skills has already merged the global's
-        # auto-loaded user/public skills into context.skills, so embedding that
-        # set and selecting no further discovery (skill_refs=[]) reproduces the
-        # global's exact skill set regardless of which sources / marketplace it
-        # used. Resolving skill_refs=None instead would re-discover user+public
-        # and inject skills a partial-source global never had. Users opt into
-        # dynamic all-discovered selection via the editor.
+        # Embed the global's already-resolved skills + skill_refs=[] (no further
+        # discovery) to reproduce its exact set; skill_refs=None would re-discover
+        # user+public and inject skills a partial-source global never had.
         skills=list(context.skills),
         skill_refs=[],
         system_message_suffix=context.system_message_suffix,
@@ -609,7 +604,9 @@ async def materialize_agent_profile(
 
     # Discover skills off the event loop so the dry-run can report which
     # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
-    # preview: report it as a diagnostic, keeping the dry-run's total contract.
+    # preview: pass ``available_skills=None`` (catalog unknown — the dry-run then
+    # reports nothing dangling, rather than flagging every selected skill) and
+    # surface the failure as its own diagnostic below.
     discovery_error: str | None = None
     try:
         available_skills = await asyncio.to_thread(

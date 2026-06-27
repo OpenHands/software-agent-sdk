@@ -89,8 +89,9 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
-    # null and [] are deliberately distinct (mirrors ``mcp_server_refs``). On the
-    # base because both variants consume skills as prompt context.
+    # On the base because both variants consume skills as prompt context. null
+    # and [] are deliberately distinct (mirrors ``mcp_server_refs``); ACP
+    # overrides the default to [] (it owns its tooling — see ACPAgentProfile).
     skill_refs: list[str] | None = Field(
         default=None,
         description=(
@@ -186,6 +187,19 @@ class ACPAgentProfile(AgentProfileBase):
         description=(
             "Discriminator for the ``AgentProfile`` union. ``'acp'`` selects an "
             "ACP-delegating agent."
+        ),
+    )
+    # ACP agents own their tooling, so the discovered skill catalog is NOT
+    # injected by default (an ACP profile created without selecting skills, or
+    # persisted before this field existed, resolves to no prompt context — the
+    # pre-existing ACP behavior). null (= all discovered) stays an explicit
+    # opt-in, distinct from this [] default.
+    skill_refs: list[str] | None = Field(
+        default_factory=list,
+        description=(
+            "Skills to expose to the ACP agent's prompt, by name. Defaults to "
+            "[] (none): ACP agents own their tooling. null = all discovered; "
+            "[] = none; a non-null list = the named skills."
         ),
     )
     acp_server: ACPServerKind = Field(

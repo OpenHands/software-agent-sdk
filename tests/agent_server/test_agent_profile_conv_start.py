@@ -39,7 +39,11 @@ from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
 )
-from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.profiles.resolver import (
+    DanglingMcpServerRef,
+    DanglingSkillRef,
+    ProfileNotFound,
+)
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -229,7 +233,9 @@ class TestResolveAgentFromProfile:
         )
         from openhands.sdk.agent.acp_agent import ACPAgent
 
-        profile = _make_acp_profile()
+        # ACP defaults skill_refs=[] (skip); set None to exercise the
+        # all-discovered opt-in, where discovery runs and is threaded through.
+        profile = _make_acp_profile().model_copy(update={"skill_refs": None})
         acp_agent = MagicMock(spec=ACPAgent)
 
         with (
@@ -252,8 +258,6 @@ class TestResolveAgentFromProfile:
         assert result_agent is acp_agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
-        # ACP profiles also honor skill_refs (default None = all discovered), so
-        # discovery runs and the catalog is threaded into the resolver.
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
 
@@ -431,6 +435,24 @@ class TestConversationRouterProfileErrors:
         detail = resp.json().get("detail", {})
         assert "dangling_mcp_server_refs" in detail
         assert "missing-server" in detail["dangling_mcp_server_refs"]
+
+    def test_dangling_skill_ref_returns_422(self, client, mock_conversation_service):
+        mock_conversation_service.start_conversation.side_effect = DanglingSkillRef(
+            ["missing-skill"]
+        )
+        client.app.dependency_overrides[get_conversation_service] = lambda: (
+            mock_conversation_service
+        )
+
+        payload = {
+            "agent_profile_id": str(uuid4()),
+            "workspace": {"working_dir": "/tmp/test", "kind": "LocalWorkspace"},
+        }
+        resp = client.post("/api/conversations", json=payload)
+        assert resp.status_code == 422
+        detail = resp.json().get("detail", {})
+        assert "dangling_skill_refs" in detail
+        assert "missing-skill" in detail["dangling_skill_refs"]
 
 
 # ---------------------------------------------------------------------------
