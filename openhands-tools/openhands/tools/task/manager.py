@@ -192,11 +192,13 @@ class TaskManager:
             task = self._resume_task(
                 resume=resume,
                 subagent_type=subagent_type,
+                parent_tool_use_id=parent_tool_use_id,
             )
         else:
             task = self._create_task(
                 subagent_type=subagent_type,
                 description=description,
+                parent_tool_use_id=parent_tool_use_id,
             )
 
         return self._run_task(
@@ -205,7 +207,9 @@ class TaskManager:
             parent_tool_use_id=parent_tool_use_id,
         )
 
-    def _resume_task(self, resume: str, subagent_type: str) -> Task:
+    def _resume_task(
+        self, resume: str, subagent_type: str, parent_tool_use_id: str | None = None
+    ) -> Task:
         """Resume a sub-agent task."""
         with self._tasks_lock:
             if resume not in self._tasks:
@@ -217,6 +221,7 @@ class TaskManager:
             factory = get_agent_factory(subagent_type)
             worker_agent = self._get_sub_agent_from_factory(factory)
             conversation_id = self._tasks[resume].conversation_id
+            _fwd = self._make_forwarding_callback(parent_tool_use_id)
             conversation = LocalConversation(
                 agent=worker_agent,
                 workspace=self.parent_conversation.state.workspace.working_dir,
@@ -224,6 +229,7 @@ class TaskManager:
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
                 delete_on_close=True,
+                callbacks=[_fwd] if _fwd else [],
             )
 
             self._set_confirmation_policy(
@@ -244,6 +250,7 @@ class TaskManager:
         self,
         subagent_type: str,
         description: str | None,
+        parent_tool_use_id: str | None = None,
     ) -> Task:
         """Create a fresh task.
 
@@ -276,6 +283,7 @@ class TaskManager:
                 worker_agent=worker_agent,
                 conversation_id=conversation_id,
                 hook_config=factory.definition.hooks,
+                parent_tool_use_id=parent_tool_use_id,
             )
 
             self._set_confirmation_policy(
@@ -300,6 +308,7 @@ class TaskManager:
         worker_agent: Agent,
         hook_config: HookConfig | None = None,
         max_budget_per_run: float | None = None,
+        parent_tool_use_id: str | None = None,
     ) -> LocalConversation:
         parent = self.parent_conversation
         parent_visualizer = parent._visualizer
@@ -309,6 +318,7 @@ class TaskManager:
             label = description or task_id
             visualizer = parent_visualizer.create_sub_visualizer(label)
 
+        _fwd = self._make_forwarding_callback(parent_tool_use_id)
         return LocalConversation(
             agent=worker_agent,
             workspace=parent.state.workspace.working_dir,
@@ -319,6 +329,7 @@ class TaskManager:
             max_budget_per_run=max_budget_per_run,
             hook_config=hook_config,
             delete_on_close=True,
+            callbacks=[_fwd] if _fwd else [],
         )
 
     def _get_sub_agent(self, subagent_type: str) -> Agent:
@@ -349,6 +360,33 @@ class TaskManager:
         )
         return sub_agent
 
+    def _make_forwarding_callback(self, parent_tool_use_id: str | None):
+        """Return a best-effort callback that stamps and forwards sub-agent events.
+
+        Returns None when no sink is configured so callers can skip attaching it.
+        The callback sets ``event.parent_tool_use_id`` and calls the sink.
+        It is publish-only: it does not read or mutate the parent conversation
+        (context-isolation invariant).
+
+        Args:
+            parent_tool_use_id: The tool-use ID to stamp on every forwarded event.
+
+        Returns:
+            A callable ``(event) -> None``, or ``None`` if no sink is configured.
+        """
+        sink = self._sub_event_sink
+        if sink is None:
+            return None
+
+        def _forward(event):
+            try:
+                event.parent_tool_use_id = parent_tool_use_id
+                sink(event)
+            except Exception:
+                logger.warning("sub-agent event forwarding failed", exc_info=True)
+
+        return _forward
+
     def _run_task(
         self, task: Task, prompt: str, parent_tool_use_id: str | None = None
     ) -> Task:
@@ -357,11 +395,9 @@ class TaskManager:
         Args:
             task: The task to run.
             prompt: The prompt to send to the sub-agent.
-            parent_tool_use_id: Tool-use ID of the calling tool invocation.
-                Stored for use by Task 3 (sub-event forwarding callback).
+            parent_tool_use_id: Tool-use ID of the calling tool invocation,
+                used to stamp forwarded sub-agent events.
         """
-        # Store for Task 3 to wire up the forwarding callback.
-        task._parent_tool_use_id = parent_tool_use_id  # type: ignore[attr-defined]
         if task.conversation is None:
             raise RuntimeError(f"Task '{task.id}' has no conversation to run.")
         # Get parent name for sender info
