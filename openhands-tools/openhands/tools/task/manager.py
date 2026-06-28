@@ -36,9 +36,10 @@ from openhands.sdk.subagent.registry import AgentFactory, get_agent_factory
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.event import ActionEvent
+    from openhands.sdk.event import ActionEvent, Event
 
 ConfirmationHandler = Callable[[str, list["ActionEvent"]], bool]
+SubEventSink = Callable[["Event"], None]
 
 
 logger = get_logger(__name__)
@@ -96,9 +97,11 @@ class TaskManager:
     def __init__(
         self,
         confirmation_handler: ConfirmationHandler | None = None,
+        sub_event_sink: "SubEventSink | None" = None,
     ):
         self._parent_conversation: LocalConversation | None = None
         self._confirmation_handler = confirmation_handler
+        self._sub_event_sink = sub_event_sink
 
         self._tasks: dict[str, Task] = {}
         self._tasks_lock = threading.Lock()
@@ -166,6 +169,7 @@ class TaskManager:
         resume: str | None = None,
         description: str | None = None,
         conversation: LocalConversation | None = None,
+        parent_tool_use_id: str | None = None,
     ) -> Task:
         """Start a blocking sub-agent task.
 
@@ -175,6 +179,8 @@ class TaskManager:
             resume: Task ID to resume (continues existing conversation).
             description: Short label for the task.
             conversation: Parent conversation (set on first call).
+            parent_tool_use_id: Tool-use ID of the calling tool invocation,
+                used for sub-event correlation (threaded to _run_task for Task 3).
 
         Returns:
             TaskState with the final result.
@@ -196,6 +202,7 @@ class TaskManager:
         return self._run_task(
             task=task,
             prompt=prompt,
+            parent_tool_use_id=parent_tool_use_id,
         )
 
     def _resume_task(self, resume: str, subagent_type: str) -> Task:
@@ -342,8 +349,19 @@ class TaskManager:
         )
         return sub_agent
 
-    def _run_task(self, task: Task, prompt: str) -> Task:
-        """Run a task synchronously."""
+    def _run_task(
+        self, task: Task, prompt: str, parent_tool_use_id: str | None = None
+    ) -> Task:
+        """Run a task synchronously.
+
+        Args:
+            task: The task to run.
+            prompt: The prompt to send to the sub-agent.
+            parent_tool_use_id: Tool-use ID of the calling tool invocation.
+                Stored for use by Task 3 (sub-event forwarding callback).
+        """
+        # Store for Task 3 to wire up the forwarding callback.
+        task._parent_tool_use_id = parent_tool_use_id  # type: ignore[attr-defined]
         if task.conversation is None:
             raise RuntimeError(f"Task '{task.id}' has no conversation to run.")
         # Get parent name for sender info

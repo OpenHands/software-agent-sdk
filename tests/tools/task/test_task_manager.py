@@ -539,7 +539,7 @@ class TestStartTask:
     def teardown_method(self):
         _reset_registry_for_tests()
 
-    def _fake_run_task(self, task: Task, prompt: str) -> Task:
+    def _fake_run_task(self, task: Task, prompt: str, parent_tool_use_id: str | None = None) -> Task:
         """Simulate a successful _run_task without hitting the LLM."""
         task.set_result(f"result for: {prompt}")
         return task
