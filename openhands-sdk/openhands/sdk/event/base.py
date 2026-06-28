@@ -30,6 +30,14 @@ class Event(DiscriminatedUnionMixin, ABC):
         description="Event timestamp",
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
+    parent_tool_use_id: str | None = Field(
+        default=None,
+        description=(
+            "If set, this event was produced inside a sub-agent; the value is the "
+            "tool_call_id of the parent TaskAction that spawned it. None for "
+            "main-agent events. Mirrors Anthropic's parent_tool_use_id."
+        ),
+    )
 
     @property
     def visualize(self) -> Text:
