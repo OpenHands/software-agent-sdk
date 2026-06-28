@@ -380,8 +380,10 @@ class TaskManager:
 
         def _forward(event):
             try:
-                event.parent_tool_use_id = parent_tool_use_id
-                sink(event)
+                # Event models are frozen (Pydantic frozen=True); use model_copy
+                # to produce a new instance with parent_tool_use_id stamped.
+                stamped = event.model_copy(update={"parent_tool_use_id": parent_tool_use_id})
+                sink(stamped)
             except Exception:
                 logger.warning("sub-agent event forwarding failed", exc_info=True)
 

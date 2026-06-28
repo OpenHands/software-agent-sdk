@@ -1,5 +1,6 @@
 """Tests that the subagent event sink publishes to pub_sub but does NOT persist."""
 import asyncio
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -67,3 +68,74 @@ async def test_sink_publishes_not_persists(stored, tmp_path):
 
     assert len(received) == 1
     assert received[0] is event
+
+
+@pytest.mark.asyncio
+async def test_sink_delivers_from_worker_thread(stored, tmp_path):
+    """Regression: sink called from a worker thread must reach _pub_sub subscribers.
+
+    This is the REAL path: sub-agent runs in a ThreadPoolExecutor worker thread
+    (LocalConversation._run_and_publish runs in run_in_executor). Before the fix
+    the forwarding callback tried to mutate a frozen Pydantic Event via setattr,
+    raising ValidationError (swallowed silently), so events never reached
+    pub_sub / WebhookSubscriber.
+    """
+    svc = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+    )
+    loop = asyncio.get_running_loop()
+    svc._main_loop = loop
+
+    received: list[Event] = []
+
+    class ProbeSubscriber(Subscriber[Event]):
+        async def __call__(self, event: Event):
+            received.append(event)
+
+    svc._pub_sub.subscribe(ProbeSubscriber())
+
+    sink = svc._make_subagent_event_sink()
+
+    from openhands.sdk.event.llm_convertible.message import MessageEvent
+    from openhands.sdk.llm import Message
+    from openhands.tools.task.manager import TaskManager
+
+    # Wire the full forwarding path: TaskManager._make_forwarding_callback → sink
+    tool_call_id = "toolu_regression_worker_thread"
+    mgr = TaskManager(sub_event_sink=sink)
+    fwd = mgr._make_forwarding_callback(parent_tool_use_id=tool_call_id)
+    assert fwd is not None
+
+    # Build a real frozen Pydantic event (as the sub-agent actually emits)
+    event = MessageEvent(
+        source="agent",
+        llm_message=Message(role="assistant"),
+    )
+    assert event.parent_tool_use_id is None  # initially unset
+
+    # Call the forwarding callback from a real worker thread — the real path
+    worker_done = threading.Event()
+
+    def worker():
+        fwd(event)
+        worker_done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join(timeout=2)
+    assert worker_done.is_set(), "worker thread did not finish"
+
+    # Give run_coroutine_threadsafe time to schedule and run on the loop
+    await asyncio.sleep(0.1)
+
+    # The stamped copy (not the original frozen instance) must reach the subscriber
+    assert len(received) == 1, f"Expected 1 event, got {len(received)}"
+    stamped = received[0]
+    assert stamped.parent_tool_use_id == tool_call_id, (
+        f"parent_tool_use_id not stamped: got {stamped.parent_tool_use_id!r}"
+    )
+    # The original event must be unmodified (model is frozen, copy was made)
+    assert event.parent_tool_use_id is None, (
+        "Original event was mutated — model_copy was not used"
+    )

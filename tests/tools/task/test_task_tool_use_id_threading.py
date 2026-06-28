@@ -11,27 +11,19 @@ End-to-end proof:
   Parent state.events must NOT contain the sub-agent inner events (isolation).
 """
 
-from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
 from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import Agent, LLM
-from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.event import ActionEvent, ObservationEvent
-from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.subagent.registry import _reset_registry_for_tests
-from openhands.sdk.testing import TestLLM
-from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.preset import register_builtins_agents
-from openhands.tools.task import TaskToolSet
 from openhands.tools.task.definition import TaskAction, TaskObservation
 from openhands.tools.task.impl import TaskExecutor
-from openhands.tools.task.manager import TaskManager, TaskStatus, Task
+from openhands.tools.task.manager import TaskManager, TaskStatus
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +39,17 @@ def _make_parent_conversation(tmp_path: Path) -> LocalConversation:
         workspace=str(tmp_path),
         visualizer=None,
         delete_on_close=False,
+    )
+
+
+def _make_real_event():
+    """Return a real frozen Pydantic Event instance for use in tests."""
+    from openhands.sdk.event.llm_convertible.message import MessageEvent
+    from openhands.sdk.llm import Message
+
+    return MessageEvent(
+        source="agent",
+        llm_message=Message(role="assistant"),
     )
 
 
@@ -98,11 +101,9 @@ class TestSubAgentEventForwarding:
             # Build the forwarding callback exactly as the real code does
             fwd = manager._make_forwarding_callback(parent_tool_use_id)
             if fwd is not None:
-                # Emit three fake inner events through the callback
+                # Emit three real frozen Pydantic events through the callback
                 for i in range(3):
-                    class _FakeEvent:
-                        parent_tool_use_id = None
-                    ev = _FakeEvent()
+                    ev = _make_real_event()
                     fwd(ev)
             task.set_result("task done")
             return task
@@ -174,9 +175,7 @@ class TestSubAgentEventForwarding:
             fwd = manager._make_forwarding_callback(parent_tool_use_id)
             if fwd is not None:
                 for _ in range(2):
-                    class _FakeInnerEvent:
-                        parent_tool_use_id = None
-                    fwd(_FakeInnerEvent())
+                    fwd(_make_real_event())
             task.set_result("done")
             return task
 
