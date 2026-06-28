@@ -1149,9 +1149,17 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 tool_name = extract_action_name(action_event)
                 observation: Observation = observe(name=tool_name, span_type="TOOL")(
                     tool
-                )(action_event.action, conversation)
+                )(
+                    action_event.action,
+                    conversation,
+                    parent_tool_use_id=action_event.tool_call.id,
+                )
             else:
-                observation = tool(action_event.action, conversation)
+                observation = tool(
+                    action_event.action,
+                    conversation,
+                    parent_tool_use_id=action_event.tool_call.id,
+                )
             assert isinstance(observation, Observation), (
                 f"Tool '{tool.name}' executor must return an Observation"
             )

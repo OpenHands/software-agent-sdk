@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -359,7 +360,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         return self.action_type.model_validate(arguments)
 
     def __call__(
-        self, action: ActionT, conversation: "LocalConversation | None" = None
+        self,
+        action: ActionT,
+        conversation: "LocalConversation | None" = None,
+        *,
+        parent_tool_use_id: str | None = None,
     ) -> Observation:
         """Validate input, execute, and coerce output.
 
@@ -369,8 +374,15 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if self.executor is None:
             raise NotImplementedError(f"Tool '{self.name}' has no executor")
 
-        # Execute
-        result = self.executor(action, conversation)
+        # Execute — pass parent_tool_use_id only to executors that accept it,
+        # so the ~dozen other tool executors are unaffected (no TypeError).
+        executor_params = inspect.signature(self.executor.__call__).parameters
+        if "parent_tool_use_id" in executor_params:
+            result = self.executor(
+                action, conversation, parent_tool_use_id=parent_tool_use_id
+            )
+        else:
+            result = self.executor(action, conversation)
 
         # Coerce output only if we declared a model; else wrap in base Observation
         if self.observation_type:
