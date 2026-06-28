@@ -676,6 +676,23 @@ class EventService:
         for llm in agent.get_all_llms():
             llm.telemetry.set_stats_update_callback(stats_callback)
 
+    def _make_subagent_event_sink(self):
+        """Create a publish-only sink for sub-agent inner events.
+
+        Mirrors _publish_stream_delta: publishes directly to _pub_sub so events
+        reach subscribers (e.g. WebhookSubscriber) but are NOT persisted to
+        ConversationState.events.
+        """
+        loop = self._main_loop
+        pub_sub = self._pub_sub
+
+        def _sink(event):
+            if not loop or not loop.is_running():
+                return
+            asyncio.run_coroutine_threadsafe(pub_sub(event), loop)
+
+        return _sink
+
     @staticmethod
     def _ensure_workspace_is_git_repo(working_dir: Path) -> None:
         """Initialize the workspace as a git repo if it isn't already one.
@@ -813,6 +830,11 @@ class EventService:
 
         # Register state change callback to automatically publish updates
         self._conversation._state.set_on_state_change(self._conversation._on_event)
+
+        # Wire sub-agent event sink when forwarding is enabled
+        from openhands.agent_server.config import get_default_config
+        if get_default_config().forward_subagent_events:
+            self._conversation._state.set_sub_event_sink(self._make_subagent_event_sink())
 
         # Setup LLM log streaming for remote execution
         self._setup_llm_log_streaming(self._conversation.agent)

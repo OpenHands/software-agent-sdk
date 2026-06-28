@@ -247,6 +247,11 @@ class Config(BaseModel):
             "configuration is delivered later."
         ),
     )
+    forward_subagent_events: bool = Field(
+        default=False,
+        description="Forward sub-agent inner events to the webhook (tagged with "
+        "parent_tool_use_id). Default off.",
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
 
     @property

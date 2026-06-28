@@ -245,7 +245,8 @@ class TaskToolSet(ToolDefinition[TaskAction, TaskObservation]):
             task_tool_examples=task_tool_examples,
         )
 
-        manager = TaskManager(confirmation_handler=confirmation_handler)
+        sink = conv_state.get_sub_event_sink() if hasattr(conv_state, "get_sub_event_sink") else None
+        manager = TaskManager(confirmation_handler=confirmation_handler, sub_event_sink=sink)
         task_executor = TaskExecutor(manager=manager)
 
         tools: list[ToolDefinition] = []

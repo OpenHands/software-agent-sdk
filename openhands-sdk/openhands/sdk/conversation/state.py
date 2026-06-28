@@ -228,6 +228,13 @@ class ConversationState(OpenHandsModel):
     )  # FIFO lock for thread safety
     _save_depth: int = PrivateAttr(default=0)  # context-manager nesting depth
     _dirty: bool = PrivateAttr(default=False)  # pending unsaved field changes
+    _sub_event_sink: "Callable[[Event], None] | None" = PrivateAttr(default=None)
+
+    def set_sub_event_sink(self, sink: "Callable[[Event], None] | None") -> None:
+        self._sub_event_sink = sink
+
+    def get_sub_event_sink(self) -> "Callable[[Event], None] | None":
+        return self._sub_event_sink
 
     @property
     def events(self) -> EventLog:
