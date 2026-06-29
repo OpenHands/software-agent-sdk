@@ -157,7 +157,6 @@ class TestLLM(LLM):
         self,
         messages: list[Message],  # noqa: ARG002
         tools: Sequence[ToolDefinition] | None = None,  # noqa: ARG002
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,  # noqa: ARG002
         on_token: TokenCallbackType | None = None,  # noqa: ARG002
         call_context: LLMCallContext | None = None,  # noqa: ARG002
@@ -168,7 +167,6 @@ class TestLLM(LLM):
         Args:
             messages: Input messages (ignored, but required for API compatibility)
             tools: Available tools (ignored)
-            _return_metrics: Whether to return metrics (ignored)
             add_security_risk_prediction: Add security risk field (ignored)
             on_token: Streaming callback (ignored)
             **kwargs: Additional arguments (ignored)
@@ -208,7 +206,6 @@ class TestLLM(LLM):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,  # noqa: ARG002
         call_context: LLMCallContext | None = None,  # noqa: ARG002
@@ -233,7 +230,6 @@ class TestLLM(LLM):
             lambda: self.completion(
                 messages=messages,
                 tools=tools,
-                _return_metrics=_return_metrics,
                 add_security_risk_prediction=add_security_risk_prediction,
                 **kwargs,
             ),
@@ -245,7 +241,6 @@ class TestLLM(LLM):
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,  # noqa: ARG002
         store: bool | None = None,  # noqa: ARG002
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,  # noqa: ARG002
@@ -259,7 +254,6 @@ class TestLLM(LLM):
         return self.completion(
             messages=messages,
             tools=tools,
-            _return_metrics=_return_metrics,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
             **kwargs,

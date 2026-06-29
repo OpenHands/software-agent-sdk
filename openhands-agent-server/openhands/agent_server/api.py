@@ -16,10 +16,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
+from openhands.agent_server.agent_profiles_router import agent_profiles_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.cloud_proxy_router import cloud_proxy_router
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -29,8 +29,8 @@ from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
 from openhands.agent_server.dependencies import (
-    create_session_api_key_dependency,
-    create_workspace_session_dependency,
+    check_session_api_key,
+    check_workspace_session,
 )
 from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
@@ -38,13 +38,19 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
 from openhands.agent_server.git_router import git_router
 from openhands.agent_server.hooks_router import hooks_router
+from openhands.agent_server.init_router import (
+    InitService,
+    init_router,
+    require_initialized,
+)
 from openhands.agent_server.llm_router import llm_router
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
-    create_openai_api_key_dependency,
+    check_openai_api_key,
     openai_router,
 )
+from openhands.agent_server.plugins_router import plugins_router
 from openhands.agent_server.profiles_router import profiles_router
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -124,7 +130,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         # Clean up stale tmux sessions from previous server runs
         _cleanup_stale_tmux_sessions()
 
-        service = get_default_conversation_service()
+        config: Config = api.state.config
+        deferred = config.deferred_init
         vscode_service = get_vscode_service()
         desktop_service = get_desktop_service()
         tool_preload_service = get_tool_preload_service()
@@ -185,20 +192,60 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 f"Server initialization failed with {len(exceptions)} exception(s)"
             ) from exceptions[0]
 
-        # Mark initialization as complete - now the /ready endpoint will return 200
-        # and Kubernetes readiness probes will pass
+        async def stop_stateless_services():
+            async def stop_vscode_service():
+                if vscode_service is not None:
+                    await vscode_service.stop()
+
+            async def stop_desktop_service():
+                if desktop_service is not None:
+                    await desktop_service.stop()
+
+            async def stop_tool_preload_service():
+                if tool_preload_service is not None:
+                    await tool_preload_service.stop()
+
+            await asyncio.gather(
+                stop_vscode_service(),
+                stop_desktop_service(),
+                stop_tool_preload_service(),
+                return_exceptions=True,
+            )
+
+        # In deferred-init mode the conversation service is *not* entered
+        # here — that happens later, when POST /api/init delivers the runtime
+        # config. We still mark the /ready endpoint as ready so a warm-pool
+        # orchestrator can tell the pod has finished booting and is
+        # available to receive its /api/init payload.
+        if deferred:
+            init_service = InitService(api, base_config=config)
+            api.state.init_service = init_service
+            mark_initialization_complete()
+            logger.info("Server started in deferred-init mode; awaiting POST /api/init")
+            try:
+                yield
+            finally:
+                await init_service.teardown()
+                await stop_stateless_services()
+            return
+
+        # Non-deferred (legacy) path: build and enter the conversation
+        # service as part of the lifespan, exactly as before.
+        service = get_default_conversation_service()
         mark_initialization_complete()
         logger.info("Server initialization complete - ready to serve requests")
 
+        bash_svc = get_default_bash_event_service()
+        api.state.bash_event_service = bash_svc
+
         async with service:
-            # Store the initialized service in app state for dependency injection
             api.state.conversation_service = service
 
             config = api.state.config
             retention_task: asyncio.Task | None = None
             if config.bash_events_retention_seconds is not None:
                 retention_task = asyncio.create_task(
-                    get_default_bash_event_service().run_retention_cleanup_loop(
+                    bash_svc.run_retention_cleanup_loop(
                         config.bash_events_retention_seconds
                     )
                 )
@@ -215,26 +262,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                     with suppress(asyncio.CancelledError):
                         await retention_task
 
-                # Define async functions for stopping each service
-                async def stop_vscode_service():
-                    if vscode_service is not None:
-                        await vscode_service.stop()
-
-                async def stop_desktop_service():
-                    if desktop_service is not None:
-                        await desktop_service.stop()
-
-                async def stop_tool_preload_service():
-                    if tool_preload_service is not None:
-                        await tool_preload_service.stop()
-
-                # Stop all services concurrently
-                await asyncio.gather(
-                    stop_vscode_service(),
-                    stop_desktop_service(),
-                    stop_tool_preload_service(),
-                    return_exceptions=True,
-                )
+                await stop_stateless_services()
     finally:
         if tmux_tmpdir_was_defaulted and os.environ.get("TMUX_TMPDIR") == str(
             tmux_tmpdir
@@ -286,20 +314,30 @@ def _find_http_exception(exc: BaseExceptionGroup) -> HTTPException | None:
     return None
 
 
-def _add_api_routes(app: FastAPI, config: Config) -> None:
-    """Add all API routes to the FastAPI application.
-
-    Args:
-        app: FastAPI application instance to add routes to.
-    """
+def _add_api_routes(app: FastAPI) -> None:
+    """Add all API routes to the FastAPI application."""
     app.include_router(server_details_router)
+
+    # The /api/init endpoint bypasses both the session-key auth and the
+    # dormant gate. It has its own X-Init-API-Key auth. When
+    # ``deferred_init`` is False the endpoints are still mounted but return
+    # 404 because no InitService is registered on app.state — see
+    # ``get_init_service``.
+    init_api_router = APIRouter(prefix="/api")
+    init_api_router.include_router(init_router)
+    app.include_router(init_api_router)
 
     # Header-only auth: applied to every /api/* route EXCEPT the workspace
     # static-file routes (handled separately below). Cookies are NOT honored
     # here so that we don't expand the CSRF surface across the whole API.
-    dependencies = []
-    if config.session_api_keys:
-        dependencies.append(Depends(create_session_api_key_dependency(config)))
+    # check_session_api_key reads config from request.app.state at request time,
+    # so keys delivered via POST /api/init are honoured without re-registering routes.
+    dependencies = [
+        Depends(check_session_api_key),
+        # Dormant gate: 503s every /api/* route until POST /api/init completes.
+        # No-op for non-deferred deployments.
+        Depends(require_initialized),
+    ]
 
     api_router = APIRouter(prefix="/api", dependencies=dependencies)
     api_router.include_router(event_router)
@@ -311,34 +349,29 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(plugins_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)
     api_router.include_router(mcp_router)
     api_router.include_router(settings_router)
     api_router.include_router(workspaces_router)
     api_router.include_router(profiles_router)
-    api_router.include_router(cloud_proxy_router)
+    api_router.include_router(agent_profiles_router)
     # /api/auth/* mints workspace cookies and requires the header to bootstrap,
     # so it lives under the header-only auth group.
     api_router.include_router(auth_router)
     app.include_router(api_router)
 
-    openai_dependencies = []
-    if config.session_api_keys:
-        openai_dependencies.append(Depends(create_openai_api_key_dependency(config)))
-    app.include_router(openai_router, dependencies=openai_dependencies)
+    app.include_router(openai_router, dependencies=[Depends(check_openai_api_key)])
 
     # Workspace static-file routes get their own auth group that accepts
     # EITHER the X-Session-API-Key header OR the workspace session cookie.
     # The cookie is required so that <iframe src> / <img src> embeds of
     # workspace artifacts work — browsers cannot attach custom headers to
     # those requests.
-    workspace_dependencies = []
-    if config.session_api_keys:
-        workspace_dependencies.append(
-            Depends(create_workspace_session_dependency(config))
-        )
-    workspace_api_router = APIRouter(prefix="/api", dependencies=workspace_dependencies)
+    workspace_api_router = APIRouter(
+        prefix="/api", dependencies=[Depends(check_workspace_session)]
+    )
     workspace_api_router.include_router(workspace_router)
     app.include_router(workspace_api_router)
 
@@ -388,7 +421,7 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
 
     FastAPI's default 422 response includes the raw request ``input`` in each
     validation error dict.  If the request contained secret-bearing fields
-    (e.g. ``agent.llm.api_key``, ``agent.acp_env``), those values would be
+    (e.g. ``agent.llm.api_key``, MCP server ``env``), those values would be
     echoed back to the caller.  This helper redacts them.
 
     Args:
@@ -402,6 +435,10 @@ def _sanitize_validation_errors(errors: Sequence[Any]) -> list[dict]:
         error = dict(error)  # shallow copy so we don't mutate the original
         if "input" in error:
             error["input"] = sanitize_dict(error["input"])
+        if isinstance(error.get("ctx"), dict) and isinstance(
+            error["ctx"].get("error"), Exception
+        ):
+            error["ctx"] = {**error["ctx"], "error": str(error["ctx"]["error"])}
         sanitized.append(error)
     return sanitized
 
@@ -417,7 +454,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
 
         FastAPI's default 422 handler echoes the raw request body inside the
         ``detail[].input`` field.  When the request contains secrets (e.g.
-        ``agent.llm.api_key``, ``agent.acp_env``), this would leak credentials
+        ``agent.llm.api_key``, MCP server ``env``), this would leak credentials
         in the error response.  We intercept the error, redact secret-bearing
         fields, and return a safe 422 response.
 
@@ -508,8 +545,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
         # Log 5xx errors at error level. HTTPException is intentionally
         # raised flow control — the route picked this status and detail
         # on purpose — so a stack trace adds no information beyond
-        # `exc.detail` and makes routine upstream blips (e.g. a 502 from
-        # /api/cloud-proxy when the cloud is unreachable) look
+        # `exc.detail` and makes routine upstream blips look
         # indistinguishable from a process crash. Unhandled exceptions
         # still get a full traceback via _unhandled_exception_handler
         # above. Include the traceback only when DEBUG is on, as an
@@ -553,9 +589,13 @@ def create_app(config: Config | None = None) -> FastAPI:
     app = _create_fastapi_instance(config)
     app.state.config = config
 
-    _add_api_routes(app, config)
+    _add_api_routes(app)
     _setup_static_files(app, config)
-    app.add_middleware(CORSDispatcher, allow_origins=config.allow_cors_origins)
+    app.add_middleware(
+        CORSDispatcher,
+        allow_origins=config.allow_cors_origins,
+        allow_origin_regex=config.allow_cors_origin_regex,
+    )
     _add_exception_handlers(app)
 
     return app

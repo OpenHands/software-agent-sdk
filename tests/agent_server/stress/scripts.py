@@ -53,7 +53,6 @@ class SlowTestLLM(TestLLM):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         call_context: LLMCallContext | None = None,
@@ -64,7 +63,6 @@ class SlowTestLLM(TestLLM):
         return super().completion(
             messages,
             tools,
-            _return_metrics,
             add_security_risk_prediction,
             on_token,
             call_context=call_context,

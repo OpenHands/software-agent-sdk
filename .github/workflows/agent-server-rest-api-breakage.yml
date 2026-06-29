@@ -29,14 +29,21 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Install oasdiff
+              # Pin the version so install.sh skips its GitHub API "latest release"
+              # lookup, which intermittently hits the 60/hr unauthenticated rate
+              # limit on shared runners and fails the whole check. Bump as needed.
               run: |
-                  curl -L https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin
+                  curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | version=1.19.1 sh -s -- -b /usr/local/bin
                   oasdiff --version
 
             - name: Run agent server REST API breakage check
               id: api_breakage
               # Let this step fail so CI is visibly red on breakage.
               # Later reporting steps still run because they use if: always().
+              env:
+                  AGENT_SERVER_REST_API_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before
+                      }}
+                  AGENT_SERVER_REST_TYPE_WIDENING_REPORT_PATH: rest-api-type-widening-report.json
               run: |
                   uv run --with packaging python .github/scripts/check_agent_server_rest_api_breakage.py 2>&1 | tee api-breakage.log
                   exit_code=${PIPESTATUS[0]}
@@ -49,9 +56,11 @@ jobs:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
                   IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
                   LOG_PATH: api-breakage.log
+                  REPORT_PATH: rest-api-type-widening-report.json
                   RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
               run: |
                   python3 <<'PY' >> "$GITHUB_STEP_SUMMARY"
+                  import json
                   import os
                   from pathlib import Path
 
@@ -60,6 +69,16 @@ jobs:
                   run_url = os.environ['RUN_URL']
                   status = '✅ **PASSED**' if exit_code == 0 else '❌ **FAILED**'
 
+                  try:
+                      report = json.loads(Path(os.environ['REPORT_PATH']).read_text())
+                  except Exception:
+                      report = {}
+                  type_widenings_since_base = report.get(
+                      'additive_response_property_type_widenings_since_base',
+                      [],
+                  )
+
+
                   print(f'## REST API breakage checks (OpenAPI) — {status}')
                   print()
                   print(f"**Result:** {status}")
@@ -67,6 +86,23 @@ jobs:
                       print()
                       print('> ⚠️ Breaking REST API changes or policy violations detected.')
                   print()
+
+                  if type_widenings_since_base:
+                      print('### Additive response property type widenings accepted')
+                      print()
+                      print(
+                          'These REST response fields now accept an additional type. '
+                          'The old type remains valid, and this PR was auto-marked '
+                          'with the `release-note-required` label:'
+                      )
+                      print()
+                      for change in type_widenings_since_base:
+                          print(
+                              '- `{property_path}` adds `{added_types}` in response '
+                              '`{response_status}`'.format(**change)
+                          )
+                      print()
+
 
                   if is_fork:
                       print(
@@ -101,6 +137,7 @@ jobs:
               env:
                   EXIT_CODE: ${{ steps.api_breakage.outputs.exit_code }}
                   LOG_PATH: api-breakage.log
+                  REPORT_PATH: rest-api-type-widening-report.json
               with:
                   script: |
                       const fs = require('fs');
@@ -109,6 +146,15 @@ jobs:
                       const exitCode = Number(process.env.EXIT_CODE || '0');
                       const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
                       const status = exitCode === 0 ? '✅ **PASSED**' : '❌ **FAILED**';
+
+                      let typeWideningsSinceBase = [];
+                      try {
+                        const report = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+                        typeWideningsSinceBase = report.additive_response_property_type_widenings_since_base || [];
+                      } catch (_error) {
+                        typeWideningsSinceBase = [];
+                      }
+
 
                       let body = `${marker}\n## REST API breakage checks (OpenAPI) — ${status}\n\n**Result:** ${status}\n`;
 
@@ -123,6 +169,15 @@ jobs:
 
                         const excerpt = log.slice(0, 1000).replace(/```/g, '``\\`');
                         body += `\n<details><summary>Log excerpt (first 1000 characters)</summary>\n\n\`\`\`text\n${excerpt}\n\`\`\`\n\n</details>\n`;
+                      }
+
+
+                      if (typeWideningsSinceBase.length > 0) {
+                        body += '\n### Additive response property type widenings accepted\n\n';
+                        body += 'These REST response fields now accept an additional type. The old type remains valid, and this PR was auto-marked with the `release-note-required` label:\n\n';
+                        for (const change of typeWideningsSinceBase) {
+                          body += `- \`${change.property_path}\` adds \`${change.added_types}\` in response \`${change.response_status}\`\n`;
+                        }
                       }
 
                       body += `\n[Action log](${runUrl})\n`;
@@ -152,3 +207,75 @@ jobs:
                           body,
                         });
                       }
+
+            - name: Apply release-note-required label for REST type widenings
+              if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+              uses: actions/github-script@v9
+              env:
+                  REPORT_PATH: rest-api-type-widening-report.json
+              with:
+                  script: |
+                      const fs = require('fs');
+
+                      let typeWideningsSinceBase = [];
+                      try {
+                        const report = JSON.parse(fs.readFileSync(process.env.REPORT_PATH, 'utf8'));
+                        typeWideningsSinceBase = report.additive_response_property_type_widenings_since_base || [];
+                      } catch (_error) {
+                        typeWideningsSinceBase = [];
+                      }
+
+                      if (typeWideningsSinceBase.length === 0) {
+                        return;
+                      }
+
+                      const { owner, repo } = context.repo;
+                      const issue_number = context.issue.number;
+                      const label = 'release-note-required';
+                      const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+                        owner,
+                        repo,
+                        issue_number,
+                        per_page: 100,
+                      });
+                      const hasLabel = currentLabels.some((item) => item.name === label);
+
+                      if (!hasLabel) {
+                        await github.rest.issues.addLabels({
+                          owner,
+                          repo,
+                          issue_number,
+                          labels: [label],
+                        });
+                      }
+
+
+            - name: Generate REST API contract PR summary
+              if: ${{ always() && github.event_name == 'pull_request' }}
+              env:
+                  BASE_REF: ${{ github.event.pull_request.base.sha }}
+              run: |
+                  touch rest-api-contract-summary.md
+                  uv run --with packaging python .github/scripts/generate_agent_server_rest_api_contract_summary.py \
+                      --base-ref "$BASE_REF" \
+                      --output rest-api-contract-summary.md || true
+
+            - name: Update REST API contract summary in PR description
+              if: ${{ always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  REPOSITORY: ${{ github.repository }}
+              run: |
+                  gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .body > pr-body.md
+                  python .github/scripts/update_pr_body_with_rest_api_summary.py \
+                      --body-file pr-body.md \
+                      --summary-file rest-api-contract-summary.md \
+                      --output updated-pr-body.md
+                  if cmp -s pr-body.md updated-pr-body.md; then
+                      echo "REST API contract summary in PR description is already current."
+                  else
+                      jq -n --rawfile body updated-pr-body.md '{body: $body}' \
+                          | gh api --method PATCH "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --input - >/dev/null
+                      echo "Updated REST API contract summary in PR description."
+                  fi

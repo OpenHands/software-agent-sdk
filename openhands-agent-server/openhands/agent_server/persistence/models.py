@@ -25,6 +25,7 @@ from pydantic import (
 from openhands.sdk.settings import (
     AgentSettingsConfig,
     ConversationSettings,
+    apply_agent_settings_diff,
     default_agent_settings,
     validate_agent_settings,
 )
@@ -34,12 +35,14 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 class SettingsUpdatePayload(TypedDict, total=False):
     """Typed payload for PersistedSettings.update() method.
 
-    All three ``*_diff`` dicts are deep-merged via :func:`_deep_merge`: nested
-    objects merge recursively, and a ``None`` value *inside a nested map*
-    deletes that entry (the "unset" primitive) — e.g. send
-    ``{"acp_env": {"NAME": None}}`` to drop one env-var without re-sending the
-    whole map. A ``None`` on a top-level *field* is not treated as delete; it
-    flows to validation as before.
+    ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
+    full RFC 7386 merge-patch semantics — a ``None`` value on any key (top-level
+    or nested) removes it, resetting that field to its default.
+
+    ``conversation_settings_diff`` and ``misc_settings_diff`` use
+    :func:`_deep_merge`: nested maps merge recursively, ``None`` *inside* a
+    nested map removes that entry, but a ``None`` on a top-level field flows to
+    validation as before.
 
     ``misc_settings_diff`` is deep-merged into the persisted ``misc_settings``
     block. The agent-server treats ``misc_settings`` as opaque
@@ -52,6 +55,7 @@ class SettingsUpdatePayload(TypedDict, total=False):
     conversation_settings_diff: dict[str, Any]
     misc_settings_diff: dict[str, Any]
     active_profile: str | None
+    active_agent_profile_id: str | None
 
 
 def _deep_merge(
@@ -65,13 +69,14 @@ def _deep_merge(
     - Nested dicts are merged recursively.
     - **Inside a nested map** a ``None`` value **removes** that key — the
       "unset" primitive a plain deep-merge lacks. It lets a
-      ``PATCH /api/settings`` diff delete a single map entry (one
-      ``acp_env`` / MCP ``env`` key) without round-tripping the whole map::
+      ``PATCH /api/settings`` diff delete a single map entry (one MCP
+      ``env`` / ``headers`` key) without round-tripping the whole map::
 
-          {"agent_settings_diff": {"acp_env": {"STALE_KEY": null}}}
+          {"agent_settings_diff":
+              {"mcp_config": {"mcpServers": {"svc": {"env": {"STALE_KEY": null}}}}}}
 
-    - **At the top level** (a settings *field* like ``confirmation_mode`` or
-      ``acp_env`` itself) a ``None`` is left as-is and flows to model
+    - **At the top level** (a settings *field* like ``confirmation_mode``)
+      a ``None`` is left as-is and flows to model
       validation — exactly as before this primitive existed. So a stray
       ``{"confirmation_mode": null}`` still fails loudly (422) instead of
       silently resetting a field to its default. This scoping is deliberate:
@@ -137,6 +142,14 @@ class PersistedSettings(BaseModel):
         default=None,
         description="Name of the currently active LLM profile.",
     )
+    active_agent_profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Stable id of the currently active AgentProfile. Distinct from "
+            "active_profile (the active LLM profile name); additive with a "
+            "default, so older settings files load with this as None."
+        ),
+    )
     misc_settings: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -162,15 +175,18 @@ class PersistedSettings(BaseModel):
     def update(self, payload: SettingsUpdatePayload) -> None:
         """Apply a batch of changes from a nested dict.
 
-        Accepts ``agent_settings_diff``, ``conversation_settings_diff``, and
-        ``active_profile`` for partial updates. Uses ``from_persisted()`` to
-        apply any schema migrations if the incoming diff contains an older
-        schema version.
+        Accepts ``agent_settings_diff``, ``conversation_settings_diff``,
+        ``active_profile``, and ``active_agent_profile_id`` for partial updates.
 
-        When ``agent_kind`` changes in the diff, the update is treated as a
-        variant replacement: the incoming diff is validated as-is rather than
-        merged with the old variant's fields. Same-kind updates retain deep-merge
-        behavior for incremental field edits.
+        ``agent_settings_diff`` is applied via :func:`apply_agent_settings_diff`:
+        RFC 7386 merge-patch semantics with kind-switch awareness. When
+        ``agent_kind`` changes, the diff is applied onto a fresh base of the
+        target variant. Same-kind diffs deep-merge within the variant. A
+        ``None`` value at any level removes that key and resets it to default.
+
+        ``conversation_settings_diff`` uses :func:`_deep_merge`: ``None`` inside
+        a nested map removes that entry; ``None`` on a top-level field flows to
+        validation.
 
         Thread Safety:
             This method is NOT thread-safe for concurrent in-memory updates.
@@ -184,10 +200,6 @@ class PersistedSettings(BaseModel):
             Both updates are validated before any mutations occur. If either
             validation fails, the object remains unchanged.
 
-        Note:
-            Secret values are temporarily exposed in memory during the merge
-            operation. Merged dicts are cleared after use to minimize exposure.
-
         Raises:
             ValueError: If validation fails (sanitized to avoid secret leakage).
         """
@@ -197,42 +209,14 @@ class PersistedSettings(BaseModel):
         # Phase 1: Validate all updates before any mutations
         new_agent: AgentSettingsConfig | None = None
         new_conv: ConversationSettings | None = None
-        agent_merged: dict | None = None
         conv_merged: dict | None = None
 
         try:
             if isinstance(agent_update, dict):
-                # Check if this is a variant (agent_kind) switch
-                old_kind = self.agent_settings.agent_kind
-                new_kind = agent_update.get("agent_kind")
-                is_kind_switch = new_kind is not None and new_kind != old_kind
-
-                if is_kind_switch:
-                    # Variant replacement: validate the diff as-is rather than
-                    # deep-merging it onto the old variant. A kind switch picks a
-                    # different member of the AgentSettingsConfig union, and the
-                    # old variant's serialized fields are not a valid base for the
-                    # new one (e.g. ACP's acp_command has no place in
-                    # OpenHandsAgentSettings and would fail validation).
-                    #
-                    # Consequence (intentional): fields the two variants happen to
-                    # share (e.g. ``llm``) are NOT carried over — they fall back to
-                    # the new variant's defaults unless the caller restates them in
-                    # this same diff. Switching kinds is a fresh start on the new
-                    # variant, mirroring the frontend's "fresh base on kind switch"
-                    # behaviour. Callers that want to preserve a shared field must
-                    # include it in the switch payload.
-                    agent_merged = agent_update
-                else:
-                    # Same-kind update: deep-merge for incremental field edits
-                    agent_merged = _deep_merge(
-                        self.agent_settings.model_dump(
-                            mode="json", context={"expose_secrets": "plaintext"}
-                        ),
-                        agent_update,
-                    )
                 try:
-                    new_agent = validate_agent_settings(agent_merged)
+                    new_agent = apply_agent_settings_diff(
+                        self.agent_settings, agent_update
+                    )
                 except Exception as e:
                     # Use 'from None' to break exception chain - the original
                     # exception may contain secret values in Pydantic errors
@@ -257,7 +241,7 @@ class PersistedSettings(BaseModel):
             # validation. The agent-server doesn't interpret what's inside,
             # and ``misc_settings`` is not a secret container — the merged
             # dict is therefore stored directly without the post-commit
-            # clear-down used by ``agent_settings`` / ``conversation_settings``.
+            # clear-down used by ``conversation_settings``.
             misc_update = payload.get("misc_settings_diff")
             new_misc: dict[str, Any] | None = None
             if isinstance(misc_update, dict):
@@ -271,13 +255,13 @@ class PersistedSettings(BaseModel):
             if new_misc is not None:
                 self.misc_settings = new_misc
 
-            # Update active_profile if explicitly provided (including None to clear)
+            # Update pointers if explicitly provided (including None to clear)
             if "active_profile" in payload:
                 self.active_profile = payload["active_profile"]
+            if "active_agent_profile_id" in payload:
+                self.active_agent_profile_id = payload["active_agent_profile_id"]
         finally:
-            # Clear merged dicts to minimize plaintext exposure window
-            if agent_merged is not None:
-                agent_merged.clear()
+            # Clear conv_merged to minimize plaintext exposure window
             if conv_merged is not None:
                 conv_merged.clear()
 

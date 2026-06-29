@@ -148,6 +148,32 @@ def test_claude_sonnet_4_6_strips_temp_and_top_p():
     assert "top_p" not in out
 
 
+def test_bedrock_opus_4_8_strips_temp_top_p_without_thinking_block():
+    """Bedrock cross-region claude-opus-4-8 routes through the reasoning path.
+
+    LiteLLM does not (yet) recognize the Bedrock cross-region inference id as a
+    reasoning model, so the SDK-side override must mark it as one. It must take
+    the reasoning_effort path (which strips temperature/top_p) and NOT the
+    extended-thinking path, which would inject the legacy
+    ``thinking.type=enabled`` block + ``interleaved-thinking`` header that
+    Anthropic now rejects for this model (see reverted #3427 / revert #3441).
+    """
+    llm = DummyLLM(
+        model="bedrock/us.anthropic.claude-opus-4-8-v1:0",
+        top_p=1.0,  # SDK default
+        temperature=0.0,  # Often overridden by benchmarks (e.g. SWE-bench)
+        reasoning_effort="high",
+    )
+    out = select_chat_options(llm, user_kwargs={}, has_tools=True)
+
+    assert "temperature" not in out
+    assert "top_p" not in out
+    assert out.get("reasoning_effort") == "high"
+    # Must NOT take the legacy extended-thinking path.
+    assert "thinking" not in out
+    assert "anthropic-beta" not in out.get("extra_headers", {})
+
+
 def test_extended_thinking_budget_clamped_below_max_tokens():
     """Test that thinking.budget_tokens is clamped to max_output_tokens - 1."""
     # Case 1: extended_thinking_budget exceeds max_output_tokens

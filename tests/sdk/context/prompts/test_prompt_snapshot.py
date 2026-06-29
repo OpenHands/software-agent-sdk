@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.agent.base import _DEFAULT_SOUL
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
@@ -114,6 +115,10 @@ def _build_agent(cell: Cell) -> Agent:
             "enable_browser": cell.enable_browser,
             "llm_security_analyzer": cell.llm_security_analyzer,
             "cli_mode": cell.cli_mode,
+            # Pin soul_content to the built-in default so snapshots are
+            # deterministic regardless of whether ~/.openhands/SOUL.md exists
+            # on the machine running the tests.
+            "soul_content": _DEFAULT_SOUL,
         },
     )
 
@@ -189,6 +194,30 @@ def test_dynamic_context_with_secret_registry(tmp_path: Path) -> None:
         "dynamic_context__with_secret_registry",
         agent.get_dynamic_context(state) or "",
     )
+
+
+def test_soul_default_snapshot(tmp_path: Path) -> None:
+    """Full prompt with the built-in default soul matches the snapshot."""
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt_kwargs={"soul_content": _DEFAULT_SOUL},
+    )
+    _check_snapshot("soul__default", agent.static_system_message)
+
+
+def test_soul_custom_snapshot(tmp_path: Path) -> None:
+    """Full prompt with a custom soul_content matches the snapshot."""
+    llm = LLM(model=FAMILY_MODELS["anthropic"], usage_id="snapshot-llm")
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt_kwargs={
+            "soul_content": "You are a tiny cat agent with toe beans."
+        },
+    )
+    _check_snapshot("soul__custom", agent.static_system_message)
 
 
 @pytest.mark.parametrize("cell", MATRIX, ids=[c.id for c in MATRIX])

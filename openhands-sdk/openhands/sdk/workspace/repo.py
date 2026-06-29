@@ -21,6 +21,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import to_posix_path
+from openhands.sdk.utils.redact import (
+    redact_url_credentials,
+    redact_url_credentials_in_text,
+)
 
 
 logger = get_logger(__name__)
@@ -146,7 +150,10 @@ class RepoSource(BaseModel):
             return v
         # Normalize HTTP to HTTPS for security (token injection requires HTTPS)
         if v.startswith("http://"):
-            logger.warning(f"Converting HTTP URL to HTTPS for security: {v}")
+            logger.warning(
+                "Converting HTTP URL to HTTPS for security: "
+                f"{redact_url_credentials_in_text(v)}"
+            )
             v = "https://" + v[7:]
         # Allow HTTPS, git@, and file:// URLs (file:// for testing)
         if v.startswith(("https://", "git@", "file://")):
@@ -316,20 +323,6 @@ def _build_clone_url(url: str, provider: GitProvider, token: str | None) -> str:
     return url
 
 
-def _mask_url(url: str) -> str:
-    """Remove credentials from URL for display."""
-    if "://" not in url:
-        return url
-    return url.split("://")[0] + "://" + url.split("://")[-1].split("@")[-1]
-
-
-def _mask_token(text: str, token: str | None) -> str:
-    """Mask token in text for safe logging."""
-    if token:
-        text = text.replace(token, "***")
-    return text
-
-
 # Type for functions that fetch tokens by name (e.g., "github_token" -> token value)
 TokenFetcher = Callable[[str], str | None]
 
@@ -381,7 +374,7 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
         clone_url = repo.url
         provider_str = "local"
 
-    display_url = _mask_url(repo.url)
+    display_url = redact_url_credentials(repo.url)
     logger.info(f"[clone] Cloning {display_url} ({provider_str}) -> {dest.name}/")
 
     cmd = _build_clone_command(clone_url, dest, repo.ref)
@@ -395,7 +388,9 @@ def _clone_single_repo(repo: RepoSource, dest: Path, token: str | None) -> bool:
         return False
 
     if result.returncode != 0:
-        logger.warning(f"[clone] Failed: {_mask_token(result.stderr, token)}")
+        logger.warning(
+            f"[clone] Failed: {redact_url_credentials_in_text(result.stderr)}"
+        )
         return False
 
     # For SHA refs, we did a full clone and need to checkout the specific commit
@@ -454,7 +449,9 @@ def clone_repos(
             seen_urls.add(repo.url)
             unique_repos.append(repo)
         elif repo.url:
-            logger.warning(f"[clone] Skipping duplicate URL: {_mask_url(repo.url)}")
+            logger.warning(
+                f"[clone] Skipping duplicate URL: {redact_url_credentials(repo.url)}"
+            )
 
     if not unique_repos:
         logger.info("[clone] No repositories to clone after deduplication")
@@ -496,10 +493,10 @@ def clone_repos(
                     ref=repo.ref,
                 )
             else:
-                failed.append(_mask_url(repo.url))
+                failed.append(redact_url_credentials(repo.url))
         except Exception as e:
             # Don't let one bad repo stop the entire batch
-            display_url = _mask_url(repo.url) if repo.url else "<unknown>"
+            display_url = redact_url_credentials(repo.url) if repo.url else "<unknown>"
             logger.warning(f"[clone] Error processing {display_url}: {e}")
             failed.append(display_url)
 

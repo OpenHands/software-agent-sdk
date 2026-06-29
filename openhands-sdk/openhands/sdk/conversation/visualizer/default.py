@@ -394,15 +394,9 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         input_tokens = abbr(usage.prompt_tokens or 0)
         output_tokens = abbr(usage.completion_tokens or 0)
 
-        # Cache hit rate (prompt + cache)
-        prompt = usage.prompt_tokens or 0
-        cache_read = usage.cache_read_tokens or 0
-        # litellm/OpenAI convention: prompt_tokens includes cached reads, so
-        # prompt is the right denominator. ACP (claude-agent-acp) reports
-        # input_tokens excluding cached reads, in which case the two are
-        # disjoint and the total is prompt + cache_read.
-        denom = prompt + cache_read if cache_read > prompt else prompt
-        cache_rate = f"{(cache_read / denom * 100):.2f}%" if denom > 0 else "N/A"
+        # Cache hit rate is derived on Metrics; the visualizer just formats it.
+        rate = combined_metrics.cache_hit_rate
+        cache_rate = f"{rate * 100:.2f}%" if rate is not None else "N/A"
         reasoning_tokens = usage.reasoning_tokens or 0
 
         # Cost

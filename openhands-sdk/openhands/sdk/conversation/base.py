@@ -10,6 +10,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    TraceMetadataValue,
 )
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
@@ -17,6 +18,7 @@ from openhands.sdk.observability.laminar import (
     RootSpan,
     end_root_span,
     should_enable_observability,
+    start_child_span,
     start_root_span,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -26,6 +28,14 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+def _conversation_tag_attributes(
+    tags: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    if not tags:
+        return None
+    return {f"conversation.tags.{key}": value for key, value in tags.items()}
 
 
 if TYPE_CHECKING:
@@ -128,13 +138,23 @@ class BaseConversation(ABC):
         self._observability_root_span: RootSpan | None = None
 
     def _start_observability_span(
-        self, session_id: str, user_id: str | None = None
+        self,
+        session_id: str,
+        span_name: str = "conversation",
+        user_id: str | None = None,
+        metadata: dict[str, TraceMetadataValue] | None = None,
+        tags: list[str] | None = None,
+        conversation_tags: Mapping[str, str] | None = None,
     ) -> None:
         """Start a per-conversation observability root span.
 
         Args:
             session_id: The session ID to associate with the trace
+            span_name: Optional child span name to emit under the conversation root.
             user_id: Optional user ID to associate with the trace
+            metadata: Optional trace-level metadata to attach to observability backends
+            tags: Optional span tags to attach to the conversation root span
+            conversation_tags: Optional conversation tags to add as root span attributes
         """
         if not should_enable_observability():
             return
@@ -142,14 +162,22 @@ class BaseConversation(ABC):
             # Idempotent: never start two roots for one conversation.
             return
         self._observability_root_span = start_root_span(
-            "conversation", session_id=session_id, user_id=user_id
+            "conversation",
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            tags=tags,
+            attributes=_conversation_tag_attributes(conversation_tags),
         )
+        if span_name != "conversation":
+            start_child_span(self._observability_root_span, span_name, tags=tags)
 
     def _end_observability_span(self) -> None:
         """End the observability span if it hasn't been ended already."""
         if self._span_ended:
             return
-        end_root_span(self._observability_root_span)
+        if self._observability_root_span is not None:
+            end_root_span(self._observability_root_span)
         self._observability_root_span = None
         self._span_ended = True
 
@@ -355,6 +383,19 @@ class BaseConversation(ABC):
             NotImplementedError: If the tool has no executor
         """
         ...
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Implementations that support marketplace-registered plugins resolve the
+        reference against the conversation agent's registered marketplaces and
+        merge the plugin's skills, hooks, and MCP configuration into the agent.
+
+        Args:
+            plugin_ref: Plugin reference, either ``plugin-name`` or
+                ``plugin-name@marketplace-name``.
+        """
+        raise NotImplementedError("This conversation does not support loading plugins")
 
     @abstractmethod
     def fork(

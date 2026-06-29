@@ -132,6 +132,7 @@ When reviewing code, provide constructive feedback:
 - Agent-server Docker publish tags are defined centrally in `openhands-agent-server/openhands/agent_server/docker/build.py`; keep `server.yml` manifest publication derived from the emitted per-arch tags so SHA/branch/git-tag aliases stay in sync, while preserving the legacy `latest-<variant>` alias used by workspace defaults.
 - The published agent-server Docker images in `.github/workflows/server.yml` must pass `OPENHANDS_BUILD_GIT_SHA` and `OPENHANDS_BUILD_GIT_REF` as explicit `docker/build-push-action` build args; the workflow only uses `docker/build.py` for context/tag generation, so those runtime env vars are otherwise left at the Dockerfile `unknown` defaults.
 - The PyInstaller agent-server binary should copy OpenHands distribution metadata (`openhands-agent-server`, `openhands-sdk`, `openhands-tools`, `openhands-workspace`) in `agent-server.spec`, otherwise `/server_info` version lookups via `importlib.metadata` can fall back to `unknown` inside published binary images.
+- Agent-server deferred init (warm-pool / dormant mode) is driven by `Config.deferred_init` (env `OH_DEFERRED_INIT`). The `InitService` in `openhands-agent-server/openhands/agent_server/init_router.py` owns the dormant→initializing→ready transition and is registered on `app.state.init_service` only when `deferred_init=True`; the `require_initialized` dependency, added to the `/api/*` router, returns 503 while not `ready`. Bootstrap auth for `POST /api/init` uses the existing `secret_key` (`X-Init-API-Key` header) — the orchestrator already holds this key for encryption, and it is overwritten when the per-user runtime config arrives in the init body. The agent-server's 5xx exception handler rewrites `detail` on 503s, so warm-pool orchestrators should rely on the HTTP status code (not the body) when probing dormant state.
 
 
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
@@ -141,7 +142,7 @@ When reviewing code, provide constructive feedback:
 - Remote workspace git operations should call `/api/git/changes` and `/api/git/diff` via the `path` query parameter with slash-normalized strings; building those URLs with `pathlib.Path` leaks host-platform separators and breaks Windows paths. The grep tool now prefers `rg`, then system `grep`, then Python; both the real grep executor and the SDK's terminal-command compatibility fallback should keep that order. For grep parity, the Python fallback should hide dotfiles by default but still let explicit `include` globs surface files like `.env`, matching ripgrep. For glob parity, any symlink-preservation regression test should force the Python fallback path, because ripgrep availability changes whether the fallback implementation runs at all.
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
 - Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
-- Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets` and `ACPAgent._serialize_acp_env`). Do not hand-roll redaction logic in field serializers.
+- Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets`). Do not hand-roll redaction logic in field serializers.
 
 - `LookupSecret` normalizes hostless URLs against `OH_INTERNAL_SERVER_URL` (set by `openhands-agent-server.__main__` from the bound host/port, rewriting wildcard binds to loopback) and otherwise falls back to `http://127.0.0.1:8000`, so relative secret URLs can safely target the current agent-server instance.
 
@@ -205,9 +206,15 @@ consult each relevant package-level AGENTS.md.
 </DEV_SETUP>
 
 <PR_ARTIFACTS>
-# PR-Specific Documents
+# PR-Specific Evidence Documents
+
+The `.pr/` directory is intentionally temporary by repository policy: the
+`PR Artifacts` workflow (`.github/workflows/pr-artifacts.yml`) treats it as
+PR-only reviewer context and automatically removes it after PR approval.
 
 When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+
+You can also use the `.pr/` directory for evidence, such as logs, live-tests, live-test summary files.
 
 ## Usage
 
@@ -244,14 +251,14 @@ mkdir -p .pr
 </PR_ARTIFACTS>
 
 <PR_DESCRIPTION_HUMAN_CHECK>
-# Human-only PR description fields
+# Human-only PR description fields in PR template
 
-The `HUMAN:` section and the `A human has tested these changes.` checkbox in
-PR descriptions are reserved for human contributors only. AI agents
-MUST NOT add to, edit, move, remove, or check these fields. If the PR description
-CI fails because these fields are missing, empty, or unchecked, stop and ask the
-human user to update them in their own words. If the fields were already updated
-by a human, report the exact validator error rather than editing them yourself.
+Use the PR template. The `HUMAN:` section in PR descriptions is reserved for human
+contributors only. AI agents MUST NOT edit, move, or remove this field, only
+set the placeholder. If the PR description CI fails because this field is missing
+or empty, stop and ask the human user to update it in their own words. If
+the field was already updated by a human, report the exact validator error rather
+than editing it yourself.
 </PR_DESCRIPTION_HUMAN_CHECK>
 
 

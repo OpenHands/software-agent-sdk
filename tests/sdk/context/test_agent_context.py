@@ -1,5 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
+import re
+
 import pytest
 from pydantic import SecretStr
 
@@ -959,13 +961,13 @@ templates.",
         assert result == "2024-03-15T14:30:00+00:00"
 
     def test_get_formatted_datetime_with_datetime_object(self):
-        """Test get_formatted_datetime formats datetime as ISO 8601."""
+        """Datetime objects render to the minute: no seconds or offset."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_formatted_datetime()
-        assert result == "2024-03-15T14:30:00"
+        assert result == "2024-03-15T14:30"
 
     def test_get_formatted_datetime_with_none(self):
         """Test get_formatted_datetime returns None when current_datetime is None."""
@@ -984,16 +986,13 @@ templates.",
         # Verify current_datetime is set and is a datetime object
         assert context.current_datetime is not None
         assert isinstance(context.current_datetime, datetime)
-        # Regression for #3438: the default must be timezone-aware (not naive
-        # local time) so the datetime injected into the system prompt is
-        # unambiguous.
+        # The default field value is timezone-aware (the rendered string trims it).
         assert context.current_datetime.tzinfo is not None
-        # The bug surfaced in the rendered value injected into the prompt, not
-        # just the field: get_formatted_datetime() must carry a UTC offset.
+        # Rendered value is "YYYY-MM-DDTHH:MM": no seconds, no UTC offset.
         formatted = context.get_formatted_datetime()
         assert formatted is not None
-        assert "+" in formatted or "-" in formatted.split("T", 1)[1], (
-            f"formatted datetime should carry a UTC offset, got {formatted!r}"
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", formatted), (
+            f"formatted datetime should be YYYY-MM-DDTHH:MM, got {formatted!r}"
         )
         # Verify it's approximately the current time (within 1 second)
         assert before <= context.current_datetime <= after + timedelta(seconds=1)
@@ -1090,13 +1089,13 @@ templates.",
         """Test system message suffix with a datetime object."""
         from datetime import datetime
 
-        dt = datetime(2024, 3, 15, 14, 30, 0)
+        dt = datetime(2024, 3, 15, 14, 30, 45)
         context = AgentContext(current_datetime=dt)
         result = context.get_system_message_suffix()
 
         assert result is not None
         assert "<CURRENT_DATETIME>" in result
-        assert "The current date and time is: 2024-03-15T14:30:00" in result
+        assert "The current date and time is: 2024-03-15T14:30\n" in result
 
 
 def test_agent_context_secrets_raw_strings_redacted_by_default():

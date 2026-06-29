@@ -142,7 +142,7 @@ def decrypt_str_with_cipher_or_keep(
     object dying at construction).
 
     Building block for the dict-of-string secret-bearing fields
-    (`acp_env`, `agent_context.secrets`, MCP server `env`/`headers`)
+    (`agent_context.secrets`, MCP server `env`/`headers`)
     where each value is a per-key plaintext that's separately
     encrypted at rest — they can't be typed as :class:`SecretStr`
     because their keys are user-supplied.
@@ -176,10 +176,10 @@ def validate_secret_dict(
 
     .. code-block:: python
 
-        @field_validator("acp_env", mode="before")
+        @field_validator("env", mode="before")
         @classmethod
-        def _decrypt_acp_env(cls, value, info):
-            return validate_secret_dict(value, info, description="ACP env")
+        def _decrypt_env(cls, value, info):
+            return validate_secret_dict(value, info, description="MCP env")
 
     No-ops when the field isn't a dict (lets downstream validation
     raise the canonical type error), and when no cipher is in context

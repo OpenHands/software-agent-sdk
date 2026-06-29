@@ -164,7 +164,6 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
         "acp_server",
         "acp_command",
         "acp_args",
-        "acp_env",
         "acp_model",
         "acp_session_mode",
         "acp_prompt_timeout",
@@ -209,6 +208,20 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_conversation_settings_validates_observability_metadata() -> None:
+    settings = ConversationSettings(observability_metadata={"repo": "OpenHands/sdk"})
+    assert settings.observability_metadata == {"repo": "OpenHands/sdk"}
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata={"": "missing-key"})
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata=[])  # type: ignore[arg-type]
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_tags=[1, 2])  # type: ignore[list-item]
 
 
 def test_conversation_settings_model_dump_roundtrip() -> None:
@@ -869,9 +882,34 @@ def test_acp_create_agent_uses_server_default_command(
     assert agent.acp_command == [
         "npx",
         "-y",
-        "@agentclientprotocol/claude-agent-acp@0.30.0",
+        "@agentclientprotocol/claude-agent-acp@0.44.0",
     ]
     assert agent.acp_model == "claude-opus-4-6"
+    # The authoritative provider key is carried onto the agent.
+    assert agent.acp_server == "claude-code"
+
+
+def test_acp_create_agent_carries_provider_key() -> None:
+    """``create_agent`` stamps the provider key onto the agent for every choice.
+
+    ``acp_command`` does not reliably reverse-map to a provider, so the key must
+    ride the agent (and thus ``ConversationInfo.agent``) for consumers to resolve
+    a brand label / model list. Custom carries through verbatim; an agent built
+    directly (not from settings) defaults to ``None``; and the key survives a
+    serialization round-trip through the ``AgentBase`` discriminated union.
+    """
+    for server in ("claude-code", "codex", "gemini-cli", "custom"):
+        kwargs: dict[str, Any] = {"acp_server": server}
+        if server == "custom":
+            kwargs["acp_command"] = ["my-acp"]
+        agent = ACPAgentSettings(**kwargs).create_agent()
+        assert agent.acp_server == server
+
+    assert ACPAgent(acp_command=["x"]).acp_server is None
+
+    agent = ACPAgentSettings(acp_server="gemini-cli").create_agent()
+    reloaded = ACPAgent.model_validate_json(agent.model_dump_json())
+    assert reloaded.acp_server == "gemini-cli"
 
 
 def test_acp_resolve_command_for_known_servers(
@@ -995,7 +1033,7 @@ def test_acp_resolve_command_rewrites_versioned_npx_to_pinned_binary(
     monkeypatch.setattr(shutil, "which", _which_returning("codex-acp"))
     for pkg in (
         "@zed-industries/codex-acp",
-        "@zed-industries/codex-acp@0.15.0",
+        "@zed-industries/codex-acp@0.16.0",
         "@zed-industries/codex-acp@0.11.1",
     ):
         settings = ACPAgentSettings(
@@ -1018,7 +1056,7 @@ def test_acp_resolve_command_keeps_npx_when_binary_absent(
     assert settings.resolve_acp_command() == [
         "npx",
         "-y",
-        "@zed-industries/codex-acp@0.15.0",
+        "@zed-industries/codex-acp@0.16.0",
     ]
 
 
@@ -1139,19 +1177,6 @@ def test_acp_resolve_provider_env_custom_server_empty() -> None:
         assert settings.resolve_provider_env() == {}
 
 
-def test_acp_resolve_acp_env_returns_only_user_entries() -> None:
-    # Provider creds are no longer folded into acp_env; resolve_acp_env returns
-    # only the user's explicit env vars. The provider api_key now flows through
-    # agent_context.secrets instead (see create_agent).
-    settings = ACPAgentSettings(
-        acp_server="claude-code",
-        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
-        acp_env={"MY_CUSTOM_VAR": "value"},
-    )
-
-    assert settings.resolve_acp_env() == {"MY_CUSTOM_VAR": "value"}
-
-
 def test_acp_create_agent_ignores_llm_credentials() -> None:
     # llm.api_key/base_url are deprecated (llm is removed in 1.33.0) and no
     # longer folded into agent_context.secrets: an LLM-profile base_url would
@@ -1167,13 +1192,11 @@ def test_acp_create_agent_ignores_llm_credentials() -> None:
             base_url="https://llm-proxy.example.com",
         ),
         agent_context=context,
-        acp_env={"MY_VAR": "v"},
     )
 
     with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
-    assert agent.acp_env == {"MY_VAR": "v"}
     # The caller's secrets pass through untouched; no provider creds appear.
     assert agent.agent_context is not None
     assert dict(agent.agent_context.secrets or {}) == {"GITHUB_TOKEN": "ghp_test"}
@@ -1190,7 +1213,6 @@ def test_acp_create_agent_credentials_warn_even_without_context() -> None:
     with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.llm is deprecated"):
         agent = settings.create_agent()
 
-    assert agent.acp_env == {}
     assert agent.agent_context is None
 
 
@@ -1220,24 +1242,6 @@ def test_acp_create_agent_passes_caller_context_through() -> None:
     agent = settings.create_agent()
 
     assert agent.agent_context is context
-
-
-def test_acp_env_emits_deprecation_warning() -> None:
-    # acp_env is deprecated (removed in 1.29.0); using it warns so callers
-    # migrate to the secret_registry channel before the field is deleted.
-    settings = ACPAgentSettings(acp_server="claude-code", acp_env={"MY_VAR": "v"})
-    with pytest.warns(DeprecationWarning, match=r"ACPAgentSettings\.acp_env"):
-        assert settings.resolve_acp_env() == {"MY_VAR": "v"}
-
-
-def test_acp_env_empty_does_not_warn() -> None:
-    import warnings
-
-    settings = ACPAgentSettings(acp_server="claude-code")
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        settings.resolve_acp_env()
-    assert not [w for w in caught if "acp_env" in str(w.message)]
 
 
 def test_llm_agent_settings_public_alias_removed() -> None:
@@ -1328,62 +1332,6 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 # ---------------------------------------------------------------------------
 # Secret redaction in settings serialization
 # ---------------------------------------------------------------------------
-
-
-def test_acp_agent_settings_acp_env_redacted_by_default() -> None:
-    settings = ACPAgentSettings(
-        acp_command=["echo", "test"],
-        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
-    )
-
-    assert settings.acp_env["OPENAI_API_KEY"] == "sk-real-secret"
-    assert "sk-real-secret" not in settings.model_dump_json()
-    assert settings.model_dump(mode="json")["acp_env"] == {
-        "OPENAI_API_KEY": "**********"
-    }
-
-    exposed = settings.model_dump(mode="json", context={"expose_secrets": True})
-    assert exposed["acp_env"] == {"OPENAI_API_KEY": "sk-real-secret"}
-
-
-def test_acp_agent_settings_acp_env_encrypts_with_cipher() -> None:
-    """ACP env persistence should mirror other secret-bearing settings.
-
-    The on-disk path encrypts values with a cipher, and loading with the same
-    cipher must recover plaintext so ACP agents receive usable environment
-    variables after settings are read back.
-    """
-    from openhands.sdk.utils.cipher import Cipher
-
-    settings = ACPAgentSettings(
-        acp_command=["echo", "test"],
-        acp_env={"OPENAI_API_KEY": "sk-real-secret"},
-    )
-    cipher = Cipher(secret_key="test-encryption-key")
-
-    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
-    encrypted_value = dumped["acp_env"]["OPENAI_API_KEY"]
-
-    assert encrypted_value.startswith("gAAAA")
-    assert "sk-real-secret" not in json.dumps(dumped)
-
-    restored = ACPAgentSettings.model_validate(dumped, context={"cipher": cipher})
-    assert restored.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
-
-    restored_from_persisted = validate_agent_settings(
-        dumped, context={"cipher": cipher}
-    )
-    assert isinstance(restored_from_persisted, ACPAgentSettings)
-    assert restored_from_persisted.acp_env == {"OPENAI_API_KEY": "sk-real-secret"}
-
-    legacy_plaintext = ACPAgentSettings.model_validate(
-        {
-            "acp_command": ["echo", "test"],
-            "acp_env": {"OPENAI_API_KEY": "sk-legacy-plaintext"},
-        },
-        context={"cipher": cipher},
-    )
-    assert legacy_plaintext.acp_env == {"OPENAI_API_KEY": "sk-legacy-plaintext"}
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
@@ -1592,6 +1540,56 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
 
 
+def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    settings = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config)
+
+    blob = settings.model_dump_json()
+    assert "sk-mcp-secret" not in blob
+    assert "tok-mcp-secret" not in blob
+
+    exposed = settings.model_dump(context={"expose_secrets": True})
+    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
+    assert leaky["headers"]["Authorization"] == "Bearer tok-mcp-secret"
+
+
+def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
+    # create_agent must hand the subprocess real env/headers (the field serializer
+    # redacts mcp_config for transit/storage only).
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "leaky": {
+                    "command": "echo",
+                    "args": ["mcp"],
+                    "env": {"API_KEY": "sk-mcp-secret"},
+                    "headers": {"Authorization": "Bearer tok-mcp-secret"},
+                }
+            }
+        }
+    )
+    agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
+
+    assert isinstance(agent, ACPAgent)
+    assert agent.mcp_config["mcpServers"]["leaky"]["env"]["API_KEY"] == "sk-mcp-secret"
+    assert (
+        agent.mcp_config["mcpServers"]["leaky"]["headers"]["Authorization"]
+        == "Bearer tok-mcp-secret"
+    )
+
+
 # ---------------------------------------------------------------------------
 # AgentSettingsBase — shared interface
 # ---------------------------------------------------------------------------
@@ -1708,3 +1706,279 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
     assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
     assert agent.agent_kind == "acp"
+
+
+def test_llm_subscription_fields_roundtrip() -> None:
+    settings = validate_agent_settings(
+        {
+            "llm": {
+                "model": "gpt-5.2-codex",
+                "auth_type": "subscription",
+                "subscription_vendor": "openai",
+            }
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.llm.auth_type == "subscription"
+    assert settings.llm.subscription_vendor == "openai"
+    dumped = settings.model_dump(mode="json", exclude_none=True)
+    assert dumped["llm"]["auth_type"] == "subscription"
+    assert dumped["llm"]["subscription_vendor"] == "openai"
+    assert "api_key" not in dumped["llm"]
+
+
+def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    original_llm = LLM(
+        model="gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm = LLM(model="openai/gpt-5.2-codex")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm is original_llm
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    agent = OpenHandsAgentSettings(llm=original_llm).create_agent()
+
+    assert agent.llm is runtime_llm
+    assert agent.llm.is_subscription is True
+
+
+def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.from_persisted(
+        {
+            "model": "gpt-5.2-codex",
+            "auth_type": "subscription",
+            "subscription_vendor": "openai",
+            "schema_version": 1,
+        }
+    )
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        assert llm.model == "gpt-5.2-codex"
+        return runtime_llm
+
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
+    monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.load_from_env()
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+
+    class UnexpectedAuth:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("runtime subscription LLM should not be rehydrated")
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
+    runtime_llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm._is_subscription = True
+
+    assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+@pytest.mark.asyncio
+async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        async def refresh_if_needed(self):
+            return credentials
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("async transport must not sync-refresh credentials")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+
+    api_key, extra_headers = await llm._aget_litellm_auth_values()
+    assert api_key == "access-token"
+    assert extra_headers["chatgpt-account-id"] == "account-id"
+    assert llm.extra_headers is None
+
+
+def test_sync_subscription_api_key_uses_valid_runtime_credentials(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("valid runtime credentials should not sync-refresh")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+    llm._subscription_credentials = credentials
+
+    api_key, extra_headers = llm._get_litellm_auth_values()
+    assert api_key == "access-token"
+    assert extra_headers["chatgpt-account-id"] == "account-id"
+    assert llm.extra_headers is None
+
+
+def test_openai_subscription_create_llm_serializes_subscription_auth(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+    from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+    monkeypatch.setattr(openai_auth, "_extract_chatgpt_account_id", lambda _: None)
+
+    llm = OpenAISubscriptionAuth().create_llm(
+        model="gpt-5.2-codex",
+        credentials=OAuthCredentials(
+            vendor="openai",
+            access_token="access-token",
+            refresh_token="refresh-token",
+            expires_at=4_102_444_800_000,
+        ),
+        usage_id="profile:test",
+    )
+
+    assert llm.auth_type == "subscription"
+    assert llm.subscription_vendor == "openai"
+    assert llm.api_key is None
+    assert llm.to_persisted()["auth_type"] == "subscription"
+    assert llm.to_persisted()["subscription_vendor"] == "openai"
+    assert "api_key" not in llm.to_persisted(context={"expose_secrets": "plaintext"})
+    assert "base_url" not in llm.to_persisted()
+
+
+def test_create_subscription_llm_from_config_preserves_non_auth_options(
+    monkeypatch,
+) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    captured: dict[str, object] = {}
+
+    class FakeAuth:
+        def refresh_if_needed_sync(self):
+            return OAuthCredentials(
+                vendor="openai",
+                access_token="access-token",
+                refresh_token="refresh-token",
+                expires_at=4_102_444_800_000,
+            )
+
+        def create_llm(self, **kwargs):
+            captured.update(kwargs)
+            return LLM(
+                model=f"openai/{kwargs['model']}",
+                auth_type="subscription",
+                subscription_vendor="openai",
+                usage_id=kwargs["usage_id"],
+                timeout=kwargs["timeout"],
+            )
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    source = LLM(
+        model="gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+        usage_id="profile:test",
+        timeout=123,
+    )
+
+    runtime = openai_auth.create_subscription_llm_from_config(source)
+
+    assert runtime.usage_id == "profile:test"
+    assert runtime.timeout == 123
+    assert captured["usage_id"] == "profile:test"
+    assert captured["timeout"] == 123
+    assert "api_key" not in captured
+    assert "base_url" not in captured

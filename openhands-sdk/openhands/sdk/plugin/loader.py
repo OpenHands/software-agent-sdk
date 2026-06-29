@@ -15,6 +15,7 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
 from openhands.sdk.skills.utils import SecretLookup, expand_mcp_variables
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 if TYPE_CHECKING:
@@ -77,7 +78,7 @@ def load_plugins(
     all_hooks: list[HookConfig] = []
 
     for spec in plugin_specs:
-        logger.info(f"Loading plugin from {spec.source}")
+        logger.info(f"Loading plugin from {redact_url_credentials(spec.source)}")
 
         # Fetch (downloads if needed, returns cached path)
         path = Plugin.fetch(

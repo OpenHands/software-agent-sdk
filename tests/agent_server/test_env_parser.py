@@ -21,7 +21,8 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.config import Config
+from openhands.agent_server.config import Config, load_config
+from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
     MISSING,
     BoolEnvParser,
@@ -441,6 +442,7 @@ def test_config_class_parsing(clean_env):
     os.environ["OH_SESSION_API_KEYS_0"] = "key1"
     os.environ["OH_SESSION_API_KEYS_1"] = "key2"
     os.environ["OH_ALLOW_CORS_ORIGINS_0"] = "http://localhost:3000"
+    os.environ["OH_ALLOW_CORS_ORIGIN_REGEX"] = r"https://.*\.example\.com"
     os.environ["OH_CONVERSATIONS_PATH"] = "/custom/conversations"
     os.environ["OH_WORKSPACE_PATH"] = "/custom/workspace"
     os.environ["OH_ENABLE_VSCODE"] = "false"
@@ -449,9 +451,56 @@ def test_config_class_parsing(clean_env):
 
     assert config.session_api_keys == ["key1", "key2"]
     assert config.allow_cors_origins == ["http://localhost:3000"]
+    assert config.allow_cors_origin_regex == r"https://.*\.example\.com"
     assert config.conversations_path == Path("/custom/conversations")
     assert config.workspace_path == Path("/custom/workspace")
     assert config.enable_vscode is False
+
+
+def test_config_file_parsing(tmp_path, clean_env):
+    """JSON config files should populate the same Config fields as env vars."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "session_api_keys": ["file-key"],
+                "allow_cors_origins": ["https://frontend.example.com"],
+                "allow_cors_origin_regex": r"https://.*\.example\.com",
+                "conversations_path": str(tmp_path / "conversations"),
+                "workspace_path": str(tmp_path / "workspace"),
+                "enable_vscode": False,
+            }
+        )
+    )
+
+    config = load_config(config_path)
+
+    assert config.session_api_keys == ["file-key"]
+    assert config.allow_cors_origins == ["https://frontend.example.com"]
+    assert config.allow_cors_origin_regex == r"https://.*\.example\.com"
+    assert config.conversations_path == tmp_path / "conversations"
+    assert config.workspace_path == tmp_path / "workspace"
+    assert config.enable_vscode is False
+
+
+def test_config_file_parsing_with_env_override(tmp_path, clean_env):
+    """Environment variables should override JSON config file values."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "allow_cors_origins": ["https://file.example.com"],
+                "allow_cors_origin_regex": r"https://file\\..+",
+            }
+        )
+    )
+    os.environ["OH_ALLOW_CORS_ORIGINS_0"] = "https://env.example.com"
+    os.environ["OH_ALLOW_CORS_ORIGIN_REGEX"] = r"https://env\\..+"
+
+    config = load_config(config_path)
+
+    assert config.allow_cors_origins == ["https://env.example.com"]
+    assert config.allow_cors_origin_regex == r"https://env\\..+"
 
 
 def test_config_webhook_specs_parsing(clean_env):
@@ -1380,3 +1429,14 @@ def test_discriminated_union_single_empty_kind_no_variables(clean_env):
     # because there's no indication that this entry is configured
     result = parser.from_env("TEST")
     assert result is MISSING
+
+
+def test_config_lease_ttl_seconds_default(clean_env):
+    config = from_env(Config, "OH")
+    assert config.lease_ttl_seconds == DEFAULT_LEASE_TTL_SECONDS
+
+
+def test_config_lease_ttl_seconds_env_var(clean_env):
+    os.environ["OH_LEASE_TTL_SECONDS"] = "0"
+    config = from_env(Config, "OH")
+    assert config.lease_ttl_seconds == 0.0

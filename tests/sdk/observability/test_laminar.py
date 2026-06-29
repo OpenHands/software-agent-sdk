@@ -438,6 +438,30 @@ def test_root_span_skips_user_id_when_none():
         os.environ.pop("LMNR_PROJECT_API_KEY", None)
 
 
+def test_root_span_sets_attributes():
+    """RootSpan must attach provided attributes to the underlying span."""
+    os.environ["LMNR_PROJECT_API_KEY"] = "test-key"
+    try:
+        from lmnr import Laminar
+
+        from openhands.sdk.observability import laminar as lam
+
+        mock_span = MagicMock(name="span")
+
+        with patch.object(Laminar, "start_span", return_value=mock_span):
+            lam._observability_enabled = True
+            root = lam.RootSpan(
+                "conversation",
+                attributes={"conversation.tags.automationid": "auto-1"},
+            )
+            assert root.span is mock_span
+            mock_span.set_attribute.assert_called_once_with(
+                "conversation.tags.automationid", "auto-1"
+            )
+    finally:
+        os.environ.pop("LMNR_PROJECT_API_KEY", None)
+
+
 def test_two_concurrent_conversations_do_not_collide():
     """Each conversation must own its own root span (no global stack).
 
@@ -496,6 +520,36 @@ def contextlib_compat():
     import contextlib
 
     return contextlib.contextmanager
+
+
+def test_root_span_sets_trace_metadata_and_tags():
+    from openhands.sdk.observability.laminar import RootSpan
+
+    fake_span = MagicMock()
+
+    with patch("lmnr.Laminar") as mock_laminar:
+        mock_laminar.start_span.return_value = fake_span
+
+        RootSpan(
+            "conversation",
+            session_id="session-1",
+            metadata={"repo_name": "OpenHands/software-agent-sdk"},
+            tags=["repo:OpenHands/software-agent-sdk"],
+        )
+
+        mock_laminar.start_span.assert_called_once_with("conversation")
+        mock_laminar.use_span.assert_called_once_with(
+            fake_span,
+            record_exception=False,
+            set_status_on_exception=False,
+        )
+        mock_laminar.set_trace_session_id.assert_called_once_with("session-1")
+        mock_laminar.set_trace_metadata.assert_called_once_with(
+            {"repo_name": "OpenHands/software-agent-sdk"}
+        )
+        mock_laminar.set_span_tags.assert_called_once_with(
+            ["repo:OpenHands/software-agent-sdk"]
+        )
 
 
 def test_deprecated_shims_are_removed():

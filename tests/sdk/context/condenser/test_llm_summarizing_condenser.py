@@ -1,8 +1,14 @@
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from litellm.types.utils import ModelResponse
+from litellm.types.utils import (
+    Choices,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    Usage,
+)
+from pydantic import SecretStr
 
 from openhands.sdk.context.condenser.base import (
     CondensationRequirement,
@@ -76,6 +82,9 @@ def mock_llm() -> LLM:
     mock_llm.reasoning_effort = None
     mock_llm.litellm_extra_body = {}
     mock_llm.temperature = 0.0
+    # Streaming is off by default (matches LLM.stream's default), so the
+    # condenser uses this LLM directly without copying it.
+    mock_llm.stream = False
 
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None
@@ -610,9 +619,7 @@ def test_condensation_requirement_returns_none(
 @pytest.mark.parametrize(
     "reasons",
     [
-        {Reason.TOKENS},
         {Reason.EVENTS},
-        {Reason.TOKENS, Reason.EVENTS},
     ],
 )
 def test_condensation_requirement_returns_soft(
@@ -631,6 +638,28 @@ def test_condensation_requirement_returns_soft(
     ):
         result = condenser.condensation_requirement(view)
         assert result == CondensationRequirement.SOFT
+
+
+@pytest.mark.parametrize(
+    "reasons",
+    [
+        {Reason.TOKENS},
+        {Reason.TOKENS, Reason.EVENTS},
+    ],
+)
+def test_condensation_requirement_returns_hard_for_token_pressure(
+    mock_llm: LLM, reasons: set[Reason]
+) -> None:
+    """Token pressure should trigger before the next LLM request can overflow."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(10)]
+    view = View.from_events(events)
+
+    with patch.object(
+        LLMSummarizingCondenser, "get_condensation_reasons", return_value=reasons
+    ):
+        result = condenser.condensation_requirement(view)
+        assert result == CondensationRequirement.HARD
 
 
 @pytest.mark.parametrize(
@@ -851,3 +880,110 @@ def test_llm_error_triggers_hard_context_reset(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
     assert cast(MagicMock, mock_llm.completion).call_count == 2
+
+
+def _streaming_llm() -> LLM:
+    """A real LLM with streaming enabled, as a long-running conversation has."""
+    return LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="summarizer-test",
+        stream=True,
+    )
+
+
+def _summary_response(content: str = "A summary") -> ModelResponse:
+    return ModelResponse(
+        id="resp-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_summarization_disables_streaming_when_llm_streams(mock_transport) -> None:
+    """Regression test for issue #3902: a ``stream=True`` LLM must still summarize
+    even though the condenser passes no ``on_token`` callback."""
+    mock_transport.return_value = _summary_response("A summary")
+
+    llm = _streaming_llm()
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on a copy, not the agent's own LLM (autospec =>
+    # self is the first positional arg).
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    summarizing_llm = mock_transport.call_args.args[0]
+    assert summarizing_llm is not llm
+    assert summarizing_llm.stream is False
+    assert llm.stream is True  # original untouched (model_copy is non-mutating)
+    # Token usage is still counted: the copy shares the original's metrics.
+    usage = llm.metrics.accumulated_token_usage
+    assert usage is not None
+    assert usage.prompt_tokens == 10
+    assert usage.completion_tokens == 5
+
+
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.LLM._atransport_call", new_callable=AsyncMock)
+async def test_async_summarization_disables_streaming_when_llm_streams(
+    mock_atransport,
+) -> None:
+    """Async variant of the issue #3902 regression test (aget_condensation)."""
+    mock_atransport.return_value = _summary_response("A summary")
+
+    llm = _streaming_llm()
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = await condenser.aget_condensation(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    mock_atransport.assert_awaited_once()
+    assert mock_atransport.call_args.kwargs["enable_streaming"] is False
+    assert mock_atransport.call_args.kwargs["on_token"] is None
+    assert llm.stream is True
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_summarization_uses_llm_as_is_when_not_streaming(mock_transport) -> None:
+    """When streaming is off, the condenser summarizes with the LLM unchanged."""
+    mock_transport.return_value = _summary_response("A summary")
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test-key"),
+        usage_id="summarizer-test",
+        stream=False,
+    )
+    condenser = LLMSummarizingCondenser(llm=llm, max_size=10, keep_first=3)
+
+    events: list[Event] = [message_event(f"Event {i}") for i in range(11)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result.summary == "A summary"
+    # The exact same LLM instance is used (no copy when not streaming).
+    assert mock_transport.call_args.args[0] is llm

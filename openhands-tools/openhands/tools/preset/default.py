@@ -3,9 +3,7 @@
 from pathlib import Path
 
 from openhands.sdk import Agent, agent_definition_to_factory, load_agents_from_dir
-from openhands.sdk.context.condenser import (
-    LLMSummarizingCondenser,
-)
+from openhands.sdk.context.condenser import default_condenser
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
@@ -68,12 +66,8 @@ def get_default_tools(
 
 
 def get_default_condenser(llm: LLM) -> CondenserBase:
-    # Create a condenser to manage the context. The condenser will automatically
-    # truncate conversation history when it exceeds max_size, and replaces the dropped
-    # events with an LLM-generated summary.
-    condenser = LLMSummarizingCondenser(llm=llm, max_size=80, keep_first=4)
-
-    return condenser
+    # Shared with spawned sub-agents (see sdk default_condenser) so both stay in sync.
+    return default_condenser(llm)
 
 
 def get_default_agent(

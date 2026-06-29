@@ -1,16 +1,18 @@
+from __future__ import annotations
+
 import contextlib
 import functools
 import inspect
 import sys
-from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Final, Literal
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
 
 
 if TYPE_CHECKING:
-    pass
+    from openhands.sdk.conversation.types import TraceMetadataValue
 
 
 logger = get_logger(__name__)
@@ -253,21 +255,39 @@ class RootSpan:
         name: str,
         session_id: str | None = None,
         user_id: str | None = None,
+        attributes: Mapping[str, str] | None = None,
+        metadata: dict[str, TraceMetadataValue] | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         from lmnr import Laminar
 
         # ``start_span`` returns a span without attaching it as the current
         # OTel context; we'll restore it on every entry point via ``use_span``.
         self.span = Laminar.start_span(name)
-        if session_id or user_id:
-            # ``set_trace_session_id`` / ``set_trace_user_id`` require an
-            # active span; briefly enter the span context to apply them.
+        if attributes:
             with contextlib.suppress(Exception):
-                with Laminar.use_span(self.span):
+                for key, value in attributes.items():
+                    self.span.set_attribute(key, value)
+        if session_id or user_id or metadata or tags:
+            # These trace/span helpers require an active span; briefly enter
+            # the span context to apply conversation-level observability data.
+            with contextlib.suppress(Exception):
+                with Laminar.use_span(
+                    self.span,
+                    # Don't mark the span ERROR if a helper raises.
+                    record_exception=False,
+                    set_status_on_exception=False,
+                ):
                     if session_id:
                         Laminar.set_trace_session_id(session_id)
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
+                    if metadata:
+                        # dict is invariant: dict[str, TraceMetadataValue] is
+                        # not assignable to dict[str, Any] without a cast.
+                        Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
+                    if tags:
+                        Laminar.set_span_tags(tags)
         self._ended = False
 
     def end(self) -> None:
@@ -285,6 +305,9 @@ def start_root_span(
     name: str,
     session_id: str | None = None,
     user_id: str | None = None,
+    attributes: Mapping[str, str] | None = None,
+    metadata: dict[str, TraceMetadataValue] | None = None,
+    tags: list[str] | None = None,
 ) -> RootSpan | None:
     """Create a long-lived root span for an owning object.
 
@@ -293,7 +316,14 @@ def start_root_span(
     if not should_enable_observability():
         return None
     try:
-        return RootSpan(name, session_id=session_id, user_id=user_id)
+        return RootSpan(
+            name,
+            session_id=session_id,
+            user_id=user_id,
+            attributes=attributes,
+            metadata=metadata,
+            tags=tags,
+        )
     except Exception:
         logger.debug("Failed to create observability root span", exc_info=True)
         return None
@@ -304,6 +334,29 @@ def end_root_span(root: RootSpan | None) -> None:
     if root is None:
         return
     root.end()
+
+
+def start_child_span(
+    root: RootSpan | None,
+    name: str,
+    tags: list[str] | None = None,
+) -> None:
+    """Create and immediately end a child span under a conversation root span."""
+    if root is None or root.span is None:
+        return
+    try:
+        from lmnr import Laminar
+
+        with Laminar.use_span(
+            root.span,
+            record_exception=False,
+            set_status_on_exception=False,
+        ):
+            with Laminar.start_as_current_span(name=name):
+                if tags:
+                    Laminar.set_span_tags(tags)
+    except Exception:
+        logger.debug("Failed to create observability child span", exc_info=True)
 
 
 @contextlib.contextmanager

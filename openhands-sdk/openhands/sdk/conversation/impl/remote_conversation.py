@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -673,6 +674,9 @@ class RemoteConversation(BaseConversation):
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
         client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -706,6 +710,10 @@ class RemoteConversation(BaseConversation):
                       have no server-side executor — when the agent calls them an
                       ActionEvent is emitted over the WebSocket and the client
                       handles execution via callbacks.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                      backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -790,9 +798,19 @@ class RemoteConversation(BaseConversation):
                     if client_tools
                     else []
                 ),
-                # Include tags if provided
-                "tags": tags or {},
+                # Include tags and observability metadata if provided
+                "tags": tags if tags is not None else {},
+                "observability_metadata": observability_metadata
+                if observability_metadata is not None
+                else {},
+                "observability_tags": observability_tags
+                if observability_tags is not None
+                else [],
+                "observability_span_name": observability_span_name,
+                "user_id": user_id,
             }
+            if user_id:
+                payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -957,7 +975,14 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id), user_id=user_id)
+        self._start_observability_span(
+            str(self._id),
+            span_name=observability_span_name,
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
@@ -1350,6 +1375,14 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"{self._conversation_action_base_path}/{self._id}/interrupt",
+        )
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            json={"plugin_ref": plugin_ref},
         )
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:

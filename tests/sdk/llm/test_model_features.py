@@ -68,6 +68,16 @@ def test_model_matches(name, pattern, expected):
         ("claude-fable-5", True),
         ("anthropic/claude-fable-5", True),
         ("litellm_proxy/anthropic/claude-fable-5", True),
+        # claude-opus-4-8: LiteLLM recognizes the first-party id, but not the
+        # Bedrock cross-region inference ids, which must be caught by the
+        # SDK-side override so temperature/top_p are stripped before the request
+        # reaches Anthropic (which rejects temperature for this model).
+        ("claude-opus-4-8", True),
+        ("anthropic/claude-opus-4-8", True),
+        ("bedrock/us.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/eu.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/apac.anthropic.claude-opus-4-8-v1:0", True),
+        ("bedrock/global.anthropic.claude-opus-4-8-v1:0", True),
         # LiteLLM proxy with deployment path prefixes (prod/, dev/, staging/, test/)
         ("litellm_proxy/prod/claude-opus-4-5-20251101", True),
         ("litellm_proxy/dev/claude-opus-4-5", True),
@@ -126,6 +136,12 @@ def test_extended_thinking_support(model, expected_extended_thinking):
         ("claude-sonnet-4-6", True),
         ("claude-opus-4-5", True),
         ("claude-opus-4-6", True),
+        # claude-fable-5 supports prompt caching but is too new for LiteLLM
+        # metadata, so it must be detected via the local allowlist across the
+        # raw, provider-prefixed, and litellm_proxy-prefixed forms.
+        ("claude-fable-5", True),
+        ("anthropic/claude-fable-5", True),
+        ("litellm_proxy/anthropic/claude-fable-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
