@@ -1,13 +1,9 @@
 """Sub-agents router for OpenHands Agent Server.
 
-Exposes a single read endpoint that lists the file-based and built-in
-sub-agents available to a workspace, mirroring the read path of
-``skills_router`` (``POST /skills``). There is intentionally no CRUD here:
-the sub-agents catalog is discovered from disk + built-ins and is not mutated
-through this API.
-
-Named ``sub_agents`` (not ``agents``) to distinguish these delegate sub-agents
-from the top-level agent and from ``agent_profiles``.
+A single read endpoint listing the file-based and built-in sub-agents available
+to a workspace (mirrors ``skills_router``'s ``POST /skills``). No CRUD: the
+catalog is discovered, not mutated. Named ``sub_agents`` to distinguish these
+delegate agents from the top-level agent and ``agent_profiles``.
 """
 
 from typing import Any
@@ -50,12 +46,11 @@ class SubAgentsRequest(BaseModel):
 
 
 class SubAgentInfo(BaseModel):
-    """Sub-agent information returned by the API.
+    """Lossless view of an ``AgentDefinition`` returned by the API.
 
-    A lossless view of an ``AgentDefinition``: every frontmatter-settable field
-    is exposed (plus the discovered ``level``/``source`` and a convenience
-    ``is_builtin`` flag), and ``system_prompt`` (the Markdown body) rides inline
-    so a detail view needs no separate content fetch.
+    Every frontmatter field plus the discovered ``level``/``source``, an
+    ``is_builtin`` flag, and the inline ``system_prompt`` (Markdown body) so a
+    detail view needs no extra fetch.
     """
 
     name: str
@@ -111,23 +106,10 @@ class SubAgentsResponse(BaseModel):
 
 @sub_agents_router.post("", response_model=SubAgentsResponse)
 def get_sub_agents(request: SubAgentsRequest) -> SubAgentsResponse:
-    """List file-based and built-in sub-agents available to the workspace.
+    """List file-based and built-in sub-agents for the workspace.
 
-    Sub-agents are merged with the same precedence used when registering them
-    for a conversation (first wins for duplicate names):
-
-    1. Project agents (highest) - ``{workspace}/.agents/agents`` then ``.openhands``
-    2. User agents - ``~/.agents/agents`` then ``~/.openhands/agents``
-    3. Built-in agents (lowest) - shipped with the SDK tools preset
-
-    This is a read-only listing; it does not register sub-agents into the
-    conversation registry (that stays conversation-scoped).
-
-    Args:
-        request: SubAgentsRequest selecting which sources to load.
-
-    Returns:
-        SubAgentsResponse with the merged, de-duplicated sub-agent catalog.
+    Merged first-wins by name with precedence project > user > builtin. Read-only:
+    it registers nothing into the conversation registry.
     """
     discovered = discover_agents(
         project_dir=request.project_dir,
@@ -136,8 +118,7 @@ def get_sub_agents(request: SubAgentsRequest) -> SubAgentsResponse:
     )
     builtins = discover_builtin_agents() if request.load_builtin else []
 
-    # discover_agents already orders project > user; built-ins come last so a
-    # project/user agent with the same name shadows a built-in.
+    # project > user (from discover_agents) > builtin: first wins on name clash.
     seen_names: set[str] = set()
     agents: list[SubAgentInfo] = []
     for agent_def in (*discovered, *builtins):

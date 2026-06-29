@@ -121,29 +121,23 @@ def discover_agents(
     include_project: bool = True,
     include_user: bool = True,
 ) -> list[AgentDefinition]:
-    """Discover file-based agents without registering them.
+    """Discover project/user file-based agents without registering them.
 
-    Pure, non-mutating counterpart to ``register_file_agents``: it returns the
-    discovered ``AgentDefinition`` objects (with ``level`` and ``source``
-    populated) but does **not** touch the global agent registry. Registry
-    mutation must stay conversation-scoped; this is for read-only listing
-    (e.g. a REST endpoint enumerating the agents available to a workspace).
+    Non-mutating counterpart to ``register_file_agents``: returns the discovered
+    definitions with ``level``/``source`` set, leaving the global registry
+    untouched (registry mutation stays conversation-scoped). Built-ins live in
+    ``openhands-tools`` (not an SDK dependency), so callers wanting them add
+    ``discover_builtin_agents`` separately.
 
-    Built-in agents are intentionally *not* included here: they live in the
-    ``openhands-tools`` preset, which ``openhands-sdk`` does not depend on.
-    Callers that also want built-ins (e.g. the agent-server router) should add
-    them separately via ``openhands.tools.preset.default.discover_builtin_agents``.
-
-    Precedence matches ``register_file_agents``: project wins over user for the
-    same agent name (and within a level ``.agents/`` wins over ``.openhands/``).
+    Precedence matches ``register_file_agents``: project wins over user.
 
     Args:
         project_dir: Project directory to scan, or None to skip project agents.
-        include_project: Whether to include project-level agents.
-        include_user: Whether to include user-level agents.
+        include_project: Include project-level agents.
+        include_user: Include user-level agents.
 
     Returns:
-        Discovered agent definitions, de-duplicated by name (first wins).
+        Definitions de-duplicated by name (first wins).
     """
     discovered: list[AgentDefinition] = []
     if include_project and project_dir is not None:

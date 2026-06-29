@@ -18,8 +18,7 @@ if TYPE_CHECKING:
     from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 
 
-# Scope at which an agent definition was discovered. Populated during discovery
-# (see ``discover_agents``); it is NOT a frontmatter field.
+# Scope where an agent was discovered. Set during discovery, not from frontmatter.
 AgentDefinitionLevel = Literal["project", "user", "builtin", "plugin", "programmatic"]
 
 
@@ -222,9 +221,8 @@ class AgentDefinition(BaseModel):
     )
     level: AgentDefinitionLevel | None = Field(
         default=None,
-        description="Discovery scope this agent was found at "
-        "(project/user/builtin/plugin/programmatic). Populated during discovery; "
-        "None for definitions loaded directly from a file.",
+        description="Scope where the agent was discovered. "
+        "Set during discovery; None when loaded directly from a file.",
     )
     when_to_use_examples: list[str] = Field(
         default_factory=list,

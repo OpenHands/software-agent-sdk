@@ -90,19 +90,16 @@ def get_default_agent(
 
 
 def discover_builtin_agents(enable_browser: bool = True) -> list[AgentDefinition]:
-    """Load builtin agent definitions from ``subagents/*.md`` without registering.
+    """Load builtin agent definitions (``level='builtin'``) without registering them.
 
-    Non-mutating counterpart to ``register_builtins_agents``: returns the builtin
-    ``AgentDefinition`` objects (with ``level='builtin'``) so callers can list
-    them without touching the global registry. Browser-only agents are filtered
-    out when ``enable_browser`` is False, matching ``register_builtins_agents``.
+    Non-mutating counterpart to ``register_builtins_agents``. Browser-only agents
+    are skipped when ``enable_browser`` is False.
 
     Args:
-        enable_browser: Whether browser tools are available. When False,
-            agents that require browser tools (e.g. web researcher) are skipped.
+        enable_browser: When False, skip agents needing browser tools (web researcher).
 
     Returns:
-        Builtin agent definitions with ``level`` set to ``"builtin"``.
+        Builtin agent definitions with ``level="builtin"``.
     """
     subagent_dir = Path(__file__).parent / "subagents"
     builtins_agents_def = load_agents_from_dir(subagent_dir)
