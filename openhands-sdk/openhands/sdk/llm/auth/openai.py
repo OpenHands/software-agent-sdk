@@ -128,8 +128,9 @@ OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes
 DEVICE_CODE_TIMEOUT_SECONDS = 900  # 15 minutes
 JWKS_CACHE_TTL_SECONDS = 3600  # 1 hour
 
-# Models available via ChatGPT subscription (not API)
-OPENAI_CODEX_MODELS = frozenset(
+# Legacy model IDs available via ChatGPT subscription (not API) before
+# codex-acp's current bare model IDs became the shared picker source.
+_LEGACY_OPENAI_CODEX_MODELS = frozenset(
     {
         "gpt-5.1-codex-max",
         "gpt-5.1-codex-mini",
@@ -138,6 +139,20 @@ OPENAI_CODEX_MODELS = frozenset(
         "gpt-5.3-codex",
     }
 )
+
+
+def _get_current_codex_model_ids() -> frozenset[str]:
+    from openhands.sdk.settings.acp_providers import get_acp_provider
+
+    provider = get_acp_provider("codex")
+    if provider is None:
+        return frozenset()
+    return frozenset(model.id for model in provider.available_models)
+
+
+# Models available via ChatGPT subscription (not API). Keep the current model
+# IDs aligned with the Codex ACP registry while preserving older saved profiles.
+OPENAI_CODEX_MODELS = _LEGACY_OPENAI_CODEX_MODELS | _get_current_codex_model_ids()
 
 
 # Thread-safe JWKS cache

@@ -46,7 +46,19 @@ def test_marketplace_registration_accepts_all_fields() -> None:
     assert registration.source == "github:example/marketplaces"
     assert registration.ref == "v1.0.0"
     assert registration.repo_path == "marketplaces/team"
-    assert registration.auto_load
+    assert registration.auto_load is True
+
+
+def test_marketplace_registration_accepts_selective_auto_load() -> None:
+    registration = MarketplaceRegistration(
+        name="team",
+        source="github:example/marketplaces",
+        auto_load=["formatter", "linter"],
+    )
+
+    assert registration.auto_load == ["formatter", "linter"]
+    assert registration.auto_loads_plugin("formatter") is True
+    assert registration.auto_loads_plugin("other") is False
 
 
 @pytest.mark.parametrize(
@@ -81,11 +93,31 @@ def test_get_auto_load_registrations(tmp_path: Path) -> None:
         source=source,
         auto_load=True,
     )
+    selective_registration = MarketplaceRegistration(
+        name="selective",
+        source=source,
+        auto_load=["formatter"],
+    )
+    empty_registration = MarketplaceRegistration(
+        name="empty",
+        source=source,
+        auto_load=[],
+    )
     manual_registration = MarketplaceRegistration(name="manual", source=source)
 
-    registry = MarketplaceRegistry([auto_registration, manual_registration])
+    registry = MarketplaceRegistry(
+        [
+            auto_registration,
+            selective_registration,
+            empty_registration,
+            manual_registration,
+        ]
+    )
 
-    assert registry.get_auto_load_registrations() == [auto_registration]
+    assert registry.get_auto_load_registrations() == [
+        auto_registration,
+        selective_registration,
+    ]
 
 
 def test_get_marketplace_fetches_and_caches_manifest(tmp_path: Path) -> None:

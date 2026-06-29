@@ -140,6 +140,58 @@ class TestGetSkillsEndpoint:
                 ("https://github.com/hieptl/.agents", "hieptl"),
             ]
 
+    def test_get_skills_with_registered_marketplaces(self, client):
+        """Registered marketplaces are forwarded to the skills service."""
+        with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
+            mock_load.return_value = SkillLoadResult(skills=[], sources={})
+
+            response = client.post(
+                "/api/skills",
+                json={
+                    "registered_marketplaces": [
+                        {
+                            "name": "team",
+                            "source": "https://github.com/org/marketplace",
+                            "ref": "main",
+                            "repo_path": "marketplace",
+                            "auto_load": True,
+                        }
+                    ]
+                },
+            )
+
+            assert response.status_code == 200
+            registrations = mock_load.call_args[1]["registered_marketplaces"]
+            assert len(registrations) == 1
+            assert registrations[0].name == "team"
+            assert registrations[0].source == "https://github.com/org/marketplace"
+            assert registrations[0].ref == "main"
+            assert registrations[0].repo_path == "marketplace"
+            assert registrations[0].auto_load is True
+
+    def test_get_skills_with_selective_auto_load_marketplace(self, client):
+        """Registered marketplaces accept selective auto_load plugin lists."""
+        with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:
+            mock_load.return_value = SkillLoadResult(skills=[], sources={})
+
+            response = client.post(
+                "/api/skills",
+                json={
+                    "registered_marketplaces": [
+                        {
+                            "name": "team",
+                            "source": "https://github.com/org/marketplace",
+                            "auto_load": ["formatter", "linter"],
+                        }
+                    ]
+                },
+            )
+
+            assert response.status_code == 200
+            registrations = mock_load.call_args[1]["registered_marketplaces"]
+            assert len(registrations) == 1
+            assert registrations[0].auto_load == ["formatter", "linter"]
+
     def test_get_skills_with_sandbox_config(self, client):
         """Test skills request with sandbox configuration."""
         with patch("openhands.agent_server.skills_router.load_all_skills") as mock_load:

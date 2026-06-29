@@ -10,6 +10,7 @@ from openhands.agent_server.llm_router import (
     list_providers,
     list_verified_models,
 )
+from openhands.sdk.llm.auth.openai import OPENAI_CODEX_MODELS
 from openhands.sdk.llm.utils.verified_models import VERIFIED_MODELS
 
 
@@ -110,6 +111,15 @@ def test_verified_models_endpoint_integration(client):
     assert "models" in data
     assert "openai" in data["models"]
     assert "anthropic" in data["models"]
+
+
+def test_openai_subscription_models_endpoint_integration(client):
+    """Test subscription models endpoint through the API."""
+    response = client.get("/api/llm/subscription/openai/models")
+    assert response.status_code == 200
+    data = response.json()
+    assert data == {"vendor": "openai", "models": sorted(OPENAI_CODEX_MODELS)}
+    assert "gpt-5.5" in data["models"]
 
 
 def test_openai_subscription_status_endpoint_does_not_return_tokens(

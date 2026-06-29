@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
+from openhands.agent_server.conversation_lease import LEASE_FILE_NAME
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
@@ -3250,3 +3251,64 @@ def test_llm_log_callback_swallows_emit_failures(
     emit_mock = cast(MagicMock, event_service._emit_event_from_thread)
     emit_mock.assert_called_once()
     assert "Failed to emit LLM completion log event" in caplog.text
+
+
+def _make_stored(tmp_path: Path) -> StoredConversation:
+    return StoredConversation(
+        id=uuid4(),
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(tmp_path)),
+        confirmation_policy=NeverConfirm(),
+        initial_message=None,
+        metrics=None,
+    )
+
+
+def _make_mock_conv() -> MagicMock:
+    mock_conv = MagicMock()
+    mock_state = MagicMock()
+    mock_state.execution_status = ConversationExecutionStatus.IDLE
+    mock_state.events = []
+    mock_state.stats = MagicMock()
+    mock_conv.agent.get_all_llms.return_value = []
+    mock_conv._state = mock_state
+    mock_conv.state = mock_state
+    mock_conv._on_event = MagicMock()
+    return mock_conv
+
+
+@pytest.mark.asyncio
+async def test_event_service_skips_lease_when_ttl_is_zero(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is None
+    assert not (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_event_service_creates_lease_with_custom_ttl(tmp_path: Path) -> None:
+    stored = _make_stored(tmp_path)
+    service = EventService(
+        stored=stored,
+        conversations_dir=tmp_path,
+        lease_ttl_seconds=10.0,
+    )
+    with patch(
+        "openhands.agent_server.event_service.LocalConversation",
+        return_value=_make_mock_conv(),
+    ):
+        await service.start()
+
+    assert service._lease is not None
+    assert service._lease._ttl_seconds == 10.0
+    assert (tmp_path / stored.id.hex / LEASE_FILE_NAME).exists()

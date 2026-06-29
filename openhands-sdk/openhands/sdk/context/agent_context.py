@@ -118,7 +118,8 @@ class AgentContext(BaseModel):
         default_factory=list,
         description=(
             "Marketplace registrations for plugin resolution. Registrations with "
-            "auto_load=True are resolved by LocalConversation at startup."
+            "auto_load=True or a list of plugin names are resolved by "
+            "LocalConversation at startup."
         ),
         json_schema_extra={"acp_compatible": True},
     )
@@ -149,8 +150,8 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        # Timezone-aware local "now" so the value injected into the system prompt
-        # carries a UTC offset instead of an ambiguous naive local time (#3438).
+        # Timezone-aware local "now"; get_formatted_datetime renders it to the
+        # minute for the prompt.
         default_factory=lambda: datetime.now().astimezone(),
         description=(
             "Current date and time information to provide to the agent. "
@@ -265,13 +266,17 @@ class AgentContext(BaseModel):
 
         Returns:
             Formatted datetime string, or None if current_datetime is not set.
-            If current_datetime is a datetime object, it's formatted as ISO 8601.
+            If current_datetime is a datetime object, it's formatted as
+            "YYYY-MM-DDTHH:MM" (no seconds, microseconds, or UTC offset).
             If current_datetime is already a string, it's returned as-is.
         """
         if self.current_datetime is None:
             return None
         if isinstance(self.current_datetime, datetime):
-            return self.current_datetime.isoformat()
+            # Local wall-clock to the minute: drop seconds, microseconds, offset.
+            return self.current_datetime.replace(tzinfo=None).isoformat(
+                timespec="minutes"
+            )
         return self.current_datetime
 
     def _partition_skills(self) -> tuple[list[Skill], list[Skill]]:

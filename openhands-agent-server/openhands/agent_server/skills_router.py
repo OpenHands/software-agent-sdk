@@ -24,6 +24,7 @@ from openhands.agent_server.skills_service import (
     sync_public_skills,
 )
 from openhands.sdk.extensions.fetch import ExtensionFetchError
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.skills import (
     InstalledSkillInfo,
     SkillFetchError,
@@ -99,6 +100,15 @@ class SkillsRequest(BaseModel):
             "Set to null to load all public skills."
         ),
     )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Marketplace registrations for plugin-based skill loading. Registrations "
+            "with auto_load=True or a list of plugin names replace legacy public "
+            "skills."
+        ),
+    )
+
     project_dir: str | None = Field(
         default=None, description="Workspace directory path for project skills"
     )
@@ -295,6 +305,7 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
         org_repos=org_repos,
         sandbox_exposed_urls=sandbox_urls,
         marketplace_path=request.marketplace_path,
+        registered_marketplaces=request.registered_marketplaces,
     )
 
     # Convert Skill objects to SkillInfo for response
