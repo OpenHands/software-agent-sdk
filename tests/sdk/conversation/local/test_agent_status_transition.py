@@ -24,7 +24,7 @@ from typing import ClassVar
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import ImageContent, Message, MessageToolCall, TextContent
 from openhands.sdk.testing import TestLLM
@@ -543,17 +543,8 @@ def test_execution_status_finished_on_final_iteration():
     )
 
 
-def test_execution_status_error_on_max_budget(tmp_path):
-    """Run halts with ERROR + MaxBudgetReached when the cost budget is exceeded,
-    even before the iteration cap is reached."""
-    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-    from openhands.sdk.llm.utils.metrics import Metrics
-
-    events_received: list = []
-    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
-    register_tool("test_tool", test_tool)
-
-    tool_call_message = Message(
+def _tool_call_message() -> Message:
+    return Message(
         role="assistant",
         content=[TextContent(text="")],
         tool_calls=[
@@ -565,7 +556,28 @@ def test_execution_status_error_on_max_budget(tmp_path):
             )
         ],
     )
-    llm = TestLLM.from_messages([tool_call_message] * 5)
+
+
+def test_execution_status_error_on_max_budget(tmp_path):
+    """Run halts with ERROR + MaxBudgetReached when spend accrued *during the
+    run* exceeds the budget, before the iteration cap is reached."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    # TestLLM accrues no real cost; book spend when the agent acts (mid-run,
+    # while still RUNNING) to simulate an expensive step.
+    spend = Metrics(accumulated_cost=0.0)
+
+    def callback(event):
+        events_received.append(event)
+        if isinstance(event, ActionEvent):
+            spend.add_cost(5.0)
+
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    llm = TestLLM.from_messages([_tool_call_message()] * 5)
     agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
     # High iteration cap so the BUDGET is what stops the run.
     conversation = LocalConversation(
@@ -575,14 +587,11 @@ def test_execution_status_error_on_max_budget(tmp_path):
         delete_on_close=False,
         max_iteration_per_run=10,
         max_budget_per_run=1.0,
-        callbacks=[lambda e: events_received.append(e)],
+        callbacks=[callback],
     )
+    conversation.conversation_stats.usage_to_metrics["spend"] = spend
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Execute command")])
-    )
-    # Pre-seed spend over the budget (TestLLM accrues no real cost).
-    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
-        accumulated_cost=5.0
     )
     conversation.run()
 
@@ -596,11 +605,20 @@ def test_execution_status_error_on_max_budget(tmp_path):
 
 
 def test_finished_preserved_even_when_over_budget(tmp_path):
-    """A run that finishes is kept FINISHED even if it is over budget."""
+    """A run that finishes is kept FINISHED even if it ends over budget."""
     from openhands.sdk.conversation.impl.local_conversation import LocalConversation
     from openhands.sdk.llm.utils.metrics import Metrics
 
     events_received: list = []
+    # Book over-budget spend exactly when the agent finishes, so the run is over
+    # budget at the very step it reaches FINISHED.
+    spend = Metrics(accumulated_cost=0.0)
+
+    def callback(event):
+        events_received.append(event)
+        if isinstance(event, MessageEvent) and event.source == "agent":
+            spend.add_cost(5.0)
+
     # Text-only response -> agent finishes on the first iteration.
     finish_message = Message(
         role="assistant", content=[TextContent(text="Task completed")]
@@ -614,14 +632,55 @@ def test_finished_preserved_even_when_over_budget(tmp_path):
         delete_on_close=False,
         max_iteration_per_run=10,
         max_budget_per_run=1.0,
-        callbacks=[lambda e: events_received.append(e)],
+        callbacks=[callback],
     )
+    conversation.conversation_stats.usage_to_metrics["spend"] = spend
     conversation.send_message(Message(role="user", content=[TextContent(text="Do it")]))
-    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
-        accumulated_cost=5.0
-    )
     conversation.run()
 
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
     error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
     assert not any(e.code == "MaxBudgetReached" for e in error_events)
+    # Sanity: the run really did end over budget.
+    assert spend.accumulated_cost == 5.0
+
+
+def test_max_budget_baseline_resets_each_run(tmp_path):
+    """The budget window opens at run(): cost already on the books before the
+    run starts (lifetime spend, prior runs) is absorbed into the baseline and
+    does not count against the new run -- same per-run() scope as the
+    iteration cap."""
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    events_received: list = []
+    test_tool = StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))[0]
+    register_tool("test_tool", test_tool)
+
+    finish_message = Message(role="assistant", content=[TextContent(text="Done")])
+    # A tool call keeps the run RUNNING so the budget check fires mid-run (not
+    # masked by the FINISHED guard); then the agent finishes.
+    llm = TestLLM.from_messages([_tool_call_message(), finish_message])
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    conversation = LocalConversation(
+        agent=agent,
+        workspace=str(tmp_path),
+        visualizer=None,
+        delete_on_close=False,
+        max_iteration_per_run=10,
+        max_budget_per_run=1.0,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+    conversation.send_message(Message(role="user", content=[TextContent(text="Go")]))
+    # Lifetime cost already exceeds the cap *before* this run starts.
+    conversation.conversation_stats.usage_to_metrics["spend"] = Metrics(
+        accumulated_cost=5.0
+    )
+    conversation.run()
+
+    # Baseline is captured at run() start (= 5.0), so the run itself spent 0:
+    # no breach, and the full budget remains available.
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert not any(e.code == "MaxBudgetReached" for e in error_events)
+    assert conversation.remaining_budget_this_run == 1.0

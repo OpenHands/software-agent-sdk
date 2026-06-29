@@ -152,6 +152,11 @@ class LocalConversation(BaseConversation):
     delete_on_close: bool = True
     _arun_task: asyncio.Task[None] | None
     _cancel_token: CancellationToken | None
+    # Combined accumulated_cost captured at the start of the current run().
+    # max_budget_per_run measures spend relative to this baseline, so the budget
+    # resets on every run() call (same scope as the iteration counter) rather
+    # than tracking lifetime cost.
+    _run_cost_baseline: float
     # True while run()/arun() executes an agent step while holding the state
     # lock. A state-mutating tool (e.g. switch_llm) runs on a worker thread, so
     # it must skip re-acquiring the lock the run loop holds while blocked
@@ -252,6 +257,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._run_cost_baseline = 0.0
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -491,21 +497,49 @@ class LocalConversation(BaseConversation):
     def conversation_stats(self):
         return self._state.stats
 
+    def _run_spend(self) -> float:
+        """Cost accrued during the current run() (since the run baseline)."""
+        total = self.conversation_stats.get_combined_metrics().accumulated_cost
+        return total - self._run_cost_baseline
+
+    def _reset_run_budget_baseline(self) -> None:
+        """Capture the cost baseline at the start of a run().
+
+        max_budget_per_run measures spend since this baseline, so it resets on
+        every run() call — the same scope as the per-run iteration counter.
+        """
+        self._run_cost_baseline = (
+            self.conversation_stats.get_combined_metrics().accumulated_cost
+        )
+
     def _budget_exceeded_detail(self) -> str | None:
         """Error detail if the run has hit its cost budget, else None.
 
-        Bounds total spend across all of the run's LLMs (agent, condenser, ...),
-        complementing the iteration cap which only bounds step count.
+        Bounds spend across all of the run's LLMs (agent, condenser, ...) for the
+        current run() call, complementing the iteration cap which only bounds
+        step count. It measures spend since the baseline captured at the start of
+        run() (same scope as max_iteration_per_run), not lifetime cost.
         """
         if self.max_budget_per_run is None:
             return None
-        spent = self.conversation_stats.get_combined_metrics().accumulated_cost
+        spent = self._run_spend()
         if spent < self.max_budget_per_run:
             return None
         return (
             f"Agent reached maximum budget limit "
             f"(${self.max_budget_per_run:.4f}); accumulated cost ${spent:.4f}."
         )
+
+    @property
+    def remaining_budget_this_run(self) -> float | None:
+        """Budget left for the current run(), or None if no cap is set.
+
+        Used to spawn sub-agents with the parent's *remaining* budget rather
+        than its full budget.
+        """
+        if self.max_budget_per_run is None:
+            return None
+        return max(0.0, self.max_budget_per_run - self._run_spend())
 
     def _emit_run_limit_error(self, code: str, detail: str) -> None:
         """Mark the run failed with a run-limit ConversationErrorEvent."""
@@ -1498,6 +1532,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
+            self._reset_run_budget_baseline()
 
         iteration = 0
         _run_start_event_count = len(self._state.events)
@@ -1699,6 +1734,7 @@ class LocalConversation(BaseConversation):
                 ConversationExecutionStatus.STUCK,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
+            self._reset_run_budget_baseline()
             last_acp_prompt_user_message_id = self._state.agent_state.get(
                 ACP_LAST_PROMPT_USER_MESSAGE_ID
             )

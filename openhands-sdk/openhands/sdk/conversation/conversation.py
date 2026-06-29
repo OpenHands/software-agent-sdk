@@ -73,6 +73,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -102,6 +103,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -131,6 +133,7 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -151,6 +154,16 @@ class Conversation:
         from openhands.sdk.conversation.impl.remote_conversation import (
             RemoteConversation,
         )
+
+        # Match the gt=0 contract enforced on StartConversationRequest and
+        # AgentDefinition: a budget must be a positive cost or None. (A 0.0
+        # budget is only meaningful internally, where the sub-agent path
+        # constructs LocalConversation directly to signal an exhausted parent.)
+        if max_budget_per_run is not None and max_budget_per_run <= 0:
+            raise ValueError(
+                "max_budget_per_run must be a positive cost (USD) or None; "
+                f"got {max_budget_per_run}."
+            )
 
         if isinstance(workspace, RemoteWorkspace):
             # For RemoteConversation, persistence_dir should not be used.
@@ -197,6 +210,7 @@ class Conversation:
                 token_callbacks=token_callbacks,
                 hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
+                max_budget_per_run=max_budget_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
@@ -219,6 +233,7 @@ class Conversation:
             token_callbacks=token_callbacks,
             hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
+            max_budget_per_run=max_budget_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,

@@ -644,6 +644,7 @@ class RemoteConversation(BaseConversation):
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
     max_iteration_per_run: int
+    max_budget_per_run: float | None
     workspace: RemoteWorkspace
     _client: httpx.Client
     _cleanup_initiated: bool
@@ -661,6 +662,7 @@ class RemoteConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
+        max_budget_per_run: float | None = None,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
@@ -689,6 +691,8 @@ class RemoteConversation(BaseConversation):
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
+            max_budget_per_run: Ephemeral per-interaction cost ceiling (USD)
+                      enforced on the server. None disables the budget.
             stuck_detection: Whether to enable stuck detection on server
             stuck_detection_thresholds: Optional configuration for stuck detection
                       thresholds. Can be a StuckDetectionThresholds instance or
@@ -719,6 +723,7 @@ class RemoteConversation(BaseConversation):
         self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
+        self.max_budget_per_run = max_budget_per_run
         self.workspace = workspace
         self._client = workspace.client
         self._conversation_info_base_path = LEGACY_CONVERSATIONS_PATH
@@ -779,6 +784,7 @@ class RemoteConversation(BaseConversation):
                 ),
                 "initial_message": None,
                 "max_iterations": max_iteration_per_run,
+                "max_budget_per_run": max_budget_per_run,
                 "stuck_detection": stuck_detection,
                 # We need to convert RemoteWorkspace to LocalWorkspace for the server
                 "workspace": LocalWorkspace(
@@ -1546,6 +1552,7 @@ class RemoteConversation(BaseConversation):
             workspace=self.workspace,
             conversation_id=fork_uuid,
             max_iteration_per_run=self.max_iteration_per_run,
+            max_budget_per_run=self.max_budget_per_run,
             delete_on_close=self.delete_on_close,
             tags=server_tags,
         )

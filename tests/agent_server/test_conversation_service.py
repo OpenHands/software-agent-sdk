@@ -75,6 +75,34 @@ def sample_stored_conversation():
     )
 
 
+def test_start_conversation_request_max_budget_per_run_roundtrip():
+    """max_budget_per_run defaults to None, survives JSON round-trip, rejects
+    non-positive values, and is inherited by StoredConversation."""
+    from pydantic import ValidationError
+
+    agent = Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[])
+    workspace = LocalWorkspace(working_dir="workspace/project")
+
+    assert (
+        StartConversationRequest(agent=agent, workspace=workspace).max_budget_per_run
+        is None
+    )
+
+    req = StartConversationRequest(
+        agent=agent, workspace=workspace, max_budget_per_run=2.0
+    )
+    restored = StartConversationRequest.model_validate_json(req.model_dump_json())
+    assert restored.max_budget_per_run == 2.0
+
+    with pytest.raises(ValidationError):
+        StartConversationRequest(agent=agent, workspace=workspace, max_budget_per_run=0)
+
+    stored = StoredConversation(
+        id=uuid4(), agent=agent, workspace=workspace, max_budget_per_run=1.5
+    )
+    assert stored.max_budget_per_run == 1.5
+
+
 def _create_running_terminal_action(tool_call_id: str = "call_1") -> ActionEvent:
     tool_call = MessageToolCall.from_chat_tool_call(
         ChatCompletionMessageToolCall(

@@ -971,7 +971,27 @@ class TestTaskManagerBudget:
     """The per-subagent cost budget flows from the agent definition / parent
     into the spawned sub-conversation."""
 
-    def test_budget_from_agent_definition(self, tmp_path):
+    @staticmethod
+    def _parent_with_budget(
+        tmp_path, *, budget: float | None, spent: float = 0.0
+    ) -> LocalConversation:
+        from openhands.sdk.llm.utils.metrics import Metrics
+
+        parent = LocalConversation(
+            agent=Agent(llm=_make_llm(), tools=[]),
+            workspace=str(tmp_path),
+            visualizer=None,
+            delete_on_close=False,
+            max_budget_per_run=budget,
+        )
+        if spent:
+            parent.conversation_stats.usage_to_metrics["spend"] = Metrics(
+                accumulated_cost=spent
+            )
+        return parent
+
+    def test_budget_from_agent_definition_overrides_parent(self, tmp_path):
+        """A definition-level budget wins over the parent's remaining budget."""
         from openhands.sdk.subagent.registry import agent_definition_to_factory
 
         agent_def = AgentDefinition(
@@ -982,26 +1002,42 @@ class TestTaskManagerBudget:
             factory_func=agent_definition_to_factory(agent_def),
             description=agent_def,
         )
-        manager, _ = _manager_with_parent(tmp_path)
+        parent = self._parent_with_budget(tmp_path, budget=7.0, spent=2.0)
+        manager = TaskManager()
+        manager._ensure_parent(parent)
         task = manager._create_task(subagent_type="budgeted", description=None)
         assert task.conversation is not None
         assert task.conversation.max_budget_per_run == 4.0
 
-    def test_budget_inherits_from_parent(self, tmp_path):
+    def test_budget_inherits_parent_remaining(self, tmp_path):
+        """Sub-agent inherits the parent's *remaining* budget, not its full one."""
         register_builtins_agents()
-        agent = Agent(llm=_make_llm(), tools=[])
-        parent = LocalConversation(
-            agent=agent,
-            workspace=str(tmp_path),
-            visualizer=None,
-            delete_on_close=False,
-            max_budget_per_run=7.0,
-        )
+        # 7.0 cap, 2.0 already spent this run -> 5.0 remaining.
+        parent = self._parent_with_budget(tmp_path, budget=7.0, spent=2.0)
         manager = TaskManager()
         manager._ensure_parent(parent)
         task = manager._create_task(subagent_type="general-purpose", description=None)
         assert task.conversation is not None
-        assert task.conversation.max_budget_per_run == 7.0
+        assert task.conversation.max_budget_per_run == 5.0
+
+    def test_budget_zero_when_parent_exhausted(self, tmp_path):
+        """A parent that has spent its whole budget hands the sub-agent 0.0,
+        not the full budget (the explicit None check must not fall through)."""
+        register_builtins_agents()
+        parent = self._parent_with_budget(tmp_path, budget=3.0, spent=5.0)
+        manager = TaskManager()
+        manager._ensure_parent(parent)
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run == 0.0
+
+    def test_budget_none_when_unbounded(self, tmp_path):
+        """No definition budget and no parent budget -> sub-agent is unbounded."""
+        register_builtins_agents()
+        manager, _ = _manager_with_parent(tmp_path)
+        task = manager._create_task(subagent_type="general-purpose", description=None)
+        assert task.conversation is not None
+        assert task.conversation.max_budget_per_run is None
 
 
 class TestRunErrorSurfacing:

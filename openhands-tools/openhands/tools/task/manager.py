@@ -252,11 +252,14 @@ class TaskManager:
             if factory.definition.max_iteration_per_run
             else self.parent_conversation.max_iteration_per_run
         )
-        # Sub-agent budget: definition value, else inherit the parent's.
-        effective_max_budget = (
-            factory.definition.max_budget_per_run
-            or self.parent_conversation.max_budget_per_run
-        )
+        # Sub-agent budget: definition value, else inherit the parent's
+        # *remaining* budget for the current run. Use an explicit None check
+        # because a remaining budget of 0.0 is meaningful (parent exhausted) and
+        # `0.0 or X` would wrongly fall through to X.
+        if factory.definition.max_budget_per_run is not None:
+            effective_max_budget = factory.definition.max_budget_per_run
+        else:
+            effective_max_budget = self.parent_conversation.remaining_budget_this_run
 
         with self._tasks_lock:
             task_id, conversation_id = self._generate_ids()

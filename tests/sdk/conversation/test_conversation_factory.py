@@ -114,6 +114,36 @@ def test_conversation_factory_forwards_local_observability_span_name(agent):
         conversation.close()
 
 
+def test_conversation_factory_forwards_max_budget_per_run(agent):
+    """Factory forwards max_budget_per_run to LocalConversation."""
+    conversation = Conversation(
+        agent=agent,
+        max_budget_per_run=2.5,
+        visualizer=None,
+    )
+
+    assert isinstance(conversation, LocalConversation)
+    assert conversation.max_budget_per_run == 2.5
+
+
+@pytest.mark.parametrize("budget", [0, -5.0])
+def test_conversation_factory_rejects_non_positive_max_budget_local(agent, budget):
+    """Factory rejects a non-positive budget, matching the gt=0 contract on
+    StartConversationRequest / AgentDefinition (None stays allowed)."""
+    with pytest.raises(ValueError, match="max_budget_per_run must be a positive"):
+        Conversation(agent=agent, max_budget_per_run=budget, visualizer=None)
+
+
+@pytest.mark.parametrize("budget", [0, -5.0])
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_rejects_non_positive_max_budget_remote(
+    mock_ws_client, agent, remote_workspace, budget
+):
+    """The same guard applies before the remote branch is reached."""
+    with pytest.raises(ValueError, match="max_budget_per_run must be a positive"):
+        Conversation(agent=agent, workspace=remote_workspace, max_budget_per_run=budget)
+
+
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
 def test_conversation_factory_forwards_remote_parameters(
     mock_ws_client, agent, remote_workspace
@@ -128,6 +158,24 @@ def test_conversation_factory_forwards_remote_parameters(
 
     assert isinstance(conversation, RemoteConversation)
     assert conversation.max_iteration_per_run == 200
+
+
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_conversation_factory_forwards_remote_max_budget_to_payload(
+    mock_ws_client, agent, remote_workspace
+):
+    """RemoteConversation must send max_budget_per_run in the create request."""
+    conversation = Conversation(
+        agent=agent,
+        workspace=remote_workspace,
+        max_budget_per_run=3.0,
+    )
+
+    assert isinstance(conversation, RemoteConversation)
+    assert conversation.max_budget_per_run == 3.0
+    create_call = remote_workspace._client.request.call_args_list[0]
+    assert create_call.args[:2] == ("POST", "/api/conversations")
+    assert create_call.kwargs["json"]["max_budget_per_run"] == 3.0
 
 
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
