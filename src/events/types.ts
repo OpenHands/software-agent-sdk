@@ -285,12 +285,7 @@ export interface LLMCompletionLogEvent extends BaseEvent {
  * Hook execution event type - matches Python SDK's HookEventType literal.
  */
 export type HookExecutionEventType =
-  | 'PreToolUse'
-  | 'PostToolUse'
-  | 'UserPromptSubmit'
-  | 'SessionStart'
-  | 'SessionEnd'
-  | 'Stop';
+  'PreToolUse' | 'PostToolUse' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop';
 
 /**
  * Hook execution event - emitted when a hook is executed.

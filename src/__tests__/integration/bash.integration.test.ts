@@ -27,8 +27,7 @@ describe('Bash API Integration Tests', () => {
         async () => {
           const page = await bash.searchEvents({ command_id__eq: command.id, limit: 20 });
           outputEvent = page.items.find((event) => event.kind === 'BashOutput') as
-            | BashOutput
-            | undefined;
+            BashOutput | undefined;
           return Boolean(outputEvent?.exit_code !== undefined);
         },
         { timeout: config.testTimeout, interval: 250, message: 'bash output was not produced' }
