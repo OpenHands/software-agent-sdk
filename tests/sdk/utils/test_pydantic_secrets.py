@@ -243,10 +243,13 @@ def test_validate_secret_with_cipher_decrypts(mock_info, cipher):
     assert result.get_secret_value() == "sk-test-123"
 
 
-def test_validate_secret_with_cipher_invalid_data_returns_none(mock_info, cipher):
-    """Invalid encrypted data with cipher returns None (graceful failure)."""
+def test_validate_secret_with_cipher_legacy_plaintext_returns_secretstr(
+    mock_info, cipher
+):
+    """Plaintext secrets saved before encryption are preserved."""
     result = validate_secret("not-encrypted-data", mock_info({"cipher": cipher}))
-    assert result is None
+    assert isinstance(result, SecretStr)
+    assert result.get_secret_value() == "not-encrypted-data"
 
 
 def test_validate_secret_with_cipher_wrong_key_returns_none(mock_info, cipher):

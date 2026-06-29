@@ -86,7 +86,8 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     Accepts both str and SecretStr inputs, always returns SecretStr | None.
     - Empty secrets are converted to None
     - Plain strings are converted to SecretStr
-    - If a cipher is provided in context, attempts to decrypt the value
+    - If a cipher is provided in context, decrypts Fernet-encrypted values
+      and preserves legacy plaintext values
     - If decryption fails, the cipher returns None and a warning is logged
     - This gracefully handles conversations encrypted with different keys or were redacted
     """  # noqa: E501
@@ -103,9 +104,10 @@ def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     if not secret_value or not secret_value.strip() or is_redacted_secret(secret_value):
         return None
 
-    # check if a cipher is supplied
     if info.context and info.context.get("cipher"):
         cipher: Cipher = info.context.get("cipher")
+        if not secret_value.startswith(FERNET_TOKEN_PREFIX):
+            return SecretStr(secret_value)
         return cipher.decrypt(secret_value)
 
     # Always return SecretStr
