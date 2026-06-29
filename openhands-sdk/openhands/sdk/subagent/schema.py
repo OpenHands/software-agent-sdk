@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 import frontmatter
 from pydantic import BaseModel, Field
@@ -16,6 +16,11 @@ from openhands.sdk.utils.path import to_posix_path
 
 if TYPE_CHECKING:
     from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+
+
+# Scope at which an agent definition was discovered. Populated during discovery
+# (see ``discover_agents``); it is NOT a frontmatter field.
+AgentDefinitionLevel = Literal["project", "user", "builtin", "plugin", "programmatic"]
 
 
 KNOWN_FIELDS: Final[set[str]] = {
@@ -214,6 +219,12 @@ class AgentDefinition(BaseModel):
     system_prompt: str = Field(default="", description="System prompt content")
     source: str | None = Field(
         default=None, description="Source file path for this agent"
+    )
+    level: AgentDefinitionLevel | None = Field(
+        default=None,
+        description="Discovery scope this agent was found at "
+        "(project/user/builtin/plugin/programmatic). Populated during discovery; "
+        "None for definitions loaded directly from a file.",
     )
     when_to_use_examples: list[str] = Field(
         default_factory=list,

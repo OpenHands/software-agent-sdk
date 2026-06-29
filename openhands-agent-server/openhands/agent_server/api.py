@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from openhands.agent_server.agent_profiles_router import agent_profiles_router
+from openhands.agent_server.agents_router import agents_router
 from openhands.agent_server.auth_router import auth_router
 from openhands.agent_server.bash_router import bash_router
 from openhands.agent_server.bash_service import get_default_bash_event_service
@@ -349,6 +350,7 @@ def _add_api_routes(app: FastAPI) -> None:
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)
     api_router.include_router(skills_router)
+    api_router.include_router(agents_router)
     api_router.include_router(plugins_router)
     api_router.include_router(hooks_router)
     api_router.include_router(llm_router)

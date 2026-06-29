@@ -7,7 +7,7 @@ from openhands.sdk.context.condenser import default_condenser
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
-from openhands.sdk.subagent import register_agent_if_absent
+from openhands.sdk.subagent import AgentDefinition, register_agent_if_absent
 from openhands.sdk.tool import Tool
 
 
@@ -89,6 +89,39 @@ def get_default_agent(
     return agent
 
 
+def discover_builtin_agents(enable_browser: bool = True) -> list[AgentDefinition]:
+    """Load builtin agent definitions from ``subagents/*.md`` without registering.
+
+    Non-mutating counterpart to ``register_builtins_agents``: returns the builtin
+    ``AgentDefinition`` objects (with ``level='builtin'``) so callers can list
+    them without touching the global registry. Browser-only agents are filtered
+    out when ``enable_browser`` is False, matching ``register_builtins_agents``.
+
+    Args:
+        enable_browser: Whether browser tools are available. When False,
+            agents that require browser tools (e.g. web researcher) are skipped.
+
+    Returns:
+        Builtin agent definitions with ``level`` set to ``"builtin"``.
+    """
+    subagent_dir = Path(__file__).parent / "subagents"
+    builtins_agents_def = load_agents_from_dir(subagent_dir)
+
+    # Filter out browser-dependent agents when browser is not available
+    if not enable_browser:
+        _browser_only_agents = {"web-researcher"}
+        builtins_agents_def = [
+            agent
+            for agent in builtins_agents_def
+            if agent.name not in _browser_only_agents
+        ]
+
+    return [
+        agent_def.model_copy(update={"level": "builtin"})
+        for agent_def in builtins_agents_def
+    ]
+
+
 def register_builtins_agents(enable_browser: bool = True) -> list[str]:
     """Load and register builtin agents from ``subagent/*.md``.
     They are registered via `register_agent_if_absent` and will not
@@ -103,17 +136,7 @@ def register_builtins_agents(enable_browser: bool = True) -> list[str]:
     """
     register_default_tools(enable_browser=enable_browser)
 
-    subagent_dir = Path(__file__).parent / "subagents"
-    builtins_agents_def = load_agents_from_dir(subagent_dir)
-
-    # Filter out browser-dependent agents when browser is not available
-    if not enable_browser:
-        _browser_only_agents = {"web-researcher"}
-        builtins_agents_def = [
-            agent
-            for agent in builtins_agents_def
-            if agent.name not in _browser_only_agents
-        ]
+    builtins_agents_def = discover_builtin_agents(enable_browser=enable_browser)
 
     registered: list[str] = []
     for agent_def in builtins_agents_def:
