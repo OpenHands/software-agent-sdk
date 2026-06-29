@@ -256,6 +256,41 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_plugin_source_redacted_placeholder_kept(
+        self, mock_ws_client
+    ):
+        """The create payload masks inline plugin-source creds but keeps ${VAR}
+        placeholders, so the server clones private plugins via secret expansion
+        without raw credentials crossing the wire."""
+        from openhands.sdk.plugin import PluginSource
+
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        placeholder = "https://x-token-auth:${MY_TOKEN}@host/org/repo.git"
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            plugins=[
+                PluginSource(source="https://oauth2:LEAKME@host/org/priv.git"),
+                PluginSource(source=placeholder),
+            ],
+        )
+
+        create_call = next(
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+        )
+        sources = [p["source"] for p in create_call.kwargs["json"]["plugins"]]
+        assert "https://****@host/org/priv.git" in sources
+        assert placeholder in sources
+        assert "LEAKME" not in str(create_call.kwargs["json"]["plugins"])
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_remote_conversation_user_id_none_sends_explicit_null(self, mock_ws_client):
         """user_id=None sends an explicit null key (not omitted) so the server
         receives a consistent payload regardless of whether user_id was supplied."""
