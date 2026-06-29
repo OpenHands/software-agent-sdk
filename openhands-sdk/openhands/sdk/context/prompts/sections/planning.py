@@ -1,4 +1,4 @@
-"""The planning system prompt, ported verbatim from ``agent/prompts/system_prompt_planning.j2``.
+"""The planning system prompt.
 
 Unlike the default composition -- whose blocks each carry a guard and can be overridden
 individually -- the planning prompt is a single standalone STATIC block with no
