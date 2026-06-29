@@ -80,6 +80,17 @@ class LLMSummarizingCondenser(RollingCondenser):
             )
         return self
 
+    @model_validator(mode="after")
+    def _disable_streaming_for_summary(self):
+        # Summaries are consumed whole with no on_token callback, which a
+        # streaming LLM requires (#3902). Disable streaming once so every
+        # summary path is covered. model_copy is non-mutating and shares
+        # usage_id/metrics, so summary tokens stay attributed to the
+        # conversation.
+        if self.llm.stream:
+            self.llm = self.llm.model_copy(update={"stream": False})
+        return self
+
     def handles_condensation_requests(self) -> bool:
         return True
 
@@ -188,19 +199,10 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
 
-        # Force non-streaming: the summary is consumed whole and no on_token
-        # callback is passed, which a streaming LLM would require. Sharing the
-        # same usage_id/metrics keeps summary tokens counted (model_copy is
-        # non-mutating; unlike sub-agents we do not reset_metrics here).
-        summarizing_llm = (
-            self.llm.model_copy(update={"stream": False})
-            if self.llm.stream
-            else self.llm
-        )
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
         try:
-            llm_response = summarizing_llm.completion(
+            llm_response = self.llm.completion(
                 messages=messages,
             )
         except Exception as e:
@@ -393,14 +395,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
-        # Force non-streaming for the summary (see _generate_condensation).
-        summarizing_llm = (
-            self.llm.model_copy(update={"stream": False})
-            if self.llm.stream
-            else self.llm
-        )
         try:
-            llm_response = await summarizing_llm.acompletion(messages=messages)
+            llm_response = await self.llm.acompletion(messages=messages)
         except Exception as e:
             raise NoCondensationAvailableException(
                 f"Summarization LLM call failed: {e}"
