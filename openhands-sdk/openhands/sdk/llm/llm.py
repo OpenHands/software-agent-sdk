@@ -2189,6 +2189,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         effective_max_output_tokens = capped
                     if (
                         self.base_url is not None
+                        and not self.model.startswith("litellm_proxy/")
                         and effective_max_output_tokens is not None
                         and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
                     ):
