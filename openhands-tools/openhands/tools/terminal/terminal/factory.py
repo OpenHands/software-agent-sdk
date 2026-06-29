@@ -41,10 +41,23 @@ def _get_powershell_command(explicit_shell_path: str | None = None) -> str | Non
             continue
         try:
             result = subprocess.run(
-                [candidate, "-Command", "Write-Host 'PowerShell Available'"],
+                # Match how ``WindowsTerminal`` actually launches the shell:
+                # ``-NoProfile`` / ``-NoLogo``. Loading the user's PowerShell
+                # profile here is both unnecessary and harmful -- a profile that
+                # runs e.g. ``conda`` init can take several seconds, blowing past
+                # the timeout below so detection wrongly reports PowerShell as
+                # unavailable (and would leak the profile's side effects into the
+                # probe regardless).
+                [
+                    candidate,
+                    "-NoProfile",
+                    "-NoLogo",
+                    "-Command",
+                    "Write-Host 'PowerShell Available'",
+                ],
                 capture_output=True,
                 text=True,
-                timeout=5.0,
+                timeout=15.0,
                 env=sanitized_env(),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, OSError):
