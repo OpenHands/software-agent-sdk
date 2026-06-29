@@ -77,7 +77,7 @@ export class SkillsClient {
 
   async refreshSkill(skillName: string): Promise<RefreshSkillResponse> {
     const response = await this.client.post<RefreshSkillResponse>(
-      `/api/skills/installed/${encodeURIComponent(skillName)}/update`
+      `/api/skills/installed/${encodeURIComponent(skillName)}/refresh`
     );
     return response.data;
   }

@@ -510,13 +510,31 @@ describe('Auxiliary API clients', () => {
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       6,
-      'http://example.com/api/skills/installed/my-skill/update',
+      'http://example.com/api/skills/installed/my-skill/refresh',
       expect.objectContaining({ method: 'POST' })
     );
     expect(global.fetch).toHaveBeenNthCalledWith(
       7,
       'http://example.com/api/skills/marketplace',
       expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('SkillsClient.refreshSkill POSTs to the /refresh route', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'updated', skill: { name: 'my-skill' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new SkillsClient({ host: 'http://example.com' });
+    const refreshed = await client.refreshSkill('my-skill');
+
+    expect(refreshed.message).toBe('updated');
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/skills/installed/my-skill/refresh',
+      expect.objectContaining({ method: 'POST' })
     );
   });
 

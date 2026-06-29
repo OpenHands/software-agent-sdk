@@ -391,4 +391,23 @@ describe('Deterministic API Integration Tests', () => {
     },
     config.testTimeout
   );
+
+  it(
+    'reaches the skills refresh route and 404s for an uninstalled skill',
+    async () => {
+      // Contract guard for POST /api/skills/installed/{name}/refresh (the route
+      // is /refresh, not /update). A valid-but-uninstalled skill name reaches
+      // the handler, which must answer 404 — proving the route exists on the
+      // image and the client targets the corrected path.
+      let status: number | undefined;
+      try {
+        await manager.skills.refreshSkill('nonexistent-skill');
+      } catch (error) {
+        expect(error).toBeInstanceOf(HttpError);
+        status = (error as HttpError).status;
+      }
+      expect(status).toBe(404);
+    },
+    config.testTimeout
+  );
 });
