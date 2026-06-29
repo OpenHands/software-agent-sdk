@@ -83,10 +83,9 @@ class LLMSummarizingCondenser(RollingCondenser):
     @model_validator(mode="after")
     def _disable_streaming_for_summary(self):
         # Summaries are consumed whole with no on_token callback, which a
-        # streaming LLM requires (#3902). Disable streaming once so every
-        # summary path is covered. model_copy is non-mutating and shares
-        # usage_id/metrics, so summary tokens stay attributed to the
-        # conversation.
+        # streaming LLM requires. Disable streaming once so every summary path
+        # is covered. model_copy is non-mutating and shares usage_id/metrics,
+        # so summary tokens stay attributed to the conversation.
         if self.llm.stream:
             self.llm = self.llm.model_copy(update={"stream": False})
         return self
