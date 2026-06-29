@@ -2,6 +2,7 @@ import pytest
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import MessageEvent
 from openhands.sdk.llm import ImageContent, Message, TextContent
@@ -19,7 +20,7 @@ def _image_message() -> Message:
     )
 
 
-def _agent_response_text(conversation: Conversation) -> str:
+def _agent_response_text(conversation: LocalConversation) -> str:
     agent_messages = [
         event
         for event in conversation.state.events
