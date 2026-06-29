@@ -1,4 +1,4 @@
-"""Tests for the agents router (POST /agents)."""
+"""Tests for the sub-agents router (POST /sub-agents)."""
 
 from pathlib import Path
 
@@ -23,10 +23,10 @@ def _write_agent(directory: Path, name: str, description: str = "desc") -> None:
     )
 
 
-def test_get_agents_returns_builtins_only(client):
+def test_get_sub_agents_returns_builtins_only(client):
     """Built-ins are listed and tagged; user/project sources can be excluded."""
     response = client.post(
-        "/api/agents",
+        "/api/sub-agents",
         json={"load_builtin": True, "load_user": False, "load_project": False},
     )
     assert response.status_code == 200
@@ -39,14 +39,14 @@ def test_get_agents_returns_builtins_only(client):
     assert all(a["system_prompt"] for a in agents)
 
 
-def test_get_agents_includes_project_and_shadows_builtin(client, tmp_path: Path):
+def test_get_sub_agents_includes_project_and_shadows_builtin(client, tmp_path: Path):
     """A project agent appears and shadows a built-in with the same name."""
     _write_agent(tmp_path / ".agents" / "agents", "code-reviewer", "Reviews code")
     # Same name as a built-in -> project definition must win.
     _write_agent(tmp_path / ".agents" / "agents", "general-purpose", "Overridden")
 
     response = client.post(
-        "/api/agents",
+        "/api/sub-agents",
         json={
             "load_builtin": True,
             "load_user": False,
@@ -67,11 +67,56 @@ def test_get_agents_includes_project_and_shadows_builtin(client, tmp_path: Path)
     assert gp["description"] == "Overridden"
 
 
-def test_get_agents_load_builtin_false(client):
+def test_get_sub_agents_load_builtin_false(client):
     """Disabling built-ins with no other source yields an empty catalog."""
     response = client.post(
-        "/api/agents",
+        "/api/sub-agents",
         json={"load_builtin": False, "load_user": False, "load_project": False},
     )
     assert response.status_code == 200
     assert response.json()["agents"] == []
+
+
+def test_get_sub_agents_exposes_full_frontmatter(client, tmp_path: Path):
+    """Every frontmatter-settable field is returned (lossless view)."""
+    agents_dir = tmp_path / ".agents" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "full.md").write_text(
+        "---\n"
+        "name: full\n"
+        "description: Fully specified agent\n"
+        "model: inherit\n"
+        "color: purple\n"
+        "tools:\n  - TerminalTool\n"
+        "skills:\n  - some-skill\n"
+        "permission_mode: confirm_risky\n"
+        "max_iteration_per_run: 7\n"
+        "max_budget_per_run: 1.5\n"
+        "profile_store_dir: /tmp/profiles\n"
+        "mcp_servers:\n"
+        "  fetch:\n    command: uvx\n    args:\n      - mcp-server-fetch\n"
+        "condenser: none\n"
+        "custom_key: custom_value\n"
+        "---\n\n"
+        "You are a fully specified agent."
+    )
+
+    response = client.post(
+        "/api/sub-agents",
+        json={"load_builtin": False, "load_user": False, "project_dir": str(tmp_path)},
+    )
+    assert response.status_code == 200
+    agent = {a["name"]: a for a in response.json()["agents"]}["full"]
+
+    assert agent["skills"] == ["some-skill"]
+    assert agent["permission_mode"] == "confirm_risky"
+    assert agent["max_iteration_per_run"] == 7
+    assert agent["max_budget_per_run"] == 1.5
+    assert agent["profile_store_dir"] == "/tmp/profiles"
+    assert agent["mcp_servers"] == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
+    }
+    # condenser: none -> a NoOpCondenser is serialized (not null)
+    assert agent["condenser"] is not None
+    # unknown frontmatter keys are preserved in metadata
+    assert agent["metadata"]["custom_key"] == "custom_value"
