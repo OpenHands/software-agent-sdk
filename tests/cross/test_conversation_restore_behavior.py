@@ -697,9 +697,8 @@ def test_openhands_provider_restore_writes_public_model_shape(mock_completion):
         assert llm_payload["model"] == "openhands/claude-opus-4-8"
         assert "base_url" not in llm_payload
 
-        assert captured_completion_kwargs[-1]["model"] == (
-            "litellm_proxy/claude-opus-4-8"
-        )
+        assert captured_completion_kwargs[-1]["model"] == "claude-opus-4-8"
+        assert captured_completion_kwargs[-1]["custom_llm_provider"] == "litellm_proxy"
         assert (
             captured_completion_kwargs[-1]["api_base"] == OPENHANDS_LLM_PROXY_BASE_URL
         )
@@ -762,8 +761,9 @@ def test_conversation_restore_rewrites_legacy_openhands_proxy_snapshot(
             assert "base_url" not in restored_llm_payload
 
             lifecycle.send_and_run(restored, "Third message")
-            assert captured_completion_kwargs[-1]["model"] == (
-                "litellm_proxy/claude-opus-4-8"
+            assert captured_completion_kwargs[-1]["model"] == "claude-opus-4-8"
+            assert (
+                captured_completion_kwargs[-1]["custom_llm_provider"] == "litellm_proxy"
             )
             assert (
                 captured_completion_kwargs[-1]["api_base"]

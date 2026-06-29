@@ -7,7 +7,7 @@ from litellm import get_supported_openai_params
 from openhands.sdk.llm.utils.openhands_provider import OPENHANDS_PROVIDER_PREFIX
 
 
-def model_matches(model: str, patterns: Iterable[str]) -> bool:
+def model_matches(model: str | None, patterns: Iterable[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
 
     Matching semantics:
@@ -21,7 +21,7 @@ def model_matches(model: str, patterns: Iterable[str]) -> bool:
     return False
 
 
-def apply_ordered_model_rules(model: str, rules: list[str]) -> bool:
+def apply_ordered_model_rules(model: str | None, rules: list[str]) -> bool:
     """Apply ordered include/exclude model rules to determine final support.
 
     Rules semantics:
@@ -247,7 +247,7 @@ REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
 )
 
 
-def get_features(model: str) -> ModelFeatures:
+def get_features(model: str | None) -> ModelFeatures:
     """Get model features."""
     return ModelFeatures(
         supports_reasoning_effort=_supports_reasoning_effort(model),
