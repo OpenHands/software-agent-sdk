@@ -126,6 +126,19 @@ class LLMServiceUnavailableError(LLMError):
         super().__init__(message)
 
 
+class LLMMalformedToolArgsError(LLMError):
+    """Raised when the LLM returns tool calls with unparseable JSON arguments.
+
+    Added to ``LLM_RETRY_EXCEPTIONS`` so the retry decorator automatically
+    re-calls the LLM, giving it another chance to produce valid output.
+    """
+
+    def __init__(
+        self, message: str = "LLM returned malformed tool call arguments"
+    ) -> None:
+        super().__init__(message)
+
+
 class LLMBadRequestError(LLMError):
     def __init__(self, message: str = "Bad request to LLM provider") -> None:
         super().__init__(message)
