@@ -58,12 +58,12 @@ export class HttpClient {
     this.timeout = options.timeout || 60000;
   }
 
-  async request<T = unknown>(options: RequestOptions): Promise<HttpResponse<T>> {
-    const relativePath = options.url.startsWith('/') ? options.url.slice(1) : options.url;
+  private buildUrl(path: string, params?: Record<string, unknown>): URL {
+    const relativePath = path.startsWith('/') ? path.slice(1) : path;
     const url = new URL(relativePath, this.baseUrl + '/');
 
-    if (options.params) {
-      Object.entries(options.params).forEach(([key, value]) => {
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== null) {
           if (Array.isArray(value)) {
             value.forEach((item) => url.searchParams.append(key, String(item)));
@@ -73,6 +73,21 @@ export class HttpClient {
         }
       });
     }
+
+    return url;
+  }
+
+  async request<T = unknown>(options: RequestOptions): Promise<HttpResponse<T>> {
+    // `fetch` (and browsers) reject a body on a GET request, but a few
+    // agent-server batch endpoints (e.g. `GET /api/bash/bash_events/` and
+    // `GET /api/conversations/{id}/events`) are declared as GET-with-required-body.
+    // Route those through Node's http(s) module, which permits a GET body, and
+    // leave the fetch path untouched for every other request.
+    if (options.method === 'GET' && options.data !== undefined && options.data !== null) {
+      return this.requestWithBodyOnGet<T>(options);
+    }
+
+    const url = this.buildUrl(options.url, options.params);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -159,6 +174,131 @@ export class HttpClient {
 
       throw new Error('Unknown request error', { cause: error });
     }
+  }
+
+  /**
+   * Issue a GET request that carries a JSON body via Node's `http`/`https`
+   * module. `fetch` throws `TypeError: Request with GET/HEAD method cannot have
+   * body`, so this is the only way to call the agent-server's GET-with-body
+   * batch endpoints. Mirrors the URL/header/error/parse behavior of the fetch
+   * path in {@link request}. Node-only by nature (browsers forbid GET bodies).
+   */
+  private async requestWithBodyOnGet<T = unknown>(
+    options: RequestOptions
+  ): Promise<HttpResponse<T>> {
+    const url = this.buildUrl(options.url, options.params);
+
+    const body = typeof options.data === 'string' ? options.data : JSON.stringify(options.data);
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+      'Content-Length': String(Buffer.byteLength(body)),
+    };
+
+    if (this.apiKey) {
+      headers['X-Session-API-Key'] = this.apiKey;
+    }
+
+    const transport =
+      url.protocol === 'https:' ? await import('node:https') : await import('node:http');
+    const timeoutMs = options.timeout || this.timeout;
+
+    return new Promise<HttpResponse<T>>((resolve, reject) => {
+      const req = transport.request(url, { method: options.method, headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          try {
+            const status = res.statusCode ?? 0;
+            const statusText = res.statusMessage ?? '';
+            const responseHeaders: Record<string, string> = {};
+            for (const [key, value] of Object.entries(res.headers)) {
+              if (value !== undefined) {
+                responseHeaders[key] = Array.isArray(value) ? value.join(', ') : value;
+              }
+            }
+
+            const buffer = Buffer.concat(chunks);
+            const contentType = responseHeaders['content-type'];
+
+            const isAcceptable =
+              options.acceptableStatusCodes?.has(status) ||
+              (!options.acceptableStatusCodes && status >= 200 && status < 300);
+
+            if (!isAcceptable) {
+              const text = buffer.toString('utf-8');
+              let errorContent: unknown;
+              try {
+                errorContent = contentType?.includes('application/json') ? JSON.parse(text) : text;
+              } catch {
+                errorContent = text || null;
+              }
+
+              reject(
+                new HttpError(
+                  status,
+                  statusText,
+                  errorContent,
+                  `HTTP request failed (${status} ${statusText}): ${JSON.stringify(errorContent)}`
+                )
+              );
+              return;
+            }
+
+            const data = this.parseNodeResponse<T>(
+              buffer,
+              contentType,
+              options.responseType || 'auto'
+            );
+
+            resolve({ data, status, statusText, headers: responseHeaders });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+
+      req.on('error', (error: Error) => {
+        reject(new Error(`Request failed: ${error.message}`, { cause: error }));
+      });
+
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error(`Request timeout after ${timeoutMs}ms`));
+      });
+
+      req.end(body);
+    });
+  }
+
+  private parseNodeResponse<T>(
+    buffer: Buffer,
+    contentType: string | undefined,
+    responseType: ResponseType
+  ): T {
+    if (responseType === 'blob') {
+      return new Blob([new Uint8Array(buffer)]) as T;
+    }
+
+    if (responseType === 'arrayBuffer') {
+      return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as T;
+    }
+
+    const text = buffer.toString('utf-8');
+
+    if (responseType === 'text') {
+      return text as T;
+    }
+
+    if (responseType === 'json') {
+      return (text ? JSON.parse(text) : undefined) as T;
+    }
+
+    if (contentType?.includes('application/json')) {
+      return (text ? JSON.parse(text) : undefined) as T;
+    }
+
+    return text as T;
   }
 
   private async parseResponse<T>(response: Response, responseType: ResponseType): Promise<T> {

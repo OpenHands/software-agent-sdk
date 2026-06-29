@@ -57,6 +57,20 @@ export class BashClient {
     );
   }
 
+  /**
+   * Batch-fetch bash events in a single request via `GET /api/bash/bash_events/`.
+   *
+   * Unlike {@link getEvents} (which fans out one request per id), this calls the
+   * server-side batch endpoint and returns one entry per requested id, with
+   * `null` in the slots of any missing event — preserving input order.
+   */
+  async batchGetEvents(eventIds: string[]): Promise<Array<BashEvent | null>> {
+    const response = await this.client.get<(BashEvent | null)[]>('/api/bash/bash_events/', {
+      data: eventIds,
+    });
+    return response.data;
+  }
+
   async startCommand(
     request: string | ExecuteBashRequest,
     cwd?: string,
