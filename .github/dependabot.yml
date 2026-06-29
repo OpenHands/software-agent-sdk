@@ -12,7 +12,7 @@ updates:
     assignees:
       - "All-Hands-AI/core-team"
     commit-message:
-      prefix: "deps"
+      prefix: "chore"
       include: "scope"
     groups:
       typescript:
