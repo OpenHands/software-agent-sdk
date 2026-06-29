@@ -42,7 +42,11 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.marketplace.registry import PluginResolutionError
+from openhands.sdk.marketplace.registry import (
+    MarketplaceNotFoundError,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
@@ -517,12 +521,17 @@ async def load_conversation_plugin(
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     try:
         await event_service.load_plugin(plugin_ref)
-    except PluginResolutionError as e:
+    except (PluginNotFoundError, MarketplaceNotFoundError) as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
         )
-    except (PluginFetchError, FileNotFoundError, ValueError) as e:
+    except (
+        PluginResolutionError,
+        PluginFetchError,
+        FileNotFoundError,
+        ValueError,
+    ) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),

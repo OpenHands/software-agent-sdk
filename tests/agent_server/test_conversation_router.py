@@ -27,7 +27,10 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-from openhands.sdk.marketplace.registry import PluginNotFoundError
+from openhands.sdk.marketplace.registry import (
+    PluginNotFoundError,
+    PluginResolutionError,
+)
 from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
@@ -2215,6 +2218,30 @@ def test_load_conversation_plugin_not_found(
 
         assert response.status_code == 404
         assert "missing" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_malformed_ref_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps malformed plugin refs to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = PluginResolutionError(
+        "Plugin reference must use 'plugin-name@marketplace-name'"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@"},
+        )
+
+        assert response.status_code == 400
+        assert "Plugin reference must use" in response.json()["detail"]
     finally:
         client.app.dependency_overrides.clear()
 
