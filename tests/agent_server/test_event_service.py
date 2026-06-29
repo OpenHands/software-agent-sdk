@@ -1344,6 +1344,32 @@ class TestEventServiceSendMessage:
                 None, conversation.send_message, system_message
             )
 
+    @pytest.mark.asyncio
+    async def test_load_plugin_delegates_to_conversation(self, event_service):
+        """Runtime plugin loads are delegated through the executor."""
+        conversation = MagicMock()
+        conversation.load_plugin = MagicMock()
+        event_service._conversation = conversation
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.side_effect = lambda *args: self._mock_executor()
+
+            await event_service.load_plugin("plugin@team")
+
+        mock_loop.run_in_executor.assert_called_once_with(
+            None, conversation.load_plugin, "plugin@team"
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_plugin_inactive_service(self, event_service):
+        """Runtime plugin loads require an active conversation."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.load_plugin("plugin@team")
+
 
 class TestEventServiceRespondToConfirmation:
     """Test cases for confirmation responses and rejection handling."""
