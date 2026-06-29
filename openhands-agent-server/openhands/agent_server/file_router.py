@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Literal
+from typing import IO, Annotated, Literal
 from uuid import UUID
 
 from fastapi import (
@@ -501,7 +501,7 @@ class _ExactSizeReader:
     desynchronize no matter how the workspace mutates during capture.
     """
 
-    def __init__(self, fileobj: io.BufferedReader, size: int) -> None:
+    def __init__(self, fileobj: IO[bytes], size: int) -> None:
         self._fileobj = fileobj
         self._remaining = size
 
