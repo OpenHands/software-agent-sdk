@@ -1,3 +1,34 @@
+"""The planning system prompt, ported verbatim from ``agent/prompts/system_prompt_planning.j2``.
+
+Unlike the default composition -- whose blocks each carry a guard and can be overridden
+individually -- the planning prompt is a single standalone STATIC block with no
+per-section guards, so it is one section. The only substitution is ``plan_structure``;
+``tests/sdk/context/prompts/test_planning_registry.py`` pins the output against a golden
+snapshot. No ``_refine``: the text mentions no ``bash``/``terminal`` (its ``<EFFICIENCY>``
+says ``glob and grep``), so the Windows shell substitution is a no-op.
+"""
+
+# The body is verbatim long-form prompt text; wrapping a line would change the rendered
+# bytes, so line-length (E501) is disabled for this whole file.
+# ruff: noqa: E501
+
+from openhands.sdk.context.prompts.section import CacheTier, PromptContext
+
+
+__all__ = ["PlanningSection"]
+
+
+class PlanningSection:
+    """The full planning system prompt as one STATIC block.
+
+    The only substitution is ``plan_structure`` (an empty value reproduces the
+    template's ``<PLAN_STRUCTURE>\\n\\n</PLAN_STRUCTURE>`` output verbatim).
+    """
+
+    name = "planning"
+    cache_tier = CacheTier.STATIC
+
+    _BODY = """\
 You are a Planning Agent that analyzes codebases and helps the user make a detailed plan for their requested changes.
 
 <ROLE>
@@ -92,5 +123,12 @@ Follow this enhanced planning workflow to create well-researched, user-aligned p
 </PLAN_SCOPE>
 
 <PLAN_STRUCTURE>
-{{plan_structure}}
-</PLAN_STRUCTURE>
+{plan_structure}
+</PLAN_STRUCTURE>"""
+
+    def guard(self, ctx: PromptContext) -> bool:  # noqa: ARG002
+        return True
+
+    def render(self, ctx: PromptContext) -> str | None:
+        plan_structure = str(ctx.template_kwargs.get("plan_structure", ""))
+        return self._BODY.replace("{plan_structure}", plan_structure)
