@@ -358,6 +358,36 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
         pass  # Expected connection errors are acceptable
 
 
+def test_create_mcp_tools_logs_server_name_on_failure():
+    """A failed MCP setup logs the server name + underlying error instead of
+    propagating unlogged and surfacing to the user as silently-missing tools.
+
+    Regression test for #9805 (e.g. an OAuth server returning 401).
+    """
+    from openhands.sdk.mcp import utils as mcp_utils
+
+    config = {
+        "mcpServers": {
+            "linear": {"transport": "http", "url": "http://127.0.0.1:59999/mcp"}
+        }
+    }
+
+    async def _boom(client):
+        raise ValueError("401 Unauthorized")
+
+    with (
+        patch.object(mcp_utils, "_connect_and_list_tools", _boom),
+        patch.object(mcp_utils.logger, "error") as mock_error,
+    ):
+        with pytest.raises(ValueError, match="401 Unauthorized"):
+            create_mcp_tools(config, timeout=5.0)
+
+    mock_error.assert_called_once()
+    args = mock_error.call_args.args
+    assert "Failed to set up MCP tools" in args[0]
+    assert "linear" in args  # the configured server name is surfaced
+
+
 def test_create_mcp_tools_stdio_server():
     """Test creating MCP tools with dict configuration (not MCPConfig object)."""
     mcp_config = {

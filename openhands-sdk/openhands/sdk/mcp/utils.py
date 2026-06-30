@@ -78,6 +78,27 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
+    except Exception as e:
+        # Surface *why* MCP setup failed (e.g. a 401 from an OAuth-required
+        # server, or a bad command) together with the configured server name(s),
+        # instead of letting it propagate unlogged and surface to the user as
+        # silently-missing tools (#9805).
+        server_names = (
+            list(config.mcpServers.keys()) if config.mcpServers else ["unknown"]
+        )
+        logger.error(
+            "Failed to set up MCP tools for server(s) %s: %s",
+            ", ".join(server_names),
+            e,
+            exc_info=True,
+        )
+        try:
+            client.sync_close()
+        except Exception as close_exc:
+            logger.warning(
+                "Failed to close MCP client during error cleanup", exc_info=close_exc
+            )
+        raise
     except BaseException:
         try:
             client.sync_close()
