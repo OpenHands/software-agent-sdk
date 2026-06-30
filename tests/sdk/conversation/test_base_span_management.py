@@ -73,6 +73,10 @@ class MockConversation(BaseConversation):
         """Mock implementation of fork method."""
         raise NotImplementedError("Mock fork not implemented")
 
+    def navigate_to(self, event_id: Any) -> None:
+        """Mock implementation of navigate_to method."""
+        raise NotImplementedError("Mock navigate_to not implemented")
+
 
 def test_base_conversation_span_management():
     """Test that BaseConversation properly manages span state to prevent double-ending."""  # noqa: E501

@@ -72,6 +72,63 @@ class EventLog(EventsListBase):
             raise IndexError("Event index out of range")
         return self._idx_to_id[idx]
 
+    def __contains__(self, item: object) -> bool:
+        """Whether the log contains a given event id or ``Event`` (by id).
+
+        Checking by id (not the ``Sequence`` default of value-equality) keeps
+        ``event in events`` true after the event is stamped with a ``parent_id``
+        on append, and avoids hashing unhashable event payloads.
+        """
+        if isinstance(item, Event):
+            return item.id in self._id_to_idx
+        return item in self._id_to_idx
+
+    def get_by_id(self, event_id: EventID) -> Event:
+        """Return the event with the given id (raises KeyError if absent)."""
+        return self[self.get_index(event_id)]
+
+    def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
+        """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
+
+        Legacy events predating the tree have no ``parent_id``; they fall back to
+        the linear chain (event ``idx - 1``) so old conversations load unbranched
+        with no disk rewrite.
+        """
+        if event.parent_id is not None:
+            return event.parent_id  # explicit (new events)
+        if idx == 0:
+            return None  # genuine root
+        return self.get_id(idx - 1)  # legacy linear chain (back-compat)
+
+    def path_to_root(self, leaf_id: EventID | None) -> list[Event]:
+        """The active branch ``leaf -> ... -> root``, returned root-first.
+
+        ``leaf_id=None`` yields ``[]``. Raises ValueError on a cycle, KeyError if
+        ``leaf_id`` or an ancestor is missing.
+        """
+        chain: list[Event] = []
+        seen: set[EventID] = set()
+        cur_id: EventID | None = leaf_id
+        while cur_id is not None:
+            if cur_id in seen:
+                raise ValueError(f"Cycle in event tree at {cur_id}")
+            seen.add(cur_id)
+            idx = self.get_index(cur_id)
+            chain.append(evt := self[idx])
+            cur_id = self._effective_parent_id(idx, evt)
+        return chain[::-1]
+
+    def children_of(self, event_id: EventID | None) -> list[EventID]:
+        """Ids of events whose effective parent is ``event_id``.
+
+        ``None`` returns the root(s); 2+ children are sibling branches.
+        """
+        return [
+            evt.id
+            for idx, evt in enumerate(self)
+            if self._effective_parent_id(idx, evt) == event_id
+        ]
+
     @overload
     def __getitem__(self, idx: int) -> Event: ...
 

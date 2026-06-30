@@ -46,6 +46,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
@@ -1477,6 +1478,7 @@ class RemoteConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "RemoteConversation":
         """Fork this conversation on the remote agent server.
 
@@ -1493,18 +1495,27 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: **Not yet supported remotely** — a non-``None`` value
+                raises ``NotImplementedError`` (tracked separately). Use
+                ``LocalConversation.fork(from_event_id=...)`` for now.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
             conversation.
 
         Raises:
-            NotImplementedError: If ``agent`` is provided.
+            NotImplementedError: If ``agent`` or ``from_event_id`` is provided.
         """
         if agent is not None:
             raise NotImplementedError(
                 "Agent replacement is not supported for remote conversation "
                 "forks. Use LocalConversation.fork(agent=...) instead."
+            )
+        if from_event_id is not None:
+            raise NotImplementedError(
+                "fork(from_event_id=...) is not yet supported for remote "
+                "conversations. Use LocalConversation.fork(from_event_id=...) "
+                "instead."
             )
 
         body: dict[str, object] = {"reset_metrics": reset_metrics}
@@ -1540,6 +1551,19 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run=self.max_iteration_per_run,
             delete_on_close=self.delete_on_close,
             tags=server_tags,
+        )
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD within this conversation.
+
+        Not yet supported remotely (tracked separately); use
+        ``LocalConversation.navigate_to`` for now.
+
+        Raises:
+            NotImplementedError: Always.
+        """
+        raise NotImplementedError(
+            "navigate_to is not yet supported for RemoteConversation."
         )
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":

@@ -30,6 +30,14 @@ class Event(DiscriminatedUnionMixin, ABC):
         description="Event timestamp",
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
+    parent_id: EventID | None = Field(
+        default=None,
+        description=(
+            "Parent event id in the conversation tree. None for the root, or for "
+            "legacy events predating the tree (see EventLog's effective-parent "
+            "rule). Events sharing a parent_id are sibling branches."
+        ),
+    )
 
     @property
     def visualize(self) -> Text:

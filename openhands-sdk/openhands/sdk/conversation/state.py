@@ -163,6 +163,16 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
+    # Movable HEAD of the conversation tree.
+    leaf_event_id: EventID | None = Field(
+        default=None,
+        description=(
+            "HEAD of the conversation tree: the parent of the next appended "
+            "event. None means an empty tree (or, pre-feature, the linear tail; "
+            "see _resolve_active_leaf). Moving it re-roots the active branch."
+        ),
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -207,11 +217,13 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
-    # Cached projection of `_events`, lazily updated on read via a
-    # watermark.  Derived state — never persisted, never serialized.
+    # Cached projection of `_events` for the *active branch*, lazily updated on
+    # read. Derived state — never persisted. `_view_branch_leaf` is the resolved
+    # leaf the cache reflects: equal to the active leaf -> reuse; an ancestor ->
+    # extend with the tail; otherwise -> rebuild (branch switch).
     # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
     _view: View = PrivateAttr(default_factory=View)
-    _view_watermark: int = PrivateAttr(default=0)
+    _view_branch_leaf: EventID | None = PrivateAttr(default=None)
     _view_lock: threading.RLock = PrivateAttr(default_factory=threading.RLock)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
@@ -233,65 +245,82 @@ class ConversationState(OpenHandsModel):
     def events(self) -> EventLog:
         return self._events
 
+    def _resolve_active_leaf(self) -> EventID | None:
+        """The effective HEAD, resolving a ``None`` ``leaf_event_id`` by lineage.
+
+        A set leaf is returned as-is. A ``None`` leaf falls back to the last
+        event only for pre-feature conversations (last event has no
+        ``parent_id``), so legacy history loads unbranched; once events are
+        stamped, ``None`` is a deliberate empty HEAD (e.g. ``navigate_to(None)``).
+        """
+        if self.leaf_event_id is not None:
+            return self.leaf_event_id
+        if (n := len(self._events)) == 0:
+            return None
+        if self._events[n - 1].parent_id is not None:
+            return None
+        return self._events.get_id(n - 1)
+
     @property
     def view(self) -> View:
-        """Lazily-updated, incrementally-maintained ``View`` of the events.
+        """Lazily-maintained ``View`` of the active branch (``path_to_root(leaf)``).
 
-        The view is brought up to date by replaying only the events
-        appended since the last read (tracked by an internal watermark).
-        This is O(k) where k is the number of new events — typically 2–4
-        per agent step — rather than O(n) over the entire history.
+        Abandoned branches (from navigation/forking) are excluded. A linear
+        append replays only the new tail — O(k), preserving the incremental
+        optimization (#3053); a branch switch rebuilds once, O(n).
+        ``enforce_properties`` runs only on rebuild (``rebuild_view()``).
 
-        ``enforce_properties`` is *not* run on the incremental path.
-        Full enforcement happens only via ``rebuild_view()``, which is
-        called on cold load, fork, and error recovery.
-
-        Callers must treat the returned view as read-only.  This
-        reference is also invalidated by any call to ``rebuild_view()``;
-        re-read ``state.view`` after any rebuild if you need a fresh
-        snapshot.
+        The returned view is read-only and is invalidated by ``rebuild_view()``;
+        re-read ``state.view`` after any rebuild.
         """
         with self._view_lock:
-            n = len(self._events)
-            for i in range(self._view_watermark, n):
-                try:
-                    self._view.append_event(self._events[i])
-                    self._view_watermark = i + 1
-                except Exception:
-                    logger.warning(
-                        "Incremental view append failed at index %d; "
-                        "rebuilding from scratch.",
-                        i,
-                        exc_info=True,
-                    )
-                    self._view = View.from_events(self._events)
-                    self._view_watermark = len(self._events)
-                    break
+            leaf = self._resolve_active_leaf()
+            if leaf == self._view_branch_leaf:
+                return self._view
+
+            # Fast path: cached leaf is an ancestor of the new leaf (linear
+            # append) → replay only the tail. Also covers first populate (cached
+            # leaf None, cached view empty), avoiding the enforce_properties pass.
+            try:
+                tail: list[Event] = []
+                cur_id: EventID | None = leaf
+                while cur_id is not None and cur_id != self._view_branch_leaf:
+                    idx = self._events.get_index(cur_id)
+                    evt = self._events[idx]
+                    tail.append(evt)
+                    cur_id = self._events._effective_parent_id(idx, evt)
+                if cur_id == self._view_branch_leaf:
+                    for evt in reversed(tail):
+                        self._view.append_event(evt)
+                    self._view_branch_leaf = leaf
+                    return self._view
+            except Exception:
+                logger.warning(
+                    "Incremental view append failed for leaf %s; "
+                    "rebuilding from the active branch.",
+                    leaf,
+                    exc_info=True,
+                )
+
+            # Diverged branch (navigation/fork), first populate, or recovery
+            # from the failure above → full rebuild from the active branch.
+            self._view = View.from_events(self._events.path_to_root(leaf))
+            self._view_branch_leaf = leaf
             return self._view
 
     def rebuild_view(self) -> None:
-        """Re-derive the cached view from the full event log.
+        """Re-derive the cached view from the active branch, with full enforcement.
 
-        Runs ``View.from_events`` which applies all view-property
-        enforcement.  This is the recovery / cold-load path described
-        in ``ViewPropertyBase`` and should be called only on:
-
-        - Cold load (resuming a persisted ``ConversationState``).
-        - Fork creation, after deep-copying events from the source.
-        - Explicit error recovery (e.g. malformed-history retry).
-
-        Any ``View`` reference previously returned by ``state.view``
-        is invalidated after this call and must not be used — it
-        will never reflect new events or the rebuilt state.
-
-        If ``View.from_events`` raises (e.g. due to corrupted events),
-        the cache is left unchanged and the exception propagates to
-        the caller.  ``state.view`` continues to serve the pre-rebuild
-        state until a successful ``rebuild_view()`` call.
+        Runs ``View.from_events`` over ``path_to_root(leaf)``. Called on cold
+        load, fork, navigation, and error recovery. Invalidates any prior
+        ``state.view`` reference. If ``View.from_events`` raises, the cache is
+        left unchanged and the exception propagates.
         """
         with self._view_lock:
-            self._view = View.from_events(self._events)
-            self._view_watermark = len(self._events)
+            leaf = self._resolve_active_leaf()
+            branch = self._events.path_to_root(leaf)
+            self._view = View.from_events(branch)
+            self._view_branch_leaf = leaf
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -497,9 +526,15 @@ class ConversationState(OpenHandsModel):
                     logger.exception("Auto-persist base_state failed", exc_info=True)
                     raise e
 
-            # Call state change callback if set
+            # Call state change callback if set. leaf_event_id is skipped: it
+            # changes every event and the server persists broadcasts, so it would
+            # ~double the log — and the new HEAD is the just-appended event's id.
             callback = getattr(self, "_on_state_change", None)
-            if callback is not None and old is not _sentinel:
+            if (
+                callback is not None
+                and old is not _sentinel
+                and name != "leaf_event_id"
+            ):
                 try:
                     # Import here to avoid circular imports
                     from openhands.sdk.event.conversation_state import (
