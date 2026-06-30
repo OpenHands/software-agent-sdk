@@ -64,9 +64,6 @@ def _ground_truth_view_ids(conv: LocalConversation) -> list[str]:
     return [e.id for e in View.from_events(branch).events]
 
 
-# --------------------------------------------------------------------------- #
-# parent_id stamping + leaf advance  (#3747)
-# --------------------------------------------------------------------------- #
 def test_parent_id_stamped_and_leaf_advances():
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
@@ -104,9 +101,6 @@ def test_view_reflects_only_the_active_branch():
         assert _view_ids(conv) == [e0.id, e1.id, e2.id]
 
 
-# --------------------------------------------------------------------------- #
-# navigate_to  (#3748)
-# --------------------------------------------------------------------------- #
 def test_navigate_then_emit_creates_sibling_branch():
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
@@ -160,9 +154,6 @@ def test_navigate_to_none_empties_the_active_branch():
         assert _view_ids(conv) == []
 
 
-# --------------------------------------------------------------------------- #
-# fork(from_event_id=...)  (#3748)
-# --------------------------------------------------------------------------- #
 def test_fork_from_event_slices_the_branch():
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
@@ -229,16 +220,11 @@ def test_default_fork_is_unchanged_full_copy():
         assert e1.id in fork.state.events  # abandoned branch copied too
 
 
-# --------------------------------------------------------------------------- #
-# Correctness invariants (not just the happy path)
-# --------------------------------------------------------------------------- #
 def test_incremental_view_matches_ground_truth_across_branch_switches():
-    """The cached/incremental ``state.view`` must equal a from-scratch rebuild.
+    """Cached ``state.view`` must equal a from-scratch rebuild after every step.
 
-    Reading the view between every mutation exercises the incremental fast path
-    (linear append, first-populate, ancestor detection) and the full-rebuild
-    path (branch switch); both are pinned against ``View.from_events`` so a
-    fast-path bug cannot pass silently.
+    Reading the view between mutations pins the incremental fast path and the
+    branch-switch rebuild against ``View.from_events``.
     """
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
@@ -260,11 +246,7 @@ def test_incremental_view_matches_ground_truth_across_branch_switches():
 
 
 def test_legacy_conversation_resumes_and_continues():
-    """Events persisted without parent_id load as one linear branch and continue.
-
-    The headline back-compat guarantee, exercised through the real cold-load
-    (resume) path rather than an in-memory EventLog.
-    """
+    """Events persisted without parent_id load as one branch and continue (resume)."""
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp, delete_on_close=False)
         # Append directly to the log: bypasses the stamping chokepoint, so these

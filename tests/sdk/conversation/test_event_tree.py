@@ -35,9 +35,6 @@ def _branched_log() -> EventLog:
     )
 
 
-# --------------------------------------------------------------------------- #
-# __contains__ / get_by_id
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("as_event", [False, True], ids=["by-id", "by-event"])
 @pytest.mark.parametrize("target, expected", [("a", True), ("missing", False)])
 def test_contains_accepts_event_id_or_event(as_event, target, expected):
@@ -53,9 +50,6 @@ def test_get_by_id_returns_event_or_raises():
         log.get_by_id("missing")
 
 
-# --------------------------------------------------------------------------- #
-# path_to_root
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "leaf, expected",
     [
@@ -81,9 +75,6 @@ def test_path_to_root_unknown_leaf_raises():
         _log(_event("a")).path_to_root("nope")
 
 
-# --------------------------------------------------------------------------- #
-# children_of
-# --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "parent, expected",
     [
@@ -97,9 +88,6 @@ def test_children_of(parent, expected):
     assert _branched_log().children_of(parent) == expected
 
 
-# --------------------------------------------------------------------------- #
-# Back-compat: events persisted before parent_id existed
-# --------------------------------------------------------------------------- #
 def test_legacy_events_form_a_single_linear_branch():
     """Events without parent_id resolve to the linear idx chain (no rewrite)."""
     # All parent_id default to None -> the effective-parent rule walks idx-1.
