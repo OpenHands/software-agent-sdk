@@ -5,6 +5,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
+import pytest
+
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.types import TraceMetadataValue
@@ -72,6 +74,13 @@ class MockConversation(BaseConversation):
     def fork(self, **kwargs: Any) -> "MockConversation":
         """Mock implementation of fork method."""
         raise NotImplementedError("Mock fork not implemented")
+
+
+def test_base_conversation_load_plugin_default_not_supported():
+    conversation = MockConversation()
+
+    with pytest.raises(NotImplementedError, match="does not support loading plugins"):
+        conversation.load_plugin("plugin@marketplace")
 
 
 def test_base_conversation_span_management():

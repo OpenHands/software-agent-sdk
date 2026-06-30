@@ -14,6 +14,7 @@ from openhands.agent_server.env_parser import (
     get_env_parser,
     merge,
 )
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -235,6 +236,13 @@ class Config(BaseModel):
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
+        ),
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Default marketplace registrations for plugin and skill loading. "
+            "Can be configured with OH_REGISTERED_MARKETPLACES as a JSON list."
         ),
     )
     deferred_init: bool = Field(

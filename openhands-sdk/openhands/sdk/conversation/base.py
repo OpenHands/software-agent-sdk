@@ -384,6 +384,19 @@ class BaseConversation(ABC):
         """
         ...
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Implementations that support marketplace-registered plugins resolve the
+        reference against the conversation agent's registered marketplaces and
+        merge the plugin's skills, hooks, and MCP configuration into the agent.
+
+        Args:
+            plugin_ref: Plugin reference, either ``plugin-name`` or
+                ``plugin-name@marketplace-name``.
+        """
+        raise NotImplementedError("This conversation does not support loading plugins")
+
     @abstractmethod
     def fork(
         self,
