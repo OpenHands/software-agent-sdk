@@ -9,13 +9,18 @@ store key. This module keeps that FK from dangling:
 * :func:`delete_llm_profile` / :func:`rename_llm_profile` — guarded cross-store
   operations that raise :class:`ProfileReferenced` (routers map → 409) or cascade.
 
+These functions are **store-agnostic**: they touch the agent-profile store only
+through :class:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStoreProtocol`
+(``lock`` / ``list_summaries`` / ``set_llm_profile_ref``), never the filesystem,
+so the file store and a cloud DB-backed store reuse the same FK logic verbatim.
+
 Lock acquisition order — **agent-profiles, then llm-profiles.**
-The two stores are HOME-rooted but independent (each has its own file lock).
 A guarded delete/rename holds the *agent-profiles* lock across the whole
 "scan referrers → mutate the LLM profile" window, so no concurrent
 ``AgentProfileStore.save`` can introduce a new referrer between the check and
-the mutation (the TOCTOU this module exists to close). Always take the
-agent-profiles lock first; never the reverse, or two callers could deadlock.
+the mutation (the TOCTOU this module exists to close). ``lock()`` is re-entrant.
+Always take the agent-profiles lock first; never the reverse, or two callers
+could deadlock.
 
 Scope: the FK covers ``llm_profile_ref`` only. ``mcp_server_refs`` are keys into
 the user's independently-mutable global ``mcp_config`` and are checked at
@@ -24,7 +29,6 @@ resolve-time (#3717), not constrained here.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from openhands.sdk.logger import get_logger
@@ -32,8 +36,8 @@ from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_REGEX
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
-    from openhands.sdk.profiles.agent_profile_store import AgentProfileStore
+    from openhands.sdk.llm.llm_profile_store import LLMProfileMutator
+    from openhands.sdk.profiles.agent_profile_store import AgentProfileStoreProtocol
 
 logger = get_logger(__name__)
 
@@ -60,71 +64,56 @@ def _validate_name(name: str) -> None:
         raise ValueError(f"Invalid profile name: {name!r}.")
 
 
-def _scan_referrers(store: AgentProfileStore, llm_profile_name: str) -> list[str]:
-    """Return citing agent-profile names. Caller must hold the store lock.
+def _scan_referrers(
+    store: AgentProfileStoreProtocol, llm_profile_name: str
+) -> list[str]:
+    """Return citing agent-profile names. Caller must hold :meth:`store.lock`.
 
-    Reads JSON directly (no validation/secret instantiation). Non-dict and
-    corrupt files are skipped.
+    Reads metadata via ``list_summaries`` (no validation / secret
+    instantiation). Only the OpenHands variant carries ``llm_profile_ref``.
     """
-    referrers: list[str] = []
-    for path in sorted(store.base_dir.glob("*.json")):
-        if not PROFILE_NAME_REGEX.match(path.stem):
-            continue
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        # agent_kind defaults to "openhands"; only that variant has the ref.
-        if data.get("agent_kind", "openhands") != "openhands":
-            continue
-        if data.get("llm_profile_ref") == llm_profile_name:
-            referrers.append(path.stem)
-    return referrers
+    return [
+        str(summary["name"])
+        for summary in store.list_summaries()
+        if summary.get("agent_kind", "openhands") == "openhands"
+        and summary.get("llm_profile_ref") == llm_profile_name
+    ]
 
 
-def _rewrite_refs(store: AgentProfileStore, old_name: str, new_name: str) -> list[str]:
+def _rewrite_refs(
+    store: AgentProfileStoreProtocol, old_name: str, new_name: str
+) -> list[str]:
     """Repoint every ``llm_profile_ref == old_name`` to ``new_name``.
 
-    Caller must hold the store lock. Surgical raw-JSON edit: only the ref field
-    changes, so encrypted ``mcp_tools`` and the stable ``id`` are untouched and
+    Caller must hold :meth:`store.lock`. Finds referrers via ``list_summaries``
+    and applies the store's surgical ``set_llm_profile_ref`` write primitive per
+    profile, so encrypted ``mcp_tools`` and the stable ``id`` are untouched and
     no cipher is needed. Returns the names of the rewritten profiles.
     """
-    rewritten: list[str] = []
-    for path in sorted(store.base_dir.glob("*.json")):
-        if not PROFILE_NAME_REGEX.match(path.stem):
-            continue
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if data.get("agent_kind", "openhands") != "openhands":
-            continue
-        if data.get("llm_profile_ref") != old_name:
-            continue
-        data["llm_profile_ref"] = new_name
-        store._atomic_write(path, json.dumps(data, indent=2))
-        rewritten.append(path.stem)
+    rewritten = _scan_referrers(store, old_name)
+    for name in rewritten:
+        store.set_llm_profile_ref(name, new_name)
     return rewritten
 
 
-def find_referrers(store: AgentProfileStore, llm_profile_name: str) -> list[str]:
+def find_referrers(
+    store: AgentProfileStoreProtocol, llm_profile_name: str
+) -> list[str]:
     """Names of the agent profiles whose ``llm_profile_ref == llm_profile_name``."""
-    with store._acquire_lock():
+    with store.lock():
         return _scan_referrers(store, llm_profile_name)
 
 
-def cascade_rename(store: AgentProfileStore, old_name: str, new_name: str) -> list[str]:
+def cascade_rename(
+    store: AgentProfileStoreProtocol, old_name: str, new_name: str
+) -> list[str]:
     """Atomically repoint all ``llm_profile_ref == old_name`` to ``new_name``.
 
     Holds the agent-profiles lock for the whole scan-and-rewrite, so concurrent
     saves cannot interleave. Returns the rewritten profile names.
     """
     _validate_name(new_name)
-    with store._acquire_lock():
+    with store.lock():
         rewritten = _rewrite_refs(store, old_name, new_name)
     if rewritten:
         logger.info(
@@ -135,8 +124,8 @@ def cascade_rename(store: AgentProfileStore, old_name: str, new_name: str) -> li
 
 
 def delete_llm_profile(
-    agent_store: AgentProfileStore,
-    llm_store: LLMProfileStore,
+    agent_store: AgentProfileStoreProtocol,
+    llm_store: LLMProfileMutator,
     llm_profile_name: str,
 ) -> None:
     """Delete an LLM profile only if no agent profile references it.
@@ -146,7 +135,7 @@ def delete_llm_profile(
     the agent-profiles-before-llm-profiles order. Raises
     :class:`ProfileReferenced` naming the referrers if any exist.
     """
-    with agent_store._acquire_lock():
+    with agent_store.lock():
         referrers = _scan_referrers(agent_store, llm_profile_name)
         if referrers:
             raise ProfileReferenced(referrers)
@@ -154,8 +143,8 @@ def delete_llm_profile(
 
 
 def rename_llm_profile(
-    agent_store: AgentProfileStore,
-    llm_store: LLMProfileStore,
+    agent_store: AgentProfileStoreProtocol,
+    llm_store: LLMProfileMutator,
     old_name: str,
     new_name: str,
 ) -> list[str]:
@@ -168,6 +157,6 @@ def rename_llm_profile(
     the rewritten agent-profile names.
     """
     _validate_name(new_name)
-    with agent_store._acquire_lock():
+    with agent_store.lock():
         llm_store.rename(old_name, new_name)
         return _rewrite_refs(agent_store, old_name, new_name)

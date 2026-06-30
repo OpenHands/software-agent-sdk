@@ -8,7 +8,8 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
+from uuid import UUID, uuid4
 
 from filelock import FileLock, Timeout
 
@@ -17,7 +18,7 @@ from openhands.sdk.profiles.agent_profile import validate_agent_profile
 
 
 if TYPE_CHECKING:
-    from uuid import UUID
+    from contextlib import AbstractContextManager
 
     from openhands.sdk.profiles.agent_profile import (
         ACPAgentProfile,
@@ -80,6 +81,17 @@ class AgentProfileStore:
             raise TimeoutError(
                 f"Agent profile store lock acquisition timed out after {timeout}s"
             )
+
+    def lock(
+        self, timeout: float = _LOCK_TIMEOUT_SECONDS
+    ) -> AbstractContextManager[None]:
+        """Public, re-entrant store lock for the FK helpers (``profile_refs``).
+
+        Part of :class:`AgentProfileStoreProtocol` so a non-file store (e.g. a
+        DB-backed cloud store) can supply its own re-entrant transaction guard
+        under the same name. Delegates to :meth:`_acquire_lock`.
+        """
+        return self._acquire_lock(timeout)
 
     def list(self) -> list[str]:
         """Return the filenames of all stored profiles (e.g. ``["a.json"]``)."""
@@ -261,6 +273,29 @@ class AgentProfileStore:
                 f"[AgentProfile Store] Renamed profile `{old_name}` to `{new_name}`"
             )
 
+    def set_llm_profile_ref(self, name: str, new_ref: str) -> None:
+        """Surgically repoint one OpenHands profile's ``llm_profile_ref``.
+
+        The single-profile write primitive behind ``profile_refs.cascade_rename``
+        — callers hold :meth:`lock`. A raw-JSON edit (only the ref field
+        changes), so encrypted ``skills[].mcp_tools`` and the stable ``id`` are
+        untouched and no cipher is needed. No-op when the profile is missing,
+        non-dict, or an ACP profile (which carries no ``llm_profile_ref``).
+        """
+        path = self._get_profile_path(name)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        if data.get("agent_kind", "openhands") != "openhands":
+            return
+        data["llm_profile_ref"] = new_ref
+        self._atomic_write(path, json.dumps(data, indent=2))
+
     def list_summaries(self) -> list[dict[str, Any]]:
         """Project profile metadata without instantiating secrets.
 
@@ -320,3 +355,101 @@ class AgentProfileStore:
             if str(summary.get("id")) == target:
                 return str(summary["name"])
         return None
+
+
+@runtime_checkable
+class AgentProfileStoreProtocol(Protocol):
+    """Structural contract shared by :class:`AgentProfileStore` (file-backed) and
+    any alternative backend — notably a multi-tenant DB store in the cloud
+    app-server.
+
+    The SDK's store-agnostic helpers — ``profile_refs`` (the LLM-profile FK) and
+    :func:`save_profile_preserving_identity` — are typed against this Protocol so
+    a non-file store reuses them verbatim instead of re-deriving the FK / id
+    lifecycle. :meth:`lock` must be **re-entrant**: the FK helpers nest it around
+    :meth:`list_summaries` / :meth:`set_llm_profile_ref`, and a cloud store whose
+    router already holds a row-level transaction must treat a nested ``lock()``
+    as a no-op rather than deadlocking.
+    """
+
+    def lock(self, timeout: float = ...) -> AbstractContextManager[None]: ...
+
+    def list(self) -> list[str]: ...
+
+    def list_summaries(self) -> list[dict[str, Any]]: ...
+
+    def save(
+        self,
+        profile: OpenHandsAgentProfile | ACPAgentProfile,
+        *,
+        cipher: Cipher | None = ...,
+        max_profiles: int | None = ...,
+    ) -> None: ...
+
+    def load(
+        self, name: str, *, cipher: Cipher | None = ...
+    ) -> OpenHandsAgentProfile | ACPAgentProfile: ...
+
+    def delete(self, name: str) -> None: ...
+
+    def rename(self, old_name: str, new_name: str) -> None: ...
+
+    def set_llm_profile_ref(self, name: str, new_ref: str) -> None: ...
+
+    def name_for_id(self, profile_id: str | UUID) -> str | None: ...
+
+
+def _existing_identity(
+    store: AgentProfileStoreProtocol, name: str
+) -> tuple[UUID | None, int | None]:
+    """Return the stored ``(id, revision)`` of the profile under ``name``.
+
+    Reads :meth:`~AgentProfileStoreProtocol.list_summaries` (no secret
+    instantiation). A malformed stored id is treated as "no prior identity".
+    """
+    for summary in store.list_summaries():
+        if summary.get("name") != name:
+            continue
+        sid = summary.get("id")
+        rev = summary.get("revision")
+        try:
+            parsed = UUID(str(sid)) if sid is not None else None
+        except (ValueError, TypeError):
+            parsed = None
+        return parsed, rev if isinstance(rev, int) else None
+    return None, None
+
+
+def save_profile_preserving_identity(
+    store: AgentProfileStoreProtocol,
+    profile: OpenHandsAgentProfile | ACPAgentProfile,
+    *,
+    cipher: Cipher | None = None,
+    max_profiles: int | None = None,
+) -> OpenHandsAgentProfile | ACPAgentProfile:
+    """Save ``profile`` with the server-managed id/revision policy.
+
+    Hoisted from the agent-server router so the file store and a cloud DB store
+    stamp identity identically (the active pointer is keyed on the id):
+
+    * **overwrite** a namesake → keep its stable ``id``, set
+      ``revision = prev + 1``;
+    * **create** → mint a fresh ``uuid4`` (ignoring any client-supplied id).
+
+    The read → stamp → save runs under :meth:`~AgentProfileStoreProtocol.lock`
+    so two concurrent creates of the same new name can't both mint an id and
+    clobber each other. Returns the saved profile (final ``id`` / ``revision``).
+
+    Raises:
+        ProfileLimitExceeded: If ``max_profiles`` would be exceeded.
+    """
+    with store.lock():
+        existing_id, existing_rev = _existing_identity(store, profile.name)
+        if existing_id is not None:
+            profile = profile.model_copy(
+                update={"id": existing_id, "revision": (existing_rev or 0) + 1}
+            )
+        else:
+            profile = profile.model_copy(update={"id": uuid4()})
+        store.save(profile, cipher=cipher, max_profiles=max_profiles)
+    return profile
