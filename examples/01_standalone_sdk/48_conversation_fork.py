@@ -118,9 +118,10 @@ print(f"Fork HEAD             : {fork_slice.state.leaf_event_id}")
 assert len(fork_slice.state.events) <= len(source.state.events)
 assert fork_slice.state.leaf_event_id == cut_event_id
 
-fork_slice.send_message("Given only my first request, run `echo sliced-branch`.")
+fork_slice.send_message("Run `echo sliced-branch` in the terminal.")
 fork_slice.run()
 print(f"Fork events after run : {len(fork_slice.state.events)}")
+assert any("sliced-branch" in str(e) for e in fork_slice.state.events)
 
 # =================================================================
 # 5. In-conversation navigation: move HEAD and create a sibling branch
