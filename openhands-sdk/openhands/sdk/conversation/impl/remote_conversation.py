@@ -1503,27 +1503,23 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
-            from_event_id: **Not yet supported remotely** — a non-``None`` value
-                raises ``NotImplementedError`` (tracked separately). Use
-                ``LocalConversation.fork(from_event_id=...)`` for now.
+            from_event_id: If set, fork only the branch up to and including this
+                event (``path_to_root``) and set the fork's HEAD there. If
+                ``None`` (default), copy the whole conversation.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
             conversation.
 
         Raises:
-            NotImplementedError: If ``agent`` or ``from_event_id`` is provided.
+            NotImplementedError: If ``agent`` is provided.
+            httpx.HTTPStatusError: If the server rejects the request (e.g. 404
+                for an unknown ``from_event_id``).
         """
         if agent is not None:
             raise NotImplementedError(
                 "Agent replacement is not supported for remote conversation "
                 "forks. Use LocalConversation.fork(agent=...) instead."
-            )
-        if from_event_id is not None:
-            raise NotImplementedError(
-                "fork(from_event_id=...) is not yet supported for remote "
-                "conversations. Use LocalConversation.fork(from_event_id=...) "
-                "instead."
             )
 
         body: dict[str, object] = {"reset_metrics": reset_metrics}
@@ -1533,6 +1529,8 @@ class RemoteConversation(BaseConversation):
             body["title"] = title
         if tags is not None:
             body["tags"] = tags
+        if from_event_id is not None:
+            body["from_event_id"] = from_event_id
 
         resp = _send_request(
             self._client,
@@ -1562,17 +1560,27 @@ class RemoteConversation(BaseConversation):
         )
 
     def navigate_to(self, event_id: EventID | None) -> None:
-        """Move the conversation HEAD within this conversation.
+        """Move the conversation HEAD to an existing event on the remote server.
 
-        Not yet supported remotely (tracked separately); use
-        ``LocalConversation.navigate_to`` for now.
+        Posts to the server's ``/navigate`` route, which re-roots the active
+        branch in place (no new conversation). The cached state is refreshed so
+        a subsequent ``state`` read reflects the new HEAD — ``leaf_event_id`` is
+        not broadcast over the WebSocket.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
 
         Raises:
-            NotImplementedError: Always.
+            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
+                for an unknown event).
         """
-        raise NotImplementedError(
-            "navigate_to is not yet supported for RemoteConversation."
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            json={"event_id": event_id},
         )
+        self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.
