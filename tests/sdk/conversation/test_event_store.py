@@ -6,6 +6,11 @@ from unittest.mock import Mock
 import pytest
 
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.persistence_const import (
+    EVENT_FILE_PATTERN,
+    EVENT_NAME_RE,
+    EVENTS_DIR,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
@@ -498,23 +503,9 @@ def test_event_cache_survives_across_multiple_iterations():
     assert all(a is b for a, b in zip(first_pass, second_pass, strict=True))
 
 
-# ---------------------------------------------------------------------------
-# Regression: event index width. The writer zero-pads to a *minimum* of 5
-# digits ({idx:05d}) and never caps, so a log past 99999 events emits 6+ digit
-# filenames. The reader regex must accept 5-or-more digits; a fixed-width
-# `\d{5}` silently dropped every event with index >= 100000 on a cold reload
-# (see issue #3926).
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("idx", [0, 1, 99999, 100000, 100001, 999999, 1_000_000])
 def test_event_filename_writer_reader_agree(idx):
     """The reader regex must match the exact filename the writer emits."""
-    from openhands.sdk.conversation.persistence_const import (
-        EVENT_FILE_PATTERN,
-        EVENT_NAME_RE,
-    )
-
     event_id = f"{idx:08x}-0000-0000-0000-000000000000"
     name = EVENT_FILE_PATTERN.format(idx=idx, event_id=event_id)
 
@@ -529,11 +520,6 @@ def test_event_log_cold_reload_past_100k_events():
     Before the fix the cold scan truncated the index at 100000 (silent data
     loss) and the count/scan paths diverged, corrupting length accounting.
     """
-    from openhands.sdk.conversation.persistence_const import (
-        EVENT_FILE_PATTERN,
-        EVENTS_DIR,
-    )
-
     # Raise the test-double LRU caps so the in-memory store keeps every file;
     # this configures only the storage stand-in, not the code under test.
     fs = InMemoryFileStore(max_size=500_000, max_memory=2 * 1024 * 1024 * 1024)
