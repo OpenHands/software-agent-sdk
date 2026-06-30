@@ -1333,6 +1333,24 @@ class LocalConversation(BaseConversation):
             cached = loaded.model_copy(update={"usage_id": usage_id})
         self.switch_llm(cached)
 
+    def get_or_create_profile_llm(self, profile_name: str, usage_id: str) -> LLM:
+        """Return a saved profile LLM registered for this conversation.
+
+        Unlike :meth:`switch_profile`, this does not replace the active agent
+        model. It is intended for auxiliary one-off model calls from tools while
+        still routing token and cost accounting through ``llm_registry`` and
+        ``ConversationStats``.
+        """
+        try:
+            return self.llm_registry.get(usage_id)
+        except KeyError:
+            loaded = self._profile_store.load(profile_name, cipher=self._cipher)
+            llm = loaded.model_copy(update={"usage_id": usage_id})
+            llm = create_subscription_llm_from_config(llm)
+            self.llm_registry.add(llm)
+            self._bind_conversation_context(llm)
+            return llm
+
     def switch_acp_model(self, model: str) -> None:
         """Switch the model on an ACP conversation.
 
