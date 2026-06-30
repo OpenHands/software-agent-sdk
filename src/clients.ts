@@ -1,7 +1,6 @@
 export { AgentProfilesClient } from './client/agent-profiles-client';
 export { ServerClient } from './client/server-client';
 export { BashClient } from './client/bash-client';
-export { CloudProxyClient } from './client/cloud-proxy-client';
 export { ConversationClient } from './client/conversation-client';
 export { FileClient } from './client/file-client';
 export { HooksClient } from './client/hooks-client';
@@ -30,7 +29,6 @@ export {
 
 export type { ServerClientOptions } from './client/server-client';
 export type { BashClientOptions } from './client/bash-client';
-export type { CloudProxyClientOptions } from './client/cloud-proxy-client';
 export type {
   ConversationClientOptions,
   CreateConversationPayload,

@@ -14,7 +14,6 @@ import {
   AgentServerVersionError,
   BashClient,
   clearAgentServerInfoCache,
-  CloudProxyClient,
   compareAgentServerVersions,
   ConversationClient,
   FileClient,
@@ -102,7 +101,6 @@ describe('Auxiliary API clients', () => {
     expect(manager.shared).toBeInstanceOf(SharedClient);
     expect(manager.hooks).toBeInstanceOf(HooksClient);
     expect(manager.mcp).toBeInstanceOf(MCPClient);
-    expect(manager.cloudProxy).toBeInstanceOf(CloudProxyClient);
   });
 
   describe('AgentProfilesClient', () => {
@@ -2036,15 +2034,13 @@ describe('Auxiliary API clients', () => {
     });
   });
 
-  it('Hooks MCP and CloudProxy clients wrap SDK v1.23.0 endpoints', async () => {
+  it('Hooks and MCP clients wrap SDK v1.23.0 endpoints', async () => {
     const serverInfo = { version: '1.23.0', uptime: 1, idle_time: 0 };
     const responses = [
       serverInfo,
       { hook_config: null },
       serverInfo,
       { ok: true, tools: ['ping'] },
-      serverInfo,
-      { proxied: true },
     ];
     global.fetch = jest.fn().mockImplementation(() => {
       const body = responses.shift();
@@ -2068,13 +2064,6 @@ describe('Auxiliary API clients', () => {
         timeout: 10,
       })
     ).resolves.toEqual({ ok: true, tools: ['ping'] });
-    await expect(
-      new CloudProxyClient(options).forward({
-        host: 'https://app.all-hands.dev',
-        path: '/api/organizations',
-        method: 'GET',
-      })
-    ).resolves.toEqual({ proxied: true });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -2098,18 +2087,6 @@ describe('Auxiliary API clients', () => {
         body: JSON.stringify({
           server: { type: 'stdio', command: 'node', args: ['server.js'] },
           timeout: 10,
-        }),
-      })
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      6,
-      'http://example.com/api/cloud-proxy',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({
-          host: 'https://app.all-hands.dev',
-          path: '/api/organizations',
-          method: 'GET',
         }),
       })
     );

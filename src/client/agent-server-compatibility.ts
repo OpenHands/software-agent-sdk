@@ -25,11 +25,6 @@ export const AgentServerFeatureRequirements = {
     displayName: 'MCP test API',
     minVersion: '1.23.0',
   },
-  cloudProxy: {
-    feature: 'cloud-proxy',
-    displayName: 'Cloud proxy',
-    minVersion: '1.23.0',
-  },
 } as const satisfies Record<string, AgentServerFeatureRequirement>;
 
 export class AgentServerVersionError extends Error {

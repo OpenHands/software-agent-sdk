@@ -403,17 +403,6 @@ export interface FileSearchSubdirsOptions {
   includeHidden?: boolean;
 }
 
-export interface CloudProxyRequest {
-  host: string;
-  path: string;
-  method?: string;
-  headers?: Record<string, string>;
-  body?: unknown;
-  timeout_seconds?: number;
-}
-
-export type CloudProxyResponse = unknown;
-
 export interface HooksRequest {
   project_dir?: string | null;
 }

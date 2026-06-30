@@ -4,7 +4,6 @@
 
 import { HttpClient } from '../client/http-client';
 import { AgentProfilesClient } from '../client/agent-profiles-client';
-import { CloudProxyClient } from '../client/cloud-proxy-client';
 import { DesktopClient } from '../client/desktop-client';
 import { FileClient } from '../client/file-client';
 import { HooksClient } from '../client/hooks-client';
@@ -95,7 +94,6 @@ export class ConversationManager {
   public readonly shared: SharedClient;
   public readonly hooks: HooksClient;
   public readonly mcp: MCPClient;
-  public readonly cloudProxy: CloudProxyClient;
   public readonly acp: ACPConversationNamespace;
 
   constructor(options: ConversationManagerOptions) {
@@ -128,7 +126,6 @@ export class ConversationManager {
     this.shared = new SharedClient(clientOptions);
     this.hooks = new HooksClient(clientOptions);
     this.mcp = new MCPClient(clientOptions);
-    this.cloudProxy = new CloudProxyClient(clientOptions);
     this.acp = new ACPConversationNamespace(this);
   }
 
@@ -412,7 +409,6 @@ export class ConversationManager {
     this.shared.close();
     this.hooks.close();
     this.mcp.close();
-    this.cloudProxy.close();
     this.client.close();
   }
 }
