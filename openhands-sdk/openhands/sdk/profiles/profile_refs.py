@@ -1,30 +1,17 @@
 """Foreign-key lifecycle between LLM profiles and ``AgentProfile``\\ s.
 
 An ``OpenHandsAgentProfile.llm_profile_ref`` is a soft FK onto an LLM-profile
-store key. This module keeps that FK from dangling:
+store key. ``find_referrers`` / ``cascade_rename`` / ``delete_llm_profile`` /
+``rename_llm_profile`` keep that FK from dangling.
 
-* :func:`find_referrers` — which agent profiles cite a given LLM profile.
-* :func:`cascade_rename` — rewrite every matching ``llm_profile_ref`` in lock-step
-  with an LLM-profile rename.
-* :func:`delete_llm_profile` / :func:`rename_llm_profile` — guarded cross-store
-  operations that raise :class:`ProfileReferenced` (routers map → 409) or cascade.
+Store-agnostic: these touch the agent-profile store only through
+:class:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStoreProtocol`,
+never the filesystem, so the file store and a cloud DB store reuse them verbatim.
 
-These functions are **store-agnostic**: they touch the agent-profile store only
-through :class:`~openhands.sdk.profiles.agent_profile_store.AgentProfileStoreProtocol`
-(``lock`` / ``list_summaries`` / ``set_llm_profile_ref``), never the filesystem,
-so the file store and a cloud DB-backed store reuse the same FK logic verbatim.
-
-Lock acquisition order — **agent-profiles, then llm-profiles.**
-A guarded delete/rename holds the *agent-profiles* lock across the whole
-"scan referrers → mutate the LLM profile" window, so no concurrent
-``AgentProfileStore.save`` can introduce a new referrer between the check and
-the mutation (the TOCTOU this module exists to close). ``lock()`` is re-entrant.
-Always take the agent-profiles lock first; never the reverse, or two callers
-could deadlock.
-
-Scope: the FK covers ``llm_profile_ref`` only. ``mcp_server_refs`` are keys into
-the user's independently-mutable global ``mcp_config`` and are checked at
-resolve-time (#3717), not constrained here.
+Lock order: agent-profiles before llm-profiles (never the reverse — deadlock).
+A guarded delete/rename holds the re-entrant agent-profiles ``lock()`` across the
+whole scan→mutate window to close the TOCTOU. The FK covers ``llm_profile_ref``
+only; ``mcp_server_refs`` are checked at resolve-time (#3717).
 """
 
 from __future__ import annotations

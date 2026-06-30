@@ -87,9 +87,11 @@ class AgentProfileStore:
     ) -> AbstractContextManager[None]:
         """Public, re-entrant store lock for the FK helpers (``profile_refs``).
 
-        Part of :class:`AgentProfileStoreProtocol` so a non-file store (e.g. a
-        DB-backed cloud store) can supply its own re-entrant transaction guard
-        under the same name. Delegates to :meth:`_acquire_lock`.
+        Re-entrant because ``filelock.FileLock`` counts acquisitions per thread,
+        so a holder may nest it (e.g. ``save_profile_preserving_identity`` over
+        ``save``). Part of :class:`AgentProfileStoreProtocol` so a non-file store
+        (e.g. a DB-backed cloud store) can supply its own re-entrant transaction
+        guard under the same name. Delegates to :meth:`_acquire_lock`.
         """
         return self._acquire_lock(timeout)
 
@@ -276,25 +278,27 @@ class AgentProfileStore:
     def set_llm_profile_ref(self, name: str, new_ref: str) -> None:
         """Surgically repoint one OpenHands profile's ``llm_profile_ref``.
 
-        The single-profile write primitive behind ``profile_refs.cascade_rename``
-        — callers hold :meth:`lock`. A raw-JSON edit (only the ref field
-        changes), so encrypted ``skills[].mcp_tools`` and the stable ``id`` are
-        untouched and no cipher is needed. No-op when the profile is missing,
-        non-dict, or an ACP profile (which carries no ``llm_profile_ref``).
+        The single-profile write primitive behind ``profile_refs.cascade_rename``.
+        Self-locks (re-entrant), so the read-modify-write is atomic whether called
+        standalone or nested under the FK helpers' :meth:`lock`. A raw-JSON edit
+        (only the ref field changes), so encrypted ``skills[].mcp_tools`` and the
+        stable ``id`` are untouched and no cipher is needed. No-op when the profile
+        is missing, non-dict, or an ACP profile (which carries no ref).
         """
         path = self._get_profile_path(name)
-        if not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return
-        if not isinstance(data, dict):
-            return
-        if data.get("agent_kind", "openhands") != "openhands":
-            return
-        data["llm_profile_ref"] = new_ref
-        self._atomic_write(path, json.dumps(data, indent=2))
+        with self._acquire_lock():
+            if not path.exists():
+                return
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return
+            if not isinstance(data, dict):
+                return
+            if data.get("agent_kind", "openhands") != "openhands":
+                return
+            data["llm_profile_ref"] = new_ref
+            self._atomic_write(path, json.dumps(data, indent=2))
 
     def list_summaries(self) -> list[dict[str, Any]]:
         """Project profile metadata without instantiating secrets.
@@ -359,17 +363,13 @@ class AgentProfileStore:
 
 @runtime_checkable
 class AgentProfileStoreProtocol(Protocol):
-    """Structural contract shared by :class:`AgentProfileStore` (file-backed) and
-    any alternative backend — notably a multi-tenant DB store in the cloud
-    app-server.
+    """Structural contract shared by :class:`AgentProfileStore` and any alternative
+    backend (e.g. a multi-tenant cloud DB store).
 
-    The SDK's store-agnostic helpers — ``profile_refs`` (the LLM-profile FK) and
-    :func:`save_profile_preserving_identity` — are typed against this Protocol so
-    a non-file store reuses them verbatim instead of re-deriving the FK / id
-    lifecycle. :meth:`lock` must be **re-entrant**: the FK helpers nest it around
-    :meth:`list_summaries` / :meth:`set_llm_profile_ref`, and a cloud store whose
-    router already holds a row-level transaction must treat a nested ``lock()``
-    as a no-op rather than deadlocking.
+    The store-agnostic helpers (``profile_refs``,
+    :func:`save_profile_preserving_identity`) are typed against this Protocol.
+    :meth:`lock` must be **re-entrant**: the FK helpers nest it around
+    :meth:`list_summaries` / :meth:`set_llm_profile_ref`.
     """
 
     def lock(self, timeout: float = ...) -> AbstractContextManager[None]: ...
@@ -429,16 +429,12 @@ def save_profile_preserving_identity(
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
     """Save ``profile`` with the server-managed id/revision policy.
 
-    Hoisted from the agent-server router so the file store and a cloud DB store
-    stamp identity identically (the active pointer is keyed on the id):
-
-    * **overwrite** a namesake → keep its stable ``id``, set
-      ``revision = prev + 1``;
+    * **overwrite** a namesake → keep its stable ``id``, ``revision = prev + 1``;
     * **create** → mint a fresh ``uuid4`` (ignoring any client-supplied id).
 
-    The read → stamp → save runs under :meth:`~AgentProfileStoreProtocol.lock`
-    so two concurrent creates of the same new name can't both mint an id and
-    clobber each other. Returns the saved profile (final ``id`` / ``revision``).
+    Runs under :meth:`~AgentProfileStoreProtocol.lock` so concurrent creates of
+    the same name can't both mint an id and clobber each other. Returns the saved
+    profile.
 
     Raises:
         ProfileLimitExceeded: If ``max_profiles`` would be exceeded.

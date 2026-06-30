@@ -1,10 +1,8 @@
-"""Seed an :class:`~openhands.sdk.profiles.AgentProfile` from live settings.
+"""Build the default :class:`~openhands.sdk.profiles.AgentProfile` from live settings.
 
-The inverse of :func:`~openhands.sdk.profiles.resolve_agent_profile`: given the
-current ``AgentSettingsConfig``, build the single default profile used by the
-one-time migration (lazily on the local agent-server, as an eager backfill on
-the cloud app-server). Hoisted out of the agent-server router so both surfaces
-seed identically — see epic #3713.
+The inverse of :func:`~openhands.sdk.profiles.resolve_agent_profile`: turns the
+current ``AgentSettingsConfig`` into the single profile used by the one-time
+migration (lazy on the local agent-server, eager backfill on the cloud one).
 """
 
 from __future__ import annotations
@@ -34,16 +32,12 @@ def build_seed_profile(
     *,
     name: str = SEED_PROFILE_NAME,
 ) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Build one ``AgentProfile`` faithfully from the current ``agent_settings``.
+    """Build one behavior-preserving ``AgentProfile`` from ``agent_settings``.
 
-    Carries every cleanly-overlapping launch field so the migrated profile is a
-    behavior-preserving representation of the user's current configuration (the
-    active pointer is otherwise just a lightweight id). Branches on
-    ``agent_kind`` so an ACP setup seeds an ACP profile (not a wrong OpenHands
-    one). ``mcp_server_refs=None`` exposes all of the user's MCP servers. An
-    OpenHands profile references the active LLM profile, falling back to
-    ``SEED_PROFILE_NAME`` when none is set (a soft ref the resolver checks at
-    materialize time).
+    Branches on ``agent_kind`` so an ACP setup seeds an ACP profile.
+    ``mcp_server_refs=None`` exposes all of the user's MCP servers; an OpenHands
+    profile references ``active_llm_profile``, falling back to
+    ``SEED_PROFILE_NAME`` (a soft ref the resolver checks at materialize time).
     """
     if agent_settings.agent_kind == "acp":
         return ACPAgentProfile(
