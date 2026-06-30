@@ -496,3 +496,65 @@ def test_event_cache_survives_across_multiple_iterations():
     first_pass = list(log)
     second_pass = list(log)
     assert all(a is b for a, b in zip(first_pass, second_pass, strict=True))
+
+
+# ---------------------------------------------------------------------------
+# Regression: event index width. The writer zero-pads to a *minimum* of 5
+# digits ({idx:05d}) and never caps, so a log past 99999 events emits 6+ digit
+# filenames. The reader regex must accept 5-or-more digits; a fixed-width
+# `\d{5}` silently dropped every event with index >= 100000 on a cold reload
+# (see issue #3926).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("idx", [0, 1, 99999, 100000, 100001, 999999, 1_000_000])
+def test_event_filename_writer_reader_agree(idx):
+    """The reader regex must match the exact filename the writer emits."""
+    from openhands.sdk.conversation.persistence_const import (
+        EVENT_FILE_PATTERN,
+        EVENT_NAME_RE,
+    )
+
+    event_id = f"{idx:08x}-0000-0000-0000-000000000000"
+    name = EVENT_FILE_PATTERN.format(idx=idx, event_id=event_id)
+
+    m = EVENT_NAME_RE.match(name)
+    assert m is not None, f"reader regex failed to match writer output: {name!r}"
+    assert int(m.group("idx")) == idx
+
+
+def test_event_log_cold_reload_past_100k_events():
+    """A log with >100000 events reloads without dropping the tail.
+
+    Before the fix the cold scan truncated the index at 100000 (silent data
+    loss) and the count/scan paths diverged, corrupting length accounting.
+    """
+    from openhands.sdk.conversation.persistence_const import (
+        EVENT_FILE_PATTERN,
+        EVENTS_DIR,
+    )
+
+    # Raise the test-double LRU caps so the in-memory store keeps every file;
+    # this configures only the storage stand-in, not the code under test.
+    fs = InMemoryFileStore(max_size=500_000, max_memory=2 * 1024 * 1024 * 1024)
+    payload = create_test_event("seed", "seed").model_dump_json(exclude_none=True)
+
+    n = 100_002  # straddles the 5-/6-digit boundary
+    for i in range(n):
+        event_id = f"{i:08x}-0000-0000-0000-000000000000"
+        path = f"{EVENTS_DIR}/" + EVENT_FILE_PATTERN.format(idx=i, event_id=event_id)
+        fs.write(path, payload)
+
+    log = EventLog(fs)
+
+    # No silent truncation: every event survives the cold scan.
+    assert len(log) == n
+
+    # The events straddling the boundary are readable, not unreachable holes.
+    assert log[99999] is not None
+    assert log[100000] is not None
+    assert log[100001] is not None
+
+    # Appending after reload keeps length accounting consistent.
+    log.append(create_test_event("after-reload", "after"))
+    assert len(log) == n + 1
