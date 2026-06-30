@@ -26,7 +26,7 @@ from pydantic import (
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
-from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
@@ -111,11 +111,20 @@ _DEFAULT_SOUL = (
     " with a computer to solve tasks."
 )
 
-# Built-in prompt dir. The registry only stands in for the default prompt here; a
-# subclass with its own prompts/system_prompt.j2 keeps the Jinja render path.
+# Built-in prompt dir. The registry only stands in for built-in prompts here; a
+# subclass with its own prompts/ keeps the Jinja render path.
 _BUILTIN_PROMPT_DIR = os.path.realpath(
     os.path.join(os.path.dirname(__file__), "prompts")
 )
+
+# Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
+# were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
+# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
+# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+_PRESET_BY_FILENAME: dict[str, PromptPreset] = {
+    "system_prompt.j2": PromptPreset.DEFAULT,
+    "system_prompt_planning.j2": PromptPreset.PLANNING,
+}
 
 
 def _load_soul_md() -> str:
@@ -462,6 +471,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
+    def _prompt_preset(self) -> PromptPreset | None:
+        """The registry preset for this agent's built-in prompt.
+
+        ``None`` means "take the Jinja escape hatch": a subclass with its own
+        ``prompt_dir``, or a ``system_prompt_filename`` that is not a known built-in
+        sentinel (e.g. a custom relative name or an absolute path).
+        """
+        if os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR:
+            return None
+        return _PRESET_BY_FILENAME.get(self.system_prompt_filename)
+
+    @property
     def static_system_message(self) -> str:
         """Compute the static portion of the system message.
 
@@ -469,10 +490,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
-        The default prompt is assembled from the typed section registry, which also
-        resolves a custom ``security_policy_filename``. Escape hatches keep the Jinja
-        path: an inline ``system_prompt`` is returned verbatim; a custom
-        ``system_prompt_filename`` or subclass ``prompt_dir`` renders its own template.
+        Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
+        the typed section registry, which also resolves a custom
+        ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
+        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
+        subclass ``prompt_dir`` renders its own template.
 
         Returns:
             The static system prompt without dynamic context.
@@ -482,17 +504,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
         # own Jinja template; everything else (incl. custom policies) uses the registry.
-        if (
-            self.system_prompt_filename != "system_prompt.j2"
-            or os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR
-        ):
+        preset = self._prompt_preset
+        if preset is None:
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
                 **self._resolved_template_kwargs(),
             )
 
-        return create_registry().build(self._build_prompt_context()).static
+        return create_registry(preset).build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -640,7 +660,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self.agent_context:
             return None
-        return create_registry().build(self._build_prompt_context()).dynamic
+        # The dynamic tier is preset-independent, so a custom Jinja template (preset
+        # None) still gets the default dynamic block, exactly as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
