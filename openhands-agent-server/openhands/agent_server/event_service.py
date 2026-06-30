@@ -1505,6 +1505,22 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
 
+    async def navigate_to(self, event_id: str | None) -> None:
+        """Move the conversation HEAD to an existing event (in-place re-root).
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in the conversation.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.navigate_to, event_id
+        )
+
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the conversation events.
 

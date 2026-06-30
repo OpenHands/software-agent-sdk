@@ -368,6 +368,8 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
+        parent_conversation_id=stored.parent_conversation_id,
+        forked_from_event_id=stored.forked_from_event_id,
         current_model_id=current_model_id,
         available_models=available_models,
         supports_runtime_model_switch=supports_runtime_model_switch,
@@ -1000,16 +1002,22 @@ class ConversationService:
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: str | None = None,
     ) -> ConversationInfo | None:
         """Fork an existing conversation, deep-copying its event history.
 
         The fork is persisted to disk and then loaded as a new EventService,
         so the forked conversation is fully independent from the source.
 
+        When *from_event_id* is set, only the branch up to and including that
+        event is copied and the fork's HEAD is set there; otherwise the whole
+        conversation is copied (today's behavior).
+
         Returns ``None`` when *source_id* does not exist.
 
         Raises:
             ValueError: If *fork_id* is already taken by an active
+                conversation, or if *from_event_id* is not in the source
                 conversation.
         """
         if self._event_services is None:
@@ -1033,6 +1041,7 @@ class ConversationService:
             title=title,
             tags=tags,
             reset_metrics=reset_metrics,
+            from_event_id=from_event_id,
         )
         # Extract the persisted data, then discard the temporary conversation.
         fork_conv_id = fork_conv.id
@@ -1055,6 +1064,8 @@ class ConversationService:
             "title": title,
             "created_at": utc_now(),
             "updated_at": utc_now(),
+            "parent_conversation_id": source_id,
+            "forked_from_event_id": from_event_id,
         }
         if reset_metrics:
             fork_overrides["metrics"] = None
@@ -1072,6 +1083,29 @@ class ConversationService:
 
         state = await fork_event_service.get_state()
         return _compose_conversation_info(fork_event_service.stored, state)
+
+    async def navigate_conversation(
+        self, conversation_id: UUID, *, event_id: str | None = None
+    ) -> ConversationInfo | None:
+        """Move a conversation's HEAD to an existing event (in-place re-root).
+
+        All branches stay on disk; only the active branch the agent runs on
+        changes. The new HEAD persists via the conversation's own state
+        autosave. Returns ``None`` when *conversation_id* does not exist.
+
+        Raises:
+            ValueError: If *event_id* is not ``None`` and not present in the
+                conversation.
+        """
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        await event_service.navigate_to(event_id)
+        state = await event_service.get_state()
+        return _compose_conversation_info(event_service.stored, state)
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
