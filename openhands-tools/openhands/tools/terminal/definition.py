@@ -5,7 +5,7 @@ import platform
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 if TYPE_CHECKING:
@@ -112,6 +112,17 @@ class TerminalAction(Action):
         default=False,
         description="If True, reset the terminal by creating a new session. Use this only when the terminal becomes unresponsive. Note that all previously set environment variables and session state will be lost after reset. Cannot be used with is_input=True.",  # noqa
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _remap_commands_alias(cls, values: object) -> object:
+        # Some models (e.g. google/gemma-4) emit "commands" (plural) instead of
+        # the correct "command" field name. Silently remap before validation so
+        # the error-handling path is never reached for this known mismatch.
+        if isinstance(values, dict) and "commands" in values and "command" not in values:
+            values = dict(values)
+            values["command"] = values.pop("commands")
+        return values
 
     @property
     def visualize(self) -> Text:
