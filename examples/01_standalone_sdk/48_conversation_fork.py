@@ -15,6 +15,7 @@ A/B-testing prompts, fork-on-tool-change, edit-a-past-turn-and-re-run.
 import os
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.event import MessageEvent
 from openhands.tools.terminal import TerminalTool
 
 
@@ -97,9 +98,6 @@ print(f"Fork events : {len(fork_alt.state.events)}")
 # =================================================================
 # Fork from the first user message: copies only path_to_root(event) and sets
 # the fork's HEAD there.
-from openhands.sdk.event import MessageEvent  # noqa: E402
-
-
 cut_event_id = next(
     e.id
     for e in source.state.events
