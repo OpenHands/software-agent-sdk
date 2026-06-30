@@ -99,10 +99,18 @@ def test_remote_navigate_refreshes_state(mock_ws_cls: Mock) -> None:
     conv = RemoteConversation(agent=_agent(), workspace=workspace)
     conv.navigate_to("evt-7")
 
-    # A conversation-info GET (refresh_from_server) must follow the navigate POST.
-    refresh_calls = [
+    # The conversation-info GET (refresh_from_server) must come *after* the
+    # navigate POST — asserting order (not mere presence) keeps the test honest
+    # even if __init__ later starts fetching the same path.
+    calls = mock_client.request.call_args_list
+    nav_idx = next(
+        i
+        for i, c in enumerate(calls)
+        if c[0][0] == "POST" and str(c[0][1]).endswith("/navigate")
+    )
+    refresh_after = [
         c
-        for c in mock_client.request.call_args_list
+        for c in calls[nav_idx + 1 :]
         if c[0][0] == "GET" and str(c[0][1]).endswith(f"/api/conversations/{cid}")
     ]
-    assert len(refresh_calls) >= 1
+    assert len(refresh_after) >= 1

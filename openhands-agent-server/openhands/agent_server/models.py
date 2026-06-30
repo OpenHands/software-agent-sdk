@@ -102,9 +102,9 @@ class StoredConversation(StartConversationRequest):
     forked_from_event_id: str | None = Field(
         default=None,
         description=(
-            "Event ID this conversation was forked at (the source's HEAD at "
-            "fork time, or the explicit ``from_event_id`` branch point). "
-            "``None`` for non-forked conversations or whole-conversation forks."
+            "The ``from_event_id`` branch point this conversation was forked at. "
+            "``None`` for conversations not created via fork, or for "
+            "whole-conversation forks (no branch slice)."
         ),
     )
     launched_agent_profile: LaunchedAgentProfile | None = Field(
