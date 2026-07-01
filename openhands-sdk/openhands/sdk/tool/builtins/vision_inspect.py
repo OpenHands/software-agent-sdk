@@ -1,4 +1,7 @@
+import base64
+import mimetypes
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import Field
@@ -23,15 +26,29 @@ if TYPE_CHECKING:
 
 VISION_INSPECT_TOOL_NAME = "inspect_image_with_vision"
 VISION_PROFILE_USAGE_PREFIX = "vision-profile"
+MAX_WORKSPACE_IMAGE_BYTES = 20 * 1024 * 1024
+SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES = frozenset(
+    {"image/gif", "image/jpeg", "image/png", "image/webp"}
+)
 
 
 class VisionInspectAction(Action):
     """Action for asking a vision model about an attached image."""
 
-    image_index: int = Field(
+    image_index: int | None = Field(
+        default=None,
         ge=0,
         description=(
-            "Zero-based index of the image to inspect from the latest user message."
+            "Zero-based index of the image to inspect from the latest user message. "
+            "Provide exactly one of image_index or image_path."
+        ),
+    )
+    image_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to an image file in the workspace to inspect. Relative paths are "
+            "resolved from the workspace root. Provide exactly one of image_index "
+            "or image_path."
         ),
     )
     question: str = Field(
@@ -50,7 +67,10 @@ class VisionInspectAction(Action):
     def visualize(self) -> Text:
         content = Text()
         content.append("Inspect image with vision: ", style="bold magenta")
-        content.append(f"image {self.image_index}")
+        if self.image_path:
+            content.append(self.image_path)
+        else:
+            content.append(f"image {self.image_index}")
         if self.profile_name:
             content.append(f" via {self.profile_name}")
         content.append("\nQuestion: ", style="bold")
@@ -61,7 +81,12 @@ class VisionInspectAction(Action):
 class VisionInspectObservation(Observation):
     """Observation returned after a vision model inspects an image."""
 
-    image_index: int = Field(description="Image index that was inspected.")
+    image_index: int | None = Field(
+        default=None, description="Image index that was inspected."
+    )
+    image_path: str | None = Field(
+        default=None, description="Workspace image path that was inspected."
+    )
     question: str = Field(description="Question asked of the vision model.")
     profile_name: str | None = Field(
         default=None, description="Vision-capable profile used for inspection."
@@ -83,7 +108,10 @@ class VisionInspectObservation(Observation):
             content.append("Failed to inspect image", style="bold red")
         else:
             content.append("Inspected image with vision", style="bold green")
-        content.append(f": image {self.image_index}")
+        if self.image_path:
+            content.append(f": {self.image_path}")
+        else:
+            content.append(f": image {self.image_index}")
         if self.profile_name:
             content.append(f" via {self.profile_name}")
         if self.answer:
@@ -143,6 +171,52 @@ def _latest_user_image_urls(conversation: "LocalConversation") -> list[str]:
     return []
 
 
+def _workspace_image_url(
+    conversation: "LocalConversation",
+    image_path: str,
+) -> tuple[str | None, str | None]:
+    workspace_dir = conversation.state.workspace.working_dir
+    if workspace_dir is None:
+        return None, "Cannot inspect workspace image files without a workspace."
+
+    root = Path(workspace_dir).expanduser().resolve()
+    requested = Path(image_path).expanduser()
+    if not requested.is_absolute():
+        requested = root / requested
+    try:
+        resolved = requested.resolve()
+        resolved.relative_to(root)
+    except Exception:
+        return None, f"Image path '{image_path}' is outside the workspace."
+
+    if not resolved.is_file():
+        return None, f"Image path '{image_path}' does not exist or is not a file."
+
+    size = resolved.stat().st_size
+    if size > MAX_WORKSPACE_IMAGE_BYTES:
+        return (
+            None,
+            (
+                f"Image path '{image_path}' is too large ({size} bytes). "
+                f"Maximum supported size is {MAX_WORKSPACE_IMAGE_BYTES} bytes."
+            ),
+        )
+
+    mime_type = mimetypes.guess_type(resolved.name)[0]
+    if mime_type not in SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES:
+        supported = ", ".join(sorted(SUPPORTED_WORKSPACE_IMAGE_MIME_TYPES))
+        return (
+            None,
+            (
+                f"Image path '{image_path}' has unsupported MIME type "
+                f"'{mime_type or 'unknown'}'. Supported types: {supported}."
+            ),
+        )
+
+    data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{data}", None
+
+
 class VisionInspectExecutor(ToolExecutor):
     def __init__(self, profile_names: Sequence[str]) -> None:
         self._profile_names = tuple(profile_names)
@@ -152,11 +226,24 @@ class VisionInspectExecutor(ToolExecutor):
         action: VisionInspectAction,
         conversation: "LocalConversation | None" = None,
     ) -> VisionInspectObservation:
+        has_image_index = action.image_index is not None
+        has_image_path = action.image_path is not None
+        if has_image_index == has_image_path:
+            return VisionInspectObservation.from_text(
+                text="Provide exactly one of image_index or image_path.",
+                is_error=True,
+                image_index=action.image_index,
+                image_path=action.image_path,
+                question=action.question,
+                profile_name=action.profile_name,
+            )
+
         if conversation is None:
             return VisionInspectObservation.from_text(
                 text="Cannot inspect images without an active conversation.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=action.profile_name,
             )
@@ -169,6 +256,7 @@ class VisionInspectExecutor(ToolExecutor):
                 text="No vision-capable LLM profile is available.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
             )
         if profile_name not in self._profile_names:
@@ -179,22 +267,41 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
             )
 
-        image_urls = _latest_user_image_urls(conversation)
-        if action.image_index >= len(image_urls):
-            return VisionInspectObservation.from_text(
-                text=(
-                    f"Image index {action.image_index} is out of range. "
-                    f"The latest user message has {len(image_urls)} image(s)."
-                ),
-                is_error=True,
-                image_index=action.image_index,
-                question=action.question,
-                profile_name=profile_name,
+        image_url: str
+        if action.image_path is not None:
+            image_url_or_none, error = _workspace_image_url(
+                conversation, action.image_path
             )
+            if error is not None or image_url_or_none is None:
+                return VisionInspectObservation.from_text(
+                    text=error or "Failed to load workspace image.",
+                    is_error=True,
+                    image_index=action.image_index,
+                    image_path=action.image_path,
+                    question=action.question,
+                    profile_name=profile_name,
+                )
+            image_url = image_url_or_none
+        else:
+            image_urls = _latest_user_image_urls(conversation)
+            if action.image_index is None or action.image_index >= len(image_urls):
+                return VisionInspectObservation.from_text(
+                    text=(
+                        f"Image index {action.image_index} is out of range. "
+                        f"The latest user message has {len(image_urls)} image(s)."
+                    ),
+                    is_error=True,
+                    image_index=action.image_index,
+                    image_path=action.image_path,
+                    question=action.question,
+                    profile_name=profile_name,
+                )
+            image_url = image_urls[action.image_index]
 
         try:
             vision_llm = conversation.get_or_create_profile_llm(
@@ -209,6 +316,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
             )
@@ -221,6 +329,7 @@ class VisionInspectExecutor(ToolExecutor):
                 ),
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
                 model=vision_llm.model,
@@ -242,7 +351,7 @@ class VisionInspectExecutor(ToolExecutor):
                 role="user",
                 content=[
                     TextContent(text=action.question),
-                    ImageContent(image_urls=[image_urls[action.image_index]]),
+                    ImageContent(image_urls=[image_url]),
                 ],
             ),
         ]
@@ -262,6 +371,7 @@ class VisionInspectExecutor(ToolExecutor):
                 text="The vision model returned no text answer.",
                 is_error=True,
                 image_index=action.image_index,
+                image_path=action.image_path,
                 question=action.question,
                 profile_name=profile_name,
                 model=vision_llm.model,
@@ -271,6 +381,7 @@ class VisionInspectExecutor(ToolExecutor):
         return VisionInspectObservation.from_text(
             text=answer,
             image_index=action.image_index,
+            image_path=action.image_path,
             question=action.question,
             profile_name=profile_name,
             model=vision_llm.model,
@@ -280,13 +391,15 @@ class VisionInspectExecutor(ToolExecutor):
 
 
 _DESCRIPTION_TEMPLATE = (
-    "Ask a saved vision-capable LLM profile to inspect an image from the latest "
-    "user message and return a text answer.\n\n"
+    "Ask a saved vision-capable LLM profile to inspect an image and return a "
+    "text answer.\n\n"
     "Use this when the current model cannot understand images, the latest user "
-    "message includes an image, and visual details are needed to answer. The "
-    "current model should pass the image_index shown in the user message and a "
-    "specific question for the vision model. The cost of this vision model call "
-    "is tracked in the same conversation stats.\n\n"
+    "message includes an image or references an image file in the workspace, "
+    "and visual details are needed to answer. The current model should pass "
+    "exactly one image source: image_index for an image attached to the latest "
+    "user message, or image_path for an image file in the workspace. Also pass "
+    "a specific question for the vision model. The cost of this vision model "
+    "call is tracked in the same conversation stats.\n\n"
     "Available vision-capable profiles:\n"
     "{profiles}"
 )
