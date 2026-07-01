@@ -8,10 +8,10 @@
       "changelog-type": "github",
       "skip-changelog": true,
       "extra-files": [
-        "openhands-sdk/pyproject.toml",
-        "openhands-tools/pyproject.toml",
-        "openhands-workspace/pyproject.toml",
-        "openhands-agent-server/pyproject.toml"
+        {"type": "toml", "path": "openhands-sdk/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-tools/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-workspace/pyproject.toml", "jsonpath": "$.project.version"},
+        {"type": "toml", "path": "openhands-agent-server/pyproject.toml", "jsonpath": "$.project.version"}
       ]
     }
   }
