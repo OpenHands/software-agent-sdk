@@ -6,6 +6,7 @@ activation by id (no ``agent_settings`` write), and the lazy migration seed.
 """
 
 import concurrent.futures
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -198,6 +199,42 @@ def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile
     seeded = response.json()["profiles"][0]
     assert seeded["llm_profile_ref"] == "default"
     assert "default.json" not in default_llm_profile_store.list()
+
+
+def test_seed_backfills_when_active_profile_is_empty_string(
+    client, default_llm_profile_store, temp_settings_dir
+):
+    """An empty-string (not ``None``) ``active_profile`` still triggers the
+    backfill.
+
+    Regression test: the trigger condition must be a falsy check, matching
+    ``build_seed_profile``'s own ``active_llm_profile or SEED_PROFILE_NAME``
+    fallback — an ``is None`` check would skip the backfill for ``""`` while
+    ``build_seed_profile`` still falls back to the unresolvable literal
+    ``"default"`` ref, reproducing the exact #3933 dangling ref. The HTTP
+    PATCH payload's pattern validator blocks a client from setting `""`, but
+    the stored ``PersistedSettings`` field has no such constraint, so a
+    hand-edited or legacy settings.json can still contain it.
+    """
+    (temp_settings_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "agent_settings": {"agent_kind": "openhands"},
+                "conversation_settings": {},
+                "active_profile": "",
+                "active_agent_profile_id": None,
+                "misc_settings": {},
+            }
+        )
+    )
+
+    body = client.get("/api/agent-profiles").json()
+    assert body["profiles"][0]["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
 
 
 def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_store):

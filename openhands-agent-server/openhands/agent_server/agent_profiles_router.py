@@ -251,7 +251,14 @@ def _seed_default_profile(
         if store.list():
             return
         active_llm_profile = settings.active_profile
-        if active_llm_profile is None and settings.agent_settings.agent_kind != "acp":
+        # Falsy check (not `is None`): mirrors build_seed_profile's own
+        # `active_llm_profile or SEED_PROFILE_NAME` fallback. A stray empty
+        # string (e.g. a hand-edited/legacy settings.json, or a direct
+        # PersistedSettings(active_profile="") construction — the HTTP PATCH
+        # payload's pattern validator blocks "" but the stored field has no
+        # such constraint) is falsy there too, so the backfill must trigger
+        # on the same condition or the exact #3933 dangling ref reappears.
+        if not active_llm_profile and settings.agent_settings.agent_kind != "acp":
             active_llm_profile = _seed_default_llm_profile(
                 settings.agent_settings.llm, cipher
             )
