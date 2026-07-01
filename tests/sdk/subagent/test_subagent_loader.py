@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from openhands.sdk.subagent.load import (
     load_project_agents,
+    load_project_root_agents,
     load_user_agents,
 )
 from openhands.sdk.subagent.registry import (
@@ -208,3 +209,61 @@ def test_load_user_agents_agents_dir_wins_over_openhands(tmp_path: Path) -> None
     assert len(agents) == 1
     assert agents[0].name == "shared"
     assert agents[0].description == "From .agents"
+
+
+def test_load_project_root_agents_splits_agents_md(tmp_path: Path) -> None:
+    """AGENTS.md with ## sections produces one AgentDefinition per section."""
+    (tmp_path / "AGENTS.md").write_text(
+        "## Docker Setup\nUse docker-compose for all services.\n\n"
+        "## Building and Testing\nRun ./gradlew test to build and test.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    names = {a.name for a in agents}
+    assert "sca_docker_setup" in names
+    assert "sca_building_and_testing" in names
+
+
+def test_load_project_root_agents_lowercase_filename(tmp_path: Path) -> None:
+    """agents.md (lowercase) is also detected."""
+    (tmp_path / "agents.md").write_text(
+        "## API Conventions\nAll endpoints return JSON.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    assert any(a.name == "sca_api_conventions" for a in agents)
+
+
+def test_load_project_root_agents_no_file_returns_empty(tmp_path: Path) -> None:
+    """Returns [] when no AGENTS.md-style file exists."""
+    assert load_project_root_agents(tmp_path) == []
+
+
+def test_load_project_root_agents_no_sections_fallback(tmp_path: Path) -> None:
+    """File with no ## headers falls back to single AgentDefinition load."""
+    (tmp_path / "AGENTS.md").write_text(
+        "---\nname: monolith-agent\ndescription: A monolith\n---\n\nSome instructions.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    assert len(agents) == 1
+    assert agents[0].name == "monolith-agent"
+
+
+def test_load_project_root_agents_triggers_populated(tmp_path: Path) -> None:
+    """Returned AgentDefinitions have non-empty triggers."""
+    (tmp_path / "AGENTS.md").write_text(
+        "## Docker Setup\nUse docker-compose for all services.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    assert len(agents) == 1
+    assert len(agents[0].triggers) > 0
+
+
+def test_load_project_root_agents_cursorrules(tmp_path: Path) -> None:
+    """.cursorrules with ## headers is parsed as sections."""
+    (tmp_path / ".cursorrules").write_text(
+        "## Code Style\nUse 4-space indentation.\n\n"
+        "## Testing\nWrite tests for all new functions.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    names = {a.name for a in agents}
+    assert "sca_code_style" in names
+    assert "sca_testing" in names

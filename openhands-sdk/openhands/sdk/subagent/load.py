@@ -54,6 +54,71 @@ _FILE_BASED_AGENTS_DIR: Final[list[str]] = [
 # File to skip analyzing when searching for agents
 _SKIP_FILES: Final[set[str]] = {"README.md", "readme.md"}
 
+# Filenames (lowercase) that are candidates for section-splitting via parse_sections.
+_SECTION_SPLIT_FILENAMES: Final[frozenset[str]] = frozenset({
+    "agents.md",
+    "agent.md",
+    "agentfile.md",
+    ".cursorrules",
+})
+
+
+def load_project_root_agents(project_dir: str | Path) -> list[AgentDefinition]:
+    """Load section-split agents from AGENTS.md-style files at the project root.
+
+    Scans project_dir for files whose names match (case-insensitively)
+    AGENTS.md, agents.md, agent.md, agentfile.md, or .cursorrules.
+    Each matching file is split by ## section headers via parse_sections().
+    Falls back to loading as a single AgentDefinition when no headers found.
+
+    Returns:
+        List of AgentDefinition objects, or [] if no matching files exist.
+    """
+    from openhands.sdk.subagent.section_parser import parse_sections
+
+    project_dir = Path(project_dir)
+    if not project_dir.is_dir():
+        return []
+
+    result: list[AgentDefinition] = []
+    seen_names: set[str] = set()
+
+    for path in sorted(project_dir.iterdir()):
+        if not path.is_file(follow_symlinks=False) or path.name.lower() not in _SECTION_SPLIT_FILENAMES:
+            continue
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(f"Could not read {path}", exc_info=True)
+            continue
+
+        agents = parse_sections(content, source_path=str(path))
+
+        if not agents:
+            from openhands.sdk.subagent.section_parser import parse_xml_sections
+            agents = parse_xml_sections(content, source_path=str(path))
+
+        if not agents:
+            try:
+                agent_def = AgentDefinition.load(path)
+                if agent_def.name not in seen_names:
+                    seen_names.add(agent_def.name)
+                    result.append(agent_def)
+                    logger.debug(f"Loaded single-agent fallback from {path}")
+            except Exception:
+                logger.warning(
+                    f"Failed to load {path} as single AgentDefinition", exc_info=True
+                )
+        else:
+            for agent_def in agents:
+                if agent_def.name not in seen_names:
+                    seen_names.add(agent_def.name)
+                    result.append(agent_def)
+            logger.debug(f"Loaded {len(agents)} section-split agents from {path}")
+
+    return result
+
 
 def load_project_agents(project_dir: str | Path) -> list[AgentDefinition]:
     """Load agent definitions from project-level directories.

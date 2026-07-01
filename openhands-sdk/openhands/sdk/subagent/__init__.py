@@ -14,6 +14,11 @@ from openhands.sdk.subagent.registry import (
     register_plugin_agents,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.section_parser import (
+    ALWAYS_ACTIVE_SENTINEL,
+    parse_sections,
+    parse_xml_sections,
+)
 
 
 __all__ = [
@@ -32,4 +37,8 @@ __all__ = [
     # Agent def and factory
     "AgentDefinition",
     "agent_definition_to_factory",
+    # SCA section parser
+    "parse_sections",
+    "parse_xml_sections",
+    "ALWAYS_ACTIVE_SENTINEL",
 ]
