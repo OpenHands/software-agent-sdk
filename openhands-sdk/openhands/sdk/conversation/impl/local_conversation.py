@@ -14,7 +14,7 @@ from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondens
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -465,9 +465,13 @@ class LocalConversation(BaseConversation):
 
         def wrapped(event: Event) -> None:
             if event.parent_id is None:
-                event = event.model_copy(
-                    update={"parent_id": self._state._resolve_active_leaf()}
-                )
+                parent = self._state._resolve_active_leaf()
+                # An empty HEAD over a non-empty log is a deliberate new root
+                # (e.g. after navigate_to(None)); mark it explicitly so it is
+                # not misread as a legacy event chained to its storage neighbour.
+                if parent is None and len(self._state.events) > 0:
+                    parent = ROOT_PARENT_ID
+                event = event.model_copy(update={"parent_id": parent})
             inner(event)
 
         return cast(ConversationCallbackType, wrapped)

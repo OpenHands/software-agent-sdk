@@ -154,6 +154,35 @@ def test_navigate_to_none_empties_the_active_branch():
         assert _view_ids(conv) == []
 
 
+def test_navigate_to_none_then_emit_starts_a_fresh_root():
+    """After navigate_to(None), the next event is a genuine root — not silently
+    re-parented onto the abandoned branch's leaf.
+
+    A stamped root landing at a non-zero storage index has parent_id=None, the
+    same shape as a legacy event; without an explicit marker the effective-parent
+    rule would treat it as a legacy child (idx-1) and resurrect the whole
+    abandoned branch into the active view.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))  # branch A: root -> a1, then abandoned
+
+        conv.navigate_to(None)  # deliberate empty HEAD
+        assert _view_ids(conv) == []
+
+        fresh = _emit(conv, _msg("fresh"))  # a new root over a non-empty log
+
+        events = conv.state.events
+        stored = events.get_by_id(fresh.id)
+        # Effective parent is None: a genuine root, not chained to a1.
+        assert events._effective_parent_id(events.get_index(fresh.id), stored) is None
+        # Active branch is exactly the fresh root; branch A stays off-view.
+        assert _view_ids(conv) == [fresh.id]
+        # Both roots hang off None as siblings.
+        assert set(events.children_of(None)) == {e0.id, fresh.id}
+
+
 def test_fork_from_event_slices_the_branch():
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
