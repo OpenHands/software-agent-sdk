@@ -32,8 +32,11 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
+from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
+    SEED_PROFILE_NAME,
     ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
@@ -174,6 +177,39 @@ def _decrypt_profile_mcp_tools(
     return profile.model_copy(update={"skills": new_skills})
 
 
+def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
+    """Mirror the live LLM config into a ``SEED_PROFILE_NAME`` LLM profile.
+
+    ``build_seed_profile`` falls back to the literal name ``SEED_PROFILE_NAME``
+    when no LLM profile is active, on the assumption that a profile by that
+    name exists — but nothing ever created one, so the seeded agent profile's
+    ``llm_profile_ref`` dangled from birth (#3933). Mirrors the cloud
+    ``SaasSettingsStore``'s legacy-LLM backfill: materialize the current
+    ``agent_settings.llm`` under that name so the reference resolves, unless a
+    profile is already stored there (never clobber it).
+    """
+    llm_store = get_llm_profile_store()
+    with _store_errors():
+        if f"{SEED_PROFILE_NAME}.json" not in llm_store.list():
+            try:
+                llm_store.save(
+                    SEED_PROFILE_NAME,
+                    llm,
+                    include_secrets=True,
+                    cipher=cipher,
+                    max_profiles=MAX_PROFILES,
+                )
+                logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
+            except ProfileLimitExceeded:
+                # Can't mirror the live LLM as a profile; the agent profile's
+                # llm_profile_ref will still dangle, but no worse than before.
+                logger.warning(
+                    "Could not seed default LLM profile "
+                    f"'{SEED_PROFILE_NAME}': profile limit reached"
+                )
+    return SEED_PROFILE_NAME
+
+
 def _seed_default_profile(
     store: AgentProfileStore,
     request: Request,
@@ -191,7 +227,12 @@ def _seed_default_profile(
         # unlocked).
         if store.list():
             return
-        profile = build_seed_profile(settings.agent_settings, settings.active_profile)
+        active_llm_profile = settings.active_profile
+        if active_llm_profile is None and settings.agent_settings.agent_kind != "acp":
+            active_llm_profile = _seed_default_llm_profile(
+                settings.agent_settings.llm, cipher
+            )
+        profile = build_seed_profile(settings.agent_settings, active_llm_profile)
         # Settings persist skills[].mcp_tools encrypted (and never decrypt on
         # load), so decrypt before re-encrypting at save to avoid double-encrypt.
         profile = _decrypt_profile_mcp_tools(profile, cipher)

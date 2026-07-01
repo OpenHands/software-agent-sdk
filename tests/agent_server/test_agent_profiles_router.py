@@ -62,6 +62,14 @@ def store(temp_agent_profiles_dir):
     return AgentProfileStore(base_dir=temp_agent_profiles_dir)
 
 
+@pytest.fixture
+def default_llm_profile_store(temp_settings_dir):
+    """The real (unpatched) LLM profile store the ``client`` fixture's
+    ``get_llm_profile_store()`` resolves to, given ``OH_PERSISTENCE_DIR`` —
+    see ``_get_profile_persistence_dir`` (``<dir>/profiles``)."""
+    return LLMProfileStore(base_dir=temp_settings_dir / "profiles")
+
+
 # ── Lazy migration seed ─────────────────────────────────────────────────────
 
 
@@ -116,6 +124,49 @@ def test_seed_acp_when_settings_acp(client):
 
     detail = client.get("/api/agent-profiles/default").json()
     assert detail["profile"]["acp_server"] == "codex"
+
+
+def test_seed_backfills_default_llm_profile_when_none_active(
+    client, default_llm_profile_store
+):
+    """No active LLM profile: seed backfills a resolvable 'default' LLM profile.
+
+    Regression test for #3933 — previously ``llm_profile_ref`` fell back to
+    the literal 'default' without anything ever creating that LLM profile, so
+    the seeded (and active) agent profile 404'd at conversation launch.
+    """
+    body = client.get("/api/agent-profiles").json()
+    seeded = body["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
+    assert materialized["llm_profile_resolved"] is True
+
+
+def test_seed_does_not_clobber_existing_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing 'default' LLM profile is left untouched by the seed."""
+    default_llm_profile_store.save("default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_store):
+    """An ACP seed has no ``llm_profile_ref``, so no LLM profile is created."""
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+
+    client.get("/api/agent-profiles")
+
+    assert default_llm_profile_store.list() == []
 
 
 def test_no_seed_when_store_nonempty(client, store):
