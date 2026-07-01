@@ -70,17 +70,6 @@ jobs:
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
                   persist-credentials: false
 
-            - name: Checkout evaluation model config
-              uses: actions/checkout@v6
-              with:
-                  repository: OpenHands/evaluation
-                  ref: main
-                  token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PRIVATE }}
-                  path: .evaluation-model-config
-                  sparse-checkout: |
-                      eval-job/model-config
-                  persist-credentials: false
-
             - name: Set up Python
               uses: actions/setup-python@v5
               with:
@@ -109,15 +98,30 @@ jobs:
                   import json
                   import os
                   import sys
-                  sys.path.insert(0, '.evaluation-model-config/eval-job/model-config')
-                  from resolve_model_config import find_models_by_id
+                  # Inlined from OpenHands/evaluation (eval-job/model-config) so this
+                  # public workflow no longer clones the private eval repo. Only `model`
+                  # plus tuning params are needed here; api_key/base_url are injected from
+                  # env (LLM_API_KEY/LLM_BASE_URL) by tests/integration/base.py.
+                  MODELS = {
+                      "gpt-5.5": {"display_name": "GPT-5.5",
+                          "llm_config": {"model": "litellm_proxy/openai/gpt-5.5", "reasoning_effort": "high"}},
+                      "deepseek-v4-flash": {"display_name": "DeepSeek V4 Flash",
+                          "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v4-flash"}},
+                      "minimax-m2.7": {"display_name": "MiniMax M2.7",
+                          "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.7", "temperature": 1.0, "top_p": 0.95}},
+                      "gemini-3.1-pro": {"display_name": "Gemini 3.1 Pro",
+                          "llm_config": {"model": "litellm_proxy/gemini-3.1-pro-preview", "temperature": 0.0}},
+                  }
 
                   model_ids = os.environ["MODEL_IDS"].split(",")
                   model_ids = [m.strip() for m in model_ids if m.strip()]
 
-                  # find_models_by_id exits with code 1 and prints a helpful
-                  # message if any model ID cannot be resolved.
-                  resolved = find_models_by_id(model_ids)
+                  # Fail fast with a helpful message if any model ID is unknown.
+                  try:
+                      resolved = [MODELS[m] for m in model_ids]
+                  except KeyError as exc:
+                      print(f"Unknown model id {exc}; known ids: {', '.join(MODELS)}", file=sys.stderr)
+                      sys.exit(1)
 
                   matrix = []
                   for model_id, model in zip(model_ids, resolved):
