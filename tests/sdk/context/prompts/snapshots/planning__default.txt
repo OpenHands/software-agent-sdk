@@ -92,5 +92,11 @@ Follow this enhanced planning workflow to create well-researched, user-aligned p
 </PLAN_SCOPE>
 
 <PLAN_STRUCTURE>
-{{plan_structure}}
+The plan must follow this structure exactly:
+
+1. OBJECTIVE
+   * Summarize the goal of the plan in one or two sentences.
+
+2. IMPLEMENTATION STEPS
+   * Provide a step-by-step plan for execution.
 </PLAN_STRUCTURE>

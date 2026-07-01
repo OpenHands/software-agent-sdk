@@ -187,6 +187,57 @@ def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_pat
     assert ask_agent_llm.caching_prompt is False
 
 
+def create_mock_model_response(content: str) -> ModelResponse:
+    """A raw litellm ModelResponse, as returned by ``LLM._transport_call``."""
+    return ModelResponse(
+        id="test-id",
+        choices=[
+            Choices(
+                finish_reason="stop",
+                index=0,
+                message=LiteLLMMessage(content=content, role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o-mini",
+        object="chat.completion",
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path):
+    """Regression test (sibling of PR #3901): a ``stream=True`` agent LLM must
+    still answer ask_agent even though the path passes no ``on_token`` callback.
+    Patching ``_transport_call`` keeps the real streaming guard in
+    ``completion()`` live, so the bug reproduces without the fix.
+    """
+    mock_transport.return_value = create_mock_model_response("4")
+
+    streaming_llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        stream=True,
+    )
+    agent = Agent(llm=streaming_llm, tools=[])
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    result = conv.ask_agent("What is 2+2?")
+
+    assert result == "4"
+    mock_transport.assert_called_once()
+    # Streaming was disabled on the dedicated ask-agent LLM; agent LLM untouched.
+    assert mock_transport.call_args.kwargs["enable_streaming"] is False
+    assert mock_transport.call_args.kwargs["on_token"] is None
+    assert streaming_llm.stream is True
+    assert conv.llm_registry.get("ask-agent-llm").stream is False
+
+
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
 def test_remote_conversation_ask_agent(mock_ws_client, agent):
     mock_ws_client.return_value.wait_until_ready.return_value = True

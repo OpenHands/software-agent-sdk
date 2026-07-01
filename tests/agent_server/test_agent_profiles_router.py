@@ -6,6 +6,7 @@ activation by id (no ``agent_settings`` write), and the lazy migration seed.
 """
 
 import concurrent.futures
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -60,6 +62,14 @@ def client(temp_agent_profiles_dir, temp_settings_dir, monkeypatch):
 @pytest.fixture
 def store(temp_agent_profiles_dir):
     return AgentProfileStore(base_dir=temp_agent_profiles_dir)
+
+
+@pytest.fixture
+def default_llm_profile_store(temp_settings_dir):
+    """The real (unpatched) LLM profile store the ``client`` fixture's
+    ``get_llm_profile_store()`` resolves to, given ``OH_PERSISTENCE_DIR`` —
+    see ``_get_profile_persistence_dir`` (``<dir>/profiles``)."""
+    return LLMProfileStore(base_dir=temp_settings_dir / "profiles")
 
 
 # ── Lazy migration seed ─────────────────────────────────────────────────────
@@ -116,6 +126,127 @@ def test_seed_acp_when_settings_acp(client):
 
     detail = client.get("/api/agent-profiles/default").json()
     assert detail["profile"]["acp_server"] == "codex"
+
+
+def test_seed_backfills_default_llm_profile_when_none_active(
+    client, default_llm_profile_store
+):
+    """No active LLM profile: seed backfills a resolvable 'default' LLM profile.
+
+    Regression test for #3933 — previously ``llm_profile_ref`` fell back to
+    the literal 'default' without anything ever creating that LLM profile, so
+    the seeded (and active) agent profile 404'd at conversation launch.
+    """
+    body = client.get("/api/agent-profiles").json()
+    seeded = body["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
+    assert materialized["llm_profile_resolved"] is True
+
+
+def test_seed_does_not_clobber_existing_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing 'default' LLM profile is left untouched by the seed."""
+    default_llm_profile_store.save("default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_does_not_clobber_differently_cased_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing differently-cased 'Default' LLM profile is never
+    overwritten.
+
+    Regression test: the existence check must resolve names the same way
+    ``save()`` does (via the store's own path resolution), not via a
+    case-sensitive ``list()`` membership check — on a case-insensitive
+    filesystem (macOS/Windows) 'default' and 'Default' are the same path, so
+    the naive check would miss the collision and ``save()`` would silently
+    clobber the existing profile.
+    """
+    default_llm_profile_store.save("Default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("Default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile_store):
+    """Hitting the LLM profile cap during backfill warns and continues
+    instead of 500ing.
+
+    Regression test: the backfill must catch the LLM store's own
+    ``ProfileLimitExceeded`` (``openhands.sdk.llm.llm_profile_store``), not
+    the identically-named exception from the agent-profile store
+    (``openhands.sdk.profiles``) — catching the wrong class let the real one
+    propagate as an unhandled 500.
+    """
+    for i in range(MAX_PROFILES):
+        default_llm_profile_store.save(f"other-{i}", LLM(model="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    seeded = response.json()["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" not in default_llm_profile_store.list()
+
+
+def test_seed_backfills_when_active_profile_is_empty_string(
+    client, default_llm_profile_store, temp_settings_dir
+):
+    """An empty-string (not ``None``) ``active_profile`` still triggers the
+    backfill.
+
+    Regression test: the trigger condition must be a falsy check, matching
+    ``build_seed_profile``'s own ``active_llm_profile or SEED_PROFILE_NAME``
+    fallback — an ``is None`` check would skip the backfill for ``""`` while
+    ``build_seed_profile`` still falls back to the unresolvable literal
+    ``"default"`` ref, reproducing the exact #3933 dangling ref. The HTTP
+    PATCH payload's pattern validator blocks a client from setting `""`, but
+    the stored ``PersistedSettings`` field has no such constraint, so a
+    hand-edited or legacy settings.json can still contain it.
+    """
+    (temp_settings_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "agent_settings": {"agent_kind": "openhands"},
+                "conversation_settings": {},
+                "active_profile": "",
+                "active_agent_profile_id": None,
+                "misc_settings": {},
+            }
+        )
+    )
+
+    body = client.get("/api/agent-profiles").json()
+    assert body["profiles"][0]["llm_profile_ref"] == "default"
+    assert "default.json" in default_llm_profile_store.list()
+
+    materialized = client.post("/api/agent-profiles/default/materialize").json()
+    assert materialized["valid"] is True
+
+
+def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_store):
+    """An ACP seed has no ``llm_profile_ref``, so no LLM profile is created."""
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_kind": "acp", "acp_server": "codex"}},
+    )
+
+    client.get("/api/agent-profiles")
+
+    assert default_llm_profile_store.list() == []
 
 
 def test_no_seed_when_store_nonempty(client, store):

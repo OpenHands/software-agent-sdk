@@ -138,19 +138,17 @@ def http_error_log_content(response: httpx.Response) -> str | dict:
         return f"<non-JSON response body omitted ({body_len} chars)>"
 
 
-def redact_url_credentials(url: str) -> str:
+def redact_url_credentials(url: str, *, preserve_placeholders: bool = False) -> str:
     """Redact credentials embedded in a URL (e.g. https://user:token@host).
 
     Replaces the ``user:password`` or bare-token portion before the ``@`` with
     ``****`` so the URL is safe for logs, error messages, and persisted state.
     SSH URLs (``git@host``) and credential-free URLs are returned unchanged.
 
-    Args:
-        url: A URL that may contain embedded credentials.
-
-    Returns:
-        URL with the credential portion replaced by ``****``, or the original
-        URL if no embedded credentials are found.
+    With ``preserve_placeholders``, a userinfo holding a ``${VAR}`` reference is
+    left intact: it is expanded from the secret registry at fetch time and is
+    not itself a secret, so masking it would break the clone. Inline credentials
+    are still masked.
 
     Examples:
         >>> redact_url_credentials("https://oauth2:SECRET@gitlab.com/repo.git")
@@ -159,11 +157,17 @@ def redact_url_credentials(url: str) -> str:
         'https://github.com/owner/repo.git'
         >>> redact_url_credentials("git@github.com:owner/repo.git")
         'git@github.com:owner/repo.git'
+        >>> redact_url_credentials(
+        ...     "https://x-token-auth:${TOKEN}@host/r.git", preserve_placeholders=True
+        ... )
+        'https://x-token-auth:${TOKEN}@host/r.git'
     """
     match = re.match(r"^(https?://)([^@/]+)@(.+)$", url)
-    if match:
-        return f"{match.group(1)}****@{match.group(3)}"
-    return url
+    if not match:
+        return url
+    if preserve_placeholders and "${" in match.group(2):
+        return url
+    return f"{match.group(1)}****@{match.group(3)}"
 
 
 # Matches embedded ``http(s)://user:token@`` credentials anywhere within a

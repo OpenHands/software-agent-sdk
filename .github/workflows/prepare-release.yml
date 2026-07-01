@@ -24,7 +24,7 @@ jobs:
                   echo "✅ Version format is valid: $INPUTS_VERSION"
 
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 

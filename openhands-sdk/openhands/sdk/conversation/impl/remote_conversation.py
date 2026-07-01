@@ -1377,6 +1377,14 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/interrupt",
         )
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            json={"plugin_ref": plugin_ref},
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 

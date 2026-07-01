@@ -52,7 +52,7 @@ from openhands.sdk.utils.pydantic_secrets import (
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
-    from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+    from openhands.sdk.llm.llm_profile_store import LLMProfileLoader
     from openhands.sdk.utils.cipher import Cipher
 
 
@@ -353,7 +353,7 @@ def _build_acp_settings(
 def resolve_agent_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
-    llm_store: LLMProfileStore,
+    llm_store: LLMProfileLoader,
     mcp_config: MCPConfig | None,
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
@@ -406,7 +406,7 @@ def resolve_agent_profile(
 def resolve_agent_profile_dry_run(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
-    llm_store: LLMProfileStore,
+    llm_store: LLMProfileLoader,
     mcp_config: MCPConfig | None,
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
