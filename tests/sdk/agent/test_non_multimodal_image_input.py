@@ -20,7 +20,10 @@ from openhands.sdk.llm.router.impl.multimodal import MultimodalRouter
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.testing import TestLLM
 from openhands.sdk.tool import ToolDefinition
-from openhands.sdk.tool.builtins.vision_inspect import VISION_PROFILE_USAGE_PREFIX
+from openhands.sdk.tool.builtins.vision_inspect import (
+    VISION_PROFILE_USAGE_PREFIX,
+    VisionInspectObservation,
+)
 
 
 if TYPE_CHECKING:
@@ -241,8 +244,9 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
         and event.tool_name == "inspect_image_with_vision"
     ]
     assert len(observations) == 1
-    assert observations[0].observation.base_url == "https://vision.example.test/"
-    observation_content = observations[0].observation.content[0]
+    observation = cast(VisionInspectObservation, observations[0].observation)
+    assert observation.base_url == "https://vision.example.test/"
+    observation_content = observation.content[0]
     assert isinstance(observation_content, TextContent)
     assert "It shows a cat." in observation_content.text
 
