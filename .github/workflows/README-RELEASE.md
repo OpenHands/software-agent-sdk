@@ -1,186 +1,114 @@
 # Release Automation Workflows
 
-This document describes the automated release workflows for the OpenHands Software Agent SDK.
+This document describes the automated release process for the OpenHands Software
+Agent SDK. Releases are driven by [release-please](https://github.com/googleapis/release-please)
+via the shared [OpenHands/release-actions](https://github.com/OpenHands/release-actions)
+reusable workflows.
 
 ## Overview
 
-The release process has been automated with three GitHub Actions workflows:
-
-1. **prepare-release.yml** - Prepares a release PR with version updates
-2. **pypi-release.yml** - Automatically publishes packages to PyPI when a release is created
-3. **release-binaries.yml** - Builds and smoke-tests multi-arch agent-server binaries
-   on releases and main pushes; release runs also attach binaries to the release
-
-## How to Create a New Release
-
-### Step 1: Trigger the Prepare Release Workflow
-
-1. Go to the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions)
-2. Select **"Prepare Release"** workflow from the left sidebar
-3. Click **"Run workflow"** button
-4. Enter the version number (e.g., `1.2.3`) - must be in format `X.Y.Z`
-5. Click **"Run workflow"**
-
-The workflow will automatically:
-- ✅ Create a new branch named `rel-X.Y.Z`
-- ✅ Update all package versions using `make set-package-version`
-- ✅ Commit the changes
-- ✅ Push the branch
-- ✅ Create a PR with labels `integration-tests` and `test-examples`
-
-### Step 2: Review the PR
-
-The created PR will include a checklist. Complete the following:
-
-- [ ] Fix any deprecation deadlines if they exist
-- [ ] Verify integration tests pass (triggered by `integration-tests` label)
-- [ ] Verify example checks pass (triggered by `test-examples` label)
-- [ ] Confirm any merged `release-note-required` PRs are accurately called out in the final release notes
-- [ ] Review and approve the PR
-
-### Step 3: Create the GitHub Release
-
-1. Go to [Releases](https://github.com/OpenHands/software-agent-sdk/releases/new)
-2. Click **"Draft a new release"**
-3. Configure the release:
-   - **Tag**: `vX.Y.Z` (must match the version)
-   - **Branch**: `rel-X.Y.Z` (the branch created by the workflow)
-   - **Previous tag**: Select the previous release version
-4. Click **"Generate release notes"** to auto-generate the changelog
-5. Review and edit the release notes as needed
-6. Click **"Publish release"**
-
-### Step 4: PyPI Publication (Automated)
-
-Once the release is published, the **pypi-release.yml** workflow will automatically:
-- ✅ Build all packages (openhands-sdk, openhands-tools, openhands-workspace, openhands-agent-server)
-- ✅ Publish them to PyPI
-
-You can monitor the progress in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions/workflows/pypi-release.yml).
-
-### Step 4b: Release Binaries + Docker Smoke Test (Automated)
-
-In parallel with the PyPI workflow, **release-binaries.yml** also fires on `release: published`.
-It also runs on every push to `main` as ongoing smoke coverage. It:
-
-- ✅ Builds the agent-server PyInstaller binary on a 5-runner matrix
-  (linux x86_64/arm64, macOS x86_64/arm64, windows x86_64) and smoke-tests each
-- ✅ Generates a combined `SHA256SUMS` and attaches all artifacts to the GitHub
-  release as `agent-server-<version>-<os>-<arch>` on release/manual runs
-- ✅ Verifies that the multi-arch Docker manifest
-  `ghcr.io/openhands/agent-server:<image-tag>-<variant>` published by
-  `server.yml` covers both `linux/amd64` and `linux/arm64` for every variant
-  (`python`, `java`, `golang`)
-- ✅ Pulls each variant on each architecture with `--platform=linux/<arch>`,
-  boots the container, and asserts `/health` responds
-
-On `push` events, `<image-tag>` is the 7-character commit SHA and binaries
-remain as workflow artifacts only. On release/manual runs, `<image-tag>` is the
-release version and the binaries are uploaded to the GitHub release.
-
-#### Build time / runner expectations
-
-| Stage | Runtime (typical) | Runners |
+| Workflow | Trigger | Purpose |
 |---|---|---|
-| Binary builds (5-way matrix, parallel) | ~10–15 min on Linux, ~12–18 min on macOS | `ubuntu-24.04`, `ubuntu-24.04-arm`, `macos-15-intel`, `macos-14`, `windows-2022` |
-| `publish-binaries` (download + checksum + upload) | ~1–2 min | `ubuntu-24.04` |
-| `docker-smoke-test` (6-way matrix, parallel) | Up to 45 min (mostly polling for the docker images) | `ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64 |
+| **release.yml** | push to `main` / `release/**` | Calls `release-actions`' `release-please.yml`. Maintains a **draft** `chore(main): release X.Y.Z` PR that bumps every package version and aggregates the changelog. Merging it tags `vX.Y.Z` and publishes the GitHub release. |
+| **pr.yml** | `pull_request_target` | Calls `release-actions`' `pr-title.yml`. Lints PR titles for Conventional Commits and applies a `type: <type>` label used for release-note grouping. |
+| **release-ready.yml** | `pull_request_target: ready_for_review` | Calls `release-actions`' `release-ready.yml`. When the draft release PR is marked ready, labels it `release: ready` + `behavior-test`, `integration-test`, `test-examples`, and notifies Slack. |
+| **pypi-release.yml** | `release: published` | Builds and publishes all packages to PyPI. Unchanged. |
+| **release-binaries.yml** | `release: published` + push to `main` | Builds/smoke-tests multi-arch agent-server binaries and attaches them to the release. Unchanged. |
+| **version-bump-prs.yml** | dispatched by `pypi-release.yml` | Opens downstream version-bump PRs in `OpenHands` and `openhands-cli`. Unchanged. |
 
-#### QEMU / buildx requirements
+Version is derived from Conventional Commit PR titles since the last release:
+`fix` → patch, `feat` → minor, breaking change → major.
 
-The smoke test does **not** require QEMU: each (variant, arch) job runs on a
-runner whose architecture matches `--platform=linux/<arch>`, so containers run
-natively. We do still set up Docker Buildx so we can call
-`docker buildx imagetools inspect` on the multi-arch manifest list.
+## How to create a release
 
-The wait window for the multi-arch manifest is 45 min — long enough to absorb
-the full `server.yml` matrix runtime (~25–30 min for `build-and-push-image` +
-`merge-manifests`) when this workflow races the corresponding `server.yml` run
-for a release tag or main-branch push.
+### 1. Land work with Conventional Commit titles
 
-If the matching manifest is already in GHCR, the wait step exits immediately.
+Every PR merged to `main` must have a [Conventional Commit](https://www.conventionalcommits.org)
+title (`feat: …`, `fix: …`, `docs: …`, etc.). `pr.yml` lints this and labels the
+PR with its type. PRs are **squash-merged**, so the PR title becomes the commit
+release-please reads.
 
-### Step 5: Version Bump PRs (Automated)
+### 2. Review the draft release PR
 
-After successful PyPI publication, the workflow will automatically create PRs to update SDK versions in downstream repositories:
+On every push to `main`, release-please opens/updates a **draft** PR titled
+`chore(main): release X.Y.Z`. It:
 
-- **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
-- **[OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
+- bumps the version in `version.txt` and all four `pyproject.toml` files
+  (`openhands-sdk`, `openhands-tools`, `openhands-workspace`,
+  `openhands-agent-server`) — kept in lockstep;
+- aggregates the changelog into the PR body (which becomes the release notes).
 
-These PRs will:
-- Be created automatically with branch name `bump-sdk-X.Y.Z`
-- Include links back to the SDK release
-- Need to be reviewed and merged by the respective repository maintainers
+Review it and fix any deprecation deadlines if they exist.
 
-### Step 6: Post-Release Tasks
+### 3. Mark it "Ready for review" to cut the release
 
-- [ ] Merge the release PR to main
-- [ ] Review and merge the auto-created version bump PRs in OpenHands and OpenHands-CLI
-- [ ] Run evaluation on OpenHands Index (manual step)
-- [ ] Announce the release
+Clicking **Ready for review** is the deliberate release-cut signal. It fires
+`release-ready.yml`, which labels the PR `release: ready` plus the three
+test-trigger labels and posts to Slack:
 
-## Manual PyPI Release (If Needed)
+- `integration-test` and `behavior-test` → `integration-runner.yml`
+- `test-examples` → `run-examples.yml`
 
-If you need to manually trigger the PyPI release workflow:
+Confirm those suites pass, and confirm any merged `release-note-required` PRs are
+accurately called out in the notes.
 
-1. Go to the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions)
-2. Select **"Publish all OpenHands packages (uv)"** workflow
-3. Click **"Run workflow"**
-4. Select the branch/tag you want to publish from
-5. Click **"Run workflow"**
+### 4. Merge to publish
 
-## Workflow Files
+Merging the release PR:
 
-- `.github/workflows/prepare-release.yml` - Automated release preparation
-- `.github/workflows/pypi-release.yml` - PyPI package publication
-- `.github/workflows/release-binaries.yml` - Multi-arch binary publishing and
-  docker manifest smoke test on releases and main pushes
+1. tags the merge commit `vX.Y.Z` and publishes the GitHub release (release notes
+   from the PR body);
+2. fires **pypi-release.yml** (publish to PyPI) and **release-binaries.yml**
+   (attach binaries), both on `release: published`;
+3. back-labels every PR included in the release with `released: vX.Y.Z`.
+
+Because release-please acts as a GitHub App (org secrets `RELEASE_APP_ID` /
+`RELEASE_APP_PRIVATE_KEY`, already configured org-wide), these downstream
+`release: published` and `labeled` events actually fire — the default
+`GITHUB_TOKEN` would suppress them.
+
+### 5. Post-release
+
+- Review and merge the auto-created version-bump PRs in `OpenHands` and
+  `openhands-cli`.
+- Run evaluation on OpenHands Index (manual).
+- Announce the release.
+
+## Hotfixes and freezes
+
+release.yml also runs on `release/**` branches, so a maintenance/freeze release
+is driven by release-please on that branch exactly like `main`. See the
+[release-actions README](https://github.com/OpenHands/release-actions#hotfixing-a-shipped-version)
+for the hotfix and freeze flows.
+
+## One-time repository settings
+
+These are configured once on the repo (not committed):
+
+```sh
+# Squash-merge so the PR title becomes the commit release-please reads.
+gh api -X PATCH repos/OpenHands/software-agent-sdk \
+  -f squash_merge_commit_title=PR_TITLE -f squash_merge_commit_message=COMMIT_MESSAGES \
+  -F allow_squash_merge=true -F allow_merge_commit=false -F allow_rebase_merge=false \
+  -F delete_branch_on_merge=true
+```
 
 ## Troubleshooting
 
-### Version Format Error
+### The draft release PR bumps the wrong files / no bump
 
-If you get a version format error, ensure you're using the format `X.Y.Z` (e.g., `1.2.3`), not `vX.Y.Z`.
+release-please propagates the version to each `pyproject.toml` via the
+`x-release-please-version` annotation comment on the `version = "…"` line and the
+`extra-files` list in `release-please-config.json`. If a package stops bumping,
+check that its annotation comment is intact.
 
-### PR Creation Failed
+### PyPI publication failed
 
-If the PR creation fails, check:
-- The branch doesn't already exist
-- You have proper permissions
-- The `GITHUB_TOKEN` has sufficient permissions
+- Check that `PYPI_TOKEN_OPENHANDS` is configured.
+- Verify the version doesn't already exist on PyPI.
 
-### PyPI Publication Failed
+### Release binaries failed
 
-If PyPI publication fails:
-- Check that the `PYPI_TOKEN_OPENHANDS` secret is properly configured
-- Verify the version doesn't already exist on PyPI
-- Check the workflow logs for specific error messages
-
-### Release Binaries Failed
-
-If `release-binaries.yml` fails:
-- **Binary build failure**: re-run the failed matrix job; PyInstaller flakes are
-  rare but possible. If it persists, the issue is likely in `agent-server.spec`.
-- **`docker-smoke-test` timed out waiting for the manifest**: `server.yml` did
-  not publish multi-arch images for the matching release tag or commit SHA.
-  Check that workflow's corresponding run and re-trigger if needed.
-- **`/health` never responded**: open the failing job; the cleanup trap dumps
-  the last 100 lines of `docker logs` for the container.
-- Release/manual runs can be re-run against an existing tag via
-  `workflow_dispatch` with the `release_tag` input (e.g. `v1.20.1`);
-  `gh release upload --clobber` makes this safe.
-
-## Previous Manual Process
-
-For reference, the previous manual release checklist was:
-
-- [ ] Checkout SDK repo, use `make set-package-version version=x.x.x` to set the version
-- [ ] Push to a branch like `rel-x.x.x` and start a PR
-- [ ] Fix any "deprecation deadlines" if they exist
-- [ ] Tag "integration-tests" and make sure integration test all pass
-- [ ] Tag "test-examples" and make sure example checks all pass
-- [ ] Draft a new release
-- [ ] Use workflow to publish to PyPI on tag `v1.X.X`
-- [ ] Evaluation on OpenHands Index
-
-Most of these steps are now automated!
+See the per-stage guidance in `release-binaries.yml`; release/manual runs can be
+re-run against an existing tag via `workflow_dispatch` with the `release_tag`
+input.

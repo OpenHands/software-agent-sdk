@@ -1,0 +1,25 @@
+name: pr
+
+# Lint every PR title for Conventional Commits and apply a matching
+# `type: <type>` label (which drives release-note grouping via
+# .github/release.yml). Conventional titles are what release-please reads to
+# compute the next version, so this is a prerequisite for the release
+# automation in release.yml.
+#
+# Trigger is pull_request_target (NOT pull_request) so the lint/label also runs
+# on PRs from forks / non-members. Safe HERE — and only stays safe — because
+# pr-title.yml never checks out or runs PR code (it reads the title from the
+# event payload only) and runs on GITHUB_TOKEN alone. Do NOT add a checkout step
+# or `secrets: inherit`.
+on:
+  pull_request_target:
+    # synchronize is needed alongside the title events: required status checks
+    # attach to a head SHA, and release-please force-pushes new commits to its
+    # release PR, so the lint must re-run on each update to stay green.
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  pr-title:
+    permissions:
+      pull-requests: write
+    uses: OpenHands/release-actions/.github/workflows/pr-title.yml@main
