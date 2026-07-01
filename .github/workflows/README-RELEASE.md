@@ -16,8 +16,29 @@ reusable workflows.
 | **release-binaries.yml** | `release: published` + push to `main` | Builds/smoke-tests multi-arch agent-server binaries and attaches them to the release. Unchanged. |
 | **version-bump-prs.yml** | dispatched by `pypi-release.yml` | Opens downstream version-bump PRs in `OpenHands` and `openhands-cli`. Unchanged. |
 
-Version is derived from Conventional Commit PR titles since the last release:
-`fix` → patch, `feat` → minor, breaking change → major.
+## Versioning policy
+
+The next version is derived from Conventional Commit PR titles since the last
+release, using release-please's `default` strategy:
+
+- `fix:` → **patch** (e.g. `1.30.0` → `1.30.1`)
+- `feat:` → **minor** (e.g. `1.30.0` → `1.31.0`)
+
+Per the SDK policy ([AGENTS.md](../../AGENTS.md): *"breaking SDK API changes
+require at least a MINOR SemVer bump"*, with a 5-minor-release deprecation
+runway), the SDK stays on the `1.x` line — **breaking changes ship as a `feat:`
+minor bump, not a major.** Breaking API changes go through the deprecation +
+`release-note-required` process, not a Conventional Commit breaking marker.
+
+> ⚠️ Do **not** use the breaking markers `feat!:` / `fix!:` / `BREAKING CHANGE:`.
+> release-please's `default` strategy escalates those to a **major** (`2.0.0`)
+> bump, which would violate the stay-on-`1.x` policy. The release PR is a draft
+> that is reviewed before cutting, so an accidental major would surface in the
+> `chore(main): release X.Y.Z` title and can be corrected before it ships.
+>
+> (`versioning: default` is deliberate: it preserves `fix:` → patch releases.
+> The alternative, `always-bump-minor`, would guarantee no major bump but would
+> also turn every `fix:` into a minor — dropping patch releases.)
 
 ## How to create a release
 
