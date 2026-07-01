@@ -34,6 +34,9 @@ from openhands.agent_server.persistence import (
 )
 from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import (
+    ProfileLimitExceeded as LLMProfileLimitExceeded,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
     SEED_PROFILE_NAME,
@@ -187,26 +190,46 @@ def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
     ``SaasSettingsStore``'s legacy-LLM backfill: materialize the current
     ``agent_settings.llm`` under that name so the reference resolves, unless a
     profile is already stored there (never clobber it).
+
+    Existence is checked via ``load()``, not ``list()``: the store resolves a
+    name straight to a filesystem path, so on a case-insensitive filesystem
+    (macOS/Windows) a differently-cased ``Default`` profile already occupies
+    the ``default`` path even though it wouldn't case-sensitively match a
+    ``list()`` membership check — that mismatch would otherwise let ``save()``
+    silently clobber it.
     """
     llm_store = get_llm_profile_store()
     with _store_errors():
-        if f"{SEED_PROFILE_NAME}.json" not in llm_store.list():
-            try:
-                llm_store.save(
-                    SEED_PROFILE_NAME,
-                    llm,
-                    include_secrets=True,
-                    cipher=cipher,
-                    max_profiles=MAX_PROFILES,
-                )
-                logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
-            except ProfileLimitExceeded:
-                # Can't mirror the live LLM as a profile; the agent profile's
-                # llm_profile_ref will still dangle, but no worse than before.
-                logger.warning(
-                    "Could not seed default LLM profile "
-                    f"'{SEED_PROFILE_NAME}': profile limit reached"
-                )
+        try:
+            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            return SEED_PROFILE_NAME
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            # Something already occupies the name (e.g. corrupted/unparsable
+            # file) — never overwrite it; a broken ref surfaces at
+            # materialize/launch time instead.
+            logger.warning(
+                f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
+                "failed to load; leaving it as-is"
+            )
+            return SEED_PROFILE_NAME
+        try:
+            llm_store.save(
+                SEED_PROFILE_NAME,
+                llm,
+                include_secrets=True,
+                cipher=cipher,
+                max_profiles=MAX_PROFILES,
+            )
+            logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
+        except LLMProfileLimitExceeded:
+            # Can't mirror the live LLM as a profile; the agent profile's
+            # llm_profile_ref will still dangle, but no worse than before.
+            logger.warning(
+                "Could not seed default LLM profile "
+                f"'{SEED_PROFILE_NAME}': profile limit reached"
+            )
     return SEED_PROFILE_NAME
 
 

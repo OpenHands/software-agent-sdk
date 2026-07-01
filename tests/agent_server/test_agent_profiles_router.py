@@ -17,6 +17,7 @@ from openhands.agent_server import agent_profiles_router as router_module
 from openhands.agent_server.api import create_app
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import reset_stores
+from openhands.agent_server.profiles_router import MAX_PROFILES
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.profiles import (
@@ -155,6 +156,48 @@ def test_seed_does_not_clobber_existing_default_llm_profile(
 
     reloaded = default_llm_profile_store.load("default")
     assert reloaded.model == "existing/model"
+
+
+def test_seed_does_not_clobber_differently_cased_default_llm_profile(
+    client, default_llm_profile_store
+):
+    """A pre-existing differently-cased 'Default' LLM profile is never
+    overwritten.
+
+    Regression test: the existence check must resolve names the same way
+    ``save()`` does (via the store's own path resolution), not via a
+    case-sensitive ``list()`` membership check — on a case-insensitive
+    filesystem (macOS/Windows) 'default' and 'Default' are the same path, so
+    the naive check would miss the collision and ``save()`` would silently
+    clobber the existing profile.
+    """
+    default_llm_profile_store.save("Default", LLM(model="existing/model"))
+
+    client.get("/api/agent-profiles")
+
+    reloaded = default_llm_profile_store.load("Default")
+    assert reloaded.model == "existing/model"
+
+
+def test_seed_llm_profile_limit_reached_does_not_500(client, default_llm_profile_store):
+    """Hitting the LLM profile cap during backfill warns and continues
+    instead of 500ing.
+
+    Regression test: the backfill must catch the LLM store's own
+    ``ProfileLimitExceeded`` (``openhands.sdk.llm.llm_profile_store``), not
+    the identically-named exception from the agent-profile store
+    (``openhands.sdk.profiles``) — catching the wrong class let the real one
+    propagate as an unhandled 500.
+    """
+    for i in range(MAX_PROFILES):
+        default_llm_profile_store.save(f"other-{i}", LLM(model="x"))
+
+    response = client.get("/api/agent-profiles")
+
+    assert response.status_code == 200
+    seeded = response.json()["profiles"][0]
+    assert seeded["llm_profile_ref"] == "default"
+    assert "default.json" not in default_llm_profile_store.list()
 
 
 def test_seed_acp_does_not_backfill_llm_profile(client, default_llm_profile_store):
