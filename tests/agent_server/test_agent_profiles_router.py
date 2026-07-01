@@ -627,6 +627,7 @@ def test_seed_preserves_openhands_fields(client):
         json={
             "agent_settings_diff": {
                 "enable_sub_agents": True,
+                "enable_switch_llm_tool": False,
                 "tool_concurrency_limit": 3,
                 "agent_context": {"system_message_suffix": "be terse"},
                 "verification": {
@@ -640,12 +641,34 @@ def test_seed_preserves_openhands_fields(client):
 
     prof = client.get("/api/agent-profiles/default").json()["profile"]
     assert prof["enable_sub_agents"] is True
+    assert prof["enable_switch_llm_tool"] is False
     assert prof["tool_concurrency_limit"] == 3
     assert prof["system_message_suffix"] == "be terse"
+    # The seed embeds the global's resolved skills and selects no further
+    # discovery (skill_refs=[]), so it resolves to exactly that skill set.
+    assert prof["skill_refs"] == []
     assert prof["verification"]["critic_enabled"] is True
     assert prof["verification"]["critic_model_name"] == "x-critic"
     # The profile verification is secret-free — no critic_api_key projected.
     assert "critic_api_key" not in prof["verification"]
+
+
+def test_seed_clears_skill_refs_even_when_global_autoloads(client):
+    """A global that auto-loads skills still seeds skill_refs=[] (embedded
+    snapshot), not None.
+
+    skill_refs=None would re-discover user+public at resolve time and inject
+    skills a partial-source global never had; the embedded snapshot of
+    context.skills is the faithful mapping regardless of source flags.
+    """
+    client.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"agent_context": {"load_user_skills": True}}},
+    )
+    client.get("/api/agent-profiles")  # triggers the seed
+
+    prof = client.get("/api/agent-profiles/default").json()["profile"]
+    assert prof["skill_refs"] == []
 
 
 def test_seed_preserves_acp_fields(client):
@@ -668,6 +691,9 @@ def test_seed_preserves_acp_fields(client):
     assert prof["acp_server"] == "codex"
     assert prof["acp_model"] == "gpt-5.5"
     assert prof["acp_args"] == ["--foo", "--bar"]
+    # Conservative ACP seed: skill_refs=[] so an existing ACP run doesn't start
+    # receiving the discovered skill catalog until the user opts in.
+    assert prof["skill_refs"] == []
 
 
 # ── Cipher: skills[].mcp_tools secret round-trip ────────────────────────────
@@ -918,6 +944,37 @@ def test_materialize_dangling_mcp_ref(client_with_llm_store, store, llm_store):
     body = response.json()
     assert body["valid"] is False
     assert body["dangling_mcp_server_refs"] == ["missing-server"]
+    assert body["resolved_settings"] is None
+
+
+def test_materialize_reports_resolved_and_dangling_skill_refs(
+    client_with_llm_store, store, llm_store
+):
+    """skill_refs are resolved against the discovered catalog; a stale ref is
+    reported and invalidates the profile (mirrors dangling MCP refs)."""
+    from openhands.sdk.skills import Skill
+
+    llm_store.save("base-llm", LLM(model="gpt-4o"), include_secrets=True)
+    store.save(
+        OpenHandsAgentProfile(
+            name="p",
+            llm_profile_ref="base-llm",
+            skill_refs=["known", "stale"],
+        )
+    )
+
+    with patch(
+        "openhands.agent_server.skills_service.discover_profile_skills",
+        return_value=[Skill(name="known", content="x")],
+    ):
+        response = client_with_llm_store.post("/api/agent-profiles/p/materialize")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert body["skill_refs"] == ["known", "stale"]
+    assert body["resolved_skills"] == ["known"]
+    assert body["dangling_skill_refs"] == ["stale"]
     assert body["resolved_settings"] is None
 
 

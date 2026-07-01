@@ -111,6 +111,24 @@ class AgentProfileBase(BaseModel):
             "null = all; [] = none; a non-null list = filter to the named keys."
         ),
     )
+    # On the base because both variants consume skills as prompt context. null
+    # (all discovered) and [] (none) are distinct; the default is [] — NOT null,
+    # unlike ``mcp_server_refs`` — because auto-injecting the whole catalog isn't
+    # behavior-preserving and a profile persisted before this field existed must
+    # not silently start pulling it on load. ``default_factory=list`` makes an
+    # absent field ([]) distinct from an explicit ``null`` (None), the opt-in for
+    # "all discovered".
+    skill_refs: list[str] | None = Field(
+        default_factory=list,
+        description=(
+            "Which of the server-discovered skills to expose in the agent's "
+            "prompt, selected by name (mirrors ``mcp_server_refs`` over "
+            "``mcp_config``). null = all discovered; [] = none (the default); a "
+            "non-null list = filter to the named skills. For OpenHands profiles, "
+            "any explicitly embedded ``skills`` are always included on top of "
+            "the filtered set."
+        ),
+    )
 
 
 class OpenHandsAgentProfile(AgentProfileBase):
@@ -162,6 +180,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default=False,
         description="Enable sub-agent delegation via TaskToolSet.",
     )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles. Defaults True to match the global agent settings "
+            "default (AgentSettingsConfig.enable_switch_llm_tool)."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -189,6 +215,9 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
+    # ``skill_refs`` is inherited from ``AgentProfileBase`` with the safe []
+    # default (no discovered skills injected unless a null/list is set) — ACP
+    # agents own their tooling, so that default is exactly right here.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
