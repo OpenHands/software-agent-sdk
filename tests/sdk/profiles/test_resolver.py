@@ -700,7 +700,10 @@ def test_dry_run_reports_resolved_and_dangling_skill_refs(
 def test_dry_run_skill_refs_null_resolves_all_discovered(
     llm_store: LLMProfileStore, mcp_config: MCPConfig
 ) -> None:
-    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    # Explicit null (all discovered) — NOT the default, which is [] (none).
+    profile = OpenHandsAgentProfile(
+        name="oh", llm_profile_ref="default", skill_refs=None
+    )
     diag = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,

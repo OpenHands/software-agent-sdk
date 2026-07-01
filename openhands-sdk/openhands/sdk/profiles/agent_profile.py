@@ -112,17 +112,21 @@ class AgentProfileBase(BaseModel):
         ),
     )
     # On the base because both variants consume skills as prompt context. null
-    # and [] are deliberately distinct (mirrors ``mcp_server_refs``); ACP
-    # overrides the default to [] (it owns its tooling — see ACPAgentProfile).
+    # (all discovered) and [] (none) are distinct; the default is [] — NOT null,
+    # unlike ``mcp_server_refs`` — because auto-injecting the whole catalog isn't
+    # behavior-preserving and a profile persisted before this field existed must
+    # not silently start pulling it on load. ``default_factory=list`` makes an
+    # absent field ([]) distinct from an explicit ``null`` (None), the opt-in for
+    # "all discovered".
     skill_refs: list[str] | None = Field(
-        default=None,
+        default_factory=list,
         description=(
             "Which of the server-discovered skills to expose in the agent's "
             "prompt, selected by name (mirrors ``mcp_server_refs`` over "
-            "``mcp_config``). null = all discovered; [] = none; a non-null "
-            "list = filter to the named skills. For OpenHands profiles, any "
-            "explicitly embedded ``skills`` are always included on top of the "
-            "filtered set."
+            "``mcp_config``). null = all discovered; [] = none (the default); a "
+            "non-null list = filter to the named skills. For OpenHands profiles, "
+            "any explicitly embedded ``skills`` are always included on top of "
+            "the filtered set."
         ),
     )
 
@@ -211,19 +215,9 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
-    # ACP agents own their tooling, so the discovered skill catalog is NOT
-    # injected by default (an ACP profile created without selecting skills, or
-    # persisted before this field existed, resolves to no prompt context — the
-    # pre-existing ACP behavior). null (= all discovered) stays an explicit
-    # opt-in, distinct from this [] default.
-    skill_refs: list[str] | None = Field(
-        default_factory=list,
-        description=(
-            "Skills to expose to the ACP agent's prompt, by name. Defaults to "
-            "[] (none): ACP agents own their tooling. null = all discovered; "
-            "[] = none; a non-null list = the named skills."
-        ),
-    )
+    # ``skill_refs`` is inherited from ``AgentProfileBase`` with the safe []
+    # default (no discovered skills injected unless a null/list is set) — ACP
+    # agents own their tooling, so that default is exactly right here.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(

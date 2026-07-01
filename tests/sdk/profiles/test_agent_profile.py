@@ -60,18 +60,23 @@ def test_openhands_profile_round_trips() -> None:
 
 def test_openhands_profile_new_field_defaults() -> None:
     """``enable_switch_llm_tool`` defaults True (global parity); ``skill_refs``
-    defaults None (all discovered)."""
+    defaults [] (none) — NOT None. A missing field must not silently inject the
+    whole discovered catalog. ``None`` (all discovered) stays an explicit opt-in,
+    reachable only when the field is present as ``null`` (see
+    ``test_skill_refs_empty_vs_null_are_distinct``)."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_switch_llm_tool is True
-    assert profile.skill_refs is None
+    assert profile.skill_refs == []
     # An older persisted payload without the fields still validates and adopts
-    # the defaults.
+    # the safe defaults — critically, an absent ``skill_refs`` resolves to [],
+    # so a profile persisted before the field existed does not start pulling the
+    # discovered catalog on load.
     reloaded = validate_agent_profile(
         {"agent_kind": "openhands", "name": "oh", "llm_profile_ref": "default"}
     )
     assert isinstance(reloaded, OpenHandsAgentProfile)
     assert reloaded.enable_switch_llm_tool is True
-    assert reloaded.skill_refs is None
+    assert reloaded.skill_refs == []
 
 
 def test_skill_refs_empty_vs_null_are_distinct() -> None:
@@ -94,9 +99,10 @@ def test_skill_refs_empty_vs_null_are_distinct() -> None:
 
 
 def test_acp_profile_skill_refs_defaults_empty() -> None:
-    """ACP profiles default ``skill_refs=[]`` (they own their tooling), unlike
-    OpenHands' ``None``. A payload without the field — incl. one persisted before
-    the field existed — adopts the [] default rather than injecting the catalog."""
+    """ACP profiles default ``skill_refs=[]`` (they own their tooling), inheriting
+    the safe base default shared with OpenHands. A payload without the field —
+    incl. one persisted before the field existed — adopts the [] default rather
+    than injecting the catalog."""
     from openhands.sdk.profiles import ACPAgentProfile
 
     profile = ACPAgentProfile(name="acp", acp_server="claude-code")

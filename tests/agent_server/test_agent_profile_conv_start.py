@@ -178,7 +178,9 @@ class TestResolveAgentFromProfile:
             _resolve_agent_from_profile,
         )
 
-        profile = _make_openhands_profile()
+        # skill_refs defaults to [] (skip); set None to exercise the
+        # all-discovered opt-in, where discovery runs and is threaded through.
+        profile = _make_openhands_profile().model_copy(update={"skill_refs": None})
         agent = _make_agent()
 
         with (
@@ -202,9 +204,42 @@ class TestResolveAgentFromProfile:
         assert result_agent is agent
         assert launched.agent_profile_id == profile.id
         assert launched.revision == profile.revision
-        # OpenHands profiles trigger skill discovery, threaded into the resolver.
+        # skill_refs=None (all discovered) triggers discovery, threaded through.
         MockDiscover.assert_called_once()
         assert MockResolve.call_args.kwargs["available_skills"] == []
+
+    def test_openhands_default_profile_skips_discovery(self):
+        """A profile with the default ``skill_refs`` (== [], incl. any persisted
+        before the field existed) must NOT trigger catalog discovery — otherwise
+        every legacy OpenHands profile would silently inject the full discovered
+        skill set into its prompt on launch (regression guard for #3868)."""
+        from openhands.agent_server.conversation_service import (
+            _resolve_agent_from_profile,
+        )
+
+        profile = _make_openhands_profile()
+        assert profile.skill_refs == []  # the default, not None
+        agent = _make_agent()
+
+        with (
+            patch(_STORE_PATH) as MockStore,
+            patch(_LLM_STORE_PATH),
+            patch(_RESOLVE_PATH) as MockResolve,
+            patch(_DISCOVER_PATH) as MockDiscover,
+        ):
+            store_inst = MockStore.return_value
+            store_inst.name_for_id.return_value = profile.name
+            store_inst.load.return_value = profile
+            mock_config = MagicMock()
+            mock_config.create_agent.return_value = agent
+            MockResolve.return_value = mock_config
+
+            _resolve_agent_from_profile(profile.id, cipher=None, mcp_config=None)
+
+        # Default skill_refs=[] selects no discovered skills, so the
+        # (network-bound) discovery is skipped and the resolver gets None.
+        MockDiscover.assert_not_called()
+        assert MockResolve.call_args.kwargs["available_skills"] is None
 
     def test_dangling_mcp_server_ref_propagates(self):
         from openhands.agent_server.conversation_service import (
