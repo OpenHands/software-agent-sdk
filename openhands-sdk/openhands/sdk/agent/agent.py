@@ -27,7 +27,7 @@ from openhands.sdk.agent.utils import (
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
-from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.conversation import (
     CancellationToken,
     ConversationCallbackType,
@@ -541,7 +541,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         secret_infos = state.secret_registry.get_secret_infos()
 
         ctx = self._build_prompt_context(additional_secret_infos=secret_infos)
-        return create_registry().build(ctx).dynamic
+        # The dynamic tier is preset-independent; fall back to the default tier for a
+        # custom Jinja template (preset None), as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(ctx).dynamic
 
     def _execute_actions(
         self,

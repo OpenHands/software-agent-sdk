@@ -2379,9 +2379,12 @@ class LocalConversation(BaseConversation):
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
+            # stream=False: the reply is consumed whole with no on_token
+            # callback, which a streaming LLM requires.
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
+                    "stream": False,
                 },
                 deep=True,
             )
