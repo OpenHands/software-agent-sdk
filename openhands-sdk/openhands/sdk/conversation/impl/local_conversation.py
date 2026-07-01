@@ -14,7 +14,7 @@ from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondens
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.cancellation import CancellationToken
-from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
+from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -47,7 +47,6 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
@@ -328,15 +327,9 @@ class LocalConversation(BaseConversation):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
-            # Advance HEAD to the just-appended event (parent_id was stamped
-            # upstream by _tree_stamping). This is the single append site, so the
-            # leaf always names a real event even when a hook swaps the in-flight
-            # one. ConversationStateUpdateEvent is excluded: it is a state-sync
-            # artifact, not a tree node, and advancing the leaf for it recurses
-            # (moving the leaf re-emits a ConversationStateUpdateEvent here).
-            if not isinstance(e, ConversationStateUpdateEvent):
-                self._state.leaf_event_id = e.id
+            # Single chokepoint: stamps parent_id (catching any event a hook
+            # swapped in downstream of _tree_stamping) and advances HEAD.
+            self._state.append_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -452,27 +445,15 @@ class LocalConversation(BaseConversation):
     def _tree_stamping(
         self, inner: ConversationCallbackType
     ) -> ConversationCallbackType:
-        """Wrap an event callback so every emitted event is placed in the tree.
+        """Wrap a callback so in-flight subscribers see a lineage-bearing event.
 
-        Stamps ``parent_id`` (to the current active leaf) on any event lacking
-        one, then forwards it to ``inner``. Stamping at the front of the chain
-        lets every subscriber and persistence see the same lineage-bearing event.
-
-        HEAD is advanced where the event is actually appended
-        (``_default_callback``), not here, so the leaf always names a real event
-        even when a hook swaps the in-flight one.
+        Convenience only: the authoritative stamp is
+        ``ConversationState.append_event``, which re-stamps anything a hook swaps
+        in downstream. HEAD advances at the append site, not here.
         """
 
         def wrapped(event: Event) -> None:
-            if event.parent_id is None:
-                parent = self._state._resolve_active_leaf()
-                # An empty HEAD over a non-empty log is a deliberate new root
-                # (e.g. after navigate_to(None)); mark it explicitly so it is
-                # not misread as a legacy event chained to its storage neighbour.
-                if parent is None and len(self._state.events) > 0:
-                    parent = ROOT_PARENT_ID
-                event = event.model_copy(update={"parent_id": parent})
-            inner(event)
+            inner(self._state._stamp_parent_id(event))
 
         return cast(ConversationCallbackType, wrapped)
 

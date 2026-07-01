@@ -346,3 +346,26 @@ def test_fork_from_event_on_an_abandoned_branch():
         assert [e.id for e in fork.state.events] == [e0.id, e1.id, e2.id]
         assert fork.state.leaf_event_id == e2.id
         assert _view_ids(fork) == _ground_truth_view_ids(fork) == [e0.id, e1.id, e2.id]
+
+
+def test_append_event_stamps_swapped_event_to_active_leaf_not_storage_tail():
+    """An unstamped event (as a hook swaps in downstream of _tree_stamping) is
+    stamped to the active leaf at append_event — not left to the idx-1 fallback,
+    which after a navigate would chain it onto the abandoned branch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))
+        _emit(conv, _msg("a2"))  # branch A (abandoned); a2 is the storage tail
+
+        conv.navigate_to(e0.id)  # active leaf is e0, but storage tail is a2
+
+        swapped = _msg("swapped")  # brand-new event, parent_id is None
+        with conv._state:
+            conv._state.append_event(swapped)
+
+        stored = conv.state.events.get_by_id(swapped.id)
+        assert stored.parent_id == e0.id  # active leaf, not a2 (idx - 1)
+        assert conv.state.leaf_event_id == swapped.id
+        assert _view_ids(conv) == [e0.id, swapped.id]  # branch A stays off-view

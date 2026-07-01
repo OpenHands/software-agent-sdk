@@ -12,7 +12,7 @@ from pydantic import Field, PrivateAttr
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -260,6 +260,36 @@ class ConversationState(OpenHandsModel):
         if self._events[n - 1].parent_id is not None:
             return None
         return self._events.get_id(n - 1)
+
+    def _stamp_parent_id(self, event: Event) -> Event:
+        """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
+        if event.parent_id is not None:
+            return event
+        parent = self._resolve_active_leaf()
+        # Empty HEAD over a non-empty log = deliberate new root (navigate_to(None));
+        # mark it so it is not misread as a legacy event chained to its neighbour.
+        if parent is None and len(self._events) > 0:
+            parent = ROOT_PARENT_ID
+        return event.model_copy(update={"parent_id": parent})
+
+    def append_event(self, event: Event) -> Event:
+        """Single storage chokepoint: stamp parent_id, append, advance HEAD.
+
+        Stamping here (not only at the emit callback) ensures no event enters the
+        log unstamped, even one a hook swaps in downstream. ``fork`` copies
+        pre-stamped events and sets HEAD itself, so it bypasses this.
+        """
+        event = self._stamp_parent_id(event)
+        self._events.append(event)
+        # ConversationStateUpdateEvent is a state-sync artifact, not a tree node;
+        # advancing HEAD for it would recurse (moving HEAD re-emits one).
+        from openhands.sdk.event.conversation_state import (
+            ConversationStateUpdateEvent,
+        )
+
+        if not isinstance(event, ConversationStateUpdateEvent):
+            self.leaf_event_id = event.id
+        return event
 
     @property
     def view(self) -> View:
