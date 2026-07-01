@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
 from openhands.sdk.llm.utils.model_features import get_features
 
 
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
+
+
 def select_chat_options(
-    llm, user_kwargs: dict[str, Any], has_tools: bool
+    llm,
+    user_kwargs: dict[str, Any],
+    has_tools: bool,
+    call_context: LLMCallContext | None = None,
 ) -> dict[str, Any]:
     """Behavior-preserving extraction of _normalize_call_kwargs.
 
@@ -96,7 +103,17 @@ def select_chat_options(
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 
-    if llm._prompt_cache_key:
-        out["prompt_cache_key"] = llm._prompt_cache_key
+    # Inject per-conversation state from call context (#3443).
+    # Prefer explicitly threaded context; fall back to PrivateAttr for
+    # callers that don't thread (e.g. condenser's dedicated LLM).
+    ctx = call_context or llm._call_context
+    if ctx.prompt_cache_key:
+        out["prompt_cache_key"] = ctx.prompt_cache_key
+    if ctx.session_id:
+        existing = out.get("extra_headers") or {}
+        out["extra_headers"] = {
+            **existing,
+            "x-litellm-session-id": ctx.session_id,
+        }
 
     return out

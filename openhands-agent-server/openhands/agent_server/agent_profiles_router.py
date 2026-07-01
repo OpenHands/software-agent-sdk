@@ -12,11 +12,9 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 """
 
 import copy
-import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
-from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, ValidationError
@@ -41,13 +39,13 @@ from openhands.sdk.profiles import (
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
-    ProfileVerificationSettings,
+    build_seed_profile,
     resolve_agent_profile_dry_run,
+    safe_validation_error_detail,
+    save_profile_preserving_identity,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from openhands.sdk.settings import AgentSettingsConfig
-from openhands.sdk.settings.model import VerificationSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
@@ -57,9 +55,6 @@ logger = get_logger(__name__)
 agent_profiles_router = APIRouter(prefix="/agent-profiles", tags=["Agent Profiles"])
 
 MAX_AGENT_PROFILES = 50
-
-# Name the lazily-seeded migration profile (and its LLM ref fallback).
-SEED_PROFILE_NAME = "default"
 
 ProfileName = Annotated[
     str,
@@ -179,67 +174,6 @@ def _decrypt_profile_mcp_tools(
     return profile.model_copy(update={"skills": new_skills})
 
 
-def _profile_verification(v: VerificationSettings) -> ProfileVerificationSettings:
-    """Project the secret-free subset of ``VerificationSettings``.
-
-    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses
-    the resolved LLM profile's key.
-    """
-    return ProfileVerificationSettings(
-        critic_enabled=v.critic_enabled,
-        critic_mode=v.critic_mode,
-        enable_iterative_refinement=v.enable_iterative_refinement,
-        critic_threshold=v.critic_threshold,
-        max_refinement_iterations=v.max_refinement_iterations,
-        critic_server_url=v.critic_server_url,
-        critic_model_name=v.critic_model_name,
-    )
-
-
-def _build_seed_profile(
-    agent_settings: AgentSettingsConfig, active_llm_profile: str | None
-) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Build one ``AgentProfile`` faithfully from the current ``agent_settings``.
-
-    Carries every cleanly-overlapping launch field so the migrated profile is a
-    stable representation of the user's current configuration (the active
-    pointer is otherwise just a lightweight id). ``mcp_server_refs=None`` exposes
-    all of the user's MCP servers. An OpenHands profile references the active LLM
-    profile (falling back to ``"default"`` when none is set — a soft ref the
-    resolver checks at materialize time).
-    """
-    if agent_settings.agent_kind == "acp":
-        return ACPAgentProfile(
-            name=SEED_PROFILE_NAME,
-            acp_server=agent_settings.acp_server,
-            acp_model=agent_settings.acp_model,
-            acp_session_mode=agent_settings.acp_session_mode,
-            acp_prompt_timeout=agent_settings.acp_prompt_timeout,
-            # settings store the command as a token list; the profile holds a
-            # single (re-parseable) string. Empty list => use the server default.
-            acp_command=(
-                shlex.join(agent_settings.acp_command)
-                if agent_settings.acp_command
-                else None
-            ),
-            acp_args=list(agent_settings.acp_args) or None,
-            mcp_server_refs=None,
-        )
-    context = agent_settings.agent_context
-    return OpenHandsAgentProfile(
-        name=SEED_PROFILE_NAME,
-        llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
-        agent=agent_settings.agent,
-        skills=list(context.skills),
-        system_message_suffix=context.system_message_suffix,
-        condenser=agent_settings.condenser,
-        verification=_profile_verification(agent_settings.verification),
-        enable_sub_agents=agent_settings.enable_sub_agents,
-        tool_concurrency_limit=agent_settings.tool_concurrency_limit,
-        mcp_server_refs=None,
-    )
-
-
 def _seed_default_profile(
     store: AgentProfileStore,
     request: Request,
@@ -251,13 +185,13 @@ def _seed_default_profile(
     The lock spans empty-check + save + pointer write so concurrent first
     requests seed exactly once and the pointer matches the persisted id.
     """
-    with _store_errors(), store._acquire_lock():
+    with _store_errors(), store.lock():
         # Double-checked under the lock: a concurrent first request may have
         # already seeded (the outer emptiness check in the list endpoint is
         # unlocked).
         if store.list():
             return
-        profile = _build_seed_profile(settings.agent_settings, settings.active_profile)
+        profile = build_seed_profile(settings.agent_settings, settings.active_profile)
         # Settings persist skills[].mcp_tools encrypted (and never decrypt on
         # load), so decrypt before re-encrypting at save to avoid double-encrypt.
         profile = _decrypt_profile_mcp_tools(profile, cipher)
@@ -282,29 +216,6 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
                 sid = summary.get("id")
                 return str(sid) if sid is not None else None
     return None
-
-
-def _existing_identity(
-    store: AgentProfileStore, name: str
-) -> tuple[UUID | None, int | None]:
-    """Return the stable ``(id, revision)`` of the profile under ``name``.
-
-    Used to keep ``id`` stable across an overwrite — the active pointer is keyed
-    on it — and to bump ``revision`` monotonically. Ignores a malformed stored
-    id (treated as no prior identity).
-    """
-    with _store_errors():
-        for summary in store.list_summaries():
-            if summary.get("name") != name:
-                continue
-            sid = summary.get("id")
-            rev = summary.get("revision")
-            try:
-                parsed = UUID(str(sid)) if sid is not None else None
-            except (ValueError, TypeError):
-                parsed = None
-            return parsed, rev if isinstance(rev, int) else None
-    return None, None
 
 
 @agent_profiles_router.get("", response_model=AgentProfileListResponse)
@@ -393,7 +304,7 @@ async def save_agent_profile(
         # MCPConfig error embeds the input (which may carry secrets) in ``msg``.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=[{"loc": err["loc"], "type": err["type"]} for err in e.errors()],
+            detail=safe_validation_error_detail(e),
         )
     except Exception:
         # Any other validation failure (e.g. SkillValidationError from a
@@ -412,19 +323,14 @@ async def save_agent_profile(
     store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
     # keeps the namesake's id and bumps revision; create mints a fresh id,
-    # ignoring any client-supplied one. The lock spans read + mint + save so two
-    # concurrent creates of the same new name can't both mint an id and clobber
-    # each other (the seed path guards the same window).
+    # ignoring any client-supplied one. ``save_profile_preserving_identity``
+    # holds the store lock across read + mint + save so two concurrent creates
+    # of the same new name can't both mint an id and clobber each other.
     try:
-        with _store_errors(), store._acquire_lock():
-            existing_id, existing_rev = _existing_identity(store, name)
-            if existing_id is not None:
-                profile = profile.model_copy(
-                    update={"id": existing_id, "revision": (existing_rev or 0) + 1}
-                )
-            else:
-                profile = profile.model_copy(update={"id": uuid4()})
-            store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
+        with _store_errors():
+            save_profile_preserving_identity(
+                store, profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES
+            )
     except ProfileLimitExceeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

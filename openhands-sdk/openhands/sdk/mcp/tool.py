@@ -66,12 +66,38 @@ class MCPToolExecutor(ToolExecutor):
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
-        """Execute the MCP tool call using the already-connected client."""
+        """Execute the MCP tool call using the already-connected client.
+
+        If the client's session has been lost (e.g., due to a transient
+        server error such as HTTP 503), attempt to reconnect once before
+        failing. This prevents a single transient error from permanently
+        disabling all MCP tools for the remainder of the conversation.
+        """
         if not self.client.is_connected():
-            raise RuntimeError(
-                f"MCP client not connected for tool '{self.tool_name}'. "
-                "The connection may have been closed or failed to establish."
+            if self.client._closed:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        "The client has been closed and cannot be reconnected."
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
+            logger.info(
+                f"MCP client not connected for tool '{self.tool_name}'; "
+                "attempting reconnection before failing."
             )
+            try:
+                await self.client.connect()
+            except Exception as exc:
+                return MCPToolObservation.from_text(
+                    text=(
+                        f"MCP client not connected for tool '{self.tool_name}'. "
+                        f"Reconnection attempt failed: {exc}"
+                    ),
+                    is_error=True,
+                    tool_name=self.tool_name,
+                )
         try:
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"

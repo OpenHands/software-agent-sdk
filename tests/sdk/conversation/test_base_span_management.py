@@ -5,6 +5,8 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
+import pytest
+
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.types import TraceMetadataValue
@@ -72,6 +74,13 @@ class MockConversation(BaseConversation):
     def fork(self, **kwargs: Any) -> "MockConversation":
         """Mock implementation of fork method."""
         raise NotImplementedError("Mock fork not implemented")
+
+
+def test_base_conversation_load_plugin_default_not_supported():
+    conversation = MockConversation()
+
+    with pytest.raises(NotImplementedError, match="does not support loading plugins"):
+        conversation.load_plugin("plugin@marketplace")
 
 
 def test_base_conversation_span_management():
@@ -160,6 +169,38 @@ def test_base_conversation_passes_observability_metadata_and_tag_attributes():
         )
 
 
+def test_base_conversation_uses_custom_observability_span_name_as_child_span():
+    """Custom span names are emitted as child spans under the conversation root."""
+    conversation = MockConversation()
+
+    with (
+        patch(
+            "openhands.sdk.conversation.base.should_enable_observability",
+            return_value=True,
+        ),
+        patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
+        patch("openhands.sdk.conversation.base.start_child_span") as mock_child_span,
+    ):
+        conversation._start_observability_span(
+            "test-session-id",
+            span_name="pr_review_evaluation",
+        )
+
+        mock_start_span.assert_called_once_with(
+            "conversation",
+            session_id="test-session-id",
+            user_id=None,
+            metadata=None,
+            tags=None,
+            attributes=None,
+        )
+        mock_child_span.assert_called_once_with(
+            mock_start_span.return_value,
+            "pr_review_evaluation",
+            tags=None,
+        )
+
+
 def test_base_conversation_span_management_disabled():
     """Test that BaseConversation doesn't perform span operations when observability is disabled."""  # noqa: E501
 
@@ -182,11 +223,10 @@ def test_base_conversation_span_management_disabled():
         assert conversation._span_ended is False
         assert conversation._observability_root_span is None
 
-        # End is always called (it's a no-op for None) and marks ended.
-        # The important property is that no observability call is made when
-        # observability is disabled.
+        # Ending without a started root span is a no-op and marks ended.
         conversation._end_observability_span()
-        mock_end_span.assert_called_once_with(None)
+        mock_end_span.assert_not_called()
+        assert conversation._span_ended is True
 
 
 def test_base_conversation_no_span_warnings(caplog):

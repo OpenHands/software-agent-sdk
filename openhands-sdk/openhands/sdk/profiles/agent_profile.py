@@ -20,6 +20,7 @@ from pydantic import (
     Field,
     Tag,
     TypeAdapter,
+    ValidationError,
 )
 
 from openhands.sdk.settings.model import (
@@ -27,6 +28,7 @@ from openhands.sdk.settings.model import (
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
+    VerificationSettings,
 )
 from openhands.sdk.skills import Skill
 
@@ -50,6 +52,26 @@ class ProfileVerificationSettings(BaseModel):
     max_refinement_iterations: int = Field(default=3, ge=1)
     critic_server_url: str | None = None
     critic_model_name: str | None = None
+
+
+def build_profile_verification(
+    v: VerificationSettings,
+) -> ProfileVerificationSettings:
+    """Project the secret-free subset of ``VerificationSettings`` onto a profile.
+
+    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses the
+    resolved LLM profile's key. Hoisted from the agent-server router so the
+    local and cloud seeds build verification identically.
+    """
+    return ProfileVerificationSettings(
+        critic_enabled=v.critic_enabled,
+        critic_mode=v.critic_mode,
+        enable_iterative_refinement=v.enable_iterative_refinement,
+        critic_threshold=v.critic_threshold,
+        max_refinement_iterations=v.max_refinement_iterations,
+        critic_server_url=v.critic_server_url,
+        critic_model_name=v.critic_model_name,
+    )
 
 
 class AgentProfileBase(BaseModel):
@@ -339,3 +361,16 @@ def validate_agent_profile(
         raise TypeError("AgentProfile payload must be a mapping or BaseModel.")
     payload = _apply_persisted_migrations(payload)
     return _AGENT_PROFILE_ADAPTER.validate_python(payload, context=context)
+
+
+def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+    """Secret-safe ``detail`` for a 422 from a failed profile validation.
+
+    Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``** — a
+    nested ``skills[].mcp_tools`` ``MCPConfig`` error embeds the offending input,
+    which may carry secrets. Shaped like FastAPI's request-validation ``detail``
+    (a list of error objects) so routers can hand it straight to ``HTTPException``.
+    Hoisted from the agent-server router so the local and cloud routers redact
+    identically.
+    """
+    return [{"loc": err["loc"], "type": err["type"]} for err in exc.errors()]

@@ -50,15 +50,19 @@ from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_call
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
+from openhands.sdk.llm.llm import LLMCallContext
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.marketplace.registry import MarketplaceRegistry
+from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
     PluginSource,
     ResolvedPluginSource,
     fetch_plugin_with_resolution,
+    load_available_plugins,
 )
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -75,6 +79,8 @@ from openhands.sdk.subagent import (
     register_file_agents,
     register_plugin_agents,
 )
+from openhands.sdk.tool import ToolDefinition
+from openhands.sdk.tool.builtins import InvokeSkillTool
 from openhands.sdk.tool.client_tool import ClientToolSpec
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
@@ -86,6 +92,8 @@ logger = get_logger(__name__)
 ACP_LAST_PROMPT_USER_MESSAGE_ID = "acp_last_prompt_user_message_id"
 ACP_INFLIGHT_PROMPT_USER_MESSAGE_ID = "acp_inflight_prompt_user_message_id"
 ACP_SUPERSEDE_INFLIGHT_PROMPT = "acp_supersede_inflight_prompt"
+_RUNTIME_MCP_TIMEOUT_SECS = 30
+
 ACP_STOP_HOOK_FEEDBACK_PREFIX = "[Stop hook feedback]"
 
 
@@ -186,6 +194,8 @@ class LocalConversation(BaseConversation):
         # Appended at the end (not grouped with max_iteration_per_run) to avoid
         # shifting the position of any existing positional argument.
         max_budget_per_run: float | None = None,
+        observability_span_name: str = "conversation",
+        prompt_cache_key: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -235,6 +245,11 @@ class LocalConversation(BaseConversation):
                   (e.g. a frontend) observing the emitted ActionEvent.
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                  backends. The root span remains named "conversation".
+            prompt_cache_key: Override for the prompt-cache shard key. Defaults
+                to the conversation's own ID. Sub-conversations set this to
+                the parent's ID to share the same cache shard.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -242,6 +257,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         self._arun_task = None
         self._cancel_token = None
+        self._prompt_cache_key = prompt_cache_key
         self._step_holds_state_lock = False
 
         # Store plugin specs for lazy loading (no IO in constructor)
@@ -303,7 +319,7 @@ class LocalConversation(BaseConversation):
             tags=tags,
         )
 
-        self._pin_prompt_cache_key()
+        self._bind_conversation_context(self.agent.llm)
 
         # Default callback: persist every event to state
         def _default_callback(e):
@@ -415,6 +431,7 @@ class LocalConversation(BaseConversation):
         atexit.register(self.close)
         self._start_observability_span(
             str(desired_id),
+            span_name=observability_span_name,
             user_id=user_id,
             metadata=observability_metadata,
             tags=observability_tags,
@@ -563,11 +580,11 @@ class LocalConversation(BaseConversation):
         """
         fork_id = conversation_id or uuid.uuid4()
         # Always deep-copy the agent (supplied or source) so the fork owns
-        # its own object graph. Required because __init__ mutates
-        # agent.llm._prompt_cache_key in place (#2917): a shared/aliased
-        # agent would clobber the source conversation's cache key.
-        # Round-trip via JSON avoids thread-lock pickling issues with
-        # model_copy(deep=True).
+        # its own object graph. Required because __init__ binds
+        # per-conversation call context on the LLM (#2917, #3443): a
+        # shared/aliased agent would clobber the source conversation's
+        # context. Round-trip via JSON avoids thread-lock pickling issues
+        # with model_copy(deep=True).
         source_agent = agent if agent is not None else self.agent
         agent_cls = type(source_agent)
         fork_agent = agent_cls.model_validate(
@@ -656,6 +673,10 @@ class LocalConversation(BaseConversation):
 
         all_plugin_hooks: list[HookConfig] = []
         all_plugin_agents: list[AgentDefinition] = []
+        # Names of explicitly-attached plugins (populated in the loop below). Used
+        # to keep explicit attach authoritative over ambient installed/local
+        # plugins (and to avoid double-registering their hooks/agents).
+        explicit_plugin_names: set[str] = set()
 
         merged_context = self.agent.agent_context
         merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
@@ -663,35 +684,60 @@ class LocalConversation(BaseConversation):
         # Track whether we have plugins or MCP config to process
         has_mcp_config = bool(merged_mcp)
 
-        # Load plugins if specified
+        plugins_to_load: list[tuple[PluginSource, bool]] = []
+        if merged_context is not None and merged_context.registered_marketplaces:
+            registrations = [
+                registration.model_copy(
+                    update={
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in merged_context.registered_marketplaces
+            ]
+            registry = MarketplaceRegistry(registrations)
+            for registration in registry.get_auto_load_registrations():
+                try:
+                    marketplace, _ = registry.get_marketplace(registration.name)
+                except Exception:
+                    logger.warning(
+                        "Failed to load marketplace '%s'; continuing without it",
+                        registration.name,
+                        exc_info=True,
+                    )
+                    continue
+                for entry in marketplace.plugins:
+                    if not registration.auto_loads_plugin(entry.name):
+                        continue
+                    source, ref, repo_path = marketplace.resolve_plugin_source(entry)
+                    plugins_to_load.append(
+                        (
+                            PluginSource(source=source, ref=ref, repo_path=repo_path),
+                            True,
+                        )
+                    )
+
         if self._plugin_specs:
-            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            plugins_to_load.extend((spec, False) for spec in self._plugin_specs)
+
+        # Load plugins if specified or registered for auto-load
+        if plugins_to_load:
+            logger.info(f"Loading {len(plugins_to_load)} plugin(s)...")
             self._resolved_plugins = []
 
-            # Expand ${VAR} placeholders in the source/ref using per-conversation
-            # secrets, so private plugins can be cloned with a token supplied via
-            # the secrets API, e.g. "https://x-token-auth:${MY_TOKEN}@host/repo.git".
-            #
-            # SECURITY: secrets only (check_env=False) -- never fold host
-            # environment variables into a URL sent to a remote git host.
-            # Braced-only (support_unbraced=False) avoids mangling a literal "$"
-            # that may legitimately appear in a token/password. expand_defaults
-            # is False so an unknown ${VAR} is left verbatim rather than silently
-            # defaulted inside a URL.
-            get_secret = self._state.secret_registry.get_secret_value
-
-            def _expand_secret_refs(value: str) -> str:
-                return expand_variable_references(
-                    value,
-                    get_secret=get_secret,
-                    check_env=False,
-                    support_unbraced=False,
-                    expand_defaults=False,
-                )
-
-            for spec in self._plugin_specs:
-                fetch_source = _expand_secret_refs(spec.source)
-                fetch_ref = _expand_secret_refs(spec.ref) if spec.ref else spec.ref
+            for spec, source_refs_expanded in plugins_to_load:
+                if source_refs_expanded:
+                    fetch_source = spec.source
+                    fetch_ref = spec.ref
+                else:
+                    fetch_source = self._expand_plugin_source_ref(spec.source)
+                    fetch_ref = (
+                        self._expand_plugin_source_ref(spec.ref)
+                        if spec.ref
+                        else spec.ref
+                    )
 
                 # Fetch plugin and get resolved commit SHA
                 path, resolved_ref = fetch_plugin_with_resolution(
@@ -711,9 +757,10 @@ class LocalConversation(BaseConversation):
                 # Load the plugin
                 plugin = Plugin.load(path)
                 logger.debug(
-                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    f"Loaded plugin '{plugin.manifest.name}'"
                     + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
                 )
+                explicit_plugin_names.add(plugin.name)
 
                 # Merge plugin contents
                 merged_context = plugin.add_skills_to(merged_context)
@@ -728,7 +775,55 @@ class LocalConversation(BaseConversation):
                 if plugin.agents:
                     all_plugin_agents.extend(plugin.agents)
 
-            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+            logger.info(f"Loaded {len(plugins_to_load)} plugin(s) via Conversation")
+
+        # Ambient plugins: enabled installed plugins plus local user/project
+        # plugins, mirroring how installed/local skills already auto-load. These
+        # are additive to the explicit plugins above, de-duplicated by plugin
+        # name. Explicit attach wins: an ambient plugin whose name was already
+        # attached above is skipped (this also avoids double-registering its
+        # hooks/agents). Best-effort — a failure here must not prevent the
+        # conversation from starting.
+        #
+        # Ambient plugins have no pinned commit SHA, so (unlike explicit attach)
+        # they are intentionally NOT recorded in self._resolved_plugins. On
+        # resume they are re-discovered from disk / current enabled state, just
+        # like project skills. Automation/sandbox runs lack the user's installed
+        # and home directories, so discovery naturally yields nothing there.
+        ambient_plugins_loaded = False
+        try:
+            ambient_plugins = load_available_plugins(
+                work_dir=self.workspace.working_dir,
+                include_user=True,
+                include_project=True,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load ambient (installed/local) plugins; "
+                "continuing without them",
+                exc_info=True,
+            )
+            ambient_plugins = {}
+
+        for plugin in ambient_plugins.values():
+            if plugin.name in explicit_plugin_names:
+                logger.debug(
+                    f"Skipping ambient plugin '{plugin.name}' "
+                    "(explicitly attached to this conversation)"
+                )
+                continue
+
+            merged_context = plugin.add_skills_to(merged_context)
+            merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+            has_mcp_config = has_mcp_config or bool(merged_mcp)
+
+            if plugin.hooks and not plugin.hooks.is_empty():
+                all_plugin_hooks.append(plugin.hooks)
+            if plugin.agents:
+                all_plugin_agents.extend(plugin.agents)
+
+            ambient_plugins_loaded = True
+            logger.debug(f"Loaded ambient plugin '{plugin.name}'")
 
         # Resolve project skills from the workspace. AgentContext can't do this
         # itself (the workspace path is unknown at validation time), so it is done
@@ -781,7 +876,12 @@ class LocalConversation(BaseConversation):
 
         # Update agent with merged content only if something changed.
         # Skip update otherwise to avoid unnecessary agent state mutations.
-        if self._plugin_specs or has_mcp_config or project_skills_loaded:
+        if (
+            plugins_to_load
+            or has_mcp_config
+            or project_skills_loaded
+            or ambient_plugins_loaded
+        ):
             self.agent = self.agent.model_copy(
                 update={
                     "agent_context": merged_context,
@@ -839,6 +939,190 @@ class LocalConversation(BaseConversation):
             self._hook_processor.run_session_start()
 
         self._plugins_loaded = True
+
+    def _expand_plugin_source_ref(self, value: str) -> str:
+        return expand_variable_references(
+            value,
+            get_secret=self._state.secret_registry.get_secret_value,
+            check_env=False,
+            support_unbraced=False,
+            expand_defaults=False,
+        )
+
+    def _marketplace_registry_from_context(self) -> MarketplaceRegistry:
+        agent_context = self.agent.agent_context
+        if agent_context is None:
+            raise ValueError(
+                "No agent context available. Configure agent_context with "
+                "registered_marketplaces to use load_plugin()."
+            )
+        registrations = agent_context.registered_marketplaces
+        if not registrations:
+            raise ValueError(
+                "No marketplaces registered. Configure registered_marketplaces "
+                "in AgentContext to use load_plugin()."
+            )
+        return MarketplaceRegistry(
+            [
+                registration.model_copy(
+                    update={
+                        "source": self._expand_plugin_source_ref(registration.source),
+                        "ref": self._expand_plugin_source_ref(registration.ref)
+                        if registration.ref
+                        else None,
+                    }
+                )
+                for registration in registrations
+            ]
+        )
+
+    def _merge_runtime_plugin_hooks(self, plugin_hooks: HookConfig) -> None:
+        existing_config = self._state.hook_config
+        merged_config = (
+            HookConfig.merge([existing_config, plugin_hooks])
+            if existing_config is not None
+            else plugin_hooks
+        )
+        if merged_config is None:
+            return
+
+        hook_persistence_dir = (
+            str(Path(self._state.persistence_dir).parent)
+            if self._state.persistence_dir is not None
+            else None
+        )
+        previous_processor = self._hook_processor
+        if previous_processor is not None:
+            previous_processor.run_session_end()
+
+        self._state.hook_config = merged_config
+        self._pending_hook_config = merged_config
+        self._hook_processor, self._on_event = create_hook_callback(
+            hook_config=merged_config,
+            working_dir=str(self.workspace.working_dir),
+            session_id=str(self._state.id),
+            original_callback=self._base_callback,
+            llm_getter=lambda: self.agent.llm,
+            persistence_dir=hook_persistence_dir,
+            visualizer=self._visualizer,
+            conversation_stats=self._state.stats,
+        )
+        self._hook_processor.set_conversation_state(self._state)
+        self._hook_processor.run_session_start()
+
+    def _runtime_mcp_tools_for_plugin(
+        self, plugin_mcp_config: dict[str, Any] | None
+    ) -> list[ToolDefinition]:
+        if not plugin_mcp_config:
+            return []
+        return list(
+            create_mcp_tools(plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS).tools
+        )
+
+    def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
+        agent_context = self.agent.agent_context
+        has_invocable_skills = bool(
+            agent_context
+            and any(
+                skill.is_agentskills_format and not skill.disable_model_invocation
+                for skill in agent_context.skills
+            )
+        )
+        if has_invocable_skills and InvokeSkillTool.name not in self.agent.tools_map:
+            return list(InvokeSkillTool.create(self._state))
+        return []
+
+    def _close_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        for tool in tools:
+            try:
+                tool.as_executable().executor.close()
+            except NotImplementedError:
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "Error closing runtime tool executor for tool '%s': %s",
+                    tool.name,
+                    exc,
+                )
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from the conversation's registered marketplaces."""
+        self._ensure_plugins_loaded()
+        spec = self._marketplace_registry_from_context().resolve_plugin(plugin_ref)
+
+        fetch_source = self._expand_plugin_source_ref(spec.source)
+        fetch_ref = self._expand_plugin_source_ref(spec.ref) if spec.ref else spec.ref
+        path, resolved_ref = fetch_plugin_with_resolution(
+            source=fetch_source,
+            ref=fetch_ref,
+            repo_path=spec.repo_path,
+        )
+        plugin = Plugin.load(path)
+        logger.info(
+            f"Loaded plugin '{plugin.manifest.name}'"
+            + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+        )
+
+        get_secret = self._state.secret_registry.get_secret_value
+        runtime_plugin_mcp = (
+            expand_mcp_variables(
+                plugin.mcp_config,
+                {},
+                get_secret=get_secret,
+                expand_defaults=True,
+            )
+            if plugin.mcp_config
+            else None
+        )
+        merged_context = plugin.add_skills_to(self.agent.agent_context)
+        merged_mcp = plugin.add_mcp_config_to(
+            dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+        )
+        if merged_mcp:
+            merged_mcp = expand_mcp_variables(
+                merged_mcp,
+                {},
+                get_secret=get_secret,
+                expand_defaults=True,
+            )
+        runtime_mcp_tools = (
+            self._runtime_mcp_tools_for_plugin(runtime_plugin_mcp)
+            if self._agent_ready
+            else []
+        )
+
+        with self._state:
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
+
+            if plugin.agents:
+                register_plugin_agents(
+                    agents=plugin.agents,
+                    work_dir=self.workspace.working_dir,
+                )
+            if plugin.hooks and not plugin.hooks.is_empty():
+                self._merge_runtime_plugin_hooks(plugin.hooks)
+
+            resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+            if self._resolved_plugins is None:
+                self._resolved_plugins = []
+            self._resolved_plugins.append(resolved)
+
+            self._state.agent = self.agent
+            if self._agent_ready:
+                runtime_tools = [
+                    *runtime_mcp_tools,
+                    *self._runtime_skill_tools_for_agent(),
+                ]
+                try:
+                    self.agent.add_runtime_tools(runtime_tools)
+                except Exception:
+                    self._close_runtime_tools(runtime_mcp_tools)
+                    raise
 
     def _register_file_based_agents(self) -> None:
         """Discover and register file-based agents into the agent registry.
@@ -909,7 +1193,9 @@ class LocalConversation(BaseConversation):
                 if llm.usage_id not in registered:
                     self.llm_registry.add(llm)
                     registered.add(llm.usage_id)
-                self._pin_session_affinity_header(llm)
+                # Rebinds the primary LLM (harmless, same values) and
+                # binds any additional LLMs (e.g. condenser).
+                self._bind_conversation_context(llm)
 
             self._agent_ready = True
 
@@ -923,27 +1209,32 @@ class LocalConversation(BaseConversation):
         """
         return not isinstance(self.agent, ACPAgent)
 
-    def _pin_prompt_cache_key(self) -> None:
-        # Pin the OpenAI prefix-cache shard to this conversation (#2904, #2918).
-        # Skip if a key is already set: sub-agent LLMs inherit the parent's
-        # via model_copy, and overwriting would put each sub-agent on its own
-        # shard, defeating cross-sub-agent cache reuse on OpenAI models.
-        if self.agent.llm._prompt_cache_key is None:
-            self.agent.llm._prompt_cache_key = str(self._state.id)
+    def get_llm_call_context(self) -> LLMCallContext:
+        """Build an :class:`LLMCallContext` for this conversation.
 
-    def _pin_session_affinity_header(self, llm: LLM) -> None:
-        """Ensure *llm* carries ``x-litellm-session-id`` for routing affinity.
-
-        Note: if a caller passes ``extra_headers`` as a kwarg directly to
-        ``completion()``, ``select_chat_options`` skips ``llm.extra_headers``
-        entirely — the same limitation that affects OpenRouter headers.
+        The ``prompt_cache_key`` uses the override supplied at construction
+        (for sub-agent cache-shard sharing) or defaults to the conversation's
+        own ID.  ``session_id`` is always the conversation's ID.
         """
-        existing = llm.extra_headers or {}
-        if "x-litellm-session-id" not in existing:
-            llm.extra_headers = {
-                "x-litellm-session-id": str(self._state.id),
-                **existing,
-            }
+        conv_id = str(self._state.id)
+        return LLMCallContext(
+            prompt_cache_key=self._prompt_cache_key or conv_id,
+            session_id=conv_id,
+        )
+
+    def _bind_conversation_context(self, llm: LLM) -> None:
+        """Bind per-conversation call context to *llm* as a PrivateAttr fallback.
+
+        This sets the LLM's ``_call_context`` so that callers who don't
+        thread an explicit ``call_context`` through the completion call
+        (e.g. the condenser's dedicated LLM) still get correct per-
+        conversation state.  The primary agent completion path threads
+        context explicitly via ``Agent.step()`` → ``make_llm_completion()``
+        → ``llm.completion(call_context=...)``.
+
+        See #3443 for background.
+        """
+        llm._call_context = self.get_llm_call_context()
 
     def _condenser_for_switched_llm(
         self,
@@ -1018,8 +1309,7 @@ class LocalConversation(BaseConversation):
                 )
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
-            self._pin_prompt_cache_key()
-            self._pin_session_affinity_header(new_llm)
+            self._bind_conversation_context(new_llm)
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.
@@ -2071,9 +2361,12 @@ class LocalConversation(BaseConversation):
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
+            # stream=False: the reply is consumed whole with no on_token
+            # callback, which a streaming LLM requires.
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
+                    "stream": False,
                 },
                 deep=True,
             )
