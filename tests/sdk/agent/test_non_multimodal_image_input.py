@@ -198,6 +198,7 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
     vision = TestLLM.from_messages(
         [Message(role="assistant", content=[TextContent(text="It shows a cat.")])],
         model="gpt-4o",
+        base_url="https://vision.example.test/",
     )
 
     def fake_get_or_create_profile_llm(self, profile_name, usage_id):
@@ -240,6 +241,7 @@ def test_nonvision_model_can_use_vision_profile_tool(monkeypatch):
         and event.tool_name == "inspect_image_with_vision"
     ]
     assert len(observations) == 1
+    assert observations[0].observation.base_url == "https://vision.example.test/"
     observation_content = observations[0].observation.content[0]
     assert isinstance(observation_content, TextContent)
     assert "It shows a cat." in observation_content.text

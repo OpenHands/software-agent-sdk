@@ -69,6 +69,9 @@ class VisionInspectObservation(Observation):
     model: str | None = Field(
         default=None, description="Vision-capable model used for inspection."
     )
+    base_url: str | None = Field(
+        default=None, description="Vision-capable LLM endpoint used for inspection."
+    )
     answer: str | None = Field(
         default=None, description="Text answer returned by the vision model."
     )
@@ -262,6 +265,7 @@ class VisionInspectExecutor(ToolExecutor):
                 question=action.question,
                 profile_name=profile_name,
                 model=vision_llm.model,
+                base_url=vision_llm.base_url,
             )
 
         return VisionInspectObservation.from_text(
@@ -270,6 +274,7 @@ class VisionInspectExecutor(ToolExecutor):
             question=action.question,
             profile_name=profile_name,
             model=vision_llm.model,
+            base_url=vision_llm.base_url,
             answer=answer,
         )
 
