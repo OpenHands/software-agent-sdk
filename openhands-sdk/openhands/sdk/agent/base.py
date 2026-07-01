@@ -6,8 +6,10 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
@@ -24,7 +26,7 @@ from pydantic import (
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
-from openhands.sdk.context.prompts.presets import create_registry
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.prompts.section import Platform, PromptContext
 from openhands.sdk.critic.base import CriticBase
@@ -109,11 +111,20 @@ _DEFAULT_SOUL = (
     " with a computer to solve tasks."
 )
 
-# Built-in prompt dir. The registry only stands in for the default prompt here; a
-# subclass with its own prompts/system_prompt.j2 keeps the Jinja render path.
+# Built-in prompt dir. The registry only stands in for built-in prompts here; a
+# subclass with its own prompts/ keeps the Jinja render path.
 _BUILTIN_PROMPT_DIR = os.path.realpath(
     os.path.join(os.path.dirname(__file__), "prompts")
 )
+
+# Built-in ``system_prompt_filename`` values are back-compat sentinels (the .j2 files
+# were removed) that select a registry preset. ``system_prompt_planning.j2`` keeps its
+# historical name so ``get_planning_agent`` needs no change. Any other filename -- or a
+# subclass's own ``prompt_dir`` -- falls through to the Jinja escape hatch.
+_PRESET_BY_FILENAME: dict[str, PromptPreset] = {
+    "system_prompt.j2": PromptPreset.DEFAULT,
+    "system_prompt_planning.j2": PromptPreset.PLANNING,
+}
 
 
 def _load_soul_md() -> str:
@@ -247,10 +258,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     security_policy_filename: str = Field(
         default="security_policy.j2",
         description=(
-            "Security policy template filename. Can be either:\n"
-            "- A relative filename (e.g., 'security_policy.j2') loaded from the "
-            "agent's prompts directory\n"
-            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')\n"
+            "Security policy filename. The default 'security_policy.j2' is a "
+            "back-compat sentinel (the file was removed) that selects the built-in "
+            "default policy from the prompt registry -- it is not loaded from disk. "
+            "Any other value names a custom policy file whose contents are inserted "
+            "verbatim (NOT rendered as a Jinja template). Can be either:\n"
+            "- A relative filename (e.g., 'custom_security_policy.md') loaded from "
+            "the agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.md')\n"
             "- Empty string to disable security policy"
         ),
     )
@@ -456,6 +471,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
+    def _prompt_preset(self) -> PromptPreset | None:
+        """The registry preset for this agent's built-in prompt.
+
+        ``None`` means "take the Jinja escape hatch": a subclass with its own
+        ``prompt_dir``, or a ``system_prompt_filename`` that is not a known built-in
+        sentinel (e.g. a custom relative name or an absolute path).
+        """
+        if os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR:
+            return None
+        return _PRESET_BY_FILENAME.get(self.system_prompt_filename)
+
+    @property
     def static_system_message(self) -> str:
         """Compute the static portion of the system message.
 
@@ -463,12 +490,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         per-conversation context. This static portion can be cached and reused
         across conversations for better prompt caching efficiency.
 
-        The default prompt is assembled from the typed section registry
-        (``create_registry``). Escape hatches keep the Jinja render path: an inline
-        ``system_prompt`` is returned verbatim; a custom/absolute
-        ``system_prompt_filename`` renders through ``render_template``; a subclass
-        with its own ``prompt_dir`` still renders its default-named template; and a
-        custom ``security_policy_filename`` renders so its policy file is included.
+        Built-in prompts (the ``default`` and ``planning`` presets) are assembled from
+        the typed section registry, which also resolves a custom
+        ``security_policy_filename``. Escape hatches keep the Jinja path: an inline
+        ``system_prompt`` is returned verbatim; a custom ``system_prompt_filename`` or
+        subclass ``prompt_dir`` renders its own template.
 
         Returns:
             The static system prompt without dynamic context.
@@ -476,22 +502,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.system_prompt is not None:
             return self.system_prompt
 
-        # Escape hatch: custom/absolute filename, a subclass with its own
-        # prompt_dir, or a custom security policy. The registry reproduces only
-        # the built-in default prompt (default template + default policy); a
-        # non-default security_policy_filename must keep the Jinja include path.
-        if (
-            self.system_prompt_filename != "system_prompt.j2"
-            or os.path.realpath(self.prompt_dir) != _BUILTIN_PROMPT_DIR
-            or self.security_policy_filename != "security_policy.j2"
-        ):
+        # Escape hatch: a custom filename or a subclass's own prompt_dir renders its
+        # own Jinja template; everything else (incl. custom policies) uses the registry.
+        preset = self._prompt_preset
+        if preset is None:
             return render_template(
                 prompt_dir=self.prompt_dir,
                 template_name=self.system_prompt_filename,
                 **self._resolved_template_kwargs(),
             )
 
-        return create_registry().build(self._build_prompt_context()).static
+        return create_registry(preset).build(self._build_prompt_context()).static
 
     def _resolved_template_kwargs(self) -> dict[str, object]:
         """Resolve the system-prompt template kwargs.
@@ -523,6 +544,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if "model_variant" not in template_kwargs and spec.variant:
                 template_kwargs["model_variant"] = spec.variant
         return template_kwargs
+
+    def _read_custom_security_policy(self) -> str | None:
+        """Raw contents of a custom security policy file -- inserted verbatim, NOT
+        rendered as a Jinja template.
+
+        Returns ``None`` -- so ``SecuritySection`` keeps its built-in default policy
+        -- when ``security_policy_filename`` is the default sentinel
+        ``"security_policy.j2"`` (a string only; the file was removed, so it is never
+        read) or ``""`` (an empty *filename*, which disables the policy). A configured
+        file whose own contents are empty still returns ``""`` (an empty custom
+        policy), not ``None``.
+
+        Relative names resolve against ``prompt_dir``; absolute paths are used as-is.
+        """
+        filename = self.security_policy_filename
+        if not filename or filename == "security_policy.j2":
+            return None
+        return (Path(self.prompt_dir) / filename).read_text(encoding="utf-8")
 
     def _build_prompt_context(
         self,
@@ -577,8 +616,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # secrets (additional_secret_infos), matching what <CUSTOM_SECRETS> shows.
             secret_names = tuple(name for name, _ in secret_infos if name)
 
+        template_kwargs = self._resolved_template_kwargs()
+        # A custom security policy's content for SecuritySection (registry path only).
+        policy_content = self._read_custom_security_policy()
+        if policy_content is not None:
+            template_kwargs = {
+                **template_kwargs,
+                "security_policy_content": policy_content,
+            }
+
         return PromptContext(
-            template_kwargs=self._resolved_template_kwargs(),
+            template_kwargs=template_kwargs,
             tool_names=tuple(t.name for t in self.tools),
             platform=Platform.current(),
             working_dir=None,
@@ -612,7 +660,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         if not self.agent_context:
             return None
-        return create_registry().build(self._build_prompt_context()).dynamic
+        # The dynamic tier is preset-independent, so a custom Jinja template (preset
+        # None) still gets the default dynamic block, exactly as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(self._build_prompt_context()).dynamic
 
     def init_state(
         self,
@@ -900,6 +951,42 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Drive the traversal from self
         yield from _walk(self)
+
+    def _close_tool_executor(self, tool: ToolDefinition) -> None:
+        try:
+            executable_tool = tool.as_executable()
+            executable_tool.executor.close()
+        except NotImplementedError:
+            return
+        except Exception as exc:
+            logger.warning("Error closing executor for tool '%s': %s", tool.name, exc)
+
+    def add_runtime_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        if not self._initialized:
+            logger.warning(
+                "add_runtime_tools called before agent initialization; "
+                "tools will not be registered"
+            )
+            return
+        for tool in tools:
+            if not isinstance(tool, ToolDefinition):
+                raise ValueError(
+                    f"Tool {tool} is not an instance of 'ToolDefinition'. "
+                    f"Got type: {type(tool)}"
+                )
+
+        tool_names = [tool.name for tool in tools]
+        if len(tool_names) != len(set(tool_names)):
+            duplicates = {
+                name for name, count in Counter(tool_names).items() if count > 1
+            }
+            raise ValueError(f"Duplicate runtime tool names found: {duplicates}")
+
+        for tool in tools:
+            previous_tool = self._tools.get(tool.name)
+            if previous_tool is not None:
+                self._close_tool_executor(previous_tool)
+            self._tools[tool.name] = tool
 
     @property
     def tools_map(self) -> dict[str, ToolDefinition]:

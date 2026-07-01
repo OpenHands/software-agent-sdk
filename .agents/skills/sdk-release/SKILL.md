@@ -51,6 +51,7 @@ The workflow will:
 4. Update the `sdk_ref` default in the eval workflow
 5. Open a PR titled **"Release v\<version\>"** with labels
    `integration-test`, `behavior-test`, and `test-examples`
+6. Notify `#proj-agent` with the release PR link and workflow actor
 
 ### ⏸ Checkpoint — Confirm PR Created
 

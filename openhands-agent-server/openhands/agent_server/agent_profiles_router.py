@@ -11,12 +11,11 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 (never raises on dangling refs — those appear in the body).
 """
 
+import asyncio
 import copy
-import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
-from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Path, Request, status
 from pydantic import BaseModel, Field, ValidationError
@@ -30,23 +29,31 @@ from openhands.agent_server._secrets_exposure import (
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
+    get_agent_profile_store,
+    get_llm_profile_store,
     get_settings_store,
 )
-from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.agent_server.skills_service import discover_profile_skills_if_needed
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import (
+    ProfileLimitExceeded as LLMProfileLimitExceeded,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
+    SEED_PROFILE_NAME,
     ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
     OpenHandsAgentProfile,
     ProfileLimitExceeded,
-    ProfileVerificationSettings,
+    build_seed_profile,
     resolve_agent_profile_dry_run,
+    safe_validation_error_detail,
+    save_profile_preserving_identity,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
-from openhands.sdk.settings import AgentSettingsConfig
-from openhands.sdk.settings.model import VerificationSettings
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
@@ -56,9 +63,6 @@ logger = get_logger(__name__)
 agent_profiles_router = APIRouter(prefix="/agent-profiles", tags=["Agent Profiles"])
 
 MAX_AGENT_PROFILES = 50
-
-# Name the lazily-seeded migration profile (and its LLM ref fallback).
-SEED_PROFILE_NAME = "default"
 
 ProfileName = Annotated[
     str,
@@ -178,65 +182,57 @@ def _decrypt_profile_mcp_tools(
     return profile.model_copy(update={"skills": new_skills})
 
 
-def _profile_verification(v: VerificationSettings) -> ProfileVerificationSettings:
-    """Project the secret-free subset of ``VerificationSettings``.
+def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
+    """Mirror the live LLM config into a ``SEED_PROFILE_NAME`` LLM profile.
 
-    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses
-    the resolved LLM profile's key.
+    ``build_seed_profile`` falls back to the literal name ``SEED_PROFILE_NAME``
+    when no LLM profile is active, on the assumption that a profile by that
+    name exists — but nothing ever created one, so the seeded agent profile's
+    ``llm_profile_ref`` dangled from birth (#3933). Mirrors the cloud
+    ``SaasSettingsStore``'s legacy-LLM backfill: materialize the current
+    ``agent_settings.llm`` under that name so the reference resolves, unless a
+    profile is already stored there (never clobber it).
+
+    Existence is checked via ``load()``, not ``list()``: the store resolves a
+    name straight to a filesystem path, so on a case-insensitive filesystem
+    (macOS/Windows) a differently-cased ``Default`` profile already occupies
+    the ``default`` path even though it wouldn't case-sensitively match a
+    ``list()`` membership check — that mismatch would otherwise let ``save()``
+    silently clobber it.
     """
-    return ProfileVerificationSettings(
-        critic_enabled=v.critic_enabled,
-        critic_mode=v.critic_mode,
-        enable_iterative_refinement=v.enable_iterative_refinement,
-        critic_threshold=v.critic_threshold,
-        max_refinement_iterations=v.max_refinement_iterations,
-        critic_server_url=v.critic_server_url,
-        critic_model_name=v.critic_model_name,
-    )
-
-
-def _build_seed_profile(
-    agent_settings: AgentSettingsConfig, active_llm_profile: str | None
-) -> OpenHandsAgentProfile | ACPAgentProfile:
-    """Build one ``AgentProfile`` faithfully from the current ``agent_settings``.
-
-    Carries every cleanly-overlapping launch field so the migrated profile is a
-    stable representation of the user's current configuration (the active
-    pointer is otherwise just a lightweight id). ``mcp_server_refs=None`` exposes
-    all of the user's MCP servers. An OpenHands profile references the active LLM
-    profile (falling back to ``"default"`` when none is set — a soft ref the
-    resolver checks at materialize time).
-    """
-    if agent_settings.agent_kind == "acp":
-        return ACPAgentProfile(
-            name=SEED_PROFILE_NAME,
-            acp_server=agent_settings.acp_server,
-            acp_model=agent_settings.acp_model,
-            acp_session_mode=agent_settings.acp_session_mode,
-            acp_prompt_timeout=agent_settings.acp_prompt_timeout,
-            # settings store the command as a token list; the profile holds a
-            # single (re-parseable) string. Empty list => use the server default.
-            acp_command=(
-                shlex.join(agent_settings.acp_command)
-                if agent_settings.acp_command
-                else None
-            ),
-            acp_args=list(agent_settings.acp_args) or None,
-            mcp_server_refs=None,
-        )
-    context = agent_settings.agent_context
-    return OpenHandsAgentProfile(
-        name=SEED_PROFILE_NAME,
-        llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
-        agent=agent_settings.agent,
-        skills=list(context.skills),
-        system_message_suffix=context.system_message_suffix,
-        condenser=agent_settings.condenser,
-        verification=_profile_verification(agent_settings.verification),
-        enable_sub_agents=agent_settings.enable_sub_agents,
-        tool_concurrency_limit=agent_settings.tool_concurrency_limit,
-        mcp_server_refs=None,
-    )
+    llm_store = get_llm_profile_store()
+    with _store_errors():
+        try:
+            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            return SEED_PROFILE_NAME
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            # Something already occupies the name (e.g. corrupted/unparsable
+            # file) — never overwrite it; a broken ref surfaces at
+            # materialize/launch time instead.
+            logger.warning(
+                f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
+                "failed to load; leaving it as-is"
+            )
+            return SEED_PROFILE_NAME
+        try:
+            llm_store.save(
+                SEED_PROFILE_NAME,
+                llm,
+                include_secrets=True,
+                cipher=cipher,
+                max_profiles=MAX_PROFILES,
+            )
+            logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
+        except LLMProfileLimitExceeded:
+            # Can't mirror the live LLM as a profile; the agent profile's
+            # llm_profile_ref will still dangle, but no worse than before.
+            logger.warning(
+                "Could not seed default LLM profile "
+                f"'{SEED_PROFILE_NAME}': profile limit reached"
+            )
+    return SEED_PROFILE_NAME
 
 
 def _seed_default_profile(
@@ -250,13 +246,25 @@ def _seed_default_profile(
     The lock spans empty-check + save + pointer write so concurrent first
     requests seed exactly once and the pointer matches the persisted id.
     """
-    with _store_errors(), store._acquire_lock():
+    with _store_errors(), store.lock():
         # Double-checked under the lock: a concurrent first request may have
         # already seeded (the outer emptiness check in the list endpoint is
         # unlocked).
         if store.list():
             return
-        profile = _build_seed_profile(settings.agent_settings, settings.active_profile)
+        active_llm_profile = settings.active_profile
+        # Falsy check (not `is None`): mirrors build_seed_profile's own
+        # `active_llm_profile or SEED_PROFILE_NAME` fallback. A stray empty
+        # string (e.g. a hand-edited/legacy settings.json, or a direct
+        # PersistedSettings(active_profile="") construction — the HTTP PATCH
+        # payload's pattern validator blocks "" but the stored field has no
+        # such constraint) is falsy there too, so the backfill must trigger
+        # on the same condition or the exact #3933 dangling ref reappears.
+        if not active_llm_profile and settings.agent_settings.agent_kind != "acp":
+            active_llm_profile = _seed_default_llm_profile(
+                settings.agent_settings.llm, cipher
+            )
+        profile = build_seed_profile(settings.agent_settings, active_llm_profile)
         # Settings persist skills[].mcp_tools encrypted (and never decrypt on
         # load), so decrypt before re-encrypting at save to avoid double-encrypt.
         profile = _decrypt_profile_mcp_tools(profile, cipher)
@@ -283,29 +291,6 @@ def _summary_id_for_name(store: AgentProfileStore, name: str) -> str | None:
     return None
 
 
-def _existing_identity(
-    store: AgentProfileStore, name: str
-) -> tuple[UUID | None, int | None]:
-    """Return the stable ``(id, revision)`` of the profile under ``name``.
-
-    Used to keep ``id`` stable across an overwrite — the active pointer is keyed
-    on it — and to bump ``revision`` monotonically. Ignores a malformed stored
-    id (treated as no prior identity).
-    """
-    with _store_errors():
-        for summary in store.list_summaries():
-            if summary.get("name") != name:
-                continue
-            sid = summary.get("id")
-            rev = summary.get("revision")
-            try:
-                parsed = UUID(str(sid)) if sid is not None else None
-            except (ValueError, TypeError):
-                parsed = None
-            return parsed, rev if isinstance(rev, int) else None
-    return None, None
-
-
 @agent_profiles_router.get("", response_model=AgentProfileListResponse)
 async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     """List all stored agent profiles and the active pointer.
@@ -318,7 +303,7 @@ async def list_agent_profiles(request: Request) -> AgentProfileListResponse:
     settings_store = get_settings_store(config)
     settings = settings_store.load() or PersistedSettings()
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     with _store_errors():
         existing = store.list()
 
@@ -347,7 +332,7 @@ async def get_agent_profile(
     expose_mode = parse_expose_secrets_header(request)
     cipher = get_cipher(request)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             profile = store.load(name, cipher=cipher)
@@ -392,7 +377,7 @@ async def save_agent_profile(
         # MCPConfig error embeds the input (which may carry secrets) in ``msg``.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=[{"loc": err["loc"], "type": err["type"]} for err in e.errors()],
+            detail=safe_validation_error_detail(e),
         )
     except Exception:
         # Any other validation failure (e.g. SkillValidationError from a
@@ -408,22 +393,17 @@ async def save_agent_profile(
     # secret once rather than double-encrypting the token.
     profile = _decrypt_profile_mcp_tools(profile, cipher)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     # The id is server-managed (the active pointer is keyed on it): overwrite
     # keeps the namesake's id and bumps revision; create mints a fresh id,
-    # ignoring any client-supplied one. The lock spans read + mint + save so two
-    # concurrent creates of the same new name can't both mint an id and clobber
-    # each other (the seed path guards the same window).
+    # ignoring any client-supplied one. ``save_profile_preserving_identity``
+    # holds the store lock across read + mint + save so two concurrent creates
+    # of the same new name can't both mint an id and clobber each other.
     try:
-        with _store_errors(), store._acquire_lock():
-            existing_id, existing_rev = _existing_identity(store, name)
-            if existing_id is not None:
-                profile = profile.model_copy(
-                    update={"id": existing_id, "revision": (existing_rev or 0) + 1}
-                )
-            else:
-                profile = profile.model_copy(update={"id": uuid4()})
-            store.save(profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES)
+        with _store_errors():
+            save_profile_preserving_identity(
+                store, profile, cipher=cipher, max_profiles=MAX_AGENT_PROFILES
+            )
     except ProfileLimitExceeded:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -448,7 +428,7 @@ async def delete_agent_profile(
     If the deleted profile was the active one, ``active_agent_profile_id`` is
     cleared.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     deleted_id = _summary_id_for_name(store, name)
 
     with _store_errors():
@@ -485,7 +465,7 @@ async def rename_agent_profile(
     survives the rename untouched. Returns 404 if the source is missing, 409 if
     ``new_name`` is taken.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             store.rename(name, body.new_name)
@@ -520,7 +500,7 @@ async def activate_agent_profile(
     ``/activate``, this does **not** write ``agent_settings`` (the
     creation-time-only contract). Returns 404 if no stored profile has that id.
     """
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     with _store_errors():
         known_ids = {
             str(s["id"]) for s in store.list_summaries() if s.get("id") is not None
@@ -574,7 +554,7 @@ async def materialize_agent_profile(
     """
     cipher = get_cipher(request)
 
-    store = AgentProfileStore()
+    store = get_agent_profile_store()
     try:
         with _store_errors():
             profile = store.load(name, cipher=cipher)
@@ -592,10 +572,31 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
-    llm_store = LLMProfileStore()
-    return resolve_agent_profile_dry_run(
+    # Discover skills off the event loop so the dry-run can report which
+    # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
+    # preview: pass ``available_skills=None`` (catalog unknown — the dry-run then
+    # reports nothing dangling, rather than flagging every selected skill) and
+    # surface the failure as its own diagnostic below.
+    discovery_error: str | None = None
+    try:
+        available_skills = await asyncio.to_thread(
+            discover_profile_skills_if_needed, profile
+        )
+    except Exception as exc:
+        available_skills = None
+        discovery_error = str(exc)
+        logger.warning("Skill discovery failed during materialize: %s", exc)
+
+    llm_store = get_llm_profile_store()
+    diagnostics = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,
+        available_skills=available_skills,
         cipher=cipher,
     )
+    if discovery_error is not None:
+        diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
+        diagnostics.valid = False
+        diagnostics.resolved_settings = None
+    return diagnostics

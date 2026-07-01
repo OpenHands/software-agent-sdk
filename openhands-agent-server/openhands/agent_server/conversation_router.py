@@ -42,7 +42,17 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.profiles.resolver import DanglingMcpServerRef, ProfileNotFound
+from openhands.sdk.marketplace.registry import (
+    MarketplaceNotFoundError,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
+from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles.resolver import (
+    DanglingMcpServerRef,
+    DanglingSkillRef,
+    ProfileNotFound,
+)
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
@@ -205,6 +215,11 @@ async def start_conversation(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
+        ) from e
+    except DanglingSkillRef as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(e), "dangling_skill_refs": e.missing},
         ) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(
@@ -494,6 +509,42 @@ async def switch_conversation_llm(
     if cipher is not None:
         llm = decrypt_incoming_llm_secrets(llm, cipher)
     conversation.switch_llm(llm)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/load_plugin",
+    responses={
+        400: {"description": "Invalid plugin reference or inactive conversation"},
+        404: {"description": "Conversation or plugin not found"},
+    },
+)
+async def load_conversation_plugin(
+    conversation_id: UUID,
+    plugin_ref: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Load a plugin from the conversation's registered marketplaces."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await event_service.load_plugin(plugin_ref)
+    except (PluginNotFoundError, MarketplaceNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except (
+        PluginResolutionError,
+        PluginFetchError,
+        FileNotFoundError,
+        ValueError,
+    ) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     return Success()
 
 
