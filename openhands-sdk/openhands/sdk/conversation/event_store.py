@@ -2,7 +2,7 @@
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
-from typing import SupportsIndex, overload
+from typing import Final, SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -20,6 +20,11 @@ logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
+
+# Marks a feature-created root at a non-zero index (e.g. navigate_to(None) then
+# emit), where parent_id=None is ambiguous with a legacy event. Reserved value:
+# never collides with a real id (event ids are uuid4).
+ROOT_PARENT_ID: Final = "__root__"
 
 
 class EventLog(EventsListBase):
@@ -94,6 +99,8 @@ class EventLog(EventsListBase):
         the linear chain (event ``idx - 1``) so old conversations load unbranched
         with no disk rewrite.
         """
+        if event.parent_id == ROOT_PARENT_ID:
+            return None  # explicit root (feature-created root at idx > 0)
         if event.parent_id is not None:
             return event.parent_id  # explicit (new events)
         if idx == 0:
