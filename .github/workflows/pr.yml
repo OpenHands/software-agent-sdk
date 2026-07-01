@@ -1,3 +1,4 @@
+---
 name: pr
 
 # Lint every PR title for Conventional Commits and apply a matching
@@ -11,15 +12,15 @@ name: pr
 # pr-title.yml never checks out or runs PR code (it reads the title from the
 # event payload only) and runs on GITHUB_TOKEN alone. Do NOT add a checkout step
 # or `secrets: inherit`.
+#
+# `synchronize` is included because required status checks attach to a head SHA,
+# and release-please force-pushes new commits to its release PR, so the lint must
+# re-run on each update to stay green.
 on:
-  pull_request_target:
-    # synchronize is needed alongside the title events: required status checks
-    # attach to a head SHA, and release-please force-pushes new commits to its
-    # release PR, so the lint must re-run on each update to stay green.
-    types: [opened, edited, reopened, synchronize]
-
+    pull_request_target:
+        types: [opened, edited, reopened, synchronize]
 jobs:
-  pr-title:
-    permissions:
-      pull-requests: write
-    uses: OpenHands/release-actions/.github/workflows/pr-title.yml@v0.2.0
+    pr-title:
+        permissions:
+            pull-requests: write
+        uses: OpenHands/release-actions/.github/workflows/pr-title.yml@v0.2.0
