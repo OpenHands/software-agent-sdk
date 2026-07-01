@@ -267,3 +267,20 @@ def test_load_project_root_agents_cursorrules(tmp_path: Path) -> None:
     names = {a.name for a in agents}
     assert "sca_code_style" in names
     assert "sca_testing" in names
+
+
+def test_load_project_root_agents_merges_cross_file_slug_collision(
+    tmp_path: Path,
+) -> None:
+    """Same slug from two different files merges instead of dropping the second."""
+    (tmp_path / "AGENTS.md").write_text(
+        "## Testing\nRun pytest before committing.\n"
+    )
+    (tmp_path / ".cursorrules").write_text(
+        "## Testing\nAlso run the linter.\n"
+    )
+    agents = load_project_root_agents(tmp_path)
+    testing_agents = [a for a in agents if a.name == "sca_testing"]
+    assert len(testing_agents) == 1
+    assert "Run pytest before committing." in testing_agents[0].system_prompt
+    assert "Also run the linter." in testing_agents[0].system_prompt

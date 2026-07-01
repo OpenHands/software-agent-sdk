@@ -40,6 +40,7 @@ from typing import Final
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.subagent.section_parser import _merge_section_agent, parse_sections
 
 
 logger = get_logger(__name__)
@@ -68,23 +69,27 @@ def load_project_root_agents(project_dir: str | Path) -> list[AgentDefinition]:
 
     Scans project_dir for files whose names match (case-insensitively)
     AGENTS.md, agents.md, agent.md, agentfile.md, or .cursorrules.
-    Each matching file is split by ## section headers via parse_sections().
-    Falls back to loading as a single AgentDefinition when no headers found.
+    Each matching file is split into sections via parse_sections(), which
+    handles both XML tags and Markdown ## headers together (see its
+    docstring). Falls back to loading as a single AgentDefinition when
+    neither is found.
 
     Returns:
         List of AgentDefinition objects, or [] if no matching files exist.
     """
-    from openhands.sdk.subagent.section_parser import parse_sections
-
     project_dir = Path(project_dir)
     if not project_dir.is_dir():
         return []
 
     result: list[AgentDefinition] = []
-    seen_names: set[str] = set()
+    name_to_index: dict[str, int] = {}
 
     for path in sorted(project_dir.iterdir()):
-        if not path.is_file(follow_symlinks=False) or path.name.lower() not in _SECTION_SPLIT_FILENAMES:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or path.name.lower() not in _SECTION_SPLIT_FILENAMES
+        ):
             continue
 
         try:
@@ -96,14 +101,10 @@ def load_project_root_agents(project_dir: str | Path) -> list[AgentDefinition]:
         agents = parse_sections(content, source_path=str(path))
 
         if not agents:
-            from openhands.sdk.subagent.section_parser import parse_xml_sections
-            agents = parse_xml_sections(content, source_path=str(path))
-
-        if not agents:
             try:
                 agent_def = AgentDefinition.load(path)
-                if agent_def.name not in seen_names:
-                    seen_names.add(agent_def.name)
+                if agent_def.name not in name_to_index:
+                    name_to_index[agent_def.name] = len(result)
                     result.append(agent_def)
                     logger.debug(f"Loaded single-agent fallback from {path}")
             except Exception:
@@ -112,8 +113,16 @@ def load_project_root_agents(project_dir: str | Path) -> list[AgentDefinition]:
                 )
         else:
             for agent_def in agents:
-                if agent_def.name not in seen_names:
-                    seen_names.add(agent_def.name)
+                if agent_def.name in name_to_index:
+                    # Same slug produced by a different file (e.g. AGENTS.md
+                    # and .cursorrules both have a "## Testing" section) —
+                    # merge instead of silently dropping the second one.
+                    idx = name_to_index[agent_def.name]
+                    result[idx] = _merge_section_agent(
+                        result[idx], agent_def, agent_def.description, str(path)
+                    )
+                else:
+                    name_to_index[agent_def.name] = len(result)
                     result.append(agent_def)
             logger.debug(f"Loaded {len(agents)} section-split agents from {path}")
 

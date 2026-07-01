@@ -3,6 +3,7 @@ import pytest
 from openhands.sdk.subagent.section_parser import (
     ALWAYS_ACTIVE_SENTINEL,
     parse_sections,
+    parse_xml_sections,
     _is_foundational,
     _tokenize,
     _header_triggers,
@@ -98,6 +99,140 @@ class TestParseSections:
         assert len(agents) == 1
 
 
+class TestParseSectionsRunsXmlAndMarkdownTogether:
+    """Regression tests: XML tags and ## headers are no longer mutually
+    exclusive fallbacks — both are recognized in the same pass."""
+
+    def test_xml_tag_inside_markdown_section_becomes_own_section(self):
+        """An XML tag following a ## header must not be absorbed into that
+        header's body — it should become its own section."""
+        content = (
+            "## Docker Setup\n"
+            "Use docker-compose.\n\n"
+            "<TESTING>\n"
+            "Run pytest before committing.\n"
+            "</TESTING>\n"
+        )
+        agents = parse_sections(content)
+        names = {a.name for a in agents}
+        assert "sca_docker_setup" in names
+        assert "sca_testing" in names
+
+        docker = next(a for a in agents if a.name == "sca_docker_setup")
+        testing = next(a for a in agents if a.name == "sca_testing")
+        # The XML block's content must not leak into the preceding section.
+        assert "Run pytest before committing." not in docker.system_prompt
+        assert "Run pytest before committing." in testing.system_prompt
+
+    def test_xml_tagged_section_gets_always_active_when_foundational(self):
+        content = (
+            "## Docker Setup\n"
+            "Use docker-compose.\n\n"
+            "<TESTING>\n"
+            "Run pytest before committing.\n"
+            "</TESTING>\n"
+        )
+        agents = parse_sections(content)
+        testing = next(a for a in agents if a.name == "sca_testing")
+        docker = next(a for a in agents if a.name == "sca_docker_setup")
+        assert ALWAYS_ACTIVE_SENTINEL in testing.triggers
+        assert ALWAYS_ACTIVE_SENTINEL not in docker.triggers
+
+    def test_pure_xml_content_no_markdown_headers(self):
+        """parse_sections finds XML sections even with zero ## headers —
+        callers no longer need a separate parse_xml_sections fallback."""
+        content = "<ROLE>\nYou are a helpful agent.\n</ROLE>\n"
+        agents = parse_sections(content)
+        assert len(agents) == 1
+        assert agents[0].name == "sca_role"
+
+    def test_multiple_xml_tags_before_and_after_markdown_section(self):
+        content = (
+            "<ROLE>\n"
+            "You are a helpful agent.\n"
+            "</ROLE>\n\n"
+            "## Docker Setup\n"
+            "Use docker-compose.\n\n"
+            "<TESTING>\n"
+            "Run pytest.\n"
+            "</TESTING>\n"
+        )
+        agents = parse_sections(content)
+        names = {a.name for a in agents}
+        assert names == {"sca_role", "sca_docker_setup", "sca_testing"}
+
+    def test_parse_xml_sections_unaffected_by_refactor(self):
+        """parse_xml_sections keeps its own public contract unchanged."""
+        content = "<DOCKER_SETUP>\nUse docker-compose.\n</DOCKER_SETUP>\n"
+        agents = parse_xml_sections(content)
+        assert len(agents) == 1
+        assert agents[0].name == "sca_docker_setup"
+
+    def test_preamble_before_first_marker_still_dropped(self):
+        """Known open issue (see KNOWN_ISSUES.md): content that is neither
+        inside an XML tag nor under a ## header is still discarded. This
+        test documents current behavior, not desired behavior."""
+        content = (
+            "# Core Engineering Principles\n"
+            "Always write tests.\n\n"
+            "## Docker Setup\n"
+            "Use docker-compose.\n"
+        )
+        agents = parse_sections(content)
+        all_text = " ".join(a.system_prompt for a in agents)
+        assert "Always write tests." not in all_text
+
+
+class TestSlugCollisionMerge:
+    """Regression tests: colliding slugs merge instead of silently dropping."""
+
+    def test_colliding_slugs_merge_into_one_agent(self):
+        content = (
+            "## API Conventions\n"
+            "Use REST for all endpoints.\n\n"
+            "## API-Conventions\n"
+            "Use GraphQL for internal tooling.\n"
+        )
+        agents = parse_sections(content)
+        assert len(agents) == 1
+        assert agents[0].name == "sca_api_conventions"
+
+    def test_merge_preserves_both_bodies(self):
+        content = (
+            "## API Conventions\n"
+            "Use REST for all endpoints.\n\n"
+            "## API-Conventions\n"
+            "Use GraphQL for internal tooling.\n"
+        )
+        agents = parse_sections(content)
+        assert "Use REST for all endpoints." in agents[0].system_prompt
+        assert "Use GraphQL for internal tooling." in agents[0].system_prompt
+
+    def test_merge_does_not_duplicate_identical_body(self):
+        content = (
+            "## API Conventions\n"
+            "Use REST for all endpoints.\n\n"
+            "## API-Conventions\n"
+            "Use REST for all endpoints.\n"
+        )
+        agents = parse_sections(content)
+        assert len(agents) == 1
+        # Identical body text must appear only once, not duplicated.
+        assert agents[0].system_prompt.count("Use REST for all endpoints.") == 1
+
+    def test_merge_unions_triggers(self):
+        content = (
+            "## Docker Setup\n"
+            "Use docker-compose for services.\n\n"
+            "## Docker-Setup\n"
+            "Kubernetes is an alternative.\n"
+        )
+        agents = parse_sections(content)
+        assert len(agents) == 1
+        assert "docker" in agents[0].triggers
+        assert "kubernetes" in agents[0].triggers
+
+
 class TestIsFoundational:
     def test_testing_is_foundational(self):
         assert _is_foundational("## Testing Guidelines")
@@ -113,6 +248,19 @@ class TestIsFoundational:
 
     def test_api_is_not_foundational(self):
         assert not _is_foundational("## API Conventions")
+
+    def test_pull_request_is_foundational(self):
+        """Regression test: multi-word phrase with no single-word fallback.
+
+        _is_foundational previously only matched single tokens split on "_",
+        so "pull_request" (stored as one underscored string) could never
+        match — "pull" and "request" alone aren't in the keyword set.
+        """
+        assert _is_foundational("## Pull Request Guidelines")
+
+    def test_builds_is_not_foundational(self):
+        """"builds" is not "build" — the token match must not substring-match."""
+        assert not _is_foundational("## Builds Overview")
 
 
 class TestTokenize:
