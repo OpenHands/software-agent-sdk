@@ -107,16 +107,20 @@ class EventLog(EventsListBase):
             return None  # genuine root
         return self.get_id(idx - 1)  # legacy linear chain (back-compat)
 
-    def path_to_root(self, leaf_id: EventID | None) -> list[Event]:
+    def path_to_root(
+        self, leaf_id: EventID | None, limit: int | None = None
+    ) -> list[Event]:
         """The active branch ``leaf -> ... -> root``, returned root-first.
 
-        ``leaf_id=None`` yields ``[]``. Raises ValueError on a cycle, KeyError if
-        ``leaf_id`` or an ancestor is missing.
+        ``leaf_id=None`` yields ``[]``. ``limit`` keeps only the last ``limit``
+        events (walking back from the leaf), so callers wanting a recent window
+        stay O(limit) instead of O(branch). Raises ValueError on a cycle, KeyError
+        if ``leaf_id`` or an ancestor is missing.
         """
         chain: list[Event] = []
         seen: set[EventID] = set()
         cur_id: EventID | None = leaf_id
-        while cur_id is not None:
+        while cur_id is not None and (limit is None or len(chain) < limit):
             if cur_id in seen:
                 raise ValueError(f"Cycle in event tree at {cur_id}")
             seen.add(cur_id)

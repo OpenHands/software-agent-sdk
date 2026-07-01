@@ -7,16 +7,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from litellm import ChatCompletionMessageToolCall
+from litellm.types.utils import Function
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation, LocalConversation
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.event.types import SourceType
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.tool.schema import Action
 
 
 def _agent() -> Agent:
@@ -369,3 +374,60 @@ def test_append_event_stamps_swapped_event_to_active_leaf_not_storage_tail():
         assert stored.parent_id == e0.id  # active leaf, not a2 (idx - 1)
         assert conv.state.leaf_event_id == swapped.id
         assert _view_ids(conv) == [e0.id, swapped.id]  # branch A stays off-view
+
+
+class _MockAction(Action):
+    command: str
+
+
+def _action_event(call_id: str = "call_1") -> ActionEvent:
+    """A minimal executable ActionEvent — pending until a matching observation."""
+    tool_call = ChatCompletionMessageToolCall(
+        id=call_id,
+        type="function",
+        function=Function(name="test_tool", arguments='{"command": "x"}'),
+    )
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="t")],
+        action=_MockAction(command="x"),
+        tool_name="test_tool",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall.from_chat_tool_call(tool_call),
+        llm_response_id="resp-1",
+    )
+
+
+def test_active_branch_returns_live_path_and_tail():
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))
+        _emit(conv, _msg("a2"))  # branch A, to be abandoned
+        conv.navigate_to(e0.id)
+        e3 = _emit(conv, _msg("b1"))  # branch B
+
+        # Only the live path; abandoned a1/a2 excluded.
+        assert [e.id for e in conv.state.active_branch()] == [e0.id, e3.id]
+        # limit walks back from the leaf.
+        assert [e.id for e in conv.state.active_branch(limit=1)] == [e3.id]
+
+
+def test_pending_actions_ignore_abandoned_branch():
+    """get_unmatched_actions over the active branch drops an abandoned branch's
+    orphaned action — so navigating away can't leave phantom pending actions.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        pending = _emit(conv, _action_event("call_A"))  # unmatched on branch A
+
+        conv.navigate_to(e0.id)  # abandon branch A
+
+        # The full log still shows the orphaned action...
+        assert [
+            a.id
+            for a in ConversationState.get_unmatched_actions(list(conv.state.events))
+        ] == [pending.id]
+        # ...but the active branch (what the consumers now read) does not.
+        assert ConversationState.get_unmatched_actions(conv.state.active_branch()) == []

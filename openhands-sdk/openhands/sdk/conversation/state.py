@@ -261,6 +261,15 @@ class ConversationState(OpenHandsModel):
             return None
         return self._events.get_id(n - 1)
 
+    def active_branch(self, limit: int | None = None) -> list[Event]:
+        """Raw events on the active branch (``path_to_root(leaf)``), root-first.
+
+        Excludes abandoned branches, so consumers reasoning about the *current*
+        conversation (stuck detection, pending actions) see only the live path.
+        ``limit`` returns just the last ``limit`` events, kept O(limit).
+        """
+        return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
+
     def _stamp_parent_id(self, event: Event) -> Event:
         """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
         if event.parent_id is not None:

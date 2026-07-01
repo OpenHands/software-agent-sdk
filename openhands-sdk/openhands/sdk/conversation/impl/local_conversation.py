@@ -2200,7 +2200,9 @@ class LocalConversation(BaseConversation):
         This is a non-invasive method to reject actions between run() calls.
         Also clears the agent_waiting_for_confirmation flag.
         """
-        pending_actions = ConversationState.get_unmatched_actions(self._state.events)
+        pending_actions = ConversationState.get_unmatched_actions(
+            self._state.active_branch()
+        )
 
         with self._state:
             # Always clear the agent_waiting_for_confirmation flag
@@ -2236,7 +2238,7 @@ class LocalConversation(BaseConversation):
 
         Must be called while holding ``self._state``.
         """
-        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        orphans = ConversationState.get_unmatched_actions(self._state.active_branch())
         for ae in orphans:
             logger.info(
                 "Emitting synthetic error for orphaned action %s (%s)",
