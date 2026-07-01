@@ -431,3 +431,88 @@ def test_pending_actions_ignore_abandoned_branch():
         ] == [pending.id]
         # ...but the active branch (what the consumers now read) does not.
         assert ConversationState.get_unmatched_actions(conv.state.active_branch()) == []
+
+
+def test_navigate_to_none_empties_single_root_tree():
+    """navigate_to(None) must empty even a one-event tree, and the next event must
+    be a fresh root — not chained onto the abandoned one. (The legacy fallback in
+    _resolve_active_leaf used to resurrect a lone root.)
+    """
+    from openhands.sdk.conversation.event_store import ROOT_PARENT_ID
+
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+        assert conv.state.leaf_event_id is None
+        assert conv.state.head_is_empty is True
+        assert _view_ids(conv) == []
+
+        fresh = _emit(conv, _msg("fresh"))
+        assert conv.state.events.get_by_id(fresh.id).parent_id == ROOT_PARENT_ID
+        assert _view_ids(conv) == [fresh.id]
+
+
+def test_empty_head_survives_reload():
+    """A deliberate empty HEAD persists across save/reload (head_is_empty), instead
+    of being resurrected by the legacy fallback on cold load.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+        cid = conv.id
+        conv.close()
+
+        resumed = _conversation(tmp, conversation_id=cid, delete_on_close=False)
+        assert resumed.state.head_is_empty is True
+        assert resumed.state.leaf_event_id is None
+        assert _view_ids(resumed) == []
+
+
+def test_generate_title_reads_active_branch(monkeypatch):
+    """generate_title() extracts the first user message from the active branch, not
+    an abandoned branch's message.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("old root"))
+        _emit(conv, _msg("reply", "agent"))  # 2-event prefix so navigate empties
+        conv.navigate_to(None)
+        _emit(conv, _msg("fresh root"))
+
+        captured: dict = {}
+
+        def _fake_generate(events, llm, max_length=50):
+            captured["events"] = list(events)
+            return "title"
+
+        monkeypatch.setattr(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "generate_conversation_title",
+            _fake_generate,
+        )
+        conv.generate_title()
+
+        texts = [
+            c.text
+            for e in captured["events"]
+            if isinstance(e, MessageEvent)
+            for c in e.llm_message.content
+            if isinstance(c, TextContent)
+        ]
+        assert texts == ["fresh root"]
+
+
+def test_fork_preserves_empty_head():
+    """A full fork of an empty-HEAD conversation stays empty (head_is_empty is
+    copied), instead of the legacy fallback resurrecting the last event.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+
+        fork = conv.fork()
+        assert fork.state.head_is_empty is True
+        assert _view_ids(fork) == []

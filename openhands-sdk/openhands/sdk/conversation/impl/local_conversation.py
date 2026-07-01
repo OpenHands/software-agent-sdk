@@ -659,6 +659,11 @@ class LocalConversation(BaseConversation):
             for event in source_events:
                 fork_conv._state.events.append(_copy_event_for_fork(event))
             fork_conv._state.leaf_event_id = fork_leaf
+            # A full fork inherits the source's empty-HEAD state; a branch slice
+            # roots HEAD at a real event (from_event_id), so it is never empty.
+            fork_conv._state.head_is_empty = (
+                self._state.head_is_empty if from_event_id is None else False
+            )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -712,6 +717,10 @@ class LocalConversation(BaseConversation):
             if event_id is not None and event_id not in self._state.events:
                 raise ValueError(f"Unknown event_id: {event_id}")
             self._state.leaf_event_id = event_id  # autosaves base_state.json
+            # Mark an explicit empty HEAD so it is not misread as a legacy/unset
+            # leaf (which would resolve back to the last event). See
+            # ConversationState._resolve_active_leaf.
+            self._state.head_is_empty = event_id is None
             self._state.rebuild_view()
 
     def _ensure_plugins_loaded(self) -> None:
@@ -1844,7 +1853,7 @@ class LocalConversation(BaseConversation):
 
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         if last_acp_prompt_user_message_id is None:
@@ -1959,7 +1968,7 @@ class LocalConversation(BaseConversation):
                     with self._state:
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         latest_acp_prompt_message_id = (
@@ -2057,7 +2066,7 @@ class LocalConversation(BaseConversation):
 
                     acp_prompt_messages = [
                         event
-                        for event in self._state.events
+                        for event in self._state.active_branch()
                         if _is_acp_prompt_message(event)
                     ]
                     latest_acp_prompt_message_id = (
@@ -2471,7 +2480,9 @@ class LocalConversation(BaseConversation):
         """
         effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=effective_llm, max_length=max_length
+            events=self._state.active_branch(),
+            llm=effective_llm,
+            max_length=max_length,
         )
 
     def condense(self) -> None:

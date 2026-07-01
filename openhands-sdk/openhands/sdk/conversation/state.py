@@ -173,6 +173,12 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
+    # Distinguishes a deliberate empty HEAD (navigate_to(None)) from an unset
+    # ``leaf_event_id``, which triggers legacy back-compat. Without it, emptying a
+    # single-root tree is indistinguishable from a pre-tree conversation. Persisted
+    # so the empty HEAD survives a save/reload. See _resolve_active_leaf.
+    head_is_empty: bool = Field(default=False)
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -248,13 +254,15 @@ class ConversationState(OpenHandsModel):
     def _resolve_active_leaf(self) -> EventID | None:
         """The effective HEAD, resolving a ``None`` ``leaf_event_id`` by lineage.
 
-        A set leaf is returned as-is. A ``None`` leaf falls back to the last
-        event only for pre-feature conversations (last event has no
-        ``parent_id``), so legacy history loads unbranched; once events are
-        stamped, ``None`` is a deliberate empty HEAD (e.g. ``navigate_to(None)``).
+        A set leaf is returned as-is. ``head_is_empty`` marks a deliberate empty
+        HEAD (``navigate_to(None)``) -> no active branch. Otherwise a ``None`` leaf
+        falls back to the last event only for pre-feature conversations (last
+        event has no ``parent_id``), so legacy history loads unbranched.
         """
         if self.leaf_event_id is not None:
             return self.leaf_event_id
+        if self.head_is_empty:
+            return None
         if (n := len(self._events)) == 0:
             return None
         if self._events[n - 1].parent_id is not None:
@@ -298,6 +306,8 @@ class ConversationState(OpenHandsModel):
 
         if not isinstance(event, ConversationStateUpdateEvent):
             self.leaf_event_id = event.id
+            if self.head_is_empty:  # HEAD now points at a real event again
+                self.head_is_empty = False
         return event
 
     @property
@@ -565,14 +575,15 @@ class ConversationState(OpenHandsModel):
                     logger.exception("Auto-persist base_state failed", exc_info=True)
                     raise e
 
-            # Call state change callback if set. leaf_event_id is skipped: it
-            # changes every event and the server persists broadcasts, so it would
-            # ~double the log — and the new HEAD is the just-appended event's id.
+            # Call state change callback if set. leaf_event_id/head_is_empty are
+            # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
+            # every event, so broadcasting it would ~double the persisted log) and
+            # the HEAD is recoverable from the just-appended event.
             callback = getattr(self, "_on_state_change", None)
             if (
                 callback is not None
                 and old is not _sentinel
-                and name != "leaf_event_id"
+                and name not in ("leaf_event_id", "head_is_empty")
             ):
                 try:
                     # Import here to avoid circular imports

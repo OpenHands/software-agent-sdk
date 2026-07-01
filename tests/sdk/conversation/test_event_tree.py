@@ -1,11 +1,19 @@
 """Unit tests for the EventLog tree helpers and back-compat rule (#3747)."""
 
 import pytest
+from pydantic import ValidationError
 
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
+
+
+def test_event_id_cannot_equal_reserved_root_sentinel():
+    """No event may take the reserved ROOT_PARENT_ID as its id, else its children
+    would be read as parentless (parent_id == ROOT_PARENT_ID means "root")."""
+    with pytest.raises(ValidationError):
+        _event(ROOT_PARENT_ID)
 
 
 def _event(event_id: str, parent_id: str | None = None) -> MessageEvent:

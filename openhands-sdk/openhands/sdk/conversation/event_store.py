@@ -2,7 +2,7 @@
 import operator
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
-from typing import Final, SupportsIndex, overload
+from typing import SupportsIndex, overload
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -11,6 +11,7 @@ from openhands.sdk.conversation.persistence_const import (
     EVENTS_DIR,
 )
 from openhands.sdk.event import Event, EventID
+from openhands.sdk.event.types import ROOT_PARENT_ID
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.path import posix_path_name
@@ -21,10 +22,9 @@ logger = get_logger(__name__)
 LOCK_FILE_NAME = ".eventlog.lock"
 LOCK_TIMEOUT_SECONDS = 30
 
-# Marks a feature-created root at a non-zero index (e.g. navigate_to(None) then
-# emit), where parent_id=None is ambiguous with a legacy event. Reserved value:
-# never collides with a real id (event ids are uuid4).
-ROOT_PARENT_ID: Final = "__root__"
+# ROOT_PARENT_ID now lives in event.types (single source of truth); it is used
+# below in _effective_parent_id and re-exported here so existing
+# ``from event_store import ROOT_PARENT_ID`` importers keep working.
 
 
 class EventLog(EventsListBase):
