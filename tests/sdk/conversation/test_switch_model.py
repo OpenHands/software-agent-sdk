@@ -90,6 +90,57 @@ def _make_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
     return conv, agent
 
 
+def _make_pre_session_acp_conversation(tmp_path) -> tuple[LocalConversation, ACPAgent]:
+    """An ACP conversation created but not yet ``run()``.
+
+    No ``_conn`` / ``_session_id`` / ``_executor`` is wired, so there is no live
+    session — ``switch_acp_model`` must defer rather than issue a protocol call.
+    """
+    agent = ACPAgent(acp_command=["echo", "test"], acp_model="model-a")
+    agent._agent_name = "codex-acp"
+    conv = LocalConversation(
+        agent=agent,
+        workspace=tmp_path,
+        persistence_dir=str(tmp_path / "persist"),
+    )
+    return conv, agent
+
+
+def test_switch_acp_model_before_session_defers_and_persists(tmp_path):
+    """A pre-``run()`` switch persists the new model without raising.
+
+    Regression for #3763: ``switch_acp_model`` used to call ``set_acp_model``
+    first, which raised ``RuntimeError`` before the first ``run()``, so the
+    persist block never ran and the new model was silently lost — the first
+    session kept the construction-time ``acp_model``. With no live session the
+    live call must be skipped and the value persisted, so session creation on
+    the first ``run()`` honors the switched model.
+    """
+    conv, agent = _make_pre_session_acp_conversation(tmp_path)
+    assert not agent.has_live_acp_session
+
+    conv.switch_acp_model("model-b")
+
+    # The authoritative model moved even though no live session was touched.
+    switched = conv.agent
+    assert isinstance(switched, ACPAgent)
+    assert switched.acp_model == "model-b"
+    assert not switched.has_live_acp_session
+    assert isinstance(conv.state.agent, ACPAgent)
+    assert conv.state.agent.acp_model == "model-b"
+    # Cold-read hint updated for the chip/picker before any session exists.
+    assert conv.state.agent_state["acp_current_model_id"] == "model-b"
+
+    # Survives a restart before the first run: base_state.json carries the
+    # switched model, and model_post_init re-derives the sentinel LLM from it,
+    # so the first session starts on model-b (acceptance criterion #3).
+    base_text = conv.state._fs.read(BASE_STATE)
+    reloaded = ConversationState.model_validate(json.loads(base_text))
+    assert isinstance(reloaded.agent, ACPAgent)
+    assert reloaded.agent.acp_model == "model-b"
+    assert reloaded.agent.llm.model == "model-b"
+
+
 def test_switch_acp_model_persists_authoritative_model(tmp_path):
     """A runtime switch persists as the authoritative ``acp_model``.
 
@@ -243,17 +294,17 @@ def test_switch_profile_preserves_prompt_cache_key(profile_store):
     """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
     conv = _make_conversation()
     expected = str(conv.id)
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("slow")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     # Switching back to a cached registry entry must still carry the key.
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
 
 def test_switch_then_send_message(profile_store):
@@ -293,7 +344,7 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     assert conv.agent.llm.usage_id == "caller-supplied-id"
     assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
     # Cache-key must be repinned (regression guard for #2918 on the new path).
-    assert conv.agent.llm._prompt_cache_key == str(conv.id)
+    assert conv.agent.llm._call_context.prompt_cache_key == str(conv.id)
 
 
 def test_switch_llm_refreshes_llm_condenser_credentials(

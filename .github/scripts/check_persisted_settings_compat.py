@@ -145,7 +145,6 @@ if ACPAgentSettingsCls is not None:
         acp = ACPAgentSettingsCls(
             acp_server="claude-code",
             acp_model="claude-opus-4-6",
-            acp_env={"OPENAI_API_KEY": "sk-test-acp"},
         )
     except Exception:
         acp = None

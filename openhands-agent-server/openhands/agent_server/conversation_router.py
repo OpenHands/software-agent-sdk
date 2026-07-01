@@ -34,6 +34,7 @@ from openhands.agent_server.models import (
     SetConfirmationPolicyRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
+    StartGoalRequest,
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
@@ -41,6 +42,17 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.marketplace.registry import (
+    MarketplaceNotFoundError,
+    PluginNotFoundError,
+    PluginResolutionError,
+)
+from openhands.sdk.plugin import PluginFetchError
+from openhands.sdk.profiles.resolver import (
+    DanglingMcpServerRef,
+    DanglingSkillRef,
+    ProfileNotFound,
+)
 from openhands.sdk.tool.client_tool import ClientToolRegistrationError
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.preset.default import get_default_tools
@@ -197,6 +209,18 @@ async def start_conversation(
     """Start a conversation in the local environment."""
     try:
         info, is_new = await conversation_service.start_conversation(request)
+    except ProfileNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except DanglingMcpServerRef as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(e), "dangling_mcp_server_refs": e.missing},
+        ) from e
+    except DanglingSkillRef as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"message": str(e), "dangling_skill_refs": e.missing},
+        ) from e
     except ClientToolRegistrationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
@@ -282,6 +306,94 @@ async def run_conversation(
                 ),
             )
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal",
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation run or goal loop is already running"},
+    },
+)
+async def start_goal_in_conversation(
+    conversation_id: UUID,
+    request: StartGoalRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Start a ``/goal`` loop inside an existing conversation.
+
+    The loop appends messages and starts agent runs in the same conversation
+    history and event stream as the main chat. It does not create a separate
+    conversation for the goal or fork the existing one.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    try:
+        await event_service.start_goal_loop(
+            request.objective, max_iterations=request.max_iterations
+        )
+    except ValueError as e:
+        message = str(e)
+        if message in ("conversation_already_running", "goal_already_running"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation run or goal loop already running.",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal/stop",
+    responses={404: {"description": "Item not found"}},
+)
+async def stop_goal_in_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Stop the active ``/goal`` loop inside this conversation.
+
+    This cancels only the background goal loop, not the conversation itself, and
+    records an ``interrupted`` goal status so ``/goal/resume`` can continue it.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.stop_goal_loop()
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/goal/resume",
+    responses={
+        404: {"description": "Item not found"},
+        409: {"description": "Conversation run or goal loop is already running"},
+    },
+)
+async def resume_goal_in_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Resume the last interrupted ``/goal`` loop inside this conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+
+    try:
+        await event_service.resume_goal_loop()
+    except ValueError as e:
+        message = str(e)
+        if message in ("conversation_already_running", "goal_already_running"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conversation run or goal loop already running.",
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
     return Success()
 
@@ -401,11 +513,46 @@ async def switch_conversation_llm(
 
 
 @conversation_router.post(
+    "/{conversation_id}/load_plugin",
+    responses={
+        400: {"description": "Invalid plugin reference or inactive conversation"},
+        404: {"description": "Conversation or plugin not found"},
+    },
+)
+async def load_conversation_plugin(
+    conversation_id: UUID,
+    plugin_ref: str = Body(..., embed=True),
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Load a plugin from the conversation's registered marketplaces."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    try:
+        await event_service.load_plugin(plugin_ref)
+    except (PluginNotFoundError, MarketplaceNotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except (
+        PluginResolutionError,
+        PluginFetchError,
+        FileNotFoundError,
+        ValueError,
+    ) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    return Success()
+
+
+@conversation_router.post(
     "/{conversation_id}/switch_acp_model",
     responses={
         400: {"description": "Agent is not ACP, or provider can't switch models"},
         404: {"description": "Conversation not found"},
-        409: {"description": "ACP session not initialized yet"},
         504: {"description": "ACP server did not answer the model switch in time"},
     },
 )
@@ -414,11 +561,14 @@ async def switch_conversation_acp_model(
     model: str = Body(..., embed=True),
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> Success:
-    """Switch the model of a running ACP conversation, mid-conversation.
+    """Switch the model of an ACP conversation.
 
-    Issues a protocol-level ``session/set_model`` call to the ACP subprocess
-    so the new model applies to subsequent turns without losing context. Only
-    valid for ACP conversations whose provider supports runtime switching.
+    For a conversation that has already started, issues a protocol-level
+    ``session/set_model`` call to the ACP subprocess so the new model applies to
+    subsequent turns without losing context. For one created but not yet run,
+    the value is persisted and applied when the first session starts (returns
+    ``200`` either way). Only valid for ACP conversations whose provider
+    supports model switching.
     """
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -436,11 +586,6 @@ async def switch_conversation_acp_model(
         # instead of an opaque 500.
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail=str(e),
-        )
-    except RuntimeError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         )
     return Success()

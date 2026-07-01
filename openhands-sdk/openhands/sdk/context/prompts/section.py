@@ -68,6 +68,13 @@ class PromptContext(BaseModel):
     now: str | None = None
     skill_names: tuple[str, ...] = Field(default_factory=tuple)
     secret_names: tuple[str, ...] = Field(default_factory=tuple)
+    # Resolved dynamic-tier data (skills gated + secrets merged before assembly),
+    # consumed by the dynamic sections. ``repo_skills`` is (name, content) pairs;
+    # ``secret_infos`` is (name, description) pairs.
+    repo_skills: tuple[tuple[str, str], ...] = Field(default_factory=tuple)
+    available_skills_prompt: str | None = None
+    custom_suffix: str | None = None
+    secret_infos: tuple[tuple[str, str | None], ...] = Field(default_factory=tuple)
 
     @field_validator("template_kwargs", mode="after")
     @classmethod

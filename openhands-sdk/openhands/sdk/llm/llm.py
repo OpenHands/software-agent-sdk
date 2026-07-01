@@ -8,15 +8,16 @@ import threading
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx  # noqa: F401
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
     PrivateAttr,
     SecretStr,
+    computed_field,
     field_serializer,
     field_validator,
     model_validator,
@@ -120,22 +121,11 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
+from openhands.sdk.llm.utils.vertex_preflight import assert_vertex_sdk_available
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
-
-# Shared message for the no-op ``_return_metrics`` deprecation (Q1 of #3341).
-# Metrics are always returned via ``LLMResponse.metrics``; the parameter has no
-# effect and is scheduled for removal after the standard 5-minor-release runway.
-# NOTE: ``deprecated_in`` / ``removed_in`` must be passed as string literals at
-# each call site — ``check_deprecations.py`` reads them via static AST analysis
-# and cannot resolve module-level constants.
-_RETURN_METRICS_DETAILS: Final[str] = (
-    "The _return_metrics parameter has no effect; metrics are always available "
-    "via LLMResponse.metrics. Stop passing it."
-)
 
 __all__ = ["LLM"]
 
@@ -192,6 +182,27 @@ LLM_SECRET_FIELDS: Final[tuple[str, ...]] = (
 )
 
 LLM_PROFILE_SCHEMA_VERSION: Final[int] = 1
+
+
+@dataclass(frozen=True)
+class LLMCallContext:
+    """Per-conversation state threaded through the completion call chain.
+
+    The primary path threads this explicitly:
+    ``Agent.step()`` → ``make_llm_completion()`` → ``llm.completion(call_context=...)``
+    → ``select_chat_options(call_context=...)``.
+
+    A fallback copy is also stored as a ``PrivateAttr`` on :class:`LLM`
+    (via ``_bind_conversation_context``) for callers that don't thread
+    context explicitly (e.g. the condenser's dedicated LLM).  The
+    PrivateAttr is:
+    * dropped on ``model_dump()`` / ``model_validate()`` round-trips,
+    * shallow-copied by ``model_copy()`` (sub-agent),
+    * never serialised into user-visible config.
+    """
+
+    prompt_cache_key: str | None = None
+    session_id: str | None = None
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -291,6 +302,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
     )
 
+    # OpenRouter uses HTTP-Referer as the app identity for rankings.
+    # Keep this stable unless the OpenRouter app attribution is migrated.
     openrouter_site_url: str = Field(
         default="https://docs.all-hands.dev/",
     )
@@ -541,7 +554,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _subscription_credential_store: Any = PrivateAttr(default=None)
     _subscription_credentials: Any = PrivateAttr(default=None)
     _litellm_provider: str | None = PrivateAttr(default=None)
-    _prompt_cache_key: str | None = PrivateAttr(default=None)
+    _call_context: LLMCallContext = PrivateAttr(default_factory=LLMCallContext)
     _effective_max_input_tokens: int | None = PrivateAttr(default=None)
     _effective_max_output_tokens: int | None = PrivateAttr(default=None)
     _litellm_modify_params_lock: ClassVar[threading.RLock] = threading.RLock()
@@ -737,6 +750,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return self._telemetry
 
+    @computed_field(
+        return_type=bool,
+        description=(
+            "Whether this LLM uses subscription-based authentication. "
+            "Serialized so that subscription-specific request handling "
+            "survives transport to a remote agent-server."
+        ),
+    )
     @property
     def is_subscription(self) -> bool:
         """Check if this LLM uses subscription-based authentication.
@@ -749,6 +770,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             bool: True if using subscription-based transport, False otherwise.
         """
         return self._is_subscription
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _restore_is_subscription(cls, data, handler):
+        """Restore the subscription flag when validating serialized data.
+
+        ``is_subscription`` is a computed field backed by the private
+        ``_is_subscription`` attribute, so plain validation would drop it.
+        Without this, an LLM created via ``LLM.subscription_login()`` loses
+        its subscription-specific request handling (streaming exemption,
+        Codex system prompt transform, reasoning-item stripping) after a
+        dump/validate round trip - e.g. when shipped to a remote
+        agent-server.
+        """
+        llm = handler(data)
+        if isinstance(data, dict) and data.get("is_subscription"):
+            llm._is_subscription = True
+        return llm
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
@@ -989,6 +1028,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1004,7 +1044,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         formatted_messages = self.format_messages_for_llm(messages)
         return self._finalize_completion_params(
-            formatted_messages, tools, add_security_risk_prediction, kwargs
+            formatted_messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     async def _aprepare_completion_params(
@@ -1013,6 +1057,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1028,7 +1073,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         formatted_messages = await self.aformat_messages_for_llm(messages)
         return self._finalize_completion_params(
-            formatted_messages, tools, add_security_risk_prediction, kwargs
+            formatted_messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
     def _finalize_completion_params(
@@ -1037,6 +1086,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[ChatCompletionToolParam],
@@ -1086,7 +1136,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         kwargs["tools"] = cc_tools if (bool(cc_tools) and use_native_fc) else None
         has_tools_flag = bool(cc_tools) and use_native_fc
         # Behavior-preserving: delegate to select_chat_options
-        call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
+        call_kwargs = select_chat_options(
+            self, kwargs, has_tools=has_tools_flag, call_context=call_context
+        )
 
         # 3a) joint input/output budget clamp (e.g. Bedrock-Anthropic)
         call_kwargs = self._clamp_max_tokens_for_joint_budget(
@@ -1129,6 +1181,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1151,6 +1204,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store,
             add_security_risk_prediction,
             kwargs,
+            call_context=call_context,
         )
 
     async def _aprepare_responses_params(
@@ -1161,6 +1215,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1182,6 +1237,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store,
             add_security_risk_prediction,
             kwargs,
+            call_context=call_context,
         )
 
     def _finalize_responses_params(
@@ -1193,6 +1249,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None,
         add_security_risk_prediction: bool,
         kwargs: dict[str, Any],
+        call_context: LLMCallContext | None = None,
     ) -> tuple[
         str | None,
         list[dict[str, Any]],
@@ -1223,7 +1280,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Normalize/override Responses kwargs consistently
         call_kwargs = select_responses_options(
-            self, kwargs, include=include, store=store
+            self, kwargs, include=include, store=store, call_context=call_context
         )
 
         # Request context for telemetry (always include context_window for metrics)
@@ -1296,9 +1353,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -1309,9 +1366,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Args:
             messages: List of conversation messages.
             tools: Optional list of tools available to the model.
-            _return_metrics: Deprecated and ignored; metrics are always returned
-                via ``LLMResponse.metrics``. Scheduled for removal in
-                ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas.
             on_token: Optional callback for streaming tokens.
             **kwargs: Additional arguments passed to the LLM API.
@@ -1335,13 +1389,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             print(response.content)
             ```
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.completion(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -1356,7 +1403,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = self._prepare_completion_params(
-            messages, tools, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1405,6 +1456,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1416,9 +1468,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`completion`.
@@ -1426,13 +1478,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.acompletion`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.acompletion(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
@@ -1447,7 +1492,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = await self._aprepare_completion_params(
-            messages, tools, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1499,6 +1548,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1512,9 +1562,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
@@ -1526,8 +1576,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model
             include: Optional list of fields to include in response
             store: Whether to store the conversation
-            _return_metrics: Deprecated and ignored; metrics are always returned
-                via ``LLMResponse.metrics``. Scheduled for removal in ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
@@ -1536,13 +1584,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.responses(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
@@ -1558,7 +1599,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = self._prepare_responses_params(
-            messages, tools, include, store, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1649,6 +1696,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=on_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1662,9 +1710,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
-        _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: AnyTokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Async variant of :meth:`responses`.
@@ -1672,13 +1720,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Uses ``litellm.aresponses`` under the hood, freeing the event loop
         while waiting for the LLM provider response.
         """
-        if _return_metrics:
-            warn_deprecated(
-                "LLM.aresponses(_return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
         _caller_kwargs = kwargs.copy()
         user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if user_enable_streaming:
@@ -1694,7 +1735,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             call_kwargs,
             telemetry_ctx,
         ) = await self._aprepare_responses_params(
-            messages, tools, include, store, add_security_risk_prediction, kwargs
+            messages,
+            tools,
+            include,
+            store,
+            add_security_risk_prediction,
+            kwargs,
+            call_context=call_context,
         )
 
         @self._make_retry_decorator()
@@ -1794,6 +1841,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    call_context=call_context,
                     **_caller_kwargs,
                 ),
             )
@@ -1939,6 +1987,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         **kwargs,
     ) -> dict[str, Any]:
         """Build the keyword arguments for a litellm (a)completion call."""
+        provider = self._infer_litellm_provider()
+        assert_vertex_sdk_available(provider)
+
         # When streaming, request usage in the final chunk so that detailed
         # token breakdowns (prompt_tokens_details with cached_tokens, etc.) are
         # not silently discarded by litellm's streaming handler.
@@ -2204,6 +2255,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             context_window,
                         )
                         effective_max_output_tokens = capped
+                    if (
+                        self.base_url is not None
+                        and not self.model.startswith("litellm_proxy/")
+                        and effective_max_output_tokens is not None
+                        and effective_max_output_tokens > DEFAULT_MAX_OUTPUT_TOKENS_CAP
+                    ):
+                        logger.debug(
+                            "Capping max_output_tokens from %s to %s for %s "
+                            "(model metadata may exceed provider limit)",
+                            effective_max_output_tokens,
+                            DEFAULT_MAX_OUTPUT_TOKENS_CAP,
+                            self.model,
+                        )
+                        effective_max_output_tokens = DEFAULT_MAX_OUTPUT_TOKENS_CAP
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     # 'max_tokens' is ambiguous: some providers use it for total
                     # context window, not output limit. Cap it to avoid requesting

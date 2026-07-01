@@ -10,6 +10,7 @@ from litellm.exceptions import (
 )
 
 from .classifier import (
+    is_content_policy_violation,
     is_context_window_exceeded,
     looks_like_auth_error,
     looks_like_malformed_conversation_history_error,
@@ -17,6 +18,7 @@ from .classifier import (
 from .types import (
     LLMAuthenticationError,
     LLMBadRequestError,
+    LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
     LLMRateLimitError,
@@ -55,6 +57,11 @@ def map_provider_exception(exception: Exception) -> Exception:
         exception, (APIConnectionError, ServiceUnavailableError, InternalServerError)
     ):
         return LLMServiceUnavailableError(str(exception))
+
+    # Content-policy blocks are deterministic 4xx; distinguish them from generic
+    # bad requests so the agent can recover softly instead of hard-erroring.
+    if is_content_policy_violation(exception):
+        return LLMContentPolicyViolationError(str(exception))
 
     # Generic client-side 4xx errors
     if isinstance(exception, BadRequestError):

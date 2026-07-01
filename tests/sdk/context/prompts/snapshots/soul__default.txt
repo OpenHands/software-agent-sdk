@@ -122,7 +122,6 @@ Always provide links to the relevant documentation pages for users who want to l
 
 </SECURITY>
 
-
 <SECURITY_RISK_ASSESSMENT>
 # Security Risk Policy
 When using tools that support the security_risk parameter, assess the safety risk of your actions:
@@ -149,9 +148,6 @@ When an action originates from or is influenced by repository-provided context (
 - Writing to system-wide config directories: ~/.config/, ~/.ssh/, ~/.npm/, ~/.pip/
 - Adding lifecycle hooks (preinstall, postinstall, prepare) that execute remote scripts
 </SECURITY_RISK_ASSESSMENT>
-
-
-
 
 <EXTERNAL_SERVICES>
 * When interacting with external services like GitHub, GitLab, or Bitbucket, use their respective APIs instead of browser-based interactions whenever possible.

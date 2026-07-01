@@ -27,6 +27,7 @@ from openhands.sdk.agent.utils import (
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.conversation import (
     CancellationToken,
     ConversationCallbackType,
@@ -50,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.llm import (
+    LLM,
     LLMResponse,
     Message,
     MessageToolCall,
@@ -60,9 +62,11 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
+    LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
 )
+from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
@@ -77,6 +81,7 @@ from openhands.sdk.tool import (
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
@@ -109,6 +114,36 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
+
+def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.contains_image
+    return False
+
+
+def _non_multimodal_image_message(model: str) -> Message:
+    return Message(
+        role="assistant",
+        content=[
+            TextContent(
+                text=(
+                    "I received your image, but the currently selected model "
+                    f"({model}) does not support image understanding. Please "
+                    "switch to a multimodal model to analyze the image."
+                )
+            )
+        ],
+    )
+
+
+def _should_handle_non_multimodal_image_input(
+    llm: LLM, messages: list[Message]
+) -> bool:
+    if isinstance(llm, RouterLLM):
+        return False
+    return _latest_user_message_contains_image(messages) and not llm.vision_is_active()
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,7 +492,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         This method pulls secrets from the conversation's secret_registry and
         merges them with agent_context to build the dynamic portion of the
-        system prompt.
+        system prompt, assembled from the dynamic-tier sections of the default
+        registry. ``_build_prompt_context`` reproduces the legacy no-agent_context
+        path: with no agent_context but registry secrets present, it resolves a
+        default ``AgentContext()`` so the secrets (and its datetime) still render.
 
         Args:
             state: The conversation state containing the secret_registry.
@@ -468,25 +506,11 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
-        if not self.agent_context:
-            # No agent_context but we might have secrets from registry
-            if secret_infos:
-                from openhands.sdk.context.agent_context import AgentContext
-
-                # Create a minimal context just for secrets
-                temp_context = AgentContext()
-                return temp_context.get_system_message_suffix(
-                    llm_model=self.llm.model,
-                    llm_model_canonical=self.llm.model_canonical_name,
-                    additional_secret_infos=secret_infos,
-                )
-            return None
-
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-            additional_secret_infos=secret_infos,
-        )
+        ctx = self._build_prompt_context(additional_secret_infos=secret_infos)
+        # The dynamic tier is preset-independent; fall back to the default tier for a
+        # custom Jinja template (preset None), as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(ctx).dynamic
 
     def _execute_actions(
         self,
@@ -584,6 +608,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
+        # Build per-conversation context once and thread it through all
+        # LLM calls in this step (avoids shared mutable state on the LLM).
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
@@ -597,6 +625,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         _messages = _messages_or_condensation
 
+        if _should_handle_non_multimodal_image_input(self.llm, _messages):
+            logger.info(
+                "Image input received while selected model does not support vision: %s",
+                self.llm.model,
+            )
+            on_event(
+                MessageEvent(
+                    source="agent",
+                    llm_message=_non_multimodal_image_message(self.llm.model),
+                )
+            )
+            state.execution_status = ConversationExecutionStatus.FINISHED
+            return
+
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
@@ -608,6 +650,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
+                call_context=call_context,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -619,6 +662,28 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ),
             )
             on_event(error_message)
+            return
+        except LLMContentPolicyViolationError as e:
+            # Content-policy blocks are deterministic; nudge the model and let the
+            # run loop continue instead of emitting a fatal error.
+            logger.warning(f"LLM output blocked by content filter: {e}")
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    "Your previous response was blocked by the "
+                                    "model's content filter. Please continue, "
+                                    "rephrasing to avoid the flagged content."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
             return
         except LLMMalformedConversationHistoryError as e:
             # The provider rejected the current message history as structurally
@@ -725,6 +790,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
         # Prepare LLM messages from the cached, incrementally-maintained view.
         # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = await aprepare_llm_messages(
@@ -737,6 +804,20 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
         _messages = _messages_or_condensation
 
+        if _should_handle_non_multimodal_image_input(self.llm, _messages):
+            logger.info(
+                "Image input received while selected model does not support vision: %s",
+                self.llm.model,
+            )
+            on_event(
+                MessageEvent(
+                    source="agent",
+                    llm_message=_non_multimodal_image_message(self.llm.model),
+                )
+            )
+            state.execution_status = ConversationExecutionStatus.FINISHED
+            return
+
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
@@ -748,6 +829,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
+                call_context=call_context,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -759,6 +841,28 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ),
             )
             on_event(error_message)
+            return
+        except LLMContentPolicyViolationError as e:
+            # Content-policy blocks are deterministic; nudge the model and let the
+            # run loop continue instead of emitting a fatal error.
+            logger.warning(f"LLM output blocked by content filter: {e}")
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    "Your previous response was blocked by the "
+                                    "model's content filter. Please continue, "
+                                    "rephrasing to avoid the flagged content."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
             return
         except LLMMalformedConversationHistoryError as e:
             # The provider rejected the current message history as
