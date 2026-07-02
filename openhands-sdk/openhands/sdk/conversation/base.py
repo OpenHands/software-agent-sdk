@@ -12,6 +12,7 @@ from openhands.sdk.conversation.types import (
     ConversationTokenCallbackType,
     TraceMetadataValue,
 )
+from openhands.sdk.event.types import EventID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
@@ -406,6 +407,7 @@ class BaseConversation(ABC):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "BaseConversation":
         """Deep-copy this conversation with a new ID.
 
@@ -422,10 +424,29 @@ class BaseConversation(ABC):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, copy only the branch up to this event and set
+                the fork's HEAD there. If ``None`` (default), full copy.
 
         Returns:
             A new conversation that shares the same event history but has
             its own identity and independent state going forward.
+        """
+        ...
+
+    @abstractmethod
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event within this conversation.
+
+        Re-roots the active branch in place: the agent's next context becomes
+        ``path_to_root(event_id)``. All branches stay on disk; unlike
+        :meth:`fork`, no new conversation is created.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in this
+                conversation.
         """
         ...
 

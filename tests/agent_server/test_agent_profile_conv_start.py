@@ -375,6 +375,8 @@ class TestConversationServiceStartFromProfile:
                     metrics=None,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
+                    forked_from_conversation_id=None,
+                    forked_from_event_id=None,
                 )
 
                 async def capture_start(stored):

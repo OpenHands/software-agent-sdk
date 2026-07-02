@@ -2729,6 +2729,9 @@ class TestEventServiceClose:
             def fork(self, **kwargs):
                 return mock.fork(**kwargs)
 
+            def navigate_to(self, event_id):
+                return mock.navigate_to(event_id)
+
         conv = SyncOnlyConversation()
         event_service._conversation = conv  # type: ignore[assignment]
 
