@@ -1,5 +1,6 @@
 """Utility functions for MCP integration."""
 
+import copy
 import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from openhands.sdk.tool import (
     ToolExecutor,
 )
 from openhands.sdk.tool.schema import Schema
+from openhands.sdk.tool.tool import _prioritize_schema_fields
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -372,10 +374,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
 
         assert self.name == self.mcp_tool.name
-        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_openai_tool(
             add_security_risk_prediction=add_security_risk_prediction,
-            action_type=mcp_action_type,
         )
 
     def to_responses_tool(
@@ -402,8 +402,42 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             )
 
         assert self.name == self.mcp_tool.name
-        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_responses_tool(
+            add_security_risk_prediction=add_security_risk_prediction,
+        )
+
+    def _get_tool_schema(
+        self,
+        add_security_risk_prediction: bool = False,
+        action_type: type[Schema] | None = None,
+    ) -> dict[str, Any]:
+        """Build provider-facing schema from the original MCP inputSchema."""
+        if action_type is not None:
+            raise ValueError(
+                "MCPTool._get_tool_schema does not support overriding action_type"
+            )
+
+        mcp_action_type = _create_mcp_action_type(self.mcp_tool)
+        sdk_schema = super()._get_tool_schema(
             add_security_risk_prediction=add_security_risk_prediction,
             action_type=mcp_action_type,
         )
+        sdk_props: dict[str, Any] = sdk_schema.get("properties", {})
+        sdk_required: list[str] = sdk_schema.get("required", []) or []
+
+        merged = copy.deepcopy(self.mcp_tool.inputSchema)
+        merged.setdefault("type", "object")
+        props = merged.setdefault("properties", {})
+        for meta in ("security_risk", "summary"):
+            if meta in sdk_props and meta not in props:
+                props[meta] = sdk_props[meta]
+                if meta in sdk_required:
+                    required = merged.setdefault("required", [])
+                    if meta not in required:
+                        required.append(meta)
+
+        _prioritize_schema_fields(
+            schema=merged,
+            priority=("security_risk", "summary"),
+        )
+        return merged
