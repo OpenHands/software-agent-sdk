@@ -88,10 +88,6 @@ class EventLog(EventsListBase):
             return item.id in self._id_to_idx
         return item in self._id_to_idx
 
-    def get_by_id(self, event_id: EventID) -> Event:
-        """Return the event with the given id (raises KeyError if absent)."""
-        return self[self.get_index(event_id)]
-
     def _effective_parent_id(self, idx: int, event: Event) -> EventID | None:
         """Resolve the parent of ``event`` (at ``idx``) for tree traversal.
 
@@ -128,17 +124,6 @@ class EventLog(EventsListBase):
             chain.append(evt := self[idx])
             cur_id = self._effective_parent_id(idx, evt)
         return chain[::-1]
-
-    def children_of(self, event_id: EventID | None) -> list[EventID]:
-        """Ids of events whose effective parent is ``event_id``.
-
-        ``None`` returns the root(s); 2+ children are sibling branches.
-        """
-        return [
-            evt.id
-            for idx, evt in enumerate(self)
-            if self._effective_parent_id(idx, evt) == event_id
-        ]
 
     @overload
     def __getitem__(self, idx: int) -> Event: ...

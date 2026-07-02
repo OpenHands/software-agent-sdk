@@ -19,7 +19,7 @@ from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.types import ROOT_PARENT_ID, SourceType
 from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.tool.schema import Action
 
@@ -56,6 +56,11 @@ def _msg(text: str, source: SourceType = "user") -> MessageEvent:
         source=source,
         llm_message=Message(role=role, content=[TextContent(text=text)]),
     )
+
+
+def _by_id(events, event_id: str) -> Event:
+    """Look up a stored event by id."""
+    return next(e for e in events if e.id == event_id)
 
 
 def _view_ids(conv: LocalConversation) -> list[str]:
@@ -118,7 +123,7 @@ def test_navigate_then_emit_creates_sibling_branch():
         assert _view_ids(conv) == [e0.id]
 
         e3 = _emit(conv, _msg("b1"))  # branch B forks off the root
-        assert conv.state.events.get_by_id(e3.id).parent_id == e0.id
+        assert _by_id(conv.state.events, e3.id).parent_id == e0.id
 
         # Abandoned branch A is still on disk...
         assert e1.id in conv.state.events
@@ -129,7 +134,8 @@ def test_navigate_then_emit_creates_sibling_branch():
         assert view_ids == [e0.id, e3.id]
 
         # Both branches hang off the root as siblings.
-        assert set(conv.state.events.children_of(e0.id)) == {e1.id, e3.id}
+        assert _by_id(conv.state.events, e1.id).parent_id == e0.id
+        assert _by_id(conv.state.events, e3.id).parent_id == e0.id
 
 
 @pytest.mark.parametrize(
@@ -179,13 +185,15 @@ def test_navigate_to_none_then_emit_starts_a_fresh_root():
         fresh = _emit(conv, _msg("fresh"))  # a new root over a non-empty log
 
         events = conv.state.events
-        stored = events.get_by_id(fresh.id)
+        stored = _by_id(events, fresh.id)
         # Effective parent is None: a genuine root, not chained to a1.
         assert events._effective_parent_id(events.get_index(fresh.id), stored) is None
         # Active branch is exactly the fresh root; branch A stays off-view.
         assert _view_ids(conv) == [fresh.id]
-        # Both roots hang off None as siblings.
-        assert set(events.children_of(None)) == {e0.id, fresh.id}
+        # Both roots hang off None as siblings: e0 is a genuine root, and the
+        # fresh event carries the explicit ROOT_PARENT_ID sentinel.
+        assert _by_id(events, e0.id).parent_id is None
+        assert _by_id(events, fresh.id).parent_id == ROOT_PARENT_ID
 
 
 def test_fork_from_event_slices_the_branch():
@@ -207,7 +215,7 @@ def test_fork_from_event_slices_the_branch():
 
         # Running the fork continues from the cut point.
         e3 = _emit(fork, _msg("c"))
-        assert fork.state.events.get_by_id(e3.id).parent_id == e1.id
+        assert _by_id(fork.state.events, e3.id).parent_id == e1.id
 
 
 def test_fork_after_condensation_replays_correctly():
@@ -302,7 +310,7 @@ def test_legacy_conversation_resumes_and_continues():
 
         # A new event seamlessly continues the chain off the last legacy event.
         new = _emit(resumed, _msg("after-resume"))
-        assert resumed.state.events.get_by_id(new.id).parent_id == legacy[-1].id
+        assert _by_id(resumed.state.events, new.id).parent_id == legacy[-1].id
         assert resumed.state.leaf_event_id == new.id
         assert [e.id for e in resumed.state.events.path_to_root(new.id)] == [
             *(e.id for e in legacy),
@@ -370,7 +378,7 @@ def test_append_event_stamps_swapped_event_to_active_leaf_not_storage_tail():
         with conv._state:
             conv._state.append_event(swapped)
 
-        stored = conv.state.events.get_by_id(swapped.id)
+        stored = _by_id(conv.state.events, swapped.id)
         assert stored.parent_id == e0.id  # active leaf, not a2 (idx - 1)
         assert conv.state.leaf_event_id == swapped.id
         assert _view_ids(conv) == [e0.id, swapped.id]  # branch A stays off-view
@@ -438,8 +446,6 @@ def test_navigate_to_none_empties_single_root_tree():
     be a fresh root — not chained onto the abandoned one. (The legacy fallback in
     _resolve_active_leaf used to resurrect a lone root.)
     """
-    from openhands.sdk.conversation.event_store import ROOT_PARENT_ID
-
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
         _emit(conv, _msg("only"))
@@ -449,7 +455,7 @@ def test_navigate_to_none_empties_single_root_tree():
         assert _view_ids(conv) == []
 
         fresh = _emit(conv, _msg("fresh"))
-        assert conv.state.events.get_by_id(fresh.id).parent_id == ROOT_PARENT_ID
+        assert _by_id(conv.state.events, fresh.id).parent_id == ROOT_PARENT_ID
         assert _view_ids(conv) == [fresh.id]
 
 
