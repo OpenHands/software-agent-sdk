@@ -328,6 +328,54 @@ def test_message_event_visualize_omits_empty_responses_reasoning_label():
     assert "Hello, how can you help me?" in text_content
 
 
+def test_environment_user_role_message_is_not_titled_as_human_user():
+    """Framework user-role messages should not render as human-authored input."""
+    from rich.console import Console
+
+    visualizer = DefaultConversationVisualizer()
+    event = MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Framework corrective nudge.")],
+        ),
+    )
+
+    block = visualizer._create_event_block(event)
+    assert block is not None
+
+    console = Console()
+    with console.capture() as capture:
+        console.print(block)
+    output = capture.get()
+
+    assert "Message from User" not in output
+    assert "Message from Environment" in output
+    assert "Framework corrective nudge." in output
+
+
+def test_skip_user_messages_keeps_environment_user_role_messages():
+    """skip_user_messages should skip only real human messages."""
+    visualizer = DefaultConversationVisualizer(skip_user_messages=True)
+    human_event = MessageEvent(
+        source="user",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Human input")],
+        ),
+    )
+    environment_event = MessageEvent(
+        source="environment",
+        llm_message=Message(
+            role="user",
+            content=[TextContent(text="Framework corrective nudge.")],
+        ),
+    )
+
+    assert visualizer._create_event_block(human_event) is None
+    assert visualizer._create_event_block(environment_event) is not None
+
+
 def test_agent_error_event_visualize():
     """Test AgentErrorEvent visualization."""
     event = AgentErrorEvent(
