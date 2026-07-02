@@ -18,6 +18,10 @@ from openhands.sdk.agent.response_dispatch import (
     ResponseDispatchMixin,
     classify_response,
 )
+from openhands.sdk.agent.skill_tool_permissions import (
+    EffectiveTools,
+    effective_tools_for_state,
+)
 from openhands.sdk.agent.utils import (
     amake_llm_completion,
     aprepare_llm_messages,
@@ -565,8 +569,8 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         batch.emit(on_event)
         batch.finalize(
             on_event=on_event,
-            check_iterative_refinement=lambda ae: (
-                self._check_iterative_refinement(conversation, ae)
+            check_iterative_refinement=lambda ae: self._check_iterative_refinement(
+                conversation, ae
             ),
             mark_finished=lambda: setattr(
                 state,
@@ -574,6 +578,9 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                 ConversationExecutionStatus.FINISHED,
             ),
         )
+
+    def _effective_tools_for_state(self, state: ConversationState) -> EffectiveTools:
+        return effective_tools_for_state(state, self.tools_map)
 
     @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
@@ -643,12 +650,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
         )
+        effective_tools = self._effective_tools_for_state(state)
 
         try:
             llm_response = make_llm_completion(
                 self.llm,
                 _messages,
-                tools=list(self.tools_map.values()),
+                tools=list(effective_tools.tools_map.values()),
                 on_token=on_token,
                 call_context=call_context,
             )
@@ -1120,6 +1128,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         # Store the normalized tool call to persist correct name/args in events.
         normalized_tool_call = tool_call
         arguments: dict[str, object] | None = None
+        effective_tools = self._effective_tools_for_state(conversation.state)
 
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
@@ -1135,7 +1144,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
 
             tool = self.tools_map.get(tool_name, None)
             if tool is None:
-                available = list(self.tools_map.keys())
+                available = list(effective_tools.tools_map.keys())
                 err = f"Tool '{tool_name}' not found. Available: {available}"
                 logger.error(err)
                 self._emit_tool_error(
@@ -1150,6 +1159,27 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     responses_reasoning_item=responses_reasoning_item,
                 )
                 return
+            if tool_name not in effective_tools.tools_map:
+                active_skills = ", ".join(effective_tools.restricted_skill_names)
+                available = list(effective_tools.tools_map.keys())
+                err = (
+                    f"Tool '{tool_name}' is not available while skill(s) "
+                    f"{active_skills} are active. Available: {available}"
+                )
+                logger.error(err)
+                self._emit_tool_error(
+                    error=err,
+                    tool_name=tool_name,
+                    tool_call=tool_call,
+                    llm_response_id=llm_response_id,
+                    on_event=on_event,
+                    thought=thought,
+                    reasoning_content=reasoning_content,
+                    thinking_blocks=thinking_blocks,
+                    responses_reasoning_item=responses_reasoning_item,
+                )
+                return
+            tool = effective_tools.tools_map[tool_name]
 
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
             normalized_tool_call = tool_call.model_copy(

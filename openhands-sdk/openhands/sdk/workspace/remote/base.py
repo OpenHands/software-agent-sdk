@@ -850,6 +850,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             description=skill_data.get("description"),
             is_agentskills_format=skill_data.get("is_agentskills_format", False),
             disable_model_invocation=skill_data.get("disable_model_invocation", False),
+            allowed_tools=skill_data.get("allowed_tools"),
         )
 
     def load_skills_from_agent_server(
