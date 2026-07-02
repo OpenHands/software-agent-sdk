@@ -31,6 +31,7 @@ from openhands.sdk.skills import (
     to_prompt,
 )
 from openhands.sdk.skills.skill import DEFAULT_MARKETPLACE_PATH
+from openhands.sdk.utils.datetime import utc_now
 from openhands.sdk.utils.pydantic_secrets import (
     serialize_secret,
     validate_secret_dict,
@@ -150,9 +151,15 @@ class AgentContext(BaseModel):
         json_schema_extra={"acp_compatible": True},
     )
     current_datetime: datetime | str | None = Field(
-        # Timezone-aware local "now"; get_formatted_datetime renders it to the
-        # minute for the prompt.
-        default_factory=lambda: datetime.now().astimezone(),
+        # Use utc_now() for consistency with the SDK's own datetime helper.
+        # UTC is unambiguous for LLM agents and includes the timezone offset
+        # in .isoformat() output (e.g. "2026-06-06T12:00:00+00:00").
+        #
+        # Remaining known limitation: the value is frozen at AgentContext
+        # construction time (stale in long-running conversations / reused
+        # contexts). Tracking in #3438 — refreshing the value on each turn
+        # requires a broader lifecycle change.
+        default_factory=utc_now,
         description=(
             "Current date and time information to provide to the agent. "
             "Can be a datetime object (which will be formatted as ISO 8601) "
