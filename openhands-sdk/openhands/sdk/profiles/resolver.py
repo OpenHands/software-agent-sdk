@@ -44,10 +44,32 @@ from openhands.sdk.settings.model import (
     validate_agent_settings,
 )
 from openhands.sdk.skills import Skill, merge_skills_by_name
+from openhands.sdk.tool import Tool
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
     decrypt_str_with_cipher_or_keep,
 )
+
+
+# Default exec tools for a profile-resolved agent: a profile carries no ``tools``,
+# so without this ``create_agent`` gets ``tools=[]`` and only the Finish/Think
+# built-ins (#3967). String literals, not ``openhands-tools`` imports (this
+# package can't depend on it); browser is omitted since it isn't registered on
+# every runtime and ``resolve_tool`` raises on an unknown tool.
+_DEFAULT_OPENHANDS_TOOL_NAMES: tuple[str, ...] = (
+    "terminal",
+    "file_editor",
+    "task_tracker",
+)
+_SUB_AGENT_TOOL_NAME = "task_tool_set"  # delegation; gated on enable_sub_agents
+
+
+def _default_openhands_tools(enable_sub_agents: bool) -> list[Tool]:
+    """Standard exec tool specs for a profile-resolved OpenHands agent (#3967)."""
+    names = list(_DEFAULT_OPENHANDS_TOOL_NAMES)
+    if enable_sub_agents:
+        names.append(_SUB_AGENT_TOOL_NAME)
+    return [Tool(name=name) for name in names]
 
 
 if TYPE_CHECKING:
@@ -294,6 +316,7 @@ def _build_openhands_settings(
         "agent": profile.agent,
         "llm": llm,
         "mcp_config": mcp_config,
+        "tools": _default_openhands_tools(profile.enable_sub_agents),
         "agent_context": AgentContext(
             skills=skills,
             system_message_suffix=profile.system_message_suffix,

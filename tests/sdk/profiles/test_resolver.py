@@ -96,8 +96,43 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     # MCP filtered to the referenced key.
     assert settings.mcp_config is not None
     assert list(settings.mcp_config.mcpServers.keys()) == ["fetch"]
-    # Output feeds the unchanged create_agent path.
-    assert isinstance(settings.create_agent(), Agent)
+    # Default exec toolset is attached (#3967); the sub-agent tool set is
+    # included because enable_sub_agents=True.
+    tool_names = [t.name for t in settings.tools]
+    assert {"terminal", "file_editor", "task_tracker"} <= set(tool_names)
+    assert "task_tool_set" in tool_names
+    # Output feeds the unchanged create_agent path, tools included.
+    agent = settings.create_agent()
+    assert isinstance(agent, Agent)
+    assert {"terminal", "file_editor", "task_tracker"} <= {t.name for t in agent.tools}
+
+
+def test_openhands_resolves_default_exec_tools(
+    llm_store: LLMProfileStore,
+) -> None:
+    """A profile has no ``tools`` field, so resolution must attach the standard
+    exec set (#3967) — otherwise ``create_agent`` yields an agent with only the
+    Finish/Think built-ins and no way to run shell commands or edit files. The
+    sub-agent tool set stays out when ``enable_sub_agents`` is False (default)."""
+    profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
+    assert profile.enable_sub_agents is False
+
+    settings = resolve_agent_profile(
+        profile,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert [t.name for t in settings.tools] == [
+        "terminal",
+        "file_editor",
+        "task_tracker",
+    ]
+    # The resolved agent carries the exec tools, not just the built-ins.
+    agent = settings.create_agent()
+    assert {"terminal", "file_editor", "task_tracker"} <= {t.name for t in agent.tools}
 
 
 def test_openhands_copies_skills_and_verification(
