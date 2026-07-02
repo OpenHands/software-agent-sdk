@@ -793,6 +793,23 @@ class TestToolShieldHelpers:
 
         assert th.mcp_tools_from_config({}) == list(th.ALWAYS_ACTIVE_TOOLS)
 
+    def test_mcp_tools_from_config_drops_unsafe_server_names(self):
+        """Experience names become filename stems in toolshield's loader, so
+        names that don't slug to a conservative [a-z0-9-] identifier must be
+        dropped, not forwarded (e.g. path-traversal-shaped names)."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        config = {
+            "mcpServers": {
+                "../../etc/passwd": {},
+                "evil/../name": {},
+                "": {},
+                "filesystem": {},
+            }
+        }
+        result = th.mcp_tools_from_config(config)
+        assert result == list(th.ALWAYS_ACTIVE_TOOLS) + ["filesystem-mcp"]
+
     @requires_toolshield
     def test_safety_experiences_for_mcp_config_loads_bundled(self):
         from openhands.sdk.security import toolshield_helpers as th

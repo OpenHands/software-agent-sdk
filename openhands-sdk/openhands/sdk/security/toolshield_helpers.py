@@ -54,17 +54,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
-from typing import TYPE_CHECKING, Any
+import re
+from typing import Any
 
 from openhands.sdk.logger import get_logger
-
-
-if TYPE_CHECKING:
-    # Only for type hints; keep the real import lazy so the SDK doesn't
-    # require toolshield to be installed.
-    from toolshield import (  # type: ignore[import-not-found]  # noqa: F401
-        ExperienceStore,
-    )
 
 
 logger = get_logger(__name__)
@@ -109,7 +102,9 @@ def load_safety_experiences(
     Args:
         tool_names: Tool experience identifiers (e.g. ``"terminal-mcp"``).
             Must match a file bundled in the ``toolshield`` package for the
-            given ``model`` subdirectory.
+            given ``model`` subdirectory. These are used as filename stems
+            by ``toolshield`` -- pass trusted, validated values only (the
+            config/scan helpers in this module validate before calling).
         model: Which pre-generated experience set to use. Defaults to
             ``"claude-sonnet-4.5"``.
 
@@ -130,6 +125,12 @@ def default_safety_experiences(model: str = "claude-sonnet-4.5") -> str:
     instead.
     """
     return load_safety_experiences(DEFAULT_TOOL_NAMES, model=model)
+
+
+# Experience names are used as filename stems by toolshield's loader, so
+# only accept conservative slugs. Anything else (path separators, dots,
+# unicode tricks) is dropped rather than forwarded.
+_EXPERIENCE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
 def _experience_name_from_server_name(server_name: str) -> str:
@@ -173,6 +174,9 @@ def mcp_tools_from_config(mcp_config: dict[str, Any]) -> list[str]:
     servers = (mcp_config or {}).get("mcpServers", {}) or {}
     for server_name in servers:
         exp_name = _experience_name_from_server_name(str(server_name))
+        if not _EXPERIENCE_NAME_RE.fullmatch(exp_name):
+            logger.debug(f"Ignoring MCP server with unusable name: {server_name!r}")
+            continue
         if exp_name not in names:
             names.append(exp_name)
     return names
@@ -218,16 +222,20 @@ def safety_experiences_for_mcp_config(
     missing = [t for t in wanted if t not in available]
     if missing:
         logger.info(
-            f"Configured MCP servers without bundled {model!r} experiences "
-            f"(skipping): {missing}"
+            f"Skipping {len(missing)} configured MCP tool(s) without "
+            f"bundled {model!r} experiences"
         )
+        logger.debug(f"Tools without bundled experiences: {missing}")
     if not runnable:
         logger.warning(
             "No configured MCP server matches a bundled experience file; "
             "returning empty safety_experiences"
         )
         return ""
-    logger.info(f"Loading safety experiences for configured MCP tools: {runnable}")
+    logger.info(
+        f"Loading safety experiences for {len(runnable)} configured MCP tool(s)"
+    )
+    logger.debug(f"Configured MCP tools with experiences: {runnable}")
     return load_safety_experiences(runnable, model=model)
 
 
@@ -245,6 +253,13 @@ def detect_active_mcp_tools(
 
     Tools in :data:`ALWAYS_ACTIVE_TOOLS` (terminal) are returned
     unconditionally since they're local exec rather than network services.
+
+    Not safe for concurrent use: capturing the scanner's output swaps
+    ``sys.stdout`` process-wide for the duration of the scan, so other
+    threads' prints during that window would be captured too. Call from
+    single-threaded setup code (or serialize calls); the recommended
+    :func:`safety_experiences_for_mcp_config` path does no scanning and
+    has no such constraint.
 
     Args:
         port_range: Inclusive ``(start, end)`` localhost port range to scan.
@@ -296,6 +311,14 @@ def detect_active_mcp_tools(
             )
             continue
         exp_name = _experience_name_from_server_name(name)
+        if not _EXPERIENCE_NAME_RE.fullmatch(exp_name):
+            # Server names come from the network here -- drop anything
+            # that doesn't slug to a safe filename stem.
+            logger.debug(
+                f"MCP server at {server.get('url')} reported unusable "
+                f"name {name!r}; skipping"
+            )
+            continue
         if exp_name in active:
             continue
         active.append(exp_name)
@@ -361,7 +384,8 @@ def auto_detect_safety_experiences(
     networked_detected = [t for t in active if t not in ALWAYS_ACTIVE_TOOLS]
 
     if networked_detected:
-        logger.info(f"Auto-detected active MCP tools: {active}")
+        logger.info(f"Auto-detected {len(active)} active MCP tool(s)")
+        logger.debug(f"Auto-detected active MCP tools: {active}")
         # Keep only tools with a bundled experience for ``model``; log
         # the misses so the operator knows coverage gaps.
         from toolshield import (  # type: ignore[import-not-found]
@@ -373,9 +397,10 @@ def auto_detect_safety_experiences(
         missing = [t for t in active if t not in available]
         if missing:
             logger.info(
-                f"Detected tools without bundled {model!r} experiences "
-                f"(skipping): {missing}"
+                f"Skipping {len(missing)} detected tool(s) without "
+                f"bundled {model!r} experiences"
             )
+            logger.debug(f"Detected tools without bundled experiences: {missing}")
         if runnable:
             return load_safety_experiences(runnable, model=model)
 
