@@ -28,6 +28,7 @@ from openhands.agent_server.models import (
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
+    SendMessageRequest,
     StartConversationRequest,
     StoredConversation,
     UpdateConversationRequest,
@@ -1050,6 +1051,83 @@ class TestConversationServiceCountConversations:
 
 class TestConversationServiceStartConversation:
     """Test cases for ConversationService.start_conversation method."""
+
+    async def _start_with_initial_message(
+        self,
+        conversation_service: ConversationService,
+        tmp_path: Path,
+        initial_message: SendMessageRequest,
+    ) -> AsyncMock:
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+            confirmation_policy=NeverConfirm(),
+            initial_message=initial_message,
+        )
+        event_service: AsyncMock | None = None
+
+        async def fake_start_event_service(stored: StoredConversation):
+            nonlocal event_service
+            service = AsyncMock(spec=EventService)
+            service.stored = stored
+            service.get_state.return_value = ConversationState(
+                id=stored.id,
+                agent=stored.agent,
+                workspace=stored.workspace,
+                execution_status=ConversationExecutionStatus.IDLE,
+                confirmation_policy=stored.confirmation_policy,
+            )
+            event_service = service
+            return service
+
+        with patch.object(
+            conversation_service,
+            "_start_event_service",
+            side_effect=fake_start_event_service,
+        ):
+            await conversation_service.start_conversation(request)
+
+        assert event_service is not None
+        return event_service
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_honors_explicit_initial_message_run_false(
+        self, conversation_service, tmp_path
+    ):
+        initial_message = SendMessageRequest(
+            role="user",
+            content=[TextContent(text="queue without auto-run")],
+            run=False,
+        )
+        assert "run" in initial_message.model_fields_set
+
+        event_service = await self._start_with_initial_message(
+            conversation_service, tmp_path, initial_message
+        )
+
+        event_service.send_message.assert_awaited_once()
+        _, run = event_service.send_message.await_args.args
+        assert run is False
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_autoruns_when_initial_message_run_omitted(
+        self, conversation_service, tmp_path
+    ):
+        initial_message = SendMessageRequest(
+            role="user",
+            content=[TextContent(text="preserve default startup behavior")],
+        )
+        assert "run" not in initial_message.model_fields_set
+
+        event_service = await self._start_with_initial_message(
+            conversation_service, tmp_path, initial_message
+        )
+
+        event_service.send_message.assert_awaited_once()
+        _, run = event_service.send_message.await_args.args
+        assert run is True
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_secrets(self, conversation_service):

@@ -820,7 +820,14 @@ class ConversationService:
             message = Message(
                 role=initial_message.role, content=initial_message.content
             )
-            await event_service.send_message(message, True)
+            # Preserve existing startup behavior for first-party callers that
+            # omit run, while honoring clients that explicitly set run=False.
+            run_initial_message = (
+                initial_message.run
+                if "run" in initial_message.model_fields_set
+                else True
+            )
+            await event_service.send_message(message, run_initial_message)
 
         state = await event_service.get_state()
         conversation_info = _compose_conversation_info(event_service.stored, state)
