@@ -914,7 +914,12 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
     """Create a runtime subscription LLM from a serialized LLM config."""
     if getattr(llm, "auth_type", "api_key") != "subscription":
         return llm
-    if llm.is_subscription:
+    # Only short-circuit for a locally-created subscription LLM that still has
+    # its runtime credentials (PrivateAttr, lost during serialization). A
+    # deserialized LLM may have is_subscription=True but missing base_url or
+    # credentials, so it must be re-created to restore the Codex endpoint and
+    # refresh OAuth tokens.
+    if llm.is_subscription and llm._subscription_credentials is not None:
         return llm
 
     vendor = llm.subscription_vendor or "openai"

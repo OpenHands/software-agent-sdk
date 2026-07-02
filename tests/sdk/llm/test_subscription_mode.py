@@ -417,3 +417,83 @@ def test_is_subscription_survives_serialization_round_trip():
         plain.model_dump(context={"expose_secrets": True})
     )
     assert restored_plain.is_subscription is False
+
+
+def test_create_subscription_llm_from_config_restores_missing_base_url():
+    """create_subscription_llm_from_config must re-create the LLM when
+    is_subscription=True but runtime credentials are missing (lost during
+    serialization).
+
+    Clients (e.g. agent-canvas) strip base_url and api_key before forwarding
+    a subscription LLM config. If the function short-circuits on
+    is_subscription=True alone, the LLM keeps base_url=None and requests fall
+    back to the default OpenAI Platform endpoint, producing
+    "Missing scopes: api.responses.write" errors.
+    """
+    from openhands.sdk.llm.auth.openai import (
+        CODEX_API_ENDPOINT,
+        create_subscription_llm_from_config,
+    )
+
+    # Simulate a config that went through agent-canvas: auth_type=subscription,
+    # is_subscription=True (survived serialization), but base_url stripped and
+    # _subscription_credentials lost (PrivateAttr doesn't survive serialization).
+    llm = LLM(
+        model="openai/gpt-5.5",
+        auth_type="subscription",
+        subscription_vendor="openai",
+        stream=True,
+        usage_id="test-restore-base-url",
+    )
+    llm._is_subscription = True
+    assert llm.base_url is None  # precondition: base_url was stripped
+    assert llm._subscription_credentials is None  # lost in serialization
+
+    # Stub credential refresh so the test doesn't require a real ChatGPT login.
+    fake_creds = SimpleNamespace(
+        access_token="fake-token",
+        refresh_token="fake-refresh",
+        expires_at=9999999999999,
+    )
+    with patch(
+        "openhands.sdk.llm.auth.openai.OpenAISubscriptionAuth.refresh_if_needed_sync",
+        return_value=fake_creds,
+    ):
+        result = create_subscription_llm_from_config(llm)
+
+    expected_base_url = CODEX_API_ENDPOINT.rsplit("/", 1)[0]
+    assert result.is_subscription is True
+    assert result.base_url == expected_base_url
+    assert result.api_key is None  # OAuth token lives in PrivateAttr, not api_key
+
+
+def test_create_subscription_llm_from_config_short_circuits_when_complete():
+    """When is_subscription=True AND runtime credentials are present (locally
+    created, not deserialized), the function should return the LLM as-is."""
+    from openhands.sdk.llm.auth.openai import (
+        create_subscription_llm_from_config,
+    )
+
+    # A locally-created subscription LLM has _subscription_credentials set.
+    llm = LLM(
+        model="openai/gpt-5.5",
+        auth_type="subscription",
+        subscription_vendor="openai",
+        base_url="https://chatgpt.com/backend-api/codex",
+        stream=True,
+        usage_id="test-short-circuit",
+    )
+    llm._is_subscription = True
+    llm._subscription_credentials = SimpleNamespace(
+        access_token="fake-token",
+        refresh_token="fake-refresh",
+        expires_at=9999999999999,
+    )
+
+    with patch(
+        "openhands.sdk.llm.auth.openai.OpenAISubscriptionAuth.refresh_if_needed_sync",
+        side_effect=AssertionError("should not be called"),
+    ):
+        result = create_subscription_llm_from_config(llm)
+
+    assert result is llm  # same object, no re-creation
