@@ -340,15 +340,15 @@ class ResponseDispatchMixin:
     def _send_corrective_nudge(self, on_event: ConversationCallbackType) -> None:
         """Inject corrective feedback when no tool call and no content.
 
-        Prevents the monologue stuck-detector from firing when the model
-        simply forgot to emit a function call.
+        The model still receives this as a user-role message, but the event
+        source marks that it came from the framework rather than the human.
         """
         logger.warning(
             "LLM response contained no tool call and no content"
             " - sending corrective feedback"
         )
         nudge = MessageEvent(
-            source="user",
+            source="environment",
             llm_message=Message(
                 role="user",
                 content=[
