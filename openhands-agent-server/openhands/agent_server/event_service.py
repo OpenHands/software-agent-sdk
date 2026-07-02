@@ -88,6 +88,7 @@ class EventService:
         default_factory=lambda: PubSub[Event](max_subscribers=50), init=False
     )
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _run_finalizing_task: asyncio.Task | None = field(default=None, init=False)
     # Set when a send_message(run=True) is rejected because a run is still
     # wrapping up; consumed by _run_and_publish to re-run the stranded message.
     _rerun_requested: bool = field(default=False, init=False)
@@ -908,10 +909,8 @@ class EventService:
 
         # Use lock to make check-and-set atomic, preventing race conditions
         async with self._run_lock:
-            if (
-                await self._get_execution_status()
-                == ConversationExecutionStatus.RUNNING
-            ):
+            execution_status = await self._get_execution_status()
+            if execution_status == ConversationExecutionStatus.RUNNING:
                 raise ValueError("conversation_already_running")
             if self._closing:
                 raise ValueError("inactive_service")
@@ -923,7 +922,10 @@ class EventService:
 
             # Check if there's already a running task
             if self._run_task is not None and not self._run_task.done():
-                raise ValueError("conversation_already_running")
+                if self._run_finalizing_task is self._run_task:
+                    raise ValueError("conversation_already_running")
+                self._run_task.cancel()
+                self._run_task = None
 
             # Capture conversation reference for the closure
             conversation = self._conversation
@@ -932,6 +934,7 @@ class EventService:
             loop = asyncio.get_running_loop()
 
             async def _run_and_publish():
+                current_task = asyncio.current_task()
                 try:
                     # Prefer the native async path when available so the event
                     # loop is free during LLM I/O.  Fall back to thread-pool
@@ -974,13 +977,17 @@ class EventService:
                     # This prevents a race condition where the conversation status
                     # becomes FINISHED before agent events (MessageEvent, ActionEvent,
                     # etc.) are published to WebSocket subscribers.
+                    self._run_finalizing_task = current_task
                     if self._callback_wrapper:
                         await loop.run_in_executor(
                             None, self._callback_wrapper.wait_for_pending, 30.0
                         )
 
                     # Clear task reference and publish state update
-                    self._run_task = None
+                    if self._run_task is current_task:
+                        self._run_task = None
+                    if self._run_finalizing_task is current_task:
+                        self._run_finalizing_task = None
                     await self._publish_state_update()
 
                     # Re-arm a run for input stranded while this task was
