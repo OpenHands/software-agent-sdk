@@ -77,12 +77,33 @@ class _RemoteMCPServerSpec(BaseModel):
             "Bearer token. If provided, sent as 'Authorization: Bearer <token>'."
         ),
     )
+    auth: Literal["oauth"] | None = Field(
+        default=None,
+        description=(
+            "Set to \"oauth\" to let fastmcp perform the OAuth flow "
+            "(RFC 9728 + PKCE) with the MCP server.  Mutually exclusive "
+            "with ``api_key`` and explicit ``Authorization`` headers."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _no_auth_conflict(self) -> _RemoteMCPServerSpec:
+        if self.auth == "oauth" and (
+            self.api_key or "Authorization" in self.headers
+        ):
+            raise ValueError(
+                "'auth: oauth' cannot be combined with 'api_key' or an "
+                "explicit 'Authorization' header."
+            )
+        return self
 
     def to_fastmcp_dict(self) -> dict[str, Any]:
         # fastmcp's RemoteMCPServer accepts "http", "streamable-http", "sse";
         # collapse the OpenHands-specific "shttp" alias to "http".
         transport = "http" if self.type == "shttp" else self.type
         out: dict[str, Any] = {"url": self.url, "transport": transport}
+        if self.auth:
+            out["auth"] = self.auth
         headers = dict(self.headers)
         if self.api_key:
             # Don't clobber a caller-provided Authorization header.

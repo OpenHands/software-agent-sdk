@@ -383,3 +383,99 @@ def test_mcp_test_bearer_token_in_auth_header(
     # itself blowing up (e.g. malformed headers crashing the transport).
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# OAuth auth field
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_test_accepts_auth_oauth_field(client: TestClient, http_mcp_server: MCPTestServer):
+    """The ``auth: "oauth"`` field should be accepted and forwarded to fastmcp.
+
+    We can't complete a real OAuth handshake in a unit test, but we can verify
+    the field is accepted at the schema layer and doesn't crash the request
+    handler.  The local FastMCP test server doesn't require OAuth, so fastmcp
+    will simply ignore the ``auth`` value and connect normally.
+    """
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+                "auth": "oauth",
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    # The server doesn't enforce OAuth, so the connection should succeed.
+    # (If fastmcp attempted a real OAuth flow it would fail because there's
+    # no OAuth metadata on the test server — but fastmcp only starts the
+    # flow when the server returns 401/403, which our test server won't.)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert set(body["tools"]) == {"echo", "add"}
+
+
+def test_mcp_test_rejects_auth_oauth_with_api_key(client: TestClient):
+    """``auth: oauth`` is mutually exclusive with ``api_key``."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+                "api_key": "some-token",
+            },
+            "timeout": 5.0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_mcp_test_rejects_auth_oauth_with_auth_header(client: TestClient):
+    """``auth: oauth`` is mutually exclusive with an explicit Authorization header."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "auth": "oauth",
+                "headers": {"Authorization": "Bearer some-token"},
+            },
+            "timeout": 5.0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_remote_spec_to_fastmcp_dict_includes_auth():
+    """to_fastmcp_dict should forward the auth field when set."""
+    from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
+
+    spec = _RemoteMCPServerSpec(
+        type="shttp",
+        url="https://mcp.example.com/mcp",
+        auth="oauth",
+    )
+    d = spec.to_fastmcp_dict()
+    assert d["auth"] == "oauth"
+    assert d["transport"] == "http"  # shttp collapsed to http
+    assert "headers" not in d  # no headers when auth=oauth
+
+
+def test_remote_spec_to_fastmcp_dict_omits_auth_when_unset():
+    """to_fastmcp_dict should omit auth when not set."""
+    from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
+
+    spec = _RemoteMCPServerSpec(
+        type="http",
+        url="https://mcp.example.com/mcp",
+    )
+    d = spec.to_fastmcp_dict()
+    assert "auth" not in d
