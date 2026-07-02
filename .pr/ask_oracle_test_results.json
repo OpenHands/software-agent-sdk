@@ -1,0 +1,23 @@
+{
+  "targeted_pytest": {
+    "command": "uv run pytest tests/tools/ask_oracle/test_ask_oracle.py tests/sdk/tool/test_builtins.py tests/sdk/test_settings.py::test_llm_agent_settings_export_schema_groups_sections tests/sdk/test_settings.py::test_export_agent_settings_schema_emits_variant_tagged_sections tests/examples/test_examples.py::test_directory_example_is_discovered",
+    "result": "10 passed"
+  },
+  "example_pytest": {
+    "command": "uv run pytest tests/examples/test_examples.py --run-examples -k 55_ask_oracle_tool",
+    "result": "1 passed, 66 deselected"
+  },
+  "pre_commit": {
+    "command": "uv run pre-commit run --files <changed ask_oracle files>",
+    "result": "passed"
+  },
+  "live_validation": {
+    "command": "OPENHANDS_SUPPRESS_BANNER=1 LLM_API_KEY=... LLM_BASE_URL=https://llm-proxy.eval.all-hands.dev ASK_ORACLE_PRIMARY_MODEL=litellm_proxy/openai/gpt-5.1 ASK_ORACLE_MODEL=litellm_proxy/openai/gpt-5-mini uv run python .pr/ask_oracle_live_validation.py",
+    "result_file": ".pr/ask_oracle_live_validation.json",
+    "result": "passed (end-to-end: agent called ask_oracle, oracle logged response matches observation, conversation finished)"
+  },
+  "live_example": {
+    "command": "LLM_API_KEY=... LLM_BASE_URL=... LLM_MODEL=litellm_proxy/openai/gpt-5.1 uv run pytest tests/examples/test_examples.py --run-examples -k 55_ask_oracle_tool",
+    "result": "1 passed, 66 deselected"
+  }
+}

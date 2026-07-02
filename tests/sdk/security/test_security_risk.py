@@ -108,11 +108,11 @@ def test_lt_reverse_ordering():
 def test_lt_unknown_raises():
     """Test that comparing UNKNOWN raises ValueError, consistent with is_riskier."""
     with pytest.raises(ValueError):
-        SecurityRisk.UNKNOWN < SecurityRisk.LOW
+        _ = SecurityRisk.UNKNOWN < SecurityRisk.LOW
     with pytest.raises(ValueError):
-        SecurityRisk.LOW < SecurityRisk.UNKNOWN
+        _ = SecurityRisk.LOW < SecurityRisk.UNKNOWN
     with pytest.raises(ValueError):
-        SecurityRisk.UNKNOWN < SecurityRisk.UNKNOWN
+        _ = SecurityRisk.UNKNOWN < SecurityRisk.UNKNOWN
 
 
 def test_max_on_concrete_risks():
