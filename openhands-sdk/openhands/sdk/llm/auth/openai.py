@@ -306,6 +306,14 @@ class DeviceCode:
     interval: int
 
 
+class OpenAIDeviceAuthError(RuntimeError):
+    """Error returned by OpenAI's device authorization endpoints."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 async def _request_device_code() -> DeviceCode:
     """Request a device code for headless ChatGPT sign-in."""
     async with AsyncClient() as client:
@@ -316,12 +324,14 @@ async def _request_device_code() -> DeviceCode:
         )
         if not response.is_success:
             if response.status_code == 404:
-                raise RuntimeError(
+                raise OpenAIDeviceAuthError(
                     "Device code login is not enabled for this OpenAI server. "
-                    "Use browser login instead."
+                    "Use browser login instead.",
+                    status_code=response.status_code,
                 )
-            raise RuntimeError(
-                f"Device code request failed with status {response.status_code}"
+            raise OpenAIDeviceAuthError(
+                f"Device code request failed with status {response.status_code}",
+                status_code=response.status_code,
             )
 
         data = response.json()
@@ -365,7 +375,10 @@ async def _poll_device_code_once(device_code: DeviceCode) -> dict[str, Any] | No
     if response.status_code in (403, 404):
         return None
 
-    raise RuntimeError(f"Device auth failed with status {response.status_code}")
+    raise OpenAIDeviceAuthError(
+        f"Device auth failed with status {response.status_code}",
+        status_code=response.status_code,
+    )
 
 
 async def _poll_device_code(device_code: DeviceCode) -> dict[str, Any]:
