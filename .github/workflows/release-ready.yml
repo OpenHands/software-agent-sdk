@@ -1,0 +1,37 @@
+---
+name: release ready
+
+# When the DRAFT release PR is marked "Ready for review", delegate to the
+# reusable release-ready workflow. It labels the release PR (`release: ready`
+# plus the `ready-labels` below) and posts to Slack. The ready-for-review action
+# is the deliberate release-cut signal.
+#
+# The `ready-labels` are the SDK's test-trigger labels: adding them kicks off the
+# integration / behavior / example suites, which trigger on the `labeled` event
+# (see integration-runner.yml and run-examples.yml). release-ready adds them with
+# the GitHub App token, so those `labeled` events actually fire.
+#
+# The trigger must live here because ready_for_review fires in the repo that owns
+# the release PR. Safe under pull_request_target — release-ready.yml never checks
+# out or runs PR code, refuses fork PRs, and requires an existing `autorelease:*`
+# label before acting. Do NOT add a checkout step.
+on:
+    pull_request_target:
+        types: [ready_for_review]
+
+jobs:
+    release-ready:
+        permissions:
+            actions: read # write only if `release-test-workflows` is later set
+            contents: read # write only if `release-test-event-type` is later set
+            issues: write
+            pull-requests: write
+        secrets: inherit # RELEASE_APP_* + SLACK_BOT_TOKEN
+        uses: OpenHands/release-actions/.github/workflows/release-ready.yml@v0.2.0
+        with:
+            product-name: OpenHands Agent SDK
+            slack-channel: '#proj-agent'
+            ready-labels: |
+                behavior-test
+                integration-test
+                test-examples
