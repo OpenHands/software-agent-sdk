@@ -35,6 +35,7 @@ from openhands.sdk.git.utils import (
     validate_git_repository,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 class SubdirectoryEntry(BaseModel):
@@ -321,6 +322,49 @@ def _head_is_detached(root: Path) -> bool:
     except GitCommandError:
         return False
     return branch.strip() == "HEAD"
+
+
+def _git_probe(args: list[str], root: Path) -> str:
+    """Run a read-only git probe, returning stripped stdout or ``""``.
+
+    Unlike ``run_git_command`` this never logs or raises on a non-zero exit:
+    a repo with no ``origin`` remote, a detached HEAD, or no commits is the
+    expected case here, not an error worth surfacing.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "--no-pager", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _git_repo_metadata(root: Path) -> dict[str, str]:
+    """Best-effort repo identity headers for the archived work-tree.
+
+    Returns the redacted ``origin`` remote URL, the current branch
+    (``DETACHED`` for a detached HEAD), and the HEAD commit, keyed by response
+    header name. Each value is independently best-effort and omitted when
+    unavailable; values that an HTTP header cannot carry (e.g. a non-ASCII
+    branch name) are dropped so an exotic ref cannot 500 the response.
+    """
+    metadata: dict[str, str] = {}
+    remote = _git_probe(["remote", "get-url", "origin"], root)
+    if remote:
+        metadata["X-Archive-Repo-Remote"] = redact_url_credentials(remote)
+    branch = _git_probe(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    if branch:
+        metadata["X-Archive-Branch"] = "DETACHED" if branch == "HEAD" else branch
+    head = _git_probe(["rev-parse", "HEAD"], root)
+    if head:
+        metadata["X-Archive-Head-Commit"] = head
+    return {k: v for k, v in metadata.items() if v.isascii()}
 
 
 def _create_git_delta(
@@ -972,13 +1016,16 @@ async def archive_directory(
             detail=f"Failed to archive directory: {str(e)}",
         )
 
-    headers: dict[str, str] | None = None
+    # Repo identity (remote / branch / HEAD) applies to both formats so a
+    # tar.gz snapshot is self-describing too; base_commit/base_ref are
+    # git-delta-only (they describe the patch's replay base).
+    headers: dict[str, str] = {}
+    if (repo_root / ".git").exists():
+        headers.update(await asyncio.to_thread(_git_repo_metadata, repo_root))
     if base_commit:
         # Make a git-delta self-describing so consumers can replay the patch.
-        headers = {
-            "X-Archive-Base-Commit": base_commit,
-            "X-Archive-Base-Ref": base_ref or "auto",
-        }
+        headers["X-Archive-Base-Commit"] = base_commit
+        headers["X-Archive-Base-Ref"] = base_ref or "auto"
 
     return FileResponse(
         path=output_path,
