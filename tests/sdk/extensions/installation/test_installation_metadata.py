@@ -238,6 +238,39 @@ def test_load_from_dir_invalid_json(tmp_path: Path):
     assert metadata.extensions == {}
 
 
+def test_save_and_load_round_trip_non_ascii(tmp_path: Path):
+    """save_to_dir() then load_from_dir() must round-trip non-ASCII content.
+
+    save_to_dir()/load_from_dir() use Path.write_text()/read_text(), which
+    fall back to the platform default encoding (cp1252 on Windows) when no
+    encoding is given. cp1252 cannot represent characters like emoji, so
+    metadata with non-ASCII fields would fail to persist. Both ends must
+    use UTF-8.
+    """
+    installation_dir = tmp_path / "installed"
+    installation_dir.mkdir()
+
+    info = InstallationInfo(
+        name="café-extension",
+        version="1.0.0",
+        description="Adds 🔐 secure access review — supports français",
+        source="github:owner/café-extension",
+        install_path=installation_dir / "café-extension",
+    )
+    metadata = InstallationMetadata(extensions={"café-extension": info})
+    metadata.save_to_dir(installation_dir)
+
+    # The metadata file on disk must be valid UTF-8.
+    metadata_path = InstallationMetadata.get_metadata_path(installation_dir)
+    assert "🔐" in metadata_path.read_bytes().decode("utf-8")
+
+    loaded_metadata = InstallationMetadata.load_from_dir(installation_dir)
+    assert metadata == loaded_metadata
+    assert loaded_metadata.extensions["café-extension"].description == (
+        "Adds 🔐 secure access review — supports français"
+    )
+
+
 # ============================================================================
 # open() Context Manager Tests
 # ============================================================================
