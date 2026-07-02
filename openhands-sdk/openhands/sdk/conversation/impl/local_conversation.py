@@ -2272,8 +2272,12 @@ class LocalConversation(BaseConversation):
                      SecretValue = str | Callable[[], str]. Callables are invoked lazily
                      when a command references the secret key.
         """
-        secret_registry = self._state.secret_registry
-        secret_registry.update_secrets(secrets)
+        # Hold the state lock: mutating secret_sources while another thread's
+        # state autosave is serializing it panics pydantic-core ("dictionary
+        # changed size during iteration").
+        with self._state:
+            secret_registry = self._state.secret_registry
+            secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
