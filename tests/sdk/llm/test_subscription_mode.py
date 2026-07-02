@@ -12,7 +12,7 @@ See: https://github.com/OpenHands/software-agent-sdk/issues/2797
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +22,7 @@ from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from openai.types.responses.response_function_tool_call import (
     ResponseFunctionToolCall,
 )
+from pydantic import ConfigDict, model_validator
 
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 from openhands.sdk.llm.llm import LLM
@@ -417,3 +418,21 @@ def test_is_subscription_survives_serialization_round_trip():
         plain.model_dump(context={"expose_secrets": True})
     )
     assert restored_plain.is_subscription is False
+
+
+def test_is_subscription_restore_respects_subclass_before_validator():
+    class StrictLLM(LLM):
+        model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+
+        @model_validator(mode="before")
+        @classmethod
+        def _drop_is_subscription(cls, data: Any) -> Any:
+            if isinstance(data, dict):
+                return {k: v for k, v in data.items() if k != "is_subscription"}
+            return data
+
+    restored = StrictLLM.model_validate(
+        {"model": "openai/gpt-4o-mini", "is_subscription": True}
+    )
+
+    assert restored.is_subscription is False
