@@ -1,14 +1,20 @@
 """Helpers for populating ``ToolShieldLLMSecurityAnalyzer.safety_experiences``.
 
 These helpers integrate with the ``toolshield`` PyPI package (install via the
-``[toolshield]`` optional extra). They expose three usage patterns:
+``[toolshield]`` optional extra). They expose four usage patterns:
 
-1. :func:`default_safety_experiences` -- seed with terminal + filesystem
+1. :func:`safety_experiences_for_mcp_config` -- **recommended for SDK
+   agents**: derive the tool surface from the agent's own
+   ``AgentBase.mcp_config`` (no network probing; works for stdio servers).
+2. :func:`default_safety_experiences` -- seed with terminal + filesystem
    experiences we ship by default.
-2. :func:`load_safety_experiences` -- load an explicit list of tool
+3. :func:`load_safety_experiences` -- load an explicit list of tool
    experiences.
-3. :func:`auto_detect_safety_experiences` -- probe localhost for active MCP
-   servers, load experiences for the tools that are actually running.
+4. :func:`auto_detect_safety_experiences` -- probe localhost for active MCP
+   servers, load experiences for the tools that are actually running. A
+   developer convenience for exploratory setups where no ``mcp_config`` is
+   at hand; prefer :func:`safety_experiences_for_mcp_config` in server or
+   agent processes.
 
 All three return a rendered string ready to plug into
 ``ToolShieldLLMSecurityAnalyzer(safety_experiences=...)``. Users who want to
@@ -33,12 +39,22 @@ Example:
     ...     llm=guardrail_llm,
     ...     safety_experiences=auto_detect_safety_experiences(),
     ... )
+    >>>
+    >>> # Or, preferred for SDK agents: match the agent's configured servers
+    >>> analyzer = ToolShieldLLMSecurityAnalyzer(
+    ...     llm=guardrail_llm,
+    ...     safety_experiences=safety_experiences_for_mcp_config(
+    ...         agent.mcp_config
+    ...     ),
+    ... )
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+import contextlib
+import io
+from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.logger import get_logger
 
@@ -131,6 +147,90 @@ def _experience_name_from_server_name(server_name: str) -> str:
     return f"{slug}-mcp"
 
 
+def mcp_tools_from_config(mcp_config: dict[str, Any]) -> list[str]:
+    """Derive experience names from an agent's ``mcp_config`` dict.
+
+    This is the preferred SDK integration path: the agent already declares
+    its MCP surface in ``AgentBase.mcp_config``
+    (``{"mcpServers": {name: spec, ...}}``), so we can map the configured
+    server names to experience names directly -- no network probing, no
+    dependency on servers being up at analyzer-construction time, and it
+    works for stdio servers that have no localhost port at all.
+
+    Tools in :data:`ALWAYS_ACTIVE_TOOLS` (terminal) are included
+    unconditionally since agents get local exec regardless of MCP config.
+
+    Args:
+        mcp_config: The agent's MCP configuration dictionary, in the same
+            shape as ``AgentBase.mcp_config``.
+
+    Returns:
+        Experience identifiers (e.g. ``"terminal-mcp"``,
+        ``"filesystem-mcp"``). Always-active tools appear first. Requires
+        no toolshield import -- this is pure name mapping.
+    """
+    names = list(ALWAYS_ACTIVE_TOOLS)
+    servers = (mcp_config or {}).get("mcpServers", {}) or {}
+    for server_name in servers:
+        exp_name = _experience_name_from_server_name(str(server_name))
+        if exp_name not in names:
+            names.append(exp_name)
+    return names
+
+
+def safety_experiences_for_mcp_config(
+    mcp_config: dict[str, Any],
+    model: str = "claude-sonnet-4.5",
+) -> str:
+    """Load experiences matching an agent's configured MCP servers.
+
+    Recommended way to seed :class:`ToolShieldLLMSecurityAnalyzer` for an
+    SDK agent: derive the tool surface from the agent's own
+    ``mcp_config`` rather than scanning localhost
+    (:func:`auto_detect_safety_experiences` remains available as a
+    developer convenience for exploratory setups).
+
+    Configured servers whose derived experience name has no bundled file
+    for ``model`` are skipped with a log line.
+
+    Example:
+        >>> analyzer = ToolShieldLLMSecurityAnalyzer(
+        ...     llm=guardrail_llm,
+        ...     safety_experiences=safety_experiences_for_mcp_config(
+        ...         agent.mcp_config
+        ...     ),
+        ... )
+
+    Args:
+        mcp_config: The agent's MCP configuration dictionary, in the same
+            shape as ``AgentBase.mcp_config``.
+        model: Experience-set subdirectory. Defaults to
+            ``"claude-sonnet-4.5"``.
+
+    Returns:
+        A rendered string ready for ``safety_experiences=``. Empty string
+        if no configured server has a bundled experience file.
+    """
+    ts = _require_toolshield()
+    wanted = mcp_tools_from_config(mcp_config)
+    available = set(ts.ExperienceStore.list_bundled(model))
+    runnable = [t for t in wanted if t in available]
+    missing = [t for t in wanted if t not in available]
+    if missing:
+        logger.info(
+            f"Configured MCP servers without bundled {model!r} experiences "
+            f"(skipping): {missing}"
+        )
+    if not runnable:
+        logger.warning(
+            "No configured MCP server matches a bundled experience file; "
+            "returning empty safety_experiences"
+        )
+        return ""
+    logger.info(f"Loading safety experiences for configured MCP tools: {runnable}")
+    return load_safety_experiences(runnable, model=model)
+
+
 def detect_active_mcp_tools(
     port_range: tuple[int, int] = DEFAULT_SCAN_PORT_RANGE,
     verbose: bool = False,
@@ -149,8 +249,10 @@ def detect_active_mcp_tools(
     Args:
         port_range: Inclusive ``(start, end)`` localhost port range to scan.
             Default matches toolshield's convention (``8000-10000``).
-        verbose: Pass through to ``toolshield.mcp_scan`` to log per-port
-            probe attempts.
+        verbose: Include per-port probe attempts in the scan output and
+            forward it at INFO level (DEBUG otherwise). The scanner's
+            stdout is always captured and routed through the SDK logger;
+            this helper never writes to the host process's stdout.
 
     Returns:
         Experience identifiers (e.g. ``"terminal-mcp"``, ``"filesystem-mcp"``)
@@ -161,16 +263,29 @@ def detect_active_mcp_tools(
     from toolshield.mcp_scan import main as _scan_main  # type: ignore[import-not-found]
 
     start_port, end_port = port_range
+    # ``mcp_scan.main`` prints scan progress/results to stdout
+    # unconditionally (toolshield<=0.1.3 has no quiet mode). Library code
+    # must not write to the host process's stdout, so capture it and
+    # forward through the SDK logger instead. ``redirect_stdout`` swaps
+    # ``sys.stdout`` process-wide for the duration; the scan is short and
+    # this helper is called from sync setup code, so the window is small.
+    scan_stdout = io.StringIO()
     try:
         # ``mcp_scan.main`` is async; safe to run here because we're not
         # already inside an event loop (the analyzer is constructed from
         # sync code). If a caller IS in an async context, they can wrap
         # this helper in ``asyncio.to_thread`` themselves.
-        found = asyncio.run(_scan_main(start_port, end_port, verbose=verbose))
+        with contextlib.redirect_stdout(scan_stdout):
+            found = asyncio.run(_scan_main(start_port, end_port, verbose=verbose))
     except RuntimeError as e:
         # Typical cause: called from within a running event loop.
         logger.warning(f"MCP scan failed ({e}); returning always-active tools only")
         return list(ALWAYS_ACTIVE_TOOLS)
+    finally:
+        captured = scan_stdout.getvalue().strip()
+        if captured:
+            log = logger.info if verbose else logger.debug
+            log(f"toolshield.mcp_scan output:\n{captured}")
 
     active = list(ALWAYS_ACTIVE_TOOLS)
     for server in found or []:
@@ -228,7 +343,21 @@ def auto_detect_safety_experiences(
     Returns:
         A rendered string ready for ``safety_experiences=``.
     """
-    active = detect_active_mcp_tools(port_range=port_range, verbose=verbose)
+    try:
+        active = detect_active_mcp_tools(port_range=port_range, verbose=verbose)
+    except ImportError:
+        if not fallback_to_default:
+            # Honor the documented no-op contract: without toolshield
+            # installed, ``fallback_to_default=False`` degrades to a bare
+            # guardrail (empty experiences) instead of raising.
+            logger.warning(
+                "toolshield is not installed and fallback_to_default=False; "
+                "returning empty safety_experiences"
+            )
+            return ""
+        # With fallback requested, the fallback itself needs toolshield to
+        # load the default seed -- surface the helpful ImportError.
+        raise
     networked_detected = [t for t in active if t not in ALWAYS_ACTIVE_TOOLS]
 
     if networked_detected:

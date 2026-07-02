@@ -11,9 +11,6 @@ from openhands.sdk.security.defense_in_depth import (
 )
 from openhands.sdk.security.ensemble import EnsembleSecurityAnalyzer
 from openhands.sdk.security.grayswan import GraySwanAnalyzer
-from openhands.sdk.security.toolshield_llm_analyzer import (
-    ToolShieldLLMSecurityAnalyzer,
-)
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.toolshield_helpers import (
@@ -21,6 +18,11 @@ from openhands.sdk.security.toolshield_helpers import (
     default_safety_experiences,
     detect_active_mcp_tools,
     load_safety_experiences,
+    mcp_tools_from_config,
+    safety_experiences_for_mcp_config,
+)
+from openhands.sdk.security.toolshield_llm_analyzer import (
+    ToolShieldLLMSecurityAnalyzer,
 )
 
 
@@ -33,6 +35,8 @@ __all__ = [
     "default_safety_experiences",
     "detect_active_mcp_tools",
     "load_safety_experiences",
+    "mcp_tools_from_config",
+    "safety_experiences_for_mcp_config",
     "GraySwanAnalyzer",
     "PatternSecurityAnalyzer",
     "PolicyRailSecurityAnalyzer",

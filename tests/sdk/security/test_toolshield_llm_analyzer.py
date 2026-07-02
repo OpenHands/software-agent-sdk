@@ -715,6 +715,104 @@ class TestToolShieldHelpers:
         # Per the helper's contract, falls back to ALWAYS_ACTIVE_TOOLS
         assert result == list(th.ALWAYS_ACTIVE_TOOLS)
 
+    # ----------------------------------------------------------------------
+    # Library-contract edges (per review on PR #2911): the no-fallback
+    # path must not require toolshield, and helpers must never write to
+    # the host process's stdout.
+    # ----------------------------------------------------------------------
+
+    def test_auto_detect_without_toolshield_no_fallback_returns_empty(self):
+        """fallback_to_default=False + missing toolshield -> "" (documented
+        no-op path), NOT ImportError."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        with patch.object(
+            th,
+            "_require_toolshield",
+            side_effect=ImportError("toolshield is not installed"),
+        ):
+            result = th.auto_detect_safety_experiences(fallback_to_default=False)
+        assert result == ""
+
+    def test_auto_detect_without_toolshield_with_fallback_raises(self):
+        """fallback_to_default=True needs toolshield to load the default
+        seed, so the helpful ImportError must surface."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        with patch.object(
+            th,
+            "_require_toolshield",
+            side_effect=ImportError("toolshield is not installed"),
+        ):
+            with pytest.raises(ImportError, match="toolshield is not installed"):
+                th.auto_detect_safety_experiences(fallback_to_default=True)
+
+    def test_detect_active_mcp_tools_does_not_write_to_stdout(self, capsys):
+        """toolshield.mcp_scan prints unconditionally; the SDK wrapper must
+        capture that and route it through the logger, leaving stdout clean
+        even with verbose=False (and verbose=True)."""
+        import sys
+
+        from openhands.sdk.security import toolshield_helpers as th
+
+        def noisy_scan(coro):
+            # Simulate toolshield.mcp_scan.main's unconditional prints.
+            coro.close()
+            print("🔍 Scanning localhost:8000-8001 for MCP servers...")
+            print("❌ No MCP servers found")
+            return []
+
+        fake_mcp_scan = MagicMock()
+        with patch.object(th, "_require_toolshield", return_value=None):
+            with patch.dict(sys.modules, {"toolshield.mcp_scan": fake_mcp_scan}):
+                with patch.object(th.asyncio, "run", side_effect=noisy_scan):
+                    th.detect_active_mcp_tools(port_range=(8000, 8001))
+                    th.detect_active_mcp_tools(port_range=(8000, 8001), verbose=True)
+        assert capsys.readouterr().out == ""
+
+    # ----------------------------------------------------------------------
+    # Config-derived experiences: preferred SDK path (no localhost scan).
+    # ----------------------------------------------------------------------
+
+    def test_mcp_tools_from_config_maps_server_names(self):
+        from openhands.sdk.security import toolshield_helpers as th
+
+        config = {
+            "mcpServers": {
+                "filesystem": {"command": "npx", "args": ["fs-mcp"]},
+                "Postgres": {"url": "http://localhost:9091/sse"},
+            }
+        }
+        result = th.mcp_tools_from_config(config)
+        assert result[0] == "terminal-mcp"  # always-active first
+        assert "filesystem-mcp" in result
+        assert "postgres-mcp" in result
+
+    def test_mcp_tools_from_config_empty_config_returns_always_active(self):
+        from openhands.sdk.security import toolshield_helpers as th
+
+        assert th.mcp_tools_from_config({}) == list(th.ALWAYS_ACTIVE_TOOLS)
+
+    @requires_toolshield
+    def test_safety_experiences_for_mcp_config_loads_bundled(self):
+        from openhands.sdk.security import toolshield_helpers as th
+
+        config = {"mcpServers": {"filesystem": {"command": "npx"}}}
+        result = th.safety_experiences_for_mcp_config(config)
+        assert "filesystem" in result.lower()
+        assert "terminal" in result.lower()
+
+    @requires_toolshield
+    def test_safety_experiences_for_mcp_config_skips_unbundled(self):
+        """Configured servers without a bundled experience file are skipped
+        rather than raising; always-active tools still load."""
+        from openhands.sdk.security import toolshield_helpers as th
+
+        config = {"mcpServers": {"no-such-tool": {"command": "x"}}}
+        result = th.safety_experiences_for_mcp_config(config)
+        assert "terminal" in result.lower()
+        assert "no-such-tool" not in result.lower()
+
 
 # ---------------------------------------------------------------------------
 # ConfirmRisky integration

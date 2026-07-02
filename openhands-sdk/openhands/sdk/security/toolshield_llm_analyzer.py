@@ -216,7 +216,7 @@ class ToolShieldLLMSecurityAnalyzer(SecurityAnalyzerBase):
     experiences via the ``safety_experiences`` field -- typically via
     one of the helpers (``default_safety_experiences()``,
     ``load_safety_experiences(...)``, ``auto_detect_safety_experiences()``).
-    Tested against ``toolshield>=0.1.1,<0.2``.
+    Tested against ``toolshield>=0.1.3,<0.2``.
 
     Note: ``reasoning_content`` and ``thinking_blocks`` from extended-
     thinking models are deliberately excluded from the guardrail
