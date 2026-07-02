@@ -8,7 +8,7 @@ OpenHands Agent Server.
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22.12+
 - npm 10+
 
 ### Install dependencies

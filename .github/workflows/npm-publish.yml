@@ -41,7 +41,7 @@ jobs:
       # Trusted publishing requires Node 22.14.0+ and npm 11.5.1+
       # See: https://docs.npmjs.com/trusted-publishers/
       - name: Set up Node.js for npm trusted publishing
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: npm
