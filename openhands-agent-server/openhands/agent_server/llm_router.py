@@ -14,6 +14,7 @@ from openhands.sdk.llm.auth.openai import (
     DEVICE_CODE_TIMEOUT_SECONDS,
     OPENAI_CODEX_MODELS,
     DeviceCode,
+    OpenAIDeviceAuthError,
     OpenAISubscriptionAuth,
 )
 from openhands.sdk.llm.utils.unverified_models import (
@@ -111,6 +112,23 @@ def _drop_expired_device_logins() -> None:
             _PENDING_OPENAI_DEVICE_LOGINS.pop(key, None)
 
 
+def _device_login_http_exception(exc: RuntimeError) -> HTTPException:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                "OpenAI is rate-limiting ChatGPT device-code sign-in. "
+                "Wait a few minutes before trying again, or configure an "
+                "OpenAI API key."
+            ),
+        )
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=str(exc) or "OpenAI subscription sign-in failed",
+    )
+
+
 @llm_router.get("/providers", response_model=ProvidersResponse)
 async def list_providers() -> ProvidersResponse:
     """List all available LLM providers supported by LiteLLM."""
@@ -185,7 +203,10 @@ async def get_openai_subscription_status() -> SubscriptionStatusResponse:
 async def start_openai_subscription_device_login() -> SubscriptionDeviceStartResponse:
     """Start ChatGPT device-code sign-in without returning tokens."""
     auth = _get_openai_subscription_auth()
-    challenge = await auth.start_device_login()
+    try:
+        challenge = await auth.start_device_login()
+    except OpenAIDeviceAuthError as exc:
+        raise _device_login_http_exception(exc) from exc
     token = secrets.token_urlsafe(32)
     expires_at = int(time.time() * 1000) + (DEVICE_CODE_TIMEOUT_SECONDS * 1000)
     async with _OPENAI_DEVICE_LOGIN_LOCK:
@@ -226,7 +247,12 @@ async def poll_openai_subscription_device_login(
     auth = _get_openai_subscription_auth()
     credentials = None
     try:
-        credentials = await auth.poll_device_login(pending.device_code, persist=False)
+        try:
+            credentials = await auth.poll_device_login(
+                pending.device_code, persist=False
+            )
+        except OpenAIDeviceAuthError as exc:
+            raise _device_login_http_exception(exc) from exc
     finally:
         async with _OPENAI_DEVICE_LOGIN_LOCK:
             _IN_FLIGHT_OPENAI_DEVICE_LOGINS.discard(request.device_code)
