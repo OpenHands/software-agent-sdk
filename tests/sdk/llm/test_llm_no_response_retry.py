@@ -1,12 +1,20 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from litellm import CustomStreamWrapper
 from litellm.responses.streaming_iterator import (
     ResponsesAPIStreamingIterator,
     SyncResponsesAPIStreamingIterator,
 )
 from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
+from litellm.types.utils import (
+    Choices,
+    Delta,
+    Message as LiteLLMMessage,
+    ModelResponse,
+    StreamingChoices,
+    Usage,
+)
 from openai.types.responses import ResponseOutputMessage, ResponseOutputText
 from pydantic import SecretStr
 
@@ -458,3 +466,122 @@ async def test_async_aresponses_stream_path_retry_bumps_temperature(
     assert mock_aresponses.call_count == 2
     _, second_kwargs = mock_aresponses.call_args_list[1]
     assert second_kwargs.get("temperature") == 1.0
+
+
+# ------------------------------------------------------------------
+# Chat Completions streaming: empty stream (zero chunks)
+# ------------------------------------------------------------------
+
+
+def create_chunk_stream(content: str = "ok") -> MagicMock:
+    chunk = ModelResponse(
+        id="chatcmpl-stream",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=content, role="assistant"),
+            )
+        ],
+        created=1,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+    stream = MagicMock(spec=CustomStreamWrapper)
+    stream.__iter__.return_value = iter([chunk])
+    stream.__aiter__.return_value = [chunk]
+    return stream
+
+
+def create_empty_stream() -> MagicMock:
+    stream = MagicMock(spec=CustomStreamWrapper)
+    stream.__iter__.return_value = iter([])
+    stream.__aiter__.return_value = []
+    return stream
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_streaming_empty_stream_raises_llm_no_response(
+    mock_completion, base_llm: LLM
+) -> None:
+    """A stream that yields zero chunks must raise the retryable
+    LLMNoResponseError, not a bare AssertionError."""
+    mock_completion.side_effect = [
+        create_empty_stream(),
+        create_empty_stream(),
+    ]
+
+    with pytest.raises(LLMNoResponseError):
+        base_llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])],
+            stream=True,
+            on_token=lambda _chunk: None,
+        )
+
+    # Retryable: tenacity ran the attempt num_retries times
+    assert mock_completion.call_count == base_llm.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_streaming_empty_stream_retries_then_succeeds(
+    mock_completion, base_llm: LLM
+) -> None:
+    mock_completion.side_effect = [
+        create_empty_stream(),
+        create_chunk_stream("ok"),
+    ]
+
+    resp = base_llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        stream=True,
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_completion.call_count == 2
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_streaming_empty_stream_raises_llm_no_response(
+    mock_acompletion: AsyncMock, base_llm: LLM
+) -> None:
+    mock_acompletion.side_effect = [
+        create_empty_stream(),
+        create_empty_stream(),
+    ]
+
+    with pytest.raises(LLMNoResponseError):
+        await base_llm.acompletion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])],
+            stream=True,
+            on_token=lambda _chunk: None,
+        )
+
+    assert mock_acompletion.call_count == base_llm.num_retries
+
+
+@pytest.mark.asyncio
+@patch(
+    "openhands.sdk.llm.llm.litellm_acompletion",
+    new_callable=AsyncMock,
+)
+async def test_async_streaming_empty_stream_retries_then_succeeds(
+    mock_acompletion: AsyncMock, base_llm: LLM
+) -> None:
+    mock_acompletion.side_effect = [
+        create_empty_stream(),
+        create_chunk_stream("ok"),
+    ]
+
+    resp = await base_llm.acompletion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])],
+        stream=True,
+        on_token=lambda _chunk: None,
+    )
+
+    assert isinstance(resp, LLMResponse)
+    assert mock_acompletion.call_count == 2
