@@ -1316,6 +1316,7 @@ class LocalConversation(BaseConversation):
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
+            self.llm_registry.discard("ask-agent-llm")
 
     def switch_profile(self, profile_name: str) -> None:
         """Switch the agent's LLM to a profile loaded from disk.

@@ -161,6 +161,24 @@ def test_llm_registry_get_method():
     assert "not found in registry" in str(context.exception)
 
 
+def test_llm_registry_discard_method():
+    """Test discard() removes an LLM if present and ignores missing usage IDs."""
+    registry = LLMRegistry()
+
+    mock_llm = Mock(spec=LLM)
+    mock_llm.usage_id = "test-service"
+
+    with patch("openhands.sdk.llm.llm_registry.RegistryEvent") as mock_registry_event:
+        mock_registry_event.return_value = Mock()
+        registry.add(mock_llm)
+
+    registry.discard("test-service")
+    registry.discard("missing-service")
+
+    assert "test-service" not in registry.usage_to_llm
+    assert registry.list_usage_ids() == []
+
+
 def test_llm_registry_add_get_workflow():
     """Test the complete add/get workflow."""
     registry = LLMRegistry()

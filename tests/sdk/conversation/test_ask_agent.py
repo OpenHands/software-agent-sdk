@@ -238,6 +238,35 @@ def test_ask_agent_disables_streaming_when_llm_streams(mock_transport, tmp_path)
     assert conv.llm_registry.get("ask-agent-llm").stream is False
 
 
+@patch("openhands.sdk.llm.llm.LLM._transport_call", autospec=True)
+def test_ask_agent_uses_switched_llm_profile(mock_transport, tmp_path):
+    """ask_agent should follow the active conversation LLM after switch_llm()."""
+    mock_transport.side_effect = [
+        create_mock_model_response("old profile answer"),
+        create_mock_model_response("new profile answer"),
+    ]
+
+    old_llm = LLM(model="litellm_proxy/old-model", usage_id="profile:old")
+    agent = Agent(llm=old_llm, tools=[])
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    assert conv.ask_agent("before switch") == "old profile answer"
+    first_ask_llm = mock_transport.call_args_list[0].args[0]
+    assert first_ask_llm.usage_id == "ask-agent-llm"
+    assert first_ask_llm.model == "litellm_proxy/old-model"
+
+    conv.switch_llm(LLM(model="litellm_proxy/new-model", usage_id="profile:new"))
+
+    assert conv.ask_agent("after switch") == "new profile answer"
+    second_ask_llm = mock_transport.call_args_list[1].args[0]
+    assert second_ask_llm.usage_id == "ask-agent-llm"
+    assert second_ask_llm.model == "litellm_proxy/new-model"
+
+
 @patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
 def test_remote_conversation_ask_agent(mock_ws_client, agent):
     mock_ws_client.return_value.wait_until_ready.return_value = True

@@ -160,6 +160,11 @@ class LLMRegistry:
         )
         return self._usage_to_llm[usage_id]
 
+    def discard(self, usage_id: str) -> None:
+        """Remove an LLM instance from the registry if it exists."""
+
+        self._usage_to_llm.pop(usage_id, None)
+
     def list_usage_ids(self) -> list[str]:
         """List all registered usage IDs."""
 
