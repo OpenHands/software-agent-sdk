@@ -13,7 +13,6 @@ from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
@@ -91,10 +90,6 @@ class DockerWorkspace(RemoteWorkspace):
         default_factory=lambda: ["DEBUG"],
         description="Environment variables to forward to the container.",
     )
-    mount_dir: str | None = Field(
-        default=None,
-        description="Optional host directory to mount into the container.",
-    )
     volumes: list[str] = Field(
         default_factory=list,
         description="Additional volume mounts for the Docker container.",
@@ -121,29 +116,32 @@ class DockerWorkspace(RemoteWorkspace):
         default=None,
         description="Connect a container to the specified Docker network.",
     )
+    health_check_timeout: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Timeout in seconds to wait for container health check to pass.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
     _image_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_mount_dir(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "mount_dir" in data:
+            raise ValueError(
+                "DockerWorkspace.mount_dir has been removed; use "
+                "volumes=['/host/dir:/workspace'] instead."
+            )
+        return data
+
     @model_validator(mode="after")
     def _validate_server_image(self):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
-        return self
-
-    @model_validator(mode="after")
-    def _validate_mount_dir(self):
-        if self.mount_dir:
-            warn_deprecated(
-                "DockerWorkspace.mount_dir",
-                deprecated_in="1.10.0",
-                removed_in=None,
-                details="Use DockerWorkspace.volumes instead",
-            )
-            self.volumes.append(f"{self.mount_dir}:/workspace")
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -276,7 +274,7 @@ class DockerWorkspace(RemoteWorkspace):
         object.__setattr__(self, "api_key", None)
 
         # Wait for container to be healthy
-        self._wait_for_health()
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info(f"Docker workspace is ready at {self.host}")
 
         # Now initialize the parent RemoteWorkspace with the container URL
@@ -309,7 +307,7 @@ class DockerWorkspace(RemoteWorkspace):
             except Exception:
                 pass
 
-    def _wait_for_health(self, timeout: float = 120.0) -> None:
+    def _wait_for_health(self, *, timeout: float) -> None:
         """Wait for the Docker container to become healthy."""
         start = time.time()
         # We can construct the health URL based on self.host if available,
@@ -356,6 +354,10 @@ class DockerWorkspace(RemoteWorkspace):
 
     def __del__(self) -> None:
         """Clean up the Docker container when the workspace is destroyed."""
+        try:
+            object.__getattribute__(self, "__pydantic_private__")
+        except AttributeError:
+            return
         self.cleanup()
 
     def cleanup(self) -> None:
@@ -417,6 +419,6 @@ class DockerWorkspace(RemoteWorkspace):
         if result.returncode != 0:
             raise RuntimeError(f"Failed to resume container: {result.stderr}")
 
-        # Wait for health after resuming (use same timeout as initial startup)
-        self._wait_for_health(timeout=120.0)
+        # Wait for container to be healthy
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info(f"Container resumed: {self._container_id}")

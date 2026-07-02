@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 from openhands.agent_server.config import get_default_config
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.schema import Action
@@ -29,12 +27,7 @@ class ToolPreloadService:
 
         self.running = True
         try:
-            if sys.platform == "win32":
-                from openhands.tools.browser_use.impl_windows import (
-                    WindowsBrowserToolExecutor as BrowserToolExecutor,
-                )
-            else:
-                from openhands.tools.browser_use.impl import BrowserToolExecutor
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
 
             # Creating an instance here to preload chomium
             BrowserToolExecutor()

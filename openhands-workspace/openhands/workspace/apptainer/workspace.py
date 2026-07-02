@@ -79,6 +79,14 @@ class ApptainerWorkspace(RemoteWorkspace):
         default=None,
         description="Optional host directory to mount into the container.",
     )
+    extra_bind_mounts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional Apptainer bind mount specs to pass as --bind values. "
+            "Use src[:dest[:opts]] syntax. OPENHANDS_APPTAINER_EXTRA_BINDS can "
+            "also provide comma-separated bind specs."
+        ),
+    )
     detach_logs: bool = Field(
         default=True, description="Whether to stream container logs in background."
     )
@@ -127,6 +135,11 @@ class ApptainerWorkspace(RemoteWorkspace):
             "https://apptainer.org/docs/user/main/bind_paths_and_mounts.html. "
             "Specify locations to disable mounts for custom Apptainer behavior."
         ),
+    )
+    health_check_timeout: float = Field(
+        default=120.0,
+        gt=0.0,
+        description="Timeout in seconds to wait for container health check to pass.",
     )
 
     _instance_name: str | None = PrivateAttr(default=None)
@@ -197,7 +210,7 @@ class ApptainerWorkspace(RemoteWorkspace):
         object.__setattr__(self, "api_key", session_api_key)
 
         # Wait for container to be healthy
-        self._wait_for_health()
+        self._wait_for_health(timeout=self.health_check_timeout)
         logger.info("Apptainer workspace is ready at %s", self.host)
 
         # Now initialize the parent RemoteWorkspace with the container URL
@@ -255,6 +268,14 @@ class ApptainerWorkspace(RemoteWorkspace):
                 self.mount_dir,
                 mount_path,
             )
+        env_extra_binds = [
+            item.strip()
+            for item in os.getenv("OPENHANDS_APPTAINER_EXTRA_BINDS", "").split(",")
+            if item.strip()
+        ]
+        for bind_spec in [*self.extra_bind_mounts, *env_extra_binds]:
+            bind_args += ["--bind", bind_spec]
+            logger.info("Adding Apptainer bind mount: %s", bind_spec)
 
         # Build container options
         container_opts: list[str] = []
@@ -322,7 +343,7 @@ class ApptainerWorkspace(RemoteWorkspace):
             except Exception:
                 pass
 
-    def _wait_for_health(self, timeout: float = 120.0) -> None:
+    def _wait_for_health(self, *, timeout: float) -> None:
         """Wait for the container to become healthy."""
         start = time.time()
         health_url = f"http://127.0.0.1:{self.host_port}/health"

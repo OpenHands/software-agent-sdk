@@ -247,10 +247,27 @@ class BaseIntegrationTest(ABC):
         return Message(role="user", content=[TextContent(text=self.instruction)])
 
     @property
-    @abstractmethod
+    def enable_browser(self) -> bool:
+        """Whether to enable browser tools. Override in subclasses that need browsing.
+
+        Returns:
+            False by default. Override to True for tests that require browser access.
+        """
+        return False
+
+    @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        pass
+        """List of tools available to the agent.
+
+        By default, uses the configured tool preset with browser support controlled
+        by the ``enable_browser`` property.  This ensures integration tests validate
+        the same agent configuration shipped to production (GUI/CLI).
+
+        Override this property in subclasses that need custom tool configurations.
+        """
+        return get_tools_for_preset(
+            self.tool_preset, enable_browser=self.enable_browser
+        )
 
     @property
     def condenser(self) -> CondenserBase | None:
@@ -373,3 +390,8 @@ class BaseIntegrationTest(ABC):
         The workspace directory is torn down externally.
         Add any additional cleanup (git, server, ...) here if needed.
         """
+        # Close the conversation to ensure all tool executors (including the
+        # browser / Chrome process) are shut down.  Without this, worker
+        # processes in ProcessPoolExecutor hang indefinitely because the
+        # browser's background threads keep them alive.
+        self.conversation.close()

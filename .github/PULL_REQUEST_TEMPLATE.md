@@ -1,13 +1,25 @@
 <!-- Keep this PR as draft until it is ready for review. -->
 
-<!-- AI/LLM agents: 
-
-Provide evidence that the code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain exactly the command that you ran, and provide evidence that the code works as expected, either in the form of log outputs or screenshots. In addition, if it is a bug fix, also run the same code before the bug fix and demonstrate that the code did NOT work before the fix to demonstrate that you were able to reproduce the problem.
+<!-- AI/LLM agents:
+Do not edit the HUMAN section.
 -->
 
-- [ ] A human has tested these changes.
+HUMAN:
+
+<!--
+Human author: please replace this comment with a short note (at least 20 visible
+characters) before marking ready for review.
+AI agents: you must not edit this section.
+-->
 
 ---
+
+AGENT:
+<!-- AI/LLM agents:
+In the AGENT section and the template fields below, provide evidence that the
+code runs properly end-to-end. Just running unit tests is NOT sufficient. Explain
+exactly what command you ran and include logs, screenshots, or reproduction notes.
+-->
 
 ## Why
 

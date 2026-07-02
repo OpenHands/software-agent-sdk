@@ -1,15 +1,24 @@
 """Tests for error handling in file editor."""
 
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.impl import file_editor
 
 from .conftest import assert_error_result
 
 
-def test_validation_error_formatting():
+def test_validation_error_formatting(tmp_path):
     """Test that validation errors are properly formatted in the output."""
+    missing_file = tmp_path / "nonexistent" / "file.txt"
     result = file_editor(
         command="view",
-        path="/nonexistent/file.txt",
+        path=str(missing_file),
     )
     assert_error_result(result)
     assert result.is_error and "does not exist" in result.text
@@ -17,12 +26,23 @@ def test_validation_error_formatting():
     # Test directory validation for non-view commands
     result = file_editor(
         command="str_replace",
-        path="/tmp",
+        path=str(tmp_path),
         old_str="something",
         new_str="new",
     )
     assert_error_result(result)
     assert result.is_error and "directory and only the `view` command" in result.text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-only regression test")
+def test_create_rejects_foreign_platform_absolute_paths(tmp_path, monkeypatch):
+    """Create should reject absolute-path syntax that is not absolute on this host."""
+    monkeypatch.chdir(tmp_path)
+    result = file_editor(command="create", path=r"C:\foo", file_text="hello")
+
+    assert_error_result(result)
+    assert "absolute path" in result.text
+    assert not (tmp_path / r"C:\foo").exists()
 
 
 def test_str_replace_error_handling(temp_file):
@@ -138,3 +158,41 @@ def test_undo_validation(temp_file):
     )
     assert_error_result(result)
     assert result.is_error and "No edit history found" in result.text
+
+
+def test_view_directory_permission_error_returns_error_observation():
+    """Directory view should return an error observation on PermissionError."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        editor = FileEditor()
+        with patch.object(
+            editor,
+            "_count_hidden_children",
+            side_effect=PermissionError("denied"),
+        ):
+            result = editor.view(path)
+        assert result.is_error
+        assert "denied" in result.text
+
+
+def test_view_subdirectory_permission_error_skips_inaccessible_dir():
+    """Subdirectory permission errors should be silently skipped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp)
+        sub = path / "sub"
+        sub.mkdir()
+        (path / "visible.txt").write_text("hello")
+
+        # Simulate iterdir on the subdirectory raising PermissionError.
+        original_iterdir = Path.iterdir
+
+        def patched_iterdir(self: Path):
+            if self == sub:
+                raise PermissionError("denied")
+            return original_iterdir(self)
+
+        editor = FileEditor()
+        with patch.object(Path, "iterdir", patched_iterdir):
+            result = editor.view(path)
+        assert not result.is_error
+        assert "visible.txt" in result.text

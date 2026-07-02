@@ -1,8 +1,10 @@
 import asyncio
 import glob
 import json
+import os
+import signal
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -16,7 +18,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
+from openhands.sdk.utils import sanitized_env, utc_now
 
 
 logger = get_logger(__name__)
@@ -30,7 +32,8 @@ class BashEventService:
 
     bash_events_dir: Path = field()
     _pub_sub: PubSub[BashEventBase] = field(
-        default_factory=lambda: PubSub[BashEventBase](), init=False
+        default_factory=lambda: PubSub[BashEventBase](max_subscribers=50),
+        init=False,
     )
 
     def _ensure_bash_events_dir(self) -> None:
@@ -38,11 +41,13 @@ class BashEventService:
         self.bash_events_dir.mkdir(parents=True, exist_ok=True)
 
     def _timestamp_to_str(self, timestamp: datetime) -> str:
-        result = timestamp.strftime("%Y%m%d%H%M%S")
-        return result
+        # Include microseconds so filename-based ordering reflects emission
+        # order for sub-second bursts (e.g. fast `yes`-style floods that
+        # emit several BashOutput chunks in the same wall-clock second).
+        return timestamp.strftime("%Y%m%d%H%M%S%f")
 
     def _get_event_filename(self, event: BashEventBase) -> str:
-        """Generate filename using YYYYMMDDHHMMSS_eventId_actionId format."""
+        """Generate filename using YYYYMMDDHHMMSSffffff_eventId_actionId format."""
         result = [self._timestamp_to_str(event.timestamp), event.kind]
         command_id = getattr(event, "command_id", None)
         if command_id:
@@ -178,6 +183,22 @@ class BashEventService:
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
 
+    def _signal_process_group(
+        self,
+        process: asyncio.subprocess.Process,
+        sig: signal.Signals,
+        command: str,
+    ) -> None:
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except ProcessLookupError:
+            pass
+        except OSError as e:
+            logger.debug(
+                f"Failed to send {sig.name} to process group for command "
+                f"'{command}': {e}"
+            )
+
     async def start_bash_command(
         self, request: ExecuteBashRequest
     ) -> tuple[BashCommand, asyncio.Task]:
@@ -194,7 +215,9 @@ class BashEventService:
     async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
         try:
-            # Create subprocess
+            # Create subprocess in a new session so we can signal the whole
+            # process group on teardown (the shell's children, e.g. sleep, must
+            # die before the shell can run user-installed traps).
             process = await asyncio.create_subprocess_shell(
                 command.command,
                 cwd=command.cwd,
@@ -202,6 +225,7 @@ class BashEventService:
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
                 env=sanitized_env(),
+                start_new_session=True,
             )
 
             # Track output order and buffers
@@ -272,14 +296,13 @@ class BashEventService:
                 )
                 exit_code = process.returncode
             except TimeoutError:
-                # Kill the process if it times out
-                process.kill()
+                # Send SIGTERM to the whole process group so user-installed
+                # cleanup traps can run, then escalate to SIGKILL if needed.
+                self._signal_process_group(process, signal.SIGTERM, command.command)
                 try:
-                    # Give the process a short time to die gracefully
                     await asyncio.wait_for(process.wait(), timeout=1.0)
                 except TimeoutError:
-                    # If it still won't die, terminate it more forcefully
-                    process.terminate()
+                    self._signal_process_group(process, signal.SIGKILL, command.command)
                     try:
                         await asyncio.wait_for(process.wait(), timeout=1.0)
                     except TimeoutError:
@@ -322,6 +345,76 @@ class BashEventService:
 
             self._save_event_to_file(error_output)
             await self._pub_sub(error_output)
+
+    def delete_events_older_than(self, cutoff: datetime) -> int:
+        """Delete bash event files with a recorded timestamp older than ``cutoff``.
+
+        This is a synchronous method — all operations are blocking filesystem
+        I/O. Callers on the asyncio event loop should use
+        ``await asyncio.to_thread(service.delete_events_older_than, cutoff)``
+        to avoid stalling the loop.
+
+        File names are prefixed with ``YYYYMMDDHHMMSS`` in ascending sort order,
+        so scanning stops as soon as a file at or after the cutoff is reached.
+
+        Returns:
+            int: The number of event files deleted.
+        """
+        cutoff_str = self._timestamp_to_str(cutoff)
+        files = self._get_event_files_by_pattern("*")  # ascending chronological order
+        count = 0
+        for path in files:
+            if path.name >= cutoff_str:
+                break  # remaining files are at or newer than cutoff
+            try:
+                path.unlink(missing_ok=True)
+                count += 1
+            except Exception as e:
+                logger.warning("Failed to delete bash event file %s: %s", path, e)
+        if count:
+            logger.info(
+                "Deleted %d bash event file(s) older than %s", count, cutoff_str
+            )
+        return count
+
+    async def run_retention_cleanup_loop(
+        self,
+        retention_seconds: int,
+        interval_seconds: float | None = None,
+    ) -> None:
+        """Periodically purge bash event files older than ``retention_seconds``.
+
+        Runs until cancelled (e.g. during application shutdown). Cleanup runs
+        immediately on entry so that files accumulated across a server restart
+        are purged without waiting for the first interval to elapse.
+
+        Blocking filesystem work is dispatched to a thread via
+        ``asyncio.to_thread`` to keep the event loop free.
+
+        Args:
+            retention_seconds: Age threshold in seconds; older files are deleted.
+            interval_seconds: How often to run the cleanup. Defaults to
+                ``max(60, retention_seconds / 2)``. Pass a smaller value in
+                tests to avoid long waits.
+        """
+        interval = (
+            interval_seconds
+            if interval_seconds is not None
+            else max(60.0, retention_seconds / 2)
+        )
+        while True:
+            try:
+                cutoff = utc_now() - timedelta(seconds=retention_seconds)
+                await asyncio.to_thread(self.delete_events_older_than, cutoff)
+            except Exception as e:
+                logger.warning("Bash events retention cleanup error: %s", e)
+                # Brief back-off to prevent log flooding if the failure is persistent
+                # (e.g. permission error, full disk). Cap at the normal interval so
+                # we don't over-delay in low-retention configurations.
+                await asyncio.sleep(min(interval, 60.0))
+            # Always sleep the full interval after the error back-off, so total
+            # wait on error = min(interval, 60) + interval ≈ 2× normal cadence.
+            await asyncio.sleep(interval)
 
     async def subscribe_to_events(self, subscriber: Subscriber[BashEventBase]) -> UUID:
         """Subscribe to bash events.

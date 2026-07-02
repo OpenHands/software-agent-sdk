@@ -8,6 +8,7 @@ from openhands.sdk.skills import (
     SkillResources,
     discover_skill_resources,
 )
+from openhands.sdk.utils.path import to_posix_path
 
 
 def test_skill_resources_model(tmp_path: Path) -> None:
@@ -51,7 +52,7 @@ def test_discover_skill_resources(tmp_path: Path) -> None:
     assert "utils/helper.py" in resources.scripts  # Nested files
     assert "guide.md" in resources.references
     assert resources.assets == []  # No assets dir
-    assert resources.skill_root == str(skill_dir.resolve())
+    assert resources.skill_root == to_posix_path(skill_dir.resolve())
 
 
 def test_resource_directories_constant() -> None:

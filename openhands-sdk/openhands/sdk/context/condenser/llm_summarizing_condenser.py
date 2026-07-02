@@ -1,6 +1,7 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
+from typing import Final
 
 from pydantic import Field, model_validator
 
@@ -79,6 +80,16 @@ class LLMSummarizingCondenser(RollingCondenser):
             )
         return self
 
+    @model_validator(mode="after")
+    def _disable_streaming_for_summary(self):
+        # Summaries are consumed whole with no on_token callback, which a
+        # streaming LLM requires. Disable streaming once so every summary path
+        # is covered. model_copy is non-mutating and shares usage_id/metrics,
+        # so summary tokens stay attributed to the conversation.
+        if self.llm.stream:
+            self.llm = self.llm.model_copy(update={"stream": False})
+        return self
+
     def handles_condensation_requests(self) -> bool:
         return True
 
@@ -105,6 +116,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         if self.max_tokens and agent_llm:
             total_tokens = get_total_token_count(view.events, agent_llm)
             if total_tokens > self.max_tokens:
+                logger.info(
+                    "Condenser token limit exceeded: total_tokens=%d max_tokens=%d "
+                    "events=%d",
+                    total_tokens,
+                    self.max_tokens,
+                    len(view),
+                )
                 reasons.add(Reason.TOKENS)
 
         # Reason 3: View exceeds maximum size in number of events.
@@ -122,12 +140,17 @@ class LLMSummarizingCondenser(RollingCondenser):
         if reasons == set():
             return None
 
-        # If the reasons are for resource constraints, we can treat it as a soft
-        # requirement. We want to condense when we can, but there's still space in the
-        # context window or we'd also see Reason.REQUEST. That means we can delay the
-        # condensation if there isn't one available (based on the view's manipulation
-        # indices).
-        resource_reasons = {Reason.TOKENS, Reason.EVENTS}
+        # Token pressure is a hard requirement in benchmark runs that use a fixed
+        # local model context: sending the next request can fail before the recovery
+        # path has a chance to run. Treat event-count pressure as soft because that
+        # threshold is only a history-management heuristic.
+        if Reason.TOKENS in reasons:
+            return CondensationRequirement.HARD
+
+        # If the remaining reasons are for resource constraints, we can treat them as
+        # a soft requirement. We want to condense when we can, but there's still space
+        # in the context window or we'd also see Reason.REQUEST.
+        resource_reasons = {Reason.EVENTS}
         if reasons.issubset(resource_reasons):
             return CondensationRequirement.SOFT
 
@@ -177,9 +200,15 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
-        llm_response = self.llm.completion(
-            messages=messages,
-        )
+        try:
+            llm_response = self.llm.completion(
+                messages=messages,
+            )
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
         # Extract summary from the LLMResponse message
         summary = None
         if llm_response.message.content:
@@ -188,7 +217,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                 summary = first_content.text
 
         return Condensation(
-            forgotten_event_ids=[event.id for event in forgotten_events],
+            forgotten_event_ids={event.id for event in forgotten_events},
             summary=summary,
             summary_offset=summary_offset,
             llm_response_id=llm_response.id,
@@ -238,6 +267,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                     events=view.events[self.keep_first :],
                     llm=agent_llm,
                     token_reduction=tokens_to_reduce,
+                    base_events=view.events[: self.keep_first],
                 )
             )
 
@@ -338,3 +368,125 @@ class LLMSummarizingCondenser(RollingCondenser):
             forgotten_events=forgotten_events,
             summary_offset=summary_offset,
         )
+
+    # ------------------------------------------------------------------
+    # Async variants
+    # ------------------------------------------------------------------
+
+    async def _agenerate_condensation(
+        self,
+        forgotten_events: Sequence[LLMConvertibleEvent],
+        summary_offset: int,
+        max_event_str_length: int | None = None,
+    ) -> Condensation:
+        """Async variant of :meth:`_generate_condensation`."""
+        assert len(forgotten_events) > 0, "No events to condense."
+
+        event_strings = [
+            maybe_truncate(str(fe), truncate_after=max_event_str_length)
+            for fe in forgotten_events
+        ]
+
+        prompt = render_template(
+            os.path.join(os.path.dirname(__file__), "prompts"),
+            "summarizing_prompt.j2",
+            events=event_strings,
+        )
+
+        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        try:
+            llm_response = await self.llm.acompletion(messages=messages)
+        except Exception as e:
+            raise NoCondensationAvailableException(
+                f"Summarization LLM call failed: {e}"
+            ) from e
+
+        summary = None
+        if llm_response.message.content:
+            first_content = llm_response.message.content[0]
+            if isinstance(first_content, TextContent):
+                summary = first_content.text
+
+        return Condensation(
+            forgotten_event_ids={event.id for event in forgotten_events},
+            summary=summary,
+            summary_offset=summary_offset,
+            llm_response_id=llm_response.id,
+        )
+
+    async def aget_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        """Async variant of :meth:`get_condensation`."""
+        try:
+            forgotten_events, summary_offset = self._get_forgotten_events(
+                view, agent_llm=agent_llm
+            )
+        except ValueError as e:
+            raise NoCondensationAvailableException(
+                "Unable to compute forgotten events"
+            ) from e
+
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for "
+                "forgetting events. Consider adjusting keep_first or max_size "
+                "parameters."
+            )
+
+        if len(forgotten_events) < len(view) * self.minimum_progress:
+            raise NoCondensationAvailableException(
+                "Cannot apply condensation: events forgotten below minimum "
+                "progress threshold."
+            )
+
+        return await self._agenerate_condensation(
+            forgotten_events=forgotten_events,
+            summary_offset=summary_offset,
+        )
+
+    async def ahard_context_reset(
+        self,
+        view: View,
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> Condensation | None:
+        """Async variant of :meth:`hard_context_reset`."""
+        max_event_str_length: int | None = None
+        attempts_remaining: int = self.hard_context_reset_max_retries
+
+        while attempts_remaining > 0:
+            try:
+                return await self._agenerate_condensation(
+                    forgotten_events=view.events,
+                    summary_offset=0,
+                    max_event_str_length=max_event_str_length,
+                )
+            except Exception as e:
+                if max_event_str_length is None:
+                    max_event_str_length = max(len(str(ev)) for ev in view.events)
+                assert max_event_str_length is not None
+                max_event_str_length = int(
+                    max_event_str_length * self.hard_context_reset_context_scaling
+                )
+                logger.warning(
+                    f"Hard context reset summarization failed: {e}. "
+                    f"Reducing max event size to {max_event_str_length}."
+                )
+            attempts_remaining -= 1
+
+        logger.error("Hard context reset summarization failed after multiple attempts.")
+        return None
+
+
+# Sizing for the standard summarizing condenser. Kept here so the default agent and
+# spawned sub-agents stay in sync.
+_DEFAULT_MAX_SIZE: Final[int] = 80
+_DEFAULT_KEEP_FIRST: Final[int] = 4
+
+
+def default_condenser(llm: LLM) -> LLMSummarizingCondenser:
+    """Standard summarizing condenser used by the default agent and sub-agents."""
+    return LLMSummarizingCondenser(
+        llm=llm, max_size=_DEFAULT_MAX_SIZE, keep_first=_DEFAULT_KEEP_FIRST
+    )

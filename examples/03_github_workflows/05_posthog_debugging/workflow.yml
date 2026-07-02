@@ -38,7 +38,7 @@ on:
             llm_model:
                 description: LLM model to use
                 required: false
-                default: anthropic/claude-sonnet-4-5-20250929
+                default: gpt-5.5
 
 permissions:
     contents: read
@@ -83,15 +83,26 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
                   LLM_MODEL: ${{ inputs.llm_model }}
+                  INPUTS_QUERY_TYPE: ${{ inputs.query_type }}
+                  INPUTS_POSTHOG_QUERY: ${{ inputs.posthog_query }}
+                  INPUTS_REPO_LIST: ${{ inputs.repo_list }}
+                  INPUTS_ISSUE_REPO: ${{ inputs.issue_repo }}
+                  INPUTS_ISSUE_PARENT: ${{ inputs.issue_parent }}
+                  INPUTS_ISSUE_PREFIX: ${{ inputs.issue_prefix }}
               run: |
                   cd posthog_debug_tools
+                  ISSUE_PARENT_ARG=()
+                  if [ -n "$INPUTS_ISSUE_PARENT" ]; then
+                    ISSUE_PARENT_ARG=(--issue-parent "$INPUTS_ISSUE_PARENT")
+                  fi
+
                   python posthog_debugging.py \
-                    --query-type "${{ inputs.query_type }}" \
-                    --query "${{ inputs.posthog_query }}" \
-                    --repos "${{ inputs.repo_list }}" \
-                    --issue-repo "${{ inputs.issue_repo }}" \
-                    ${{ inputs.issue_parent && format('--issue-parent "{0}"', inputs.issue_parent) || '' }} \
-                    --issue-prefix "${{ inputs.issue_prefix }}" \
+                    --query-type "$INPUTS_QUERY_TYPE" \
+                    --query "$INPUTS_POSTHOG_QUERY" \
+                    --repos "$INPUTS_REPO_LIST" \
+                    --issue-repo "$INPUTS_ISSUE_REPO" \
+                    "${ISSUE_PARENT_ARG[@]}" \
+                    --issue-prefix "$INPUTS_ISSUE_PREFIX" \
                     --working-dir ./workspace
 
             - name: Upload debugging artifacts

@@ -52,7 +52,8 @@ TOOL_DESCRIPTION = (
 IMPORTANT RESTRICTION FOR PLANNING AGENT:
 * You can VIEW any file in the workspace using the 'view' command
 * You can ONLY EDIT the PLAN.md file (all other edit operations will be rejected)
-* PLAN.md is automatically initialized with section headers at the workspace root
+* PLAN.md is automatically initialized with section headers at the configured
+  plan path (by default, .agents_tmp/PLAN.md under the workspace root)
 * All editing commands (create, str_replace, insert, undo_edit) are restricted to PLAN.md only
 * The PLAN.md file already contains the required section structure - you just need to fill in the content
 """  # noqa

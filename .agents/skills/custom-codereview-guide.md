@@ -16,13 +16,57 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 ### Review decision policy (eval / benchmark risk)
 
 Do **NOT** submit an **APPROVE** review when the PR changes agent behavior or anything
-that could plausibly affect benchmark/evaluation performance.
+that could plausibly affect benchmark/evaluation performance — **unless** eval evidence
+is already provided (see exception below).
 
 Examples include: prompt templates, tool calling/execution, planning/loop logic,
 memory/condenser behavior, terminal/stdin/stdout handling, or evaluation harness code.
 
 If a PR is in this category (or you are uncertain), leave a **COMMENT** review and
 explicitly flag it for a human maintainer to decide after running lightweight evals.
+
+#### Exception – eval evidence provided
+
+If the PR description **or** PR comments contain a link to the eval monitor
+(`openhands-eval-monitor.vercel.app`) showing a completed benchmark run **and**
+a human maintainer has commented confirming the results (e.g., "Human review done",
+"eval looks good", or similar), treat the eval-risk requirement as satisfied and
+follow the normal approval policy. The eval monitor link is authoritative proof of
+benchmark validation for this repository.
+
+### Review decision policy (release PR workflow validation)
+
+For release PRs (for example branches like `rel-1.23.0`, or diffs that bump package versions
+across the distributable packages), do **NOT** approve until you have checked the latest PR-specific
+results for all three of these workflows:
+
+- `Run tests`
+- `Run Examples Scripts`
+- `Run Integration Tests`
+
+The standard review prompt does not inline ordinary PR issue comments, so use the
+GitHub API / `gh` from the terminal to inspect the latest PR comments and workflow
+results before deciding.
+
+For each workflow:
+
+1. Verify it actually ran for **this PR**, not only on `main`, on a scheduled run,
+   or on an older PR head commit.
+2. Read the latest PR comment from that workflow. In this repo those comments
+   normally look like:
+   - `Run tests`: the coverage report comment containing
+     `<!-- Pytest Coverage Comment: coverage-report -->`
+   - `Run Examples Scripts`: a comment starting with
+     `## 🔄 Running Examples`
+   - `Run Integration Tests`: a comment starting with
+     `# 🧪 Integration Tests Results`
+3. Cross-check the corresponding workflow/check result and make sure the comment
+   still matches the current PR state.
+
+If any of the three workflows is missing, skipped, stale, ambiguous, or failing,
+do **NOT** approve. Leave a **COMMENT** review that names the missing/failing
+validation and explicitly asks for human maintainer review instead.
+
 
 ### Default approval policy
 
@@ -60,6 +104,36 @@ Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
 - A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)
 - A PR changing CI runners or fixing workflow infrastructure issues (e.g., standardizing runner types to fix path inconsistencies)
+
+### Special rule: live preflight failures for newly-added models
+
+PRs that only add an entry to `.github/run-eval/resolve_model_config.py` (and
+the matching test in `tests/cross/test_resolve_model_config.py`) interact with
+the LiteLLM proxy at `LLM_BASE_URL` (default
+`https://llm-proxy.eval.all-hands.dev`). Provisioning a new model name on that
+proxy is done **out-of-band**, not in the PR.
+
+A live preflight call that returns
+`Invalid model name passed in model=<provider>/<name>` for a model the PR is
+introducing is therefore **not** evidence that the PR is broken — it is most
+likely transient proxy-provisioning lag.
+
+When reviewing or QA-ing such a PR:
+
+- Do **not** post `❌ QA Report: FAIL` purely because the live preflight
+  rejected the new model name.
+- Do **not** open or re-open a 🔴 Critical inline thread on the new model
+  entry purely on the basis of `Invalid model name` from the live proxy.
+- Treat any of the following as authoritative validation instead:
+  1. A successful integration-runner workflow run for this PR.
+  2. A run for this model on
+     [openhands-eval-monitor.vercel.app](https://openhands-eval-monitor.vercel.app/).
+  3. The author's explicit confirmation (e.g. screenshot) that the model is
+     reachable via the proxy.
+
+Real preflight blockers still apply (parameter conflicts on Claude, bad
+`litellm_extra_body`, unit-test failures, regressions on existing models —
+see `.github/run-eval/AGENTS.md` "What still IS a real preflight blocker").
 
 ### When to COMMENT
 
@@ -109,12 +183,31 @@ If the updated package was uploaded **within the last 7 days**, treat it as a re
 ## What to Check
 
 - **Complexity**: Over-engineered solutions, unnecessary abstractions, complex logic that could be refactored
-- **Testing**: Duplicate test coverage, tests for library features, missing edge case coverage
+- **Testing**: Duplicate test coverage, tests for library features, missing edge case coverage. For code that writes to disk, verify that tests cover the **persistence round-trip** (write → close → reopen → verify), not just in-memory state
 - **Type Safety**: `# type: ignore` usage, missing type annotations, `getattr`/`hasattr` guards, mocking non-existent arguments
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
+- **Directory Example Entrypoints**: PRs that add or modify folder-based runnable examples under `examples/` should use `main.py` as the entrypoint and add the directory to `_TARGET_DIRECTORIES` in `tests/examples/test_examples.py`; see [Directory-Based Examples](#directory-based-examples)
 - **Event Type Deprecation**: Changes to event types (Pydantic models used in serialization) must handle deprecated fields properly
+- **Thread Safety**: New methods in `LocalConversation` that read or write `self._state` must use `with self._state:` — see the [Concurrency](#concurrency---localconversation-state-lock) section below
+- **Persistence Paths**: Code that computes persistence directories must not double-append the conversation hex — see the [Persistence Paths](#persistence-path-construction) section below
+- **Server-Side Cleanup**: Endpoints that create persistent state (directories, files) must have rollback logic for partial failures — see the [Server Error Handling](#server-side-error-handling) section below
+- **Cross-File Data Flow**: When new code calls existing APIs (constructors, factory methods), trace 1–2 levels into those APIs to verify the caller uses them correctly. Bugs often hide at layer boundaries where the caller's assumptions don't match the callee's behavior
+- **Secret Serialization**: Fields that carry secrets must use `serialize_secret()` from `openhands.sdk.utils.pydantic_secrets`. For `dict[str, str]` secret fields, wrap each value in `SecretStr` and call `serialize_secret` per value. Do not hand-roll redaction logic (e.g. custom sentinels or inline `expose_secrets` checks) in field serializers
+- **Info-Log Payloads**: `logger.info(...)` must not dump objects, dicts, or variable-length lists — see [Logging Hygiene](#logging-hygiene)
+
+## Directory-Based Examples
+
+When a PR adds or modifies a runnable example represented by a directory under `examples/`, verify that:
+
+1. The runnable entrypoint is named `main.py`.
+2. Helper modules inside that directory are not accidentally treated as standalone examples.
+3. `tests/examples/test_examples.py` includes the example directory in `_TARGET_DIRECTORIES` when the example should run in the `test-examples` workflow.
+4. The example prints an `EXAMPLE_COST: ...` marker when run by the workflow.
+
+Do not ask for this convention on support scripts that are intentionally named for GitHub workflow consumption (for example reusable automation scripts under `examples/03_github_workflows/`) unless they are presented as a directory-based runnable example.
+
 
 ## Event Type Deprecation - Critical Review Checkpoint
 
@@ -161,6 +254,56 @@ pydantic_core.ValidationError: Extra inputs are not permitted
 ```
 
 **This is a production-breaking change.** Do not approve PRs that modify event types without proper backward compatibility handling and tests.
+
+## SDK Architecture Conventions
+
+These conventions codify patterns that are easy to violate when adding new features. Each was learned from a real bug.
+
+### Concurrency - LocalConversation State Lock
+
+`LocalConversation` protects mutable state with a FIFOLock accessed via `with self._state:`. **Every** method that reads or writes `self._state.events`, `self._state.stats`, `self._state.agent_state`, `self._state.activated_knowledge_skills`, or any other mutable field on `ConversationState` must hold this lock. There are currently ~13 call sites using this pattern.
+
+When reviewing a PR that adds a new method to `LocalConversation`:
+1. Check whether it accesses any `self._state.*` field.
+2. If yes, verify the access is inside a `with self._state:` block.
+3. If not, flag it — the method is unsafe for concurrent use with `run()`.
+
+### Persistence Path Construction
+
+`BaseConversation.get_persistence_dir(base, conversation_id)` returns `str(Path(base) / conversation_id.hex)`. The `LocalConversation.__init__` constructor calls this automatically when `persistence_dir` is provided.
+
+**Rule:** Callers that pass `persistence_dir` to `LocalConversation()` must pass only the **base directory** (e.g., `/data/conversations/`). The constructor appends the conversation hex. Passing a pre-constructed full path (e.g., `/data/conversations/abc123`) causes double-appending: `/data/conversations/abc123/abc123`.
+
+When reviewing code that creates a new `LocalConversation` (fork, resume, migration):
+1. Check what value is passed as `persistence_dir`.
+2. Verify it does **not** already include the conversation ID hex.
+
+### Server-Side Error Handling
+
+Server endpoints in `conversation_service.py` that create persistent state (writing directories, files, or calling `fork()` which writes to disk) and then perform follow-up operations (like `_start_event_service`) must handle partial failure.
+
+**Pattern:** If the follow-up operation fails, clean up the already-written persistent state so it doesn't become an orphaned directory that confuses future startups.
+
+```python
+# Good: rollback on failure
+fork_dir = self.conversations_dir / fork_conv_id.hex
+try:
+    fork_event_service = await self._start_event_service(fork_stored)
+except Exception:
+    safe_rmtree(fork_dir)
+    raise
+```
+
+When reviewing server endpoints that create conversations or persistent artifacts:
+1. Identify the "point of no return" where state is written to disk.
+2. Check that subsequent operations are wrapped in try/except with cleanup.
+3. For client-supplied IDs, verify there's a duplicate check before creating state (return 409 Conflict if taken).
+
+### Logging Hygiene
+
+`logger.info(...)` must not interpolate `model_dump(...)`, `.json()`, `to_dict()`, a list/dict of tool/skill/server names, or arbitrary user-supplied values. Log a count and/or id; move full payloads to `logger.debug(...)`.
+
+When reviewing a new or changed `logger.info(...)` call: if any interpolated value is an object, a dict, or a list whose size scales with load (tools, skills, conversations, requests), flag it.
 
 ## What NOT to Comment On
 

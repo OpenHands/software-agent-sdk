@@ -167,6 +167,22 @@ class TestSkillToSkillInfo:
         assert info.source == "/skills/pdf-tools/SKILL.md"
         assert info.description == "Tools for working with PDF files"
         assert info.is_agentskills_format is True
+        assert info.disable_model_invocation is False
+
+    def test_agent_skill_to_info_preserves_disable_model_invocation(self):
+        """AgentSkills direct-invocation metadata should survive serialization."""
+        skill = Skill(
+            name="trigger-only",
+            content="Trigger-only instructions",
+            source="/skills/trigger-only/SKILL.md",
+            description="Trigger-only skill",
+            trigger=KeywordTrigger(keywords=["trigger-only"]),
+            is_agentskills_format=True,
+            disable_model_invocation=True,
+        )
+        info = skill.to_skill_info()
+
+        assert info.disable_model_invocation is True
 
     def test_task_skill_to_info(self):
         """Test conversion of task skill to SkillInfo."""

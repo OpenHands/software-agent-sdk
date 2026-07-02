@@ -12,6 +12,8 @@ from typing import NamedTuple
 
 from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_absolute_path_source, is_local_path_source
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 logger = get_logger(__name__)
@@ -46,7 +48,7 @@ def parse_github_url(url: str) -> GitHubURLComponents | None:
 
 def is_local_path(source: str) -> bool:
     """Check if source is a local path (./, ../, /, ~, file://)."""
-    return any(source.startswith(p) for p in ("./", "../", "/", "~", "file://"))
+    return is_local_path_source(source)
 
 
 def validate_source_path(source: str) -> str:
@@ -93,12 +95,11 @@ def resolve_source_path(
 
         if try_cached_clone_or_update(clone_url, repo_path, gh.branch, update):
             return repo_path / gh.path
-        logger.warning(f"Failed to clone/update: {source}")
+        logger.warning(f"Failed to clone/update: {redact_url_credentials(source)}")
         return None
 
-    # Handle local paths
     path = Path(source).expanduser()
-    if path.is_absolute():
+    if is_absolute_path_source(source):
         return path
     if base_path:
         return (base_path / path).resolve()

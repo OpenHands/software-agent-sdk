@@ -279,7 +279,7 @@ def test_remote_state_refresh_from_server_uses_configured_base_path(
     state = RemoteState(
         mock_client,
         conversation_id,
-        conversation_info_base_path="/api/acp/conversations",
+        conversation_info_base_path="/api/conversations",
     )
     state._cached_state = None
 
@@ -288,5 +288,5 @@ def test_remote_state_refresh_from_server_uses_configured_base_path(
     assert refreshed == conversation_info
     assert mock_client.request.call_args_list[-1][0] == (
         "GET",
-        f"/api/acp/conversations/{conversation_id}",
+        f"/api/conversations/{conversation_id}",
     )

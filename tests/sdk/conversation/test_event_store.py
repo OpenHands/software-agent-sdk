@@ -6,6 +6,11 @@ from unittest.mock import Mock
 import pytest
 
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.persistence_const import (
+    EVENT_FILE_PATTERN,
+    EVENT_NAME_RE,
+    EVENTS_DIR,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.llm import Message, TextContent
@@ -156,7 +161,11 @@ def test_event_log_missing_event_file():
     path = log._path(0, event_id="test-event")
     fs.delete(path)
 
-    # Accessing the event should raise FileNotFoundError
+    # Cached access still works — the event was cached on append
+    assert log[0].id == "test-event"
+
+    # Clear cache to test the disk-access path
+    log._event_cache.clear()
     with pytest.raises(FileNotFoundError):
         log[0]
 
@@ -272,14 +281,17 @@ def test_event_log_iteration_with_missing_files():
     path = log._path(1, event_id="event-2")
     fs.delete(path)
 
-    # Iteration will fail when it hits the missing file
-    # This is expected behavior - the EventLog expects all files to exist
+    # Cached iteration still works — all 3 events were cached on append
+    assert [e.id for e in log] == ["event-1", "event-2", "event-3"]
+
+    # Clear cache to test the disk-access path
+    log._event_cache.clear()
     with pytest.raises(FileNotFoundError):
         list(log)
 
 
 def test_event_log_iteration_backfills_missing_mappings():
-    """Test that iteration fails when mappings are missing."""
+    """Test that iteration fails when mappings are missing and cache is cold."""
     fs = InMemoryFileStore()
     log = EventLog(fs)
 
@@ -291,14 +303,15 @@ def test_event_log_iteration_backfills_missing_mappings():
     assert len(log) == 1
     assert log[0].id == "manual-event"
 
-    # Clear mappings to simulate missing data
+    # Clear mappings and cache to simulate missing data
     log._idx_to_id.clear()
     log._id_to_idx.clear()
+    log._event_cache.clear()
 
     # But keep the length so iteration can work
     log._length = 1
 
-    # Current implementation doesn't backfill mappings, so iteration fails
+    # Without cache or mappings, iteration fails on _path lookup
     with pytest.raises(KeyError):
         list(log)
 
@@ -441,3 +454,93 @@ def test_get_single_item_stale_index_out_of_range():
     # Index 3 doesn't exist on disk; should raise IndexError after rebuild
     with pytest.raises(IndexError, match="Event index out of range"):
         log[3]
+
+
+def test_event_cache_eliminates_repeated_deserialization():
+    """Repeated access to the same event returns the cached object."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    event = create_test_event("cached-event", "Hello")
+    log.append(event)
+
+    first = log[0]
+    second = log[0]
+    # Same object identity — no re-deserialization
+    assert first is second
+
+
+def test_event_cache_populated_by_iteration():
+    """Iterating the log populates the cache for subsequent indexed access."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    for i in range(3):
+        log.append(create_test_event(f"evt-{i}", f"Content {i}"))
+
+    # Clear cache to force cold iteration
+    log._event_cache.clear()
+    events_from_iter = list(log)
+
+    # Cache should now hold all 3 events
+    assert len(log._event_cache) == 3
+
+    # Indexed access returns the same cached object
+    for i, evt in enumerate(events_from_iter):
+        assert log[i] is evt
+
+
+def test_event_cache_survives_across_multiple_iterations():
+    """Multiple iterations return the same cached objects."""
+    fs = InMemoryFileStore()
+    log = EventLog(fs)
+
+    log.append(create_test_event("a", "A"))
+    log.append(create_test_event("b", "B"))
+
+    first_pass = list(log)
+    second_pass = list(log)
+    assert all(a is b for a, b in zip(first_pass, second_pass, strict=True))
+
+
+@pytest.mark.parametrize("idx", [0, 1, 99999, 100000, 100001, 999999, 1_000_000])
+def test_event_filename_writer_reader_agree(idx):
+    """The reader regex must match the exact filename the writer emits."""
+    event_id = f"{idx:08x}-0000-0000-0000-000000000000"
+    name = EVENT_FILE_PATTERN.format(idx=idx, event_id=event_id)
+
+    m = EVENT_NAME_RE.match(name)
+    assert m is not None, f"reader regex failed to match writer output: {name!r}"
+    assert int(m.group("idx")) == idx
+
+
+def test_event_log_cold_reload_past_100k_events():
+    """A log with >100000 events reloads without dropping the tail.
+
+    Before the fix the cold scan truncated the index at 100000 (silent data
+    loss) and the count/scan paths diverged, corrupting length accounting.
+    """
+    # Raise the test-double LRU caps so the in-memory store keeps every file;
+    # this configures only the storage stand-in, not the code under test.
+    fs = InMemoryFileStore(max_size=500_000, max_memory=2 * 1024 * 1024 * 1024)
+    payload = create_test_event("seed", "seed").model_dump_json(exclude_none=True)
+
+    n = 100_002  # straddles the 5-/6-digit boundary
+    for i in range(n):
+        event_id = f"{i:08x}-0000-0000-0000-000000000000"
+        path = f"{EVENTS_DIR}/" + EVENT_FILE_PATTERN.format(idx=i, event_id=event_id)
+        fs.write(path, payload)
+
+    log = EventLog(fs)
+
+    # No silent truncation: every event survives the cold scan.
+    assert len(log) == n
+
+    # The events straddling the boundary are readable, not unreachable holes.
+    assert log[99999] is not None
+    assert log[100000] is not None
+    assert log[100001] is not None
+
+    # Appending after reload keeps length accounting consistent.
+    log.append(create_test_event("after-reload", "after"))
+    assert len(log) == n + 1

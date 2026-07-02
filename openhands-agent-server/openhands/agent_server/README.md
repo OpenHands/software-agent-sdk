@@ -54,6 +54,7 @@ The server can be configured using environment variables or a JSON configuration
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
 | `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
+| `OH_ALLOW_CORS_ORIGIN_REGEX` | Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while echoing the concrete origin. | None |
 
 ### Configuration File
 
@@ -63,6 +64,7 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 {
   "session_api_key": "your-secret-api-key",
   "allow_cors_origins": ["https://your-frontend.com"],
+  "allow_cors_origin_regex": null,
   "conversations_path": "workspace/conversations",
   "webhooks": [
     {
@@ -83,6 +85,7 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 
 - **`session_api_key`**: Optional API key for securing the server. If set, all requests must include this key in the `Authorization` header as `Bearer <key>`
 - **`allow_cors_origins`**: List of allowed CORS origins (localhost is always allowed)
+- **`allow_cors_origin_regex`**: Regular expression for additional allowed CORS origins. Use `https?://.+` to allow any HTTP(S) origin while keeping credential-compatible origin echoing.
 - **`webhooks`**: Array of webhook configurations for event notifications
 
 **Note**: Directory configuration (`working_dir`) will be handled at the conversation level rather than globally. These directories are specified when starting a conversation through the API.

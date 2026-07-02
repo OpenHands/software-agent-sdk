@@ -13,14 +13,23 @@ import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.critic_mixin import CriticMixin
 from openhands.sdk.agent.parallel_executor import ParallelToolExecutor
+from openhands.sdk.agent.response_dispatch import (
+    LLMResponseType,
+    ResponseDispatchMixin,
+    classify_response,
+)
 from openhands.sdk.agent.utils import (
+    amake_llm_completion,
+    aprepare_llm_messages,
     fix_malformed_tool_arguments,
     make_llm_completion,
     normalize_tool_call,
     parse_tool_call_arguments,
     prepare_llm_messages,
 )
+from openhands.sdk.context.prompts.presets import PromptPreset, create_registry
 from openhands.sdk.conversation import (
+    CancellationToken,
     ConversationCallbackType,
     ConversationState,
     ConversationTokenCallbackType,
@@ -42,6 +51,7 @@ from openhands.sdk.event.condenser import (
     CondensationRequest,
 )
 from openhands.sdk.llm import (
+    LLM,
     LLMResponse,
     Message,
     MessageToolCall,
@@ -52,9 +62,11 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.llm.exceptions import (
     FunctionCallValidationError,
+    LLMContentPolicyViolationError,
     LLMContextWindowExceedError,
     LLMMalformedConversationHistoryError,
 )
+from openhands.sdk.llm.router.base import RouterLLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
@@ -62,7 +74,6 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -70,6 +81,7 @@ from openhands.sdk.tool import (
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
     from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.builtins import (
@@ -102,6 +114,36 @@ def _tool_has_summary_param(tool: ToolDefinition) -> bool:
 # Maximum number of events to scan during init_state defensive checks.
 # SystemPromptEvent must appear within this prefix (at index 0 or 1).
 INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
+
+def _latest_user_message_contains_image(messages: list[Message]) -> bool:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.contains_image
+    return False
+
+
+def _non_multimodal_image_message(model: str) -> Message:
+    return Message(
+        role="assistant",
+        content=[
+            TextContent(
+                text=(
+                    "I received your image, but the currently selected model "
+                    f"({model}) does not support image understanding. Please "
+                    "switch to a multimodal model to analyze the image."
+                )
+            )
+        ],
+    )
+
+
+def _should_handle_non_multimodal_image_input(
+    llm: LLM, messages: list[Message]
+) -> bool:
+    if isinstance(llm, RouterLLM):
+        return False
+    return _latest_user_message_contains_image(messages) and not llm.vision_is_active()
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +198,7 @@ class _ActionBatch:
         executor: ParallelToolExecutor,
         tool_runner: Callable[[ActionEvent], list[Event]],
         tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
     ) -> _ActionBatch:
         """Truncate, partition blocked actions, execute the rest, return the batch."""
         action_events, has_finish = cls._truncate_at_finish(action_events)
@@ -169,7 +212,48 @@ class _ActionBatch:
             else:
                 executable.append(ae)
 
-        executed_results = executor.execute_batch(executable, tool_runner, tools)
+        executed_results = executor.execute_batch(
+            executable, tool_runner, tools, cancel_token
+        )
+        results_by_id = dict(zip([ae.id for ae in executable], executed_results))
+
+        return cls(
+            action_events=action_events,
+            has_finish=has_finish,
+            blocked_reasons=blocked_reasons,
+            results_by_id=results_by_id,
+        )
+
+    @classmethod
+    async def aprepare(
+        cls,
+        action_events: list[ActionEvent],
+        state: ConversationState,
+        executor: ParallelToolExecutor,
+        tool_runner: Callable[[ActionEvent], list[Event]],
+        tools: dict[str, ToolDefinition] | None = None,
+        cancel_token: CancellationToken | None = None,
+    ) -> _ActionBatch:
+        """Async variant of :meth:`prepare`.
+
+        Uses :meth:`ParallelToolExecutor.aexecute_batch` so that each
+        tool call runs in its own thread and multiple calls are
+        dispatched concurrently via :func:`asyncio.gather`.
+        """
+        action_events, has_finish = cls._truncate_at_finish(action_events)
+
+        blocked_reasons: dict[str, str] = {}
+        executable: list[ActionEvent] = []
+        for ae in action_events:
+            reason = state.pop_blocked_action(ae.id)
+            if reason is not None:
+                blocked_reasons[ae.id] = reason
+            else:
+                executable.append(ae)
+
+        executed_results = await executor.aexecute_batch(
+            executable, tool_runner, tools, cancel_token
+        )
         results_by_id = dict(zip([ae.id for ae in executable], executed_results))
 
         return cls(
@@ -232,7 +316,7 @@ class _ActionBatch:
             mark_finished()
 
 
-class Agent(CriticMixin, AgentBase):
+class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
     """Main agent implementation for OpenHands.
 
     The Agent class provides the core functionality for running AI agents that can
@@ -259,7 +343,7 @@ class Agent(CriticMixin, AgentBase):
         from openhands.sdk import LLM, Agent, Tool
         from pydantic import SecretStr
 
-        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
         tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         agent = Agent(llm=llm, tools=tools)
         ```
@@ -408,7 +492,10 @@ class Agent(CriticMixin, AgentBase):
 
         This method pulls secrets from the conversation's secret_registry and
         merges them with agent_context to build the dynamic portion of the
-        system prompt.
+        system prompt, assembled from the dynamic-tier sections of the default
+        registry. ``_build_prompt_context`` reproduces the legacy no-agent_context
+        path: with no agent_context but registry secrets present, it resolves a
+        default ``AgentContext()`` so the secrets (and its datetime) still render.
 
         Args:
             state: The conversation state containing the secret_registry.
@@ -419,25 +506,11 @@ class Agent(CriticMixin, AgentBase):
         # Get secret infos from conversation's secret_registry
         secret_infos = state.secret_registry.get_secret_infos()
 
-        if not self.agent_context:
-            # No agent_context but we might have secrets from registry
-            if secret_infos:
-                from openhands.sdk.context.agent_context import AgentContext
-
-                # Create a minimal context just for secrets
-                temp_context = AgentContext()
-                return temp_context.get_system_message_suffix(
-                    llm_model=self.llm.model,
-                    llm_model_canonical=self.llm.model_canonical_name,
-                    additional_secret_infos=secret_infos,
-                )
-            return None
-
-        return self.agent_context.get_system_message_suffix(
-            llm_model=self.llm.model,
-            llm_model_canonical=self.llm.model_canonical_name,
-            additional_secret_infos=secret_infos,
-        )
+        ctx = self._build_prompt_context(additional_secret_infos=secret_infos)
+        # The dynamic tier is preset-independent; fall back to the default tier for a
+        # custom Jinja template (preset None), as before.
+        preset = self._prompt_preset or PromptPreset.DEFAULT
+        return create_registry(preset).build(ctx).dynamic
 
     def _execute_actions(
         self,
@@ -453,6 +526,41 @@ class Agent(CriticMixin, AgentBase):
             executor=self._parallel_executor,
             tool_runner=lambda ae: self._execute_action_event(conversation, ae),
             tools=self.tools_map,
+            cancel_token=conversation.cancel_token,
+        )
+        batch.emit(on_event)
+        batch.finalize(
+            on_event=on_event,
+            check_iterative_refinement=lambda ae: (
+                self._check_iterative_refinement(conversation, ae)
+            ),
+            mark_finished=lambda: setattr(
+                state,
+                "execution_status",
+                ConversationExecutionStatus.FINISHED,
+            ),
+        )
+
+    async def _aexecute_actions(
+        self,
+        conversation: LocalConversation,
+        action_events: list[ActionEvent],
+        on_event: ConversationCallbackType,
+    ) -> None:
+        """Async variant of :meth:`_execute_actions`.
+
+        Each tool call runs in its own thread via
+        :meth:`ParallelToolExecutor.aexecute_batch`, giving the event
+        loop an ``await`` boundary between every tool invocation.
+        """
+        state = conversation.state
+        batch = await _ActionBatch.aprepare(
+            action_events,
+            state=state,
+            executor=self._parallel_executor,
+            tool_runner=lambda ae: self._execute_action_event(conversation, ae),
+            tools=self.tools_map,
+            cancel_token=conversation.cancel_token,
         )
         batch.emit(on_event)
         batch.finalize(
@@ -500,9 +608,14 @@ class Agent(CriticMixin, AgentBase):
                 "skipping hook check for legacy conversation state."
             )
 
-        # Prepare LLM messages using the utility function
+        # Build per-conversation context once and thread it through all
+        # LLM calls in this step (avoids shared mutable state on the LLM).
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Prepare LLM messages from the cached, incrementally-maintained view.
+        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
         _messages_or_condensation = prepare_llm_messages(
-            state.events, condenser=self.condenser, llm=self.llm
+            state.view, condenser=self.condenser, llm=self.llm
         )
 
         # Process condensation event before agent sampels another action
@@ -511,6 +624,20 @@ class Agent(CriticMixin, AgentBase):
             return
 
         _messages = _messages_or_condensation
+
+        if _should_handle_non_multimodal_image_input(self.llm, _messages):
+            logger.info(
+                "Image input received while selected model does not support vision: %s",
+                self.llm.model,
+            )
+            on_event(
+                MessageEvent(
+                    source="agent",
+                    llm_message=_non_multimodal_image_message(self.llm.model),
+                )
+            )
+            state.execution_status = ConversationExecutionStatus.FINISHED
+            return
 
         logger.debug(
             "Sending messages to LLM: "
@@ -523,6 +650,7 @@ class Agent(CriticMixin, AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
+                call_context=call_context,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -534,6 +662,28 @@ class Agent(CriticMixin, AgentBase):
                 ),
             )
             on_event(error_message)
+            return
+        except LLMContentPolicyViolationError as e:
+            # Content-policy blocks are deterministic; nudge the model and let the
+            # run loop continue instead of emitting a fatal error.
+            logger.warning(f"LLM output blocked by content filter: {e}")
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    "Your previous response was blocked by the "
+                                    "model's content filter. Please continue, "
+                                    "rephrasing to avoid the flagged content."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
             return
         except LLMMalformedConversationHistoryError as e:
             # The provider rejected the current message history as structurally
@@ -550,6 +700,10 @@ class Agent(CriticMixin, AgentBase):
                     "triggering condensation retry with condensed history: "
                     f"{e}"
                 )
+                # The incremental view may itself be the source of the
+                # malformed history.  Re-derive with full enforcement so
+                # the condenser operates on a clean view.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(
@@ -576,117 +730,207 @@ class Agent(CriticMixin, AgentBase):
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+        response_type = classify_response(message)
 
-        # Check if this is a reasoning-only response (e.g., from reasoning models)
-        # or a message-only response without tool calls
-        has_reasoning = (
-            message.responses_reasoning_item is not None
-            or message.reasoning_content is not None
-            or (message.thinking_blocks and len(message.thinking_blocks) > 0)
-        )
-        has_content = any(
-            isinstance(c, TextContent) and c.text.strip() for c in message.content
-        )
-
-        if message.tool_calls and len(message.tool_calls) > 0:
-            if not all(isinstance(c, TextContent) for c in message.content):
-                logger.warning(
-                    "LLM returned tool calls but message content is not all "
-                    "TextContent - ignoring non-text content"
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                self._handle_tool_calls(
+                    message, llm_response, conversation, state, on_event
+                )
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
+                )
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
                 )
 
-            # Generate unique batch ID for this LLM response
-            thought_content = [c for c in message.content if isinstance(c, TextContent)]
+    @observe(name="agent.astep", ignore_inputs=["state", "on_event"])
+    async def astep(
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ) -> None:
+        """Async variant of :meth:`step`.
 
-            action_events: list[ActionEvent] = []
-            for i, tool_call in enumerate(message.tool_calls):
-                action_event = self._get_action_event(
-                    tool_call,
-                    conversation=conversation,
-                    llm_response_id=llm_response.id,
-                    on_event=on_event,
-                    security_analyzer=state.security_analyzer,
-                    thought=thought_content
-                    if i == 0
-                    else [],  # Only first gets thought
-                    # Only first gets reasoning content
-                    reasoning_content=message.reasoning_content if i == 0 else None,
-                    # Only first gets thinking blocks
-                    thinking_blocks=list(message.thinking_blocks) if i == 0 else [],
-                    responses_reasoning_item=message.responses_reasoning_item
-                    if i == 0
-                    else None,
-                )
-                if action_event is None:
-                    continue
-                action_events.append(action_event)
-
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._requires_user_confirmation(state, action_events):
-                return
-
-            if action_events:
-                self._execute_actions(conversation, action_events, on_event)
-
-            # Emit VLLM token ids if enabled before returning
-            self._maybe_emit_vllm_tokens(llm_response, on_event)
+        The LLM completion is performed asynchronously via
+        :func:`amake_llm_completion`.  Tool dispatch uses
+        :meth:`_aexecute_actions` which runs each tool call in its own
+        thread via :func:`asyncio.loop.run_in_executor` and schedules
+        parallel calls with :func:`asyncio.gather`, keeping the event
+        loop responsive during blocking tool I/O.
+        """
+        state = conversation.state
+        # Check for pending actions (implicit confirmation)
+        pending_actions = ConversationState.get_unmatched_actions(state.events)
+        if pending_actions:
+            logger.info(
+                "Confirmation mode: Executing %d pending action(s)",
+                len(pending_actions),
+            )
+            await self._aexecute_actions(conversation, pending_actions, on_event)
             return
 
-        # No tool calls - emit message event for reasoning or content responses
-        if not has_reasoning and not has_content:
-            logger.warning("LLM produced empty response - continuing agent loop")
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
+            if reason is not None:
+                logger.info(f"User message blocked by hook: {reason}")
+                state.execution_status = ConversationExecutionStatus.FINISHED
+                return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
-        msg_event = MessageEvent(
-            source="agent",
-            llm_message=message,
-            llm_response_id=llm_response.id,
+        call_context: LLMCallContext = conversation.get_llm_call_context()
+
+        # Prepare LLM messages from the cached, incrementally-maintained view.
+        # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+        _messages_or_condensation = await aprepare_llm_messages(
+            state.view, condenser=self.condenser, llm=self.llm
         )
-        # Run critic evaluation if configured for finish_and_message mode
-        if self.critic is not None and self.critic.mode == "finish_and_message":
-            critic_result = self._evaluate_with_critic(conversation, msg_event)
-            if critic_result is not None:
-                # Create new event with critic result
-                msg_event = msg_event.model_copy(
-                    update={"critic_result": critic_result}
+
+        if isinstance(_messages_or_condensation, Condensation):
+            on_event(_messages_or_condensation)
+            return
+
+        _messages = _messages_or_condensation
+
+        if _should_handle_non_multimodal_image_input(self.llm, _messages):
+            logger.info(
+                "Image input received while selected model does not support vision: %s",
+                self.llm.model,
+            )
+            on_event(
+                MessageEvent(
+                    source="agent",
+                    llm_message=_non_multimodal_image_message(self.llm.model),
                 )
-        on_event(msg_event)
-
-        # Emit VLLM token ids if enabled
-        self._maybe_emit_vllm_tokens(llm_response, on_event)
-
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if has_content:
-            logger.debug("LLM produced a message response - awaits user input")
+            )
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        # When the LLM produced no tool call and no user-facing content,
-        # inject corrective feedback so the model knows it must act.
-        # This prevents the monologue stuck-detector from firing when the
-        # model simply forgot to emit a function call (common with Qwen,
-        # which sometimes places tool-call XML inside reasoning_content).
-        if not has_content:
-            logger.warning(
-                "LLM response contained no tool call and no content"
-                " - sending corrective feedback"
+        logger.debug(
+            "Sending messages to LLM: "
+            f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
+        )
+
+        try:
+            llm_response = await amake_llm_completion(
+                self.llm,
+                _messages,
+                tools=list(self.tools_map.values()),
+                on_token=on_token,
+                call_context=call_context,
             )
-            nudge = MessageEvent(
+        except FunctionCallValidationError as e:
+            logger.warning(f"LLM generated malformed function call: {e}")
+            error_message = MessageEvent(
                 source="user",
                 llm_message=Message(
                     role="user",
-                    content=[
-                        TextContent(
-                            text=(
-                                "Your last response did not include a "
-                                "function call or a message. Please "
-                                "use a tool to proceed with the task."
-                            )
-                        )
-                    ],
+                    content=[TextContent(text=str(e))],
                 ),
             )
-            on_event(nudge)
+            on_event(error_message)
+            return
+        except LLMContentPolicyViolationError as e:
+            # Content-policy blocks are deterministic; nudge the model and let the
+            # run loop continue instead of emitting a fatal error.
+            logger.warning(f"LLM output blocked by content filter: {e}")
+            on_event(
+                MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user",
+                        content=[
+                            TextContent(
+                                text=(
+                                    "Your previous response was blocked by the "
+                                    "model's content filter. Please continue, "
+                                    "rephrasing to avoid the flagged content."
+                                )
+                            )
+                        ],
+                    ),
+                )
+            )
+            return
+        except LLMMalformedConversationHistoryError as e:
+            # The provider rejected the current message history as
+            # structurally invalid (for example, broken
+            # tool_use/tool_result pairing).  Route this into
+            # condensation recovery, but keep the logs distinct from
+            # true context-window exhaustion so upstream event-stream
+            # bugs remain visible.
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised malformed conversation history error, "
+                    "triggering condensation retry with condensed "
+                    "history: %s",
+                    e,
+                )
+                # Mirror step(): re-derive the cached view with full
+                # enforcement before the condensation retry.
+                state.rebuild_view()
+                on_event(CondensationRequest())
+                return
+            logger.warning(
+                "LLM raised malformed conversation history error but "
+                "no condenser can handle condensation requests. This "
+                "usually indicates an upstream event-stream or resume "
+                "bug: %s",
+                e,
+            )
+            raise e
+        except LLMContextWindowExceedError as e:
+            # If condenser is available and handles requests, trigger
+            # condensation
+            if (
+                self.condenser is not None
+                and self.condenser.handles_condensation_requests()
+            ):
+                logger.warning(
+                    "LLM raised context window exceeded error, triggering condensation"
+                )
+                on_event(CondensationRequest())
+                return
+            # No condenser available; log helpful warning
+            self._log_context_window_exceeded_warning()
+            raise e
+
+        message: Message = llm_response.message
+        response_type = classify_response(message)
+
+        match response_type:
+            case LLMResponseType.TOOL_CALLS:
+                await self._ahandle_tool_calls(
+                    message, llm_response, conversation, state, on_event
+                )
+            case LLMResponseType.CONTENT:
+                self._handle_content_response(
+                    message, llm_response, conversation, state, on_event
+                )
+            case LLMResponseType.REASONING_ONLY | LLMResponseType.EMPTY:
+                self._handle_no_content_response(
+                    message,
+                    llm_response,
+                    conversation,
+                    state,
+                    on_event,
+                    response_type=response_type,
+                )
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
@@ -734,11 +978,9 @@ class Agent(CriticMixin, AgentBase):
     def _extract_security_risk(
         self,
         arguments: dict,
-        tool_name: str,
         read_only_tool: bool,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
     ) -> risk.SecurityRisk:
-        requires_sr = isinstance(security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
         # Default risk value for action event
@@ -746,23 +988,14 @@ class Agent(CriticMixin, AgentBase):
         if read_only_tool:
             return risk.SecurityRisk.UNKNOWN
 
-        # Raises exception if failed to pass risk field when expected
-        # Exception will be sent back to agent as error event
-        # Strong models like GPT-5 can correct itself by retrying
-        if requires_sr and raw is None:
-            raise ValueError(
-                f"Failed to provide security_risk field in tool '{tool_name}'"
-            )
-
         # When no security analyzer is configured, ignore any security_risk field
         # from LLM and return UNKNOWN. This ensures that security_risk is only
         # evaluated when a security analyzer is explicitly set.
         if security_analyzer is None:
             return risk.SecurityRisk.UNKNOWN
 
-        # When using non-LLM security analyzer without security risk field
-        # safely ignore missing security risk fields
-        if not requires_sr and raw is None:
+        # security_risk is optional: if the LLM omits it, default to UNKNOWN.
+        if raw is None:
             return risk.SecurityRisk.UNKNOWN
 
         # Raises exception if invalid risk enum passed by LLM
@@ -829,6 +1062,20 @@ class Agent(CriticMixin, AgentBase):
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
     ) -> None:
+        try:
+            json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            tool_call = tool_call.model_copy(
+                update={
+                    "arguments": json.dumps(
+                        {
+                            "_openhands_malformed_tool_call": True,
+                            "error": error,
+                        }
+                    )
+                }
+            )
+
         tc_event = ActionEvent(
             source="agent",
             thought=thought or [],
@@ -913,7 +1160,6 @@ class Agent(CriticMixin, AgentBase):
             )
             security_risk = self._extract_security_risk(
                 arguments,
-                tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,
                 security_analyzer,
             )

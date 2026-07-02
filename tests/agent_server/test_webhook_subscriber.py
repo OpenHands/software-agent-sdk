@@ -13,10 +13,13 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from openhands.agent_server.config import WebhookSpec
-from openhands.agent_server.conversation_service import WebhookSubscriber
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+    WebhookSubscriber,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import StoredConversation
 from openhands.agent_server.utils import utc_now
@@ -24,6 +27,11 @@ from openhands.sdk import LLM, Agent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm.message import Message, TextContent
 from openhands.sdk.workspace import LocalWorkspace
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    start_conversation_with_test_llm,
+    text_message,
+)
 
 
 @pytest.fixture
@@ -329,7 +337,7 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:3]],
+            json=[event.model_dump(mode="json") for event in sample_events[:3]],
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer token",
@@ -380,10 +388,60 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:2]],
+            json=[event.model_dump(mode="json") for event in sample_events[:2]],
             headers=expected_headers,
             timeout=30.0,
         )
+
+    @pytest.mark.asyncio
+    @patch("httpx.AsyncClient")
+    async def test_post_events_serializes_set_and_secretstr(
+        self,
+        mock_client_class,
+        mock_event_service,
+        webhook_spec,
+        sample_conversation_id,
+    ):
+        """Regression: events containing set / SecretStr must serialize.
+
+        Plain model_dump() leaves set and SecretStr as Python objects that
+        httpx's JSON encoder cannot serialize ("Object of type set/SecretStr is
+        not JSON serializable"), failing every retry and dropping the events.
+        model_dump(mode="json") makes them JSON-safe.
+        """
+        import json as _json
+
+        # Test event with types that model_dump() leaves non-JSON-serializable.
+        # Note: deliberately not a ConversationEvent; we only care about serialization
+        # of pydantic models with tricky field types for the webhook POST payload.
+        class _EventWithTrickyTypes(BaseModel):
+            tags: set[str]
+            secret: SecretStr
+
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.raise_for_status.return_value = None
+        mock_client.request.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+        # Deliberately assign non-ConversationEvent for regression test.
+        subscriber.queue = [
+            _EventWithTrickyTypes(tags={"a", "b"}, secret=SecretStr("shh"))  # type: ignore[assignment]
+        ]
+
+        await subscriber._post_events()
+
+        posted_json = mock_client.request.call_args.kwargs["json"]
+        # httpx serializes this internally; it must not raise TypeError.
+        _json.dumps(posted_json)
+        assert isinstance(posted_json[0]["tags"], list)
+        # SecretStr is masked, not leaked, in JSON mode.
+        assert posted_json[0]["secret"] != "shh"
 
     @pytest.mark.asyncio
     async def test_post_events_empty_queue(
@@ -434,18 +492,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -479,21 +537,69 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
         assert subscriber.queue == original_events
+
+    @pytest.mark.asyncio
+    async def test_post_events_drops_oldest_when_requeue_exceeds_max_queue_size(
+        self, mock_event_service, sample_conversation_id
+    ):
+        """Failed re-queue trims oldest events past max_queue_size."""
+        # Tight bound so we can construct overflow easily.
+        spec = WebhookSpec(
+            base_url="https://example.com",
+            event_buffer_size=1,
+            flush_delay=0.1,
+            num_retries=0,
+            retry_delay=0,
+            max_queue_size=3,
+        )
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=spec,
+        )
+
+        # Build 5 distinct, identifiable events.
+        events = []
+        for i in range(5):
+            ev = MessageEvent(
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text=f"e{i}")]),
+            )
+            events.append(ev)
+
+        # Pre-load queue beyond bound so re-extend after failure must trim.
+        subscriber.queue = events.copy()
+
+        async def mock_request(*args, **kwargs):
+            raise httpx.HTTPStatusError(
+                "Server Error", request=MagicMock(), response=MagicMock()
+            )
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.request = mock_request
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+            await subscriber._post_events()
+
+        # Bound is honored, and the *oldest* events are the ones dropped.
+        assert len(subscriber.queue) == spec.max_queue_size
+        assert subscriber.queue == events[-spec.max_queue_size :]
 
     @pytest.mark.asyncio
     @patch("httpx.AsyncClient")
@@ -707,12 +813,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:2]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -741,12 +853,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:1]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
@@ -1113,18 +1231,18 @@ class TestConversationWebhookSubscriber:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber.post_conversation_info(conversation_info)
+            await subscriber.post_conversation_info(conversation_info)
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
 
 class TestWebhookSubscriberTimerBehavior:
@@ -1247,3 +1365,56 @@ class TestWebhookSubscriberTimerBehavior:
 
         # _post_events should have been called immediately
         subscriber._post_events.assert_called_once()
+
+
+@pytest.mark.timeout(30)
+async def test_webhook_subscribe_errors_surface(tmp_path, monkeypatch):
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    workspace = str(tmp_path / "ws")
+    (tmp_path / "ws").mkdir()
+
+    # Force WebhookSubscriber's first __call__ to raise once. Subsequent
+    # calls succeed so the test models "init error" rather than "every event
+    # raises". event_service.py:412 invokes __call__ during registration as
+    # an initial-state sync — that's where the raise lands.
+    original_init = WebhookSubscriber.__init__
+
+    def _broken_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._broken = True
+
+    async def _broken_call(self, event):
+        if getattr(self, "_broken", False):
+            self._broken = False
+            raise RuntimeError("webhook subscriber init failed")
+
+    monkeypatch.setattr(WebhookSubscriber, "__init__", _broken_init)
+    monkeypatch.setattr(WebhookSubscriber, "__call__", _broken_call)
+
+    service = ConversationService(
+        conversations_dir=persist,
+        webhook_specs=[
+            WebhookSpec(
+                base_url="http://unused.test",
+                event_buffer_size=1,
+                num_retries=0,
+            )
+        ],
+    )
+    async with service:
+        # Contract: a subscriber's init error reaches the caller. Today both
+        # swallow sites are present, so this `pytest.raises` will not see
+        # anything and the test fails (→ XFAIL). When *both* are fixed,
+        # start_conversation propagates RuntimeError, pytest.raises catches
+        # it, the test passes (→ XPASS, strict=True flags it for cleanup).
+        with pytest.raises(RuntimeError, match="webhook subscriber init failed"):
+            await start_conversation_with_test_llm(
+                service,
+                parent_llm=SlowTestLLM.from_messages(
+                    [text_message("done")], latency_s=0.0
+                ),
+                workspace_dir=workspace,
+                usage_id="webhook-error",
+                initial_text=None,
+            )

@@ -3,25 +3,37 @@ import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Final
 
 from openhands.sdk.io.base import FileStore
+from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 
+_DEFAULT_MAX_SIZE: Final = 100_000
+_DEFAULT_MAX_MEMORY: Final = 20 * 1024 * 1024  # 20 MB
+
 
 class InMemoryFileStore(FileStore):
-    files: dict[str, str]
+    files: MemoryLRUCache
     _instance_id: str
     _lock: threading.Lock
 
-    def __init__(self, files: dict[str, str] | None = None) -> None:
-        self.files = {}
+    def __init__(
+        self,
+        files: dict[str, str] | None = None,
+        *,
+        max_size: int = _DEFAULT_MAX_SIZE,
+        max_memory: int = _DEFAULT_MAX_MEMORY,
+    ) -> None:
+        self.files = MemoryLRUCache(max_memory=max_memory, max_size=max_size)
         self._instance_id = uuid.uuid4().hex
         self._lock = threading.Lock()
         if files is not None:
-            self.files = files
+            for path, contents in files.items():
+                self.files[path] = contents
 
     def write(self, path: str, contents: str | bytes) -> None:
         if isinstance(contents, bytes):

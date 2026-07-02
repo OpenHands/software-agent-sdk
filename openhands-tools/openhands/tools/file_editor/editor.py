@@ -2,8 +2,9 @@ import base64
 import mimetypes
 import os
 import re
-import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
@@ -11,6 +12,7 @@ from binaryornot.check import is_binary
 
 from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_host_absolute_path, to_posix_path
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -34,13 +36,21 @@ from openhands.tools.file_editor.utils.encoding import (
     with_encoding,
 )
 from openhands.tools.file_editor.utils.history import FileHistoryManager
-from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
 logger = get_logger(__name__)
 
 # Supported image extensions for viewing as base64-encoded content
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def _is_encodable(text: str, encoding: str) -> bool:
+    """Return True if text can be encoded with the given encoding."""
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 class FileEditor:
@@ -204,9 +214,11 @@ class FileEditor:
         if not occurrences:
             # We found no occurrences, possibly because of extra white spaces at
             # either the front or back of the string.
-            # Remove the white spaces and try again.
+            # Strip old_str to retry the *match* only. Do NOT strip new_str: it
+            # is the replacement content, and stripping it would silently drop
+            # meaningful leading/trailing whitespace (e.g. a Markdown hard line
+            # break or intentional indentation) the caller asked to write.
             old_str = old_str.strip()
-            new_str = new_str.strip()
             pattern = re.escape(old_str)
             occurrences = [
                 (
@@ -283,38 +295,17 @@ class FileEditor:
                     "a directory.",
                 )
 
-            # First count hidden files/dirs in current directory only
-            # -mindepth 1 excludes . and .. automatically
-            _, hidden_stdout, _ = run_shell_cmd(
-                rf"find -L {path} -mindepth 1 -maxdepth 1 -name '.*'"
-            )
-            hidden_count = (
-                len(hidden_stdout.strip().split("\n")) if hidden_stdout.strip() else 0
-            )
-
-            # Then get files/dirs up to 2 levels deep, excluding hidden entries at
-            # both depth 1 and 2
-            _, stdout, stderr = run_shell_cmd(
-                rf"find -L {path} -maxdepth 2 -not \( -path '{path}/\.*' -o "
-                rf"-path '{path}/*/\.*' \) | sort",
-                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
-            )
-            if stderr:
+            try:
+                hidden_count = self._count_hidden_children(path)
+                formatted_paths = self._list_directory_for_view(path)
+            except OSError as e:
                 return FileEditorObservation.from_text(
-                    text=stderr,
+                    text=str(e),
                     command="view",
                     is_error=True,
                     path=str(path),
                     prev_exist=True,
                 )
-            # Add trailing slashes to directories
-            paths = stdout.strip().split("\n") if stdout.strip() else []
-            formatted_paths = []
-            for p in paths:
-                if Path(p).is_dir():
-                    formatted_paths.append(f"{p}/")
-                else:
-                    formatted_paths.append(p)
 
             msg = [
                 f"Here's the files and directories up to 2 levels deep in {path}, "
@@ -325,7 +316,11 @@ class FileEditor:
                     f"\n{hidden_count} hidden files/directories in this directory "
                     f"are excluded. You can use 'ls -la {path}' to see them."
                 )
-            stdout = "\n".join(msg)
+            stdout = maybe_truncate(
+                "\n".join(msg),
+                truncate_after=MAX_RESPONSE_LEN_CHAR,
+                truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
+            )
             return FileEditorObservation.from_text(
                 text=stdout,
                 command="view",
@@ -436,6 +431,36 @@ class FileEditor:
             prev_exist=True,
         )
 
+    def _format_directory_entry(self, root: Path, entry: Path) -> str:
+        root_display = to_posix_path(root)
+        if entry == root:
+            display = root_display
+        else:
+            display = f"{root_display}/{to_posix_path(entry.relative_to(root))}"
+        if entry.is_dir():
+            return f"{display}/"
+        return display
+
+    def _count_hidden_children(self, path: Path) -> int:
+        return sum(1 for item in path.iterdir() if item.name.startswith("."))
+
+    def _list_directory_for_view(self, path: Path) -> list[str]:
+        visible_entries = [path]
+        for item in sorted(path.iterdir(), key=lambda p: str(p)):
+            if item.name.startswith("."):
+                continue
+            visible_entries.append(item)
+            if item.is_dir():
+                try:
+                    visible_entries.extend(
+                        child
+                        for child in sorted(item.iterdir(), key=lambda p: str(p))
+                        if not child.name.startswith(".")
+                    )
+                except OSError:
+                    pass
+        return [self._format_directory_entry(path, entry) for entry in visible_entries]
+
     @with_encoding
     def write_file(self, path: Path, file_text: str, encoding: str = "utf-8") -> None:
         """
@@ -450,11 +475,60 @@ class FileEditor:
         """
         self.validate_file(path)
         try:
-            # Use open with encoding instead of path.write_text
-            with open(path, "w", encoding=encoding) as f:
-                f.write(file_text)
+            self._atomic_write(path, file_text, encoding)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
+
+    def _atomic_write(self, path: Path, file_text: str, encoding: str) -> None:
+        """Write file_text to path atomically, never leaving a truncated file.
+
+        The content is written to a temporary file in the same directory which is
+        then Path.replace'd into place, so a failed write can never destroy the
+        original file. If the file's detected encoding cannot represent the new
+        content, fall back to UTF-8 so an edit may add characters (arrows, emoji,
+        CJK, ...) the original single-byte encoding lacks, instead of failing and
+        truncating the file. Note that the fallback transcodes the whole file to
+        UTF-8.
+        """
+        default = self._encoding_manager.default_encoding
+        if encoding != default and not _is_encodable(file_text, encoding):
+            logger.warning(
+                f"Detected encoding '{encoding}' cannot represent the new content "
+                f"for {path}; writing as '{default}' instead."
+            )
+            encoding = default
+
+        with self._temp_file(path, file_text, encoding) as tmp_path:
+            # Preserve the original file's permission bits when it already exists.
+            if path.exists():
+                os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+            Path.replace(tmp_path, path)
+
+    @contextmanager
+    def _temp_file(self, path: Path, file_text: str, encoding: str) -> Iterator[Path]:
+        """Write file_text to a fresh temp file beside path and yield its Path.
+
+        The temp file is removed on any failure (write, chmod or replace), so the
+        original file is never destroyed and no stray temp file is left behind. The
+        unlink runs after the file is closed because Windows cannot delete an open
+        file.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            encoding=encoding,
+            delete=False,
+        )
+        tmp_path = Path(tmp.name)
+        try:
+            with tmp:
+                tmp.write(file_text)
+            yield tmp_path
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     @with_encoding
     def insert(
@@ -488,33 +562,31 @@ class FileEditor:
 
         new_str_lines = new_str.split("\n")
 
-        # Create temporary file for the new content
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding=encoding, delete=False
-        ) as temp_file:
-            # Copy lines before insert point and save them for history
-            history_lines = []
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i > insert_line:
-                        break
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Build the new content in memory, then write it atomically. Routing the
+        # write through write_file reuses the same atomic, encoding-safe path as
+        # every other edit (no truncation, UTF-8 fallback for new characters).
+        new_lines: list[str] = []
+        history_lines: list[str] = []
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i > insert_line:
+                    break
+                new_lines.append(line)
+                history_lines.append(line)
 
-            # Insert new content
-            for line in new_str_lines:
-                temp_file.write(line + "\n")
+        # Insert new content
+        for line in new_str_lines:
+            new_lines.append(line + "\n")
 
-            # Copy remaining lines and save them for history
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i <= insert_line:
-                        continue
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Copy remaining lines and save them for history
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i <= insert_line:
+                    continue
+                new_lines.append(line)
+                history_lines.append(line)
 
-        # Move temporary file to original location
-        shutil.move(temp_file.name, path)
+        self.write_file(path, "".join(new_lines))
 
         # Read just the snippet range
         start_line = max(0, insert_line - SNIPPET_CONTEXT_WINDOW)
@@ -559,15 +631,13 @@ class FileEditor:
         1. Path is absolute
         2. Path and command are compatible
         """
-        # Check if its an absolute path
-        if not path.is_absolute():
-            suggestion_message = (
-                "The path should be an absolute path, starting with `/`."
-            )
+        # Check if it's an absolute path on the current host filesystem.
+        if not is_host_absolute_path(path):
+            suggestion_message = "The path should be an absolute path."
 
             # Only suggest the absolute path if cwd is provided and the path exists
             if self._cwd is not None:
-                suggested_path = self._cwd / path
+                suggested_path = Path(self._cwd) / path
                 if suggested_path.exists():
                     suggestion_message += f" Maybe you meant {suggested_path}?"
 

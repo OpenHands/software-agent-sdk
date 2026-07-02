@@ -23,6 +23,7 @@ from openhands.sdk.skills.utils import (
     load_mcp_config,
 )
 from openhands.sdk.subagent.schema import AgentDefinition
+from openhands.sdk.utils.path import to_posix_path
 
 
 if TYPE_CHECKING:
@@ -325,7 +326,7 @@ class Plugin(BaseModel):
 
         return cls(
             manifest=manifest,
-            path=str(plugin_dir),
+            path=to_posix_path(plugin_dir),
             skills=skills,
             hooks=hooks,
             mcp_config=mcp_config,
@@ -349,7 +350,7 @@ class Plugin(BaseModel):
             return []
 
         plugins: list[Plugin] = []
-        for item in plugins_path.iterdir():
+        for item in sorted(plugins_path.iterdir()):
             if item.is_dir():
                 try:
                     plugin = cls.load(item)
@@ -378,7 +379,7 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 
     if manifest_path:
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             # Handle author field - can be string or object
@@ -411,7 +412,7 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
         return []
 
     skills: list[Skill] = []
-    for item in skills_dir.iterdir():
+    for item in sorted(skills_dir.iterdir()):
         if item.is_dir():
             skill_md = find_skill_md(item)
             if skill_md:
@@ -457,18 +458,29 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
 
 def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
-    """Load MCP configuration from .mcp.json."""
+    """Load MCP configuration from .mcp.json.
+
+    Note: Variables are NOT fully expanded during plugin loading. Only SKILL_ROOT
+    is expanded (since plugin_dir is known). Other variables like ${VAR:-default}
+    are preserved as placeholders to be expanded later when per-conversation
+    secrets are available (in LocalConversation._ensure_plugins_loaded()).
+
+    This prevents the double-expansion bug where defaults would be applied
+    during plugin loading before secrets are available.
+    """
     mcp_json = plugin_dir / ".mcp.json"
     if not mcp_json.exists():
         return None
 
     try:
-        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        # expand_defaults=False: preserve ${VAR:-default} placeholders for later
+        # expansion with per-conversation secrets. Only SKILL_ROOT is expanded now.
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir, expand_defaults=False)
         if config and "mcpServers" in config:
-            server_names = list(config["mcpServers"].keys())
             logger.info(
-                f"Loaded MCP config from {mcp_json} "
-                f"with {len(server_names)} server(s): {server_names}"
+                "Loaded MCP config from %s with %d server(s)",
+                mcp_json,
+                len(config["mcpServers"]),
             )
         return config
     except Exception as e:
@@ -483,7 +495,7 @@ def _load_agents(plugin_dir: Path) -> list[AgentDefinition]:
         return []
 
     agents: list[AgentDefinition] = []
-    for item in agents_dir.iterdir():
+    for item in sorted(agents_dir.iterdir()):
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
                 agent = AgentDefinition.load(item)
@@ -502,7 +514,7 @@ def _load_commands(plugin_dir: Path) -> list[CommandDefinition]:
         return []
 
     commands: list[CommandDefinition] = []
-    for item in commands_dir.iterdir():
+    for item in sorted(commands_dir.iterdir()):
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
                 command = CommandDefinition.load(item)

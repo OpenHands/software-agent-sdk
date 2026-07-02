@@ -141,7 +141,7 @@ def test_agent_state_writes_use_reassignment_pattern():
 
     for py_file in python_files:
         try:
-            source = py_file.read_text()
+            source = py_file.read_text(encoding="utf-8")
             tree = ast.parse(source, filename=str(py_file))
         except SyntaxError:
             continue

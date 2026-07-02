@@ -1,17 +1,35 @@
 """Secret sources and types for handling sensitive data."""
 
+import os
 from abc import ABC, abstractmethod
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pydantic import Field, SecretStr, field_serializer, field_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+from openhands.sdk.utils.pydantic_secrets import (
+    is_redacted_secret,
+    serialize_secret,
+    validate_secret,
+)
 from openhands.sdk.utils.redact import is_secret_key
 
 
 logger = get_logger(__name__)
+
+_INTERNAL_SERVER_URL_ENV = "OH_INTERNAL_SERVER_URL"
+_DEFAULT_INTERNAL_SERVER_URL = "http://127.0.0.1:8000"
+
+
+def _resolve_lookup_secret_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.netloc or parsed.scheme:
+        return url
+
+    base_url = os.getenv(_INTERNAL_SERVER_URL_ENV, _DEFAULT_INTERNAL_SERVER_URL)
+    return urljoin(f"{base_url.rstrip('/')}/", url)
 
 
 class SecretSource(DiscriminatedUnionMixin, ABC):
@@ -53,6 +71,11 @@ class LookupSecret(SecretSource):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("url")
+    @classmethod
+    def _normalize_url(cls, url: str) -> str:
+        return _resolve_lookup_secret_url(url)
+
     def get_value(self) -> str:
         response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
@@ -63,17 +86,33 @@ class LookupSecret(SecretSource):
     def _validate_secrets(cls, headers: dict[str, str], info):
         result = {}
         for key, value in headers.items():
-            if is_secret_key(key):
-                secret_value = validate_secret(SecretStr(value), info)
-                # Skip headers with redacted/empty secret values
-                if secret_value is None:
-                    logger.debug(
-                        f"Skipping redacted header '{key}' during deserialization"
-                    )
-                    continue
-                result[key] = secret_value.get_secret_value()
-            else:
+            if not is_secret_key(key):
                 result[key] = value
+                continue
+
+            # Drop empty / redacted header values up-front; they carry no
+            # usable auth material regardless of cipher state.
+            if not value or not value.strip() or is_redacted_secret(value):
+                logger.debug(f"Skipping redacted header '{key}' during deserialization")
+                continue
+
+            secret_value = validate_secret(SecretStr(value), info)
+            if secret_value is None:
+                # validate_secret only returns None for a non-empty input when
+                # a cipher was supplied in the validation context but
+                # decryption failed. That happens when callers (e.g. a frontend
+                # building a LookupSecret) send a plaintext auth header but
+                # the request is otherwise tagged as containing encrypted
+                # secrets. Preserve the original value rather than silently
+                # dropping the header — the caller's intent for headers is
+                # always plaintext authentication metadata.
+                logger.debug(
+                    f"Header '{key}' could not be decrypted; "
+                    "treating value as plaintext"
+                )
+                result[key] = value
+            else:
+                result[key] = secret_value.get_secret_value()
         return result
 
     @field_serializer("headers", when_used="always")

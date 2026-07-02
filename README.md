@@ -56,7 +56,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
+    model="gpt-5.5",
     api_key=os.getenv("LLM_API_KEY"),
 )
 
@@ -78,6 +78,7 @@ print("All done!")
 ```
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
+For local development from this repository, run `make build` to install the workspace dependencies and pre-commit hooks.
 
 ## Documentation
 
@@ -89,15 +90,16 @@ The documentation includes:
 - [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started) - Installation and setup
 - [Architecture & Core Concepts](https://docs.openhands.dev/sdk/arch/overview) - Agents, tools, workspaces, and more
 - [Guides](https://docs.openhands.dev/sdk/guides/hello-world) - Hello World, custom tools, MCP, skills, and more
-- [API Reference](https://docs.openhands.dev/sdk/guides/agent-server/api-reference/server-details/alive) - Agent Server REST API documentation
+- [Agent Server API Reference](https://docs.openhands.dev/sdk/guides/agent-server/api-reference/server-details/alive) - REST API reference for the remote agent server
 
 ## Examples
 
 The `examples/` directory contains comprehensive usage examples:
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and skills
+- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and core workflows
 - **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
 - **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
+- **Skills and Plugins** (`examples/05_skills_and_plugins/`) - AgentSkills, plugins, and marketplace examples
 
 ## Skills for modern package tooling
 
@@ -193,4 +195,3 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
   <img src="https://assets.openhands.dev/logos/external/black/google.svg" alt="Google" height="17" hspace="5">
 </picture>
 </div>
-

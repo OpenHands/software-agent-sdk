@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.event import (
     ActionEvent,
     Event,
@@ -19,7 +20,9 @@ from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.llm import LLM
 
 logger = get_logger(__name__)
 
@@ -149,7 +152,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.PRE_TOOL_USE,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
                 action_id=event.id,
@@ -224,7 +227,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.POST_TOOL_USE,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 tool_name=tool_name,
                 action_id=action_event.id,
@@ -266,7 +269,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.USER_PROMPT_SUBMIT,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 message_id=event.id,
                 hook_input={"message": message},
@@ -328,7 +331,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.SESSION_START,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
             )
             if result.error:
@@ -342,7 +345,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.SESSION_END,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
             )
             if result.error:
@@ -360,7 +363,7 @@ class HookEventProcessor:
         for hook, result in zip(hooks, results, strict=False):
             self._emit_hook_execution_event(
                 hook_event_type=HookEventType.STOP,
-                hook_command=hook.command,
+                hook_command=hook.display_command,
                 result=result,
                 hook_input={"reason": reason} if reason else None,
             )
@@ -389,6 +392,13 @@ def create_hook_callback(
     session_id: str | None = None,
     original_callback: Any = None,
     emit_hook_events: bool = True,
+    llm: "LLM | None" = None,
+    llm_getter: "Callable[[], LLM | None] | None" = None,
+    persistence_dir: str | None = None,
+    visualizer: type[ConversationVisualizerBase]
+    | ConversationVisualizerBase
+    | None = None,
+    conversation_stats: "ConversationStats | None" = None,
 ) -> tuple[HookEventProcessor, Any]:
     """Create a hook-enabled event callback. Returns (processor, callback).
 
@@ -399,6 +409,12 @@ def create_hook_callback(
         original_callback: Callback to chain after hook processing.
         emit_hook_events: If True, emit HookExecutionEvent for each hook execution.
             Defaults to True for full observability.
+        llm: LLM instance inherited from the parent conversation, used by agent hooks.
+        llm_getter: Callable returning the conversation's current LLM. Preferred
+            over ``llm`` so agent hooks follow switch_llm()/switch_profile().
+        persistence_dir: Directory used to persist agent hook sub-conversation events.
+        visualizer: Visualizer instance passed to agent hook sub-conversations.
+        conversation_stats: Parent conversation stats that should include hook spend.
 
     Returns:
         Tuple of (HookEventProcessor, callback function).
@@ -407,6 +423,11 @@ def create_hook_callback(
         config=hook_config,
         working_dir=working_dir,
         session_id=session_id,
+        llm=llm,
+        llm_getter=llm_getter,
+        persistence_dir=persistence_dir,
+        visualizer=visualizer,
+        conversation_stats=conversation_stats,
     )
 
     processor = HookEventProcessor(

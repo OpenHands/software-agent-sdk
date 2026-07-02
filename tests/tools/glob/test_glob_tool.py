@@ -128,7 +128,7 @@ def test_glob_tool_specific_directory():
 
         # Check that all found files are in src directory
         for file_path in observation.files:
-            assert str(src_dir) in file_path
+            assert str(src_dir.resolve()) in file_path
 
 
 def test_glob_tool_no_matches():

@@ -89,7 +89,11 @@ class TestBrowserInitialization:
                 "openhands.tools.browser_use.impl.CustomBrowserUseServer",
                 return_value=mock_server,
             ),
-            patch("os.getuid", return_value=1000),  # Non-root user
+            patch(
+                "openhands.tools.browser_use.impl.os.getuid",
+                return_value=1000,
+                create=True,
+            ),  # Non-root user
         ):
             executor = BrowserToolExecutor(
                 headless=False,
@@ -169,10 +173,12 @@ class TestBrowserInitialization:
 
     def test_call_method_delegates_to_async_executor(self):
         """Test that __call__ method properly delegates to async executor."""
+        from openhands.tools.browser_use.definition import BrowserObservation
+
         mock_server = MagicMock()
         mock_async_executor = MagicMock()
         mock_action = MagicMock()
-        expected_result = MagicMock()
+        expected_result = BrowserObservation.from_text(text="OK")
 
         mock_async_executor.run_async.return_value = expected_result
 
@@ -201,8 +207,13 @@ class TestBrowserInitialization:
 
     def test_call_method_timeout_configuration(self):
         """Test that __call__ method uses correct timeout."""
+        from openhands.tools.browser_use.definition import BrowserObservation
+
         mock_server = MagicMock()
         mock_async_executor = MagicMock()
+        mock_async_executor.run_async.return_value = BrowserObservation.from_text(
+            text="OK"
+        )
         mock_action = MagicMock()
 
         with (

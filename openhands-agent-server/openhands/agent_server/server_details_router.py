@@ -7,6 +7,12 @@ from importlib.metadata import version
 from fastapi import APIRouter, Response
 from pydantic import BaseModel, Field
 
+from openhands.sdk.tool.registry import list_usable_tools
+from openhands.tools.terminal.timeout_policy import (
+    get_max_foreground_timeout_seconds,
+    get_runtime_idle_timeout_seconds,
+)
+
 
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
@@ -19,6 +25,10 @@ def _package_version(dist_name: str) -> str:
         return version(dist_name)
     except Exception:
         return "unknown"
+
+
+class HealthStatus(BaseModel):
+    status: str
 
 
 class ServerInfo(BaseModel):
@@ -44,6 +54,13 @@ class ServerInfo(BaseModel):
         default_factory=lambda: os.environ.get("OPENHANDS_BUILD_GIT_REF", "unknown")
     )
     python_version: str = Field(default_factory=lambda: sys.version)
+    usable_tools: list[str] = Field(default_factory=lambda: list_usable_tools())
+    runtime_idle_timeout_seconds: float | None = Field(
+        default_factory=lambda: get_runtime_idle_timeout_seconds()
+    )
+    max_foreground_terminal_timeout_seconds: float | None = Field(
+        default_factory=lambda: get_max_foreground_timeout_seconds()
+    )
 
     docs: str = "/docs"
     redoc: str = "/redoc"
@@ -65,15 +82,15 @@ def mark_initialization_complete() -> None:
 
 
 @server_details_router.get("/alive")
-async def alive():
+async def alive() -> HealthStatus:
     """Basic liveness check - returns OK if the server process is running."""
-    return {"status": "ok"}
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/health")
-async def health() -> str:
+async def health() -> HealthStatus:
     """Basic health check - returns OK if the server process is running."""
-    return "OK"
+    return HealthStatus(status="ok")
 
 
 @server_details_router.get("/ready")

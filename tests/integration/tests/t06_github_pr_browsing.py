@@ -2,8 +2,7 @@
 
 from openhands.sdk import get_logger
 from openhands.sdk.conversation import get_agent_final_response
-from openhands.sdk.tool import Tool
-from tests.integration.base import BaseIntegrationTest, TestResult, get_tools_for_preset
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 INSTRUCTION = (
@@ -21,9 +20,9 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
     INSTRUCTION: str = INSTRUCTION
 
     @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent based on configured tool preset."""
-        return get_tools_for_preset(self.tool_preset, enable_browser=False)
+    def enable_browser(self) -> bool:
+        """Enable browser tools for this browsing test."""
+        return True
 
     def setup(self) -> None:
         """No special setup needed for GitHub PR browsing."""

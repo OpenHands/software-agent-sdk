@@ -9,6 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from openhands.agent_server.api import create_app
+from openhands.agent_server.models import (
+    ACPConversationInfo,
+    ACPConversationPage,
+    ConversationInfo,
+    ConversationPage,
+)
 
 
 @pytest.fixture
@@ -166,38 +172,45 @@ def test_action_variants_have_proper_schemas(client):
         )
 
 
-def test_conversation_contracts_keep_v1_stable_and_add_acp_routes(client):
-    """v1 conversations stay Agent-only while ACP endpoints expose polymorphism."""
+def test_conversation_contracts_use_unified_acp_capable_endpoint(client):
+    """The main conversation endpoint accepts both OpenHands and ACP agents."""
     response = client.get("/openapi.json")
     assert response.status_code == 200
 
     openapi_schema = response.json()
     schemas = openapi_schema["components"]["schemas"]
 
-    v1_request = schemas["StartConversationRequest"]
-    assert (
-        v1_request["properties"]["agent"]["$ref"] == "#/components/schemas/Agent-Input"
-    )
-    v1_response = schemas["ConversationInfo"]
-    assert (
-        v1_response["properties"]["agent"]["$ref"]
-        == "#/components/schemas/Agent-Output"
-    )
-
-    acp_request = schemas["StartACPConversationRequest"]
-    agent_schema = acp_request["properties"]["agent"]
+    request = schemas["StartConversationRequest"]
+    agent_property = request["properties"]["agent"]
+    agent_ref = agent_property.get("$ref") or agent_property["anyOf"][0]["$ref"]
+    agent_schema = schemas[agent_ref.split("/")[-1]]
     assert "oneOf" in agent_schema
     refs = {variant["$ref"] for variant in agent_schema["oneOf"]}
     assert "#/components/schemas/Agent-Input" in refs
     assert "#/components/schemas/ACPAgent-Input" in refs
+    assert "agent_settings" in request["properties"]
+    assert "agent" not in request.get("required", [])
 
-    acp_response = schemas["ACPConversationInfo"]
-    acp_agent_schema = acp_response["properties"]["agent"]
-    assert "oneOf" in acp_agent_schema
-    acp_refs = {variant["$ref"] for variant in acp_agent_schema["oneOf"]}
-    assert "#/components/schemas/Agent-Output" in acp_refs
-    assert "#/components/schemas/ACPAgent-Output" in acp_refs
+    response_schema = schemas["ConversationInfo"]
+    response_agent_schema = schemas[
+        response_schema["properties"]["agent"]["$ref"].split("/")[-1]
+    ]
+    assert "oneOf" in response_agent_schema
+    response_refs = {variant["$ref"] for variant in response_agent_schema["oneOf"]}
+    assert "#/components/schemas/Agent-Output" in response_refs
+    assert "#/components/schemas/ACPAgent-Output" in response_refs
+    assert "ACPConversationInfo" not in schemas
+
+    page_schema = schemas["ConversationPage"]
+    page_items = page_schema["properties"]["items"]["items"]
+    assert page_items["$ref"] == "#/components/schemas/ConversationInfo"
 
     assert "/api/v2/conversations" not in openapi_schema["paths"]
-    assert "/api/acp/conversations" in openapi_schema["paths"]
-    assert "/api/acp/conversations/count" in openapi_schema["paths"]
+    assert "/api/conversations" in openapi_schema["paths"]
+    # The deprecated /api/acp/conversations routes were removed in v1.27.0.
+    assert "/api/acp/conversations" not in openapi_schema["paths"]
+
+
+def test_acp_conversation_response_names_are_type_aliases():
+    assert ACPConversationInfo is ConversationInfo
+    assert ACPConversationPage is ConversationPage

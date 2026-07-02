@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 
 # A resolver produces ToolDefinition instances for given params.
 Resolver = Callable[[dict[str, Any], "ConversationState"], Sequence[ToolDefinition]]
+UsabilityChecker = Callable[[], bool]
 """A resolver produces ToolDefinition instances for given params.
 
 Args:
@@ -29,6 +30,7 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
+_USABILITY_REG: dict[str, UsabilityChecker] = {}
 _MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 
 
@@ -47,32 +49,6 @@ def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
                 f"ToolDefinition '{name}' is a fixed instance; params not supported"
             )
         return [tool]
-
-    return _resolve
-
-
-def _resolver_from_callable(
-    name: str, factory: Callable[..., Sequence[ToolDefinition]]
-) -> Resolver:
-    def _resolve(
-        params: dict[str, Any], conv_state: "ConversationState"
-    ) -> Sequence[ToolDefinition]:
-        try:
-            # Try to call with conv_state parameter first
-            created = factory(conv_state=conv_state, **params)
-        except TypeError as exc:
-            raise TypeError(
-                f"Unable to resolve tool '{name}': factory could not be called with "
-                f"params {params}."
-            ) from exc
-        if not isinstance(created, Sequence) or not all(
-            isinstance(t, ToolDefinition) for t in created
-        ):
-            raise TypeError(
-                f"Factory '{name}' must return Sequence[ToolDefinition], "
-                f"got {type(created)}"
-            )
-        return created
 
     return _resolve
 
@@ -116,34 +92,47 @@ def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
     return _resolve
 
 
+def _usability_from_instance(tool: ToolDefinition) -> UsabilityChecker:
+    return lambda: tool.__class__.is_usable()
+
+
+def _usability_from_subclass(cls: type[ToolDefinition]) -> UsabilityChecker:
+    return lambda: cls.is_usable()
+
+
+def _check_tool_usable(name: str, checker: UsabilityChecker) -> bool:
+    try:
+        return checker()
+    except Exception:
+        logger.warning(
+            "Failed to determine usability for tool '%s'", name, exc_info=True
+        )
+        return False
+
+
 def register_tool(
     name: str,
-    factory: ToolDefinition
-    | type[ToolDefinition]
-    | Callable[..., Sequence[ToolDefinition]],
+    factory: ToolDefinition | type[ToolDefinition],
 ) -> None:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("ToolDefinition name must be a non-empty string")
 
     if isinstance(factory, ToolDefinition):
         resolver = _resolver_from_instance(name, factory)
+        usability_checker = _usability_from_instance(factory)
     elif isinstance(factory, type) and issubclass(factory, ToolDefinition):
         resolver = _resolver_from_subclass(name, factory)
-    elif callable(factory):
-        resolver = _resolver_from_callable(name, factory)
+        usability_checker = _usability_from_subclass(factory)
     else:
         raise TypeError(
             "register_tool(...) only accepts: (1) a ToolDefinition instance with "
-            ".executor, (2) a ToolDefinition subclass with .create(**params), or "
-            "(3) a callable factory returning a Sequence[ToolDefinition]"
+            ".executor, or (2) a ToolDefinition subclass with .create(**params)"
         )
 
     # Track the module qualname for this tool
     module_qualname = None
     if isinstance(factory, type):
         module_qualname = factory.__module__
-    elif callable(factory):
-        module_qualname = getattr(factory, "__module__", None)
     elif isinstance(factory, ToolDefinition):
         module_qualname = factory.__class__.__module__
 
@@ -152,6 +141,7 @@ def register_tool(
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
+        _USABILITY_REG[name] = usability_checker
         if module_qualname:
             _MODULE_QUALNAMES[name] = module_qualname
 
@@ -171,6 +161,18 @@ def resolve_tool(
 def list_registered_tools() -> list[str]:
     with _LOCK:
         return list(_REG.keys())
+
+
+def list_usable_tools() -> list[str]:
+    with _LOCK:
+        tool_names = list(_REG.keys())
+        usability_checkers = dict(_USABILITY_REG)
+
+    return [
+        name
+        for name in tool_names
+        if _check_tool_usable(name, usability_checkers.get(name, lambda: True))
+    ]
 
 
 def get_tool_module_qualnames() -> dict[str, str]:

@@ -6,11 +6,58 @@ PyInstaller spec for OpenHands Agent Server with PEP 420 (implicit namespace) la
 from pathlib import Path
 import os
 import site
+import sys
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_submodules,
     collect_data_files,
     copy_metadata,
 )
+
+# GNU strip on Windows PE files (notably python3XX.dll) can corrupt the binary
+# and cause LoadLibrary to fail at runtime with "Invalid access to memory location".
+IS_WINDOWS = sys.platform == "win32"
+
+# Optional Vertex AI bundle. The default build stays lean; install the
+# openhands-sdk[vertex] extra first, or pass ENABLE_VERTEX=1 to the Docker build,
+# when the binary should support vertex_ai/* partner models.
+import importlib.util as _vertex_importlib_util
+
+_VERTEX_AVAILABLE = _vertex_importlib_util.find_spec("vertexai") is not None
+
+_vertex_pkgs = (
+    "vertexai",
+    "google.cloud.aiplatform",
+    "google.cloud.aiplatform_v1",
+    "google.cloud.aiplatform_v1beta1",
+    "google.cloud.bigquery",
+    "google.cloud.storage",
+    "google.cloud.resourcemanager",
+    "google.api_core",
+    "google.auth",
+    "google.rpc",
+    "google.genai",
+    "proto",
+    "grpc_status",
+)
+_vertex_datas = []
+_vertex_binaries = []
+_vertex_hiddenimports = []
+if _VERTEX_AVAILABLE:
+    for _pkg in _vertex_pkgs:
+        _d, _b, _h = collect_all(_pkg)
+        _vertex_datas.extend(_d)
+        _vertex_binaries.extend(_b)
+        _vertex_hiddenimports.extend(_h)
+    # google.rpc.status_pb2 is a gRPC proto stub imported dynamically; only pin
+    # it when the SDK is actually present.
+    _vertex_hiddenimports.append("google.rpc.status_pb2")
+else:
+    print(
+        "[agent-server.spec] vertexai not installed; "
+        "skipping Vertex AI bundle collection. "
+        "Install openhands-sdk[vertex] before building to include it."
+    )
 
 # Get the project root directory (current working directory when running PyInstaller)
 project_root = Path.cwd()
@@ -59,7 +106,10 @@ def get_fakeredis_data():
 a = Analysis(
     [ENTRY],
     pathex=PATHEX,
-    binaries=[],
+    binaries=[
+        # Vertex AI SDK binaries (collected via collect_all above)
+        *_vertex_binaries,
+    ],
     datas=[
         # Third-party packages that ship data
         *collect_data_files("tiktoken"),
@@ -81,9 +131,22 @@ a = Analysis(
         # OpenHands Tools browser recording JS files
         *collect_data_files("openhands.tools.browser_use", includes=["js/*.js"]),
 
+        # Built-in subagent definitions consumed by register_builtins_agents()
+        # at agent-server startup. Without these, the registry stays empty in
+        # PyInstaller builds and downstream clients see an unpopulated
+        # task_tool_set description.
+        *collect_data_files("openhands.tools.preset", includes=["subagents/*.md"]),
+
         # Package metadata for importlib.metadata
+        *copy_metadata("openhands-agent-server"),
+        *copy_metadata("openhands-sdk"),
+        *copy_metadata("openhands-tools"),
+        *copy_metadata("openhands-workspace"),
         *copy_metadata("fastmcp"),
         *copy_metadata("litellm"),
+
+        # Vertex AI SDK datas (collected via collect_all above)
+        *_vertex_datas,
     ],
     hiddenimports=[
         # Pull all OpenHands modules from the namespace (PEP 420 safe once pathex is correct)
@@ -99,6 +162,13 @@ a = Analysis(
         *collect_submodules("fastmcp"),
         *collect_submodules("fakeredis"),
         *collect_submodules("lupa"),  # Required for fakeredis[lua] Lua scripting support
+        # rich._unicode_data.unicodeX_Y_Z is imported dynamically based on
+        # unicodedata.unidata_version (e.g. unicode17_0_0 on Python 3.13).
+        *collect_submodules("rich"),
+
+        # Vertex AI SDK hidden imports (collected via collect_all above; empty
+        # if openhands-sdk[vertex] is not installed in the build env).
+        *_vertex_hiddenimports,
 
         # mcp subpackages used at runtime (avoid CLI)
         "mcp.types",
@@ -148,7 +218,7 @@ exe = EXE(
     name="openhands-agent-server",
     debug=False,
     bootloader_ignore_signals=False,
-    strip=True,
+    strip=not IS_WINDOWS,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,

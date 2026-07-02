@@ -1,20 +1,64 @@
 """Tests for skills service."""
 
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from openhands.agent_server.skills_service import (
     SANDBOX_WORKER_URL_PREFIX,
     ExposedUrlData,
     SkillLoadResult,
     create_sandbox_skill,
+    discover_profile_skills,
+    discover_profile_skills_if_needed,
     load_all_skills,
     load_org_skills_from_url,
+    load_registered_marketplace_skills,
     merge_skills,
     sync_public_skills,
 )
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
+from openhands.sdk.profiles import OpenHandsAgentProfile
 from openhands.sdk.skills import Skill
+
+
+def _create_test_plugin(plugin_dir: Path, name: str, skill_name: str) -> Path:
+    manifest_dir = plugin_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps({"name": name, "version": "1.0.0"})
+    )
+    skills_dir = plugin_dir / "skills"
+    skills_dir.mkdir()
+    (skills_dir / f"{skill_name}.md").write_text(
+        f"---\nname: {skill_name}\n---\n{skill_name} content"
+    )
+    return plugin_dir
+
+
+def _create_test_marketplace(marketplace_dir: Path) -> Path:
+    _create_test_plugin(marketplace_dir / "plugins" / "auto", "auto", "auto-skill")
+    _create_test_plugin(
+        marketplace_dir / "plugins" / "manual", "manual", "manual-skill"
+    )
+    manifest_dir = marketplace_dir / ".plugin"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "test-marketplace",
+                "owner": {"name": "Test Team"},
+                "plugins": [
+                    {"name": "auto", "source": "./plugins/auto"},
+                    {"name": "manual", "source": "./plugins/manual"},
+                ],
+            }
+        )
+    )
+    return marketplace_dir
 
 
 class TestExposedUrlData:
@@ -217,6 +261,125 @@ class TestLoadAllSkills:
 
     _PATCH_TARGET = "openhands.agent_server.skills_service.load_available_skills"
 
+    def test_load_all_skills_registered_marketplaces_replace_legacy_public(
+        self, tmp_path: Path
+    ):
+        """Registered marketplaces load public-tier plugin skills."""
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+        user_skill = Skill(name="user-skill", content="user", trigger=None)
+
+        with patch(
+            self._PATCH_TARGET, side_effect=[{"user-skill": user_skill}, {}]
+        ) as mock_avail:
+            result = load_all_skills(
+                load_public=True,
+                load_user=True,
+                load_project=False,
+                load_org=False,
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="test",
+                        source=str(marketplace_dir),
+                        auto_load=True,
+                    )
+                ],
+            )
+
+        skill_names = {skill.name for skill in result.skills}
+        assert "auto-skill" in skill_names
+        assert "manual-skill" in skill_names
+        assert "user-skill" in skill_names
+        assert result.sources["registered_marketplaces"] == 2
+        assert mock_avail.call_args_list[0].kwargs["include_public"] is False
+
+    def test_load_all_skills_non_auto_registered_marketplaces_keep_legacy_public(
+        self, tmp_path: Path
+    ):
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+        public_skill = Skill(name="public-skill", content="public", trigger=None)
+
+        with patch(
+            self._PATCH_TARGET, side_effect=[{"public-skill": public_skill}, {}]
+        ) as mock_avail:
+            result = load_all_skills(
+                load_public=True,
+                load_user=False,
+                load_project=False,
+                load_org=False,
+                registered_marketplaces=[
+                    MarketplaceRegistration(name="manual", source=str(marketplace_dir))
+                ],
+            )
+
+        assert [skill.name for skill in result.skills] == ["public-skill"]
+        assert result.sources["registered_marketplaces"] == 0
+        assert mock_avail.call_args_list[0].kwargs["include_public"] is True
+
+    def test_load_registered_marketplace_skills_uses_auto_load_registrations(
+        self, tmp_path: Path
+    ):
+        """Only registrations marked auto_load=True contribute plugin skills."""
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="test",
+                    source=str(marketplace_dir),
+                    auto_load=True,
+                ),
+                MarketplaceRegistration(name="manual", source=str(marketplace_dir)),
+            ]
+        )
+
+        assert {skill.name for skill in skills} == {"auto-skill", "manual-skill"}
+
+    def test_load_registered_marketplace_skills_selects_listed_plugins(
+        self, tmp_path: Path
+    ):
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+
+        skills = load_registered_marketplace_skills(
+            [
+                MarketplaceRegistration(
+                    name="test",
+                    source=str(marketplace_dir),
+                    auto_load=["manual"],
+                )
+            ]
+        )
+
+        assert [skill.name for skill in skills] == ["manual-skill"]
+
+    def test_load_registered_marketplace_skills_uses_registration_fetch_fields(
+        self, tmp_path: Path
+    ):
+        """Marketplace source, ref, and repo_path drive registry fetching."""
+        marketplace_dir = _create_test_marketplace(tmp_path / "marketplace")
+
+        with patch(
+            "openhands.sdk.marketplace.registry.fetch_plugin_with_resolution",
+            return_value=(marketplace_dir, "abc123"),
+        ) as mock_fetch:
+            skills = load_registered_marketplace_skills(
+                [
+                    MarketplaceRegistration(
+                        name="custom",
+                        source="github:example/marketplaces",
+                        ref="feature-branch",
+                        repo_path="catalogs/public",
+                        auto_load=True,
+                    )
+                ]
+            )
+
+        assert {skill.name for skill in skills} == {"auto-skill", "manual-skill"}
+        mock_fetch.assert_called_once_with(
+            source="github:example/marketplaces",
+            ref="feature-branch",
+            repo_path="catalogs/public",
+        )
+
     def test_load_all_skills_returns_skill_load_result(self):
         """Test that load_all_skills returns a SkillLoadResult."""
         with patch(self._PATCH_TARGET, return_value={}):
@@ -255,6 +418,7 @@ class TestLoadAllSkills:
             assert result.sources["sandbox"] == 0
             assert result.sources["org"] == 0
             assert result.sources["project"] == 0
+            assert result.sources["registered_marketplaces"] == 0
 
     def test_load_all_skills_passes_marketplace_path_to_sdk_base(self):
         """Test that marketplace_path is forwarded to SDK public skill loading."""
@@ -357,6 +521,113 @@ class TestLoadAllSkills:
             assert len(shared_skills) == 1
             assert shared_skills[0].content == "project"
 
+    def test_load_all_skills_loops_and_merges_multiple_org_repos(self):
+        """Every org repo is loaded (in order) and merged into the org source."""
+        with patch(self._PATCH_TARGET, return_value={}):
+            with patch(
+                "openhands.agent_server.skills_service.load_org_skills_from_url",
+                side_effect=[
+                    [Skill(name="org_a", content="a", trigger=None)],
+                    [Skill(name="org_b", content="b", trigger=None)],
+                ],
+            ) as mock_org:
+                result = load_all_skills(
+                    load_public=False,
+                    load_user=False,
+                    load_project=False,
+                    load_org=True,
+                    org_repos=[
+                        ("https://git/hieptl/.openhands", "hieptl"),
+                        ("https://git/hieptl/.agents", "hieptl"),
+                    ],
+                )
+
+        assert result.sources["org"] == 2
+        assert [c.kwargs["org_repo_url"] for c in mock_org.call_args_list] == [
+            "https://git/hieptl/.openhands",
+            "https://git/hieptl/.agents",
+        ]
+
+    def test_load_all_skills_org_merge_precedence(self):
+        """A skill in multiple org repos resolves to the later repo's version."""
+        with patch(self._PATCH_TARGET, return_value={}):
+            with patch(
+                "openhands.agent_server.skills_service.load_org_skills_from_url",
+                side_effect=[
+                    [Skill(name="shared", content="openhands", trigger=None)],
+                    [Skill(name="shared", content="agents", trigger=None)],
+                ],
+            ):
+                result = load_all_skills(
+                    load_public=False,
+                    load_user=False,
+                    load_project=False,
+                    load_org=True,
+                    org_repos=[
+                        ("https://git/hieptl/.openhands", "hieptl"),
+                        ("https://git/hieptl/.agents", "hieptl"),
+                    ],
+                )
+
+        shared = [s for s in result.skills if s.name == "shared"]
+        assert len(shared) == 1
+        assert shared[0].content == "agents"
+
+
+class TestDiscoverProfileSkills:
+    """Tests for discover_profile_skills (AgentProfile.skill_refs catalog)."""
+
+    _LOAD_ALL = "openhands.agent_server.skills_service.load_all_skills"
+
+    def test_returns_merged_user_and_public_skills(self):
+        skills = [Skill(name="a", content="x"), Skill(name="b", content="y")]
+        with patch(self._LOAD_ALL) as mock_load:
+            mock_load.return_value = SkillLoadResult(skills=skills, sources={})
+            result = discover_profile_skills()
+
+        assert result == skills
+        # Only the deterministic, no-extra-context sources are discovered.
+        assert mock_load.call_args.kwargs == {
+            "load_public": True,
+            "load_user": True,
+            "load_org": False,
+            "load_project": False,
+        }
+
+    def test_propagates_unexpected_failure(self):
+        # load_all_skills absorbs benign per-source failures internally; an
+        # unexpected failure propagates rather than silently resolving to a
+        # zero-skill agent (the caller surfaces it loudly).
+        with patch(self._LOAD_ALL, side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                discover_profile_skills()
+
+
+class TestDiscoverProfileSkillsIfNeeded:
+    """Tests for the skip-discovery guard shared by start + dry-run."""
+
+    _DISCOVER = "openhands.agent_server.skills_service.discover_profile_skills"
+
+    def test_empty_skill_refs_skips_discovery(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=[])
+        with patch(self._DISCOVER) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) is None
+            mock_discover.assert_not_called()
+
+    def test_null_skill_refs_discovers(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=None)
+        skills = [Skill(name="a", content="x")]
+        with patch(self._DISCOVER, return_value=skills) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) == skills
+            mock_discover.assert_called_once()
+
+    def test_named_skill_refs_discovers(self):
+        profile = OpenHandsAgentProfile(name="p", llm_profile_ref="x", skill_refs=["a"])
+        skills = [Skill(name="a", content="x")]
+        with patch(self._DISCOVER, return_value=skills) as mock_discover:
+            assert discover_profile_skills_if_needed(profile) == skills
+            mock_discover.assert_called_once()
+
 
 class TestSyncPublicSkills:
     """Tests for sync_public_skills function."""
@@ -409,6 +680,50 @@ class TestSyncPublicSkills:
             assert success is False
             assert "failed" in message.lower() or "error" in message.lower()
 
+    def test_sync_public_skills_invalidates_in_memory_cache(self):
+        """Successful sync must drop the in-memory cache so the next call
+        re-parses immediately instead of waiting for the TTL."""
+        with (
+            patch(
+                "openhands.agent_server.skills_service.get_skills_cache_dir"
+            ) as mock_cache,
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository"
+            ) as mock_update,
+            patch(
+                "openhands.agent_server.skills_service._invalidate_public_skills_cache"
+            ) as mock_invalidate,
+        ):
+            mock_cache.return_value = Path("/tmp/cache")
+            mock_update.return_value = Path("/tmp/cache/public-skills")
+
+            success, _ = sync_public_skills()
+
+            assert success is True
+            mock_invalidate.assert_called_once()
+
+    def test_sync_public_skills_failure_does_not_invalidate_cache(self):
+        """A failed sync must not clobber the cache so the previous skills
+        stay available until the next successful refresh."""
+        with (
+            patch(
+                "openhands.agent_server.skills_service.get_skills_cache_dir"
+            ) as mock_cache,
+            patch(
+                "openhands.agent_server.skills_service.update_skills_repository"
+            ) as mock_update,
+            patch(
+                "openhands.agent_server.skills_service._invalidate_public_skills_cache"
+            ) as mock_invalidate,
+        ):
+            mock_cache.return_value = Path("/tmp/cache")
+            mock_update.return_value = None
+
+            success, _ = sync_public_skills()
+
+            assert success is False
+            mock_invalidate.assert_not_called()
+
 
 class TestSkillLoadResult:
     """Tests for SkillLoadResult dataclass."""
@@ -429,3 +744,124 @@ class TestSkillLoadResult:
 
         assert result.skills == []
         assert result.sources == {}
+
+
+class TestMarketplaceCatalogCache:
+    """Tests for TTL caching in service_get_marketplace_catalog."""
+
+    def setup_method(self):
+        """Reset the module-level cache before each test."""
+        import openhands.agent_server.skills_service as svc
+
+        svc._catalog_cache = None
+
+    def test_cache_miss_calls_fetch(self):
+        """First call (cold cache) fetches from the repository."""
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            result = service_get_marketplace_catalog()
+
+        mock_fetch.assert_called_once()
+        assert len(result) == 1
+        assert result[0].name == "github"
+        assert result[0].installed is False
+
+    def test_cache_hit_skips_fetch(self):
+        """Second call within TTL reuses cached entries without another fetch."""
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            service_get_marketplace_catalog()
+            service_get_marketplace_catalog()
+
+        mock_fetch.assert_called_once()  # only one fetch despite two calls
+
+    def test_installed_status_always_fresh(self):
+        """installed flag is derived fresh on every call, not from the cache."""
+        from unittest.mock import MagicMock
+
+        from openhands.agent_server.skills_service import (
+            InstalledSkillInfo,
+            service_get_marketplace_catalog,
+        )
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        installed_skill = MagicMock(spec=InstalledSkillInfo)
+        installed_skill.name = "github"
+
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ),
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+            ) as mock_installed,
+        ):
+            # First call: skill not installed
+            mock_installed.return_value = []
+            result1 = service_get_marketplace_catalog()
+            assert result1[0].installed is False
+
+            # Second call (cache hit): skill now installed
+            mock_installed.return_value = [installed_skill]
+            result2 = service_get_marketplace_catalog()
+            assert result2[0].installed is True
+
+        # service_list_installed_skills called twice (once per request)
+        assert mock_installed.call_count == 2
+
+    def test_cache_expires_after_ttl(self):
+        """After TTL expires, the next call fetches from the repository again."""
+        import openhands.agent_server.skills_service as svc
+
+        entries = [("github", "GitHub skill", "github:org/repo")]
+        with (
+            patch(
+                "openhands.agent_server.skills_service._fetch_catalog_entries",
+                return_value=entries,
+            ) as mock_fetch,
+            patch(
+                "openhands.agent_server.skills_service.service_list_installed_skills",
+                return_value=[],
+            ),
+        ):
+            from openhands.agent_server.skills_service import (
+                service_get_marketplace_catalog,
+            )
+
+            service_get_marketplace_catalog()
+            # Artificially expire the cache
+            assert svc._catalog_cache is not None
+            svc._catalog_cache = (
+                svc._catalog_cache[0] - svc._CATALOG_TTL_SECONDS - 1,
+                entries,
+            )
+            service_get_marketplace_catalog()
+
+        assert mock_fetch.call_count == 2  # fetched again after expiry

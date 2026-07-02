@@ -7,6 +7,8 @@ from pathlib import Path
 from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.path import is_local_path_source
+from openhands.sdk.utils.redact import redact_url_credentials
 
 
 logger = get_logger(__name__)
@@ -73,8 +75,9 @@ def parse_extension_source(source: str) -> tuple[SourceType, str]:
         url = normalize_git_url(source)
         return (SourceType.GIT, url)
 
-    # Local path: starts with /, ~, . or contains / without a URL scheme
-    if source.startswith(("/", "~", ".")):
+    # Local path: starts with /, ~, ., is Windows-absolute, or contains a
+    # path separator without a URL scheme.
+    if is_local_path_source(source):
         return (SourceType.LOCAL, source)
 
     if "/" in source and "://" not in source:
@@ -264,13 +267,17 @@ def _fetch_remote_source_with_resolution(
     )
 
     if result is None:
-        raise ExtensionFetchError(f"Failed to fetch extension from {source}")
+        raise ExtensionFetchError(
+            f"Failed to fetch extension from {redact_url_credentials(source)}"
+        )
 
     # Get the actual commit SHA that was checked out
     try:
         resolved_ref = git_helper.get_head_commit(repo_cache_path)
     except Exception as e:
-        logger.warning(f"Could not get commit SHA for {source}: {e}")
+        logger.warning(
+            f"Could not get commit SHA for {redact_url_credentials(source)}: {e}"
+        )
         # Fall back to the requested ref if we can't get the SHA
         resolved_ref = ref or "HEAD"
 

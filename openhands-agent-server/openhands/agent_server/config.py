@@ -1,20 +1,29 @@
+import json
 import logging
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from openhands.agent_server.env_parser import from_env
+from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
+from openhands.agent_server.env_parser import (
+    MISSING,
+    _get_default_parsers,
+    from_env,  # noqa: F401 - compatibility re-export
+    get_env_parser,
+    merge,
+)
+from openhands.sdk.marketplace.registration import MarketplaceRegistration
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 # Environment variable constants
 V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
 V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
-V0_RUNTIME_URL = "RUNTIME_URL"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
+CONFIG_PATH_ENV = "OPENHANDS_AGENT_SERVER_CONFIG_PATH"
+DEFAULT_CONFIG_PATH = Path("workspace/openhands_agent_server_config.json")
 _logger = logging.getLogger(__name__)
 
 
@@ -53,17 +62,7 @@ def _default_web_url() -> str | None:
     if web_url:
         return web_url
 
-    legacy_web_url = os.getenv(V0_RUNTIME_URL)
-    if not legacy_web_url:
-        return None
-
-    warn_deprecated(
-        "RUNTIME_URL environment variable",
-        deprecated_in="1.15.0",
-        removed_in="1.20.0",
-        details="Use OH_WEB_URL instead.",
-    )
-    return legacy_web_url
+    return None
 
 
 class WebhookSpec(BaseModel):
@@ -100,6 +99,17 @@ class WebhookSpec(BaseModel):
     )
     retry_delay: int = Field(default=5, ge=0, description="The delay between retries")
 
+    # Backpressure parameters
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on the number of events buffered for delivery. When the "
+            "downstream is failing and events are re-queued for retry, the oldest "
+            "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+
 
 class Config(BaseModel):
     """
@@ -121,8 +131,19 @@ class Config(BaseModel):
     allow_cors_origins: list[str] = Field(
         default_factory=list,
         description=(
-            "Set of CORS origins permitted by this server (Anything from localhost is "
-            "always accepted regardless of what's in here)."
+            "CORS origins permitted by this server. Localhost / 127.0.0.1 "
+            "and ``DOCKER_HOST_ADDR`` are always allowed. Does not apply to "
+            "the workspace cookie routes, which accept any origin — see "
+            "``middleware.py``."
+        ),
+    )
+    allow_cors_origin_regex: str | None = Field(
+        default=None,
+        description=(
+            "Regular expression matching additional CORS origins permitted by "
+            "this server. Localhost / 127.0.0.1 and ``DOCKER_HOST_ADDR`` are "
+            "always allowed. Does not apply to the workspace cookie routes, "
+            "which accept any origin — see ``middleware.py``."
         ),
     )
     conversations_path: Path = Field(
@@ -131,11 +152,30 @@ class Config(BaseModel):
             "The location of the directory where conversations and events are stored."
         ),
     )
+    workspace_path: Path = Field(
+        default=Path("workspace/project"),
+        description=(
+            "Default workspace directory for conversations created by the server."
+        ),
+    )
     bash_events_dir: Path = Field(
         default=Path("workspace/bash_events"),
         description=(
             "The location of the directory where bash events are stored as files. "
             "Defaults to 'workspace/bash_events'."
+        ),
+    )
+    bash_events_retention_seconds: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "How long bash event files are retained on disk, in seconds. "
+            "A background task purges events older than this window on a "
+            "rolling basis. None (default) retains events indefinitely. "
+            "Should be set higher than the longest expected command timeout: "
+            "a command whose BashCommand file is purged mid-execution will "
+            "complete normally, but its on-disk event history will be "
+            "incomplete. A value >= 2x max command timeout avoids this."
         ),
     )
     static_files_path: Path | None = Field(
@@ -175,6 +215,15 @@ class Config(BaseModel):
         default=True,
         description="Whether to preload tools",
     )
+    max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Maximum number of conversations that can execute agent steps "
+            "concurrently.  Controls the size of the dedicated thread pool "
+            "used for conversation.run() calls."
+        ),
+    )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
         description=(
@@ -187,6 +236,38 @@ class Config(BaseModel):
         default_factory=_default_web_url,
         description=(
             "The URL where this agent server instance is available externally"
+        ),
+    )
+    registered_marketplaces: list[MarketplaceRegistration] = Field(
+        default_factory=list,
+        description=(
+            "Default marketplace registrations for plugin and skill loading. "
+            "Can be configured with OH_REGISTERED_MARKETPLACES as a JSON list."
+        ),
+    )
+    deferred_init: bool = Field(
+        default=False,
+        description=(
+            "When True, the server starts in dormant mode. Stateless services "
+            "(VSCode, tool preload, etc.) start as usual, but the conversation, "
+            "event, and bash routers return 503 until POST /api/init is called with "
+            "the runtime configuration. This is intended for warm-pool deployments "
+            "where pods are pre-warmed before a user is matched and per-user "
+            "configuration is delivered later."
+        ),
+    )
+    lease_ttl_seconds: float = Field(
+        default=DEFAULT_LEASE_TTL_SECONDS,
+        ge=0.0,
+        description=(
+            "How long (in seconds) a conversation ownership lease remains valid "
+            "without renewal. The lease prevents two server instances from "
+            "concurrently owning the same conversation when storage is shared "
+            "across instances. Set to 0 to disable leasing entirely, which is "
+            "appropriate for single-instance deployments where concurrent "
+            "ownership is impossible. Values between 0 and "
+            "LEASE_RENEW_INTERVAL_SECONDS (15 s) are valid but cause the lease "
+            "to expire before the first renewal, effectively making it one-shot."
         ),
     )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
@@ -210,11 +291,43 @@ class Config(BaseModel):
 _default_config: Config | None = None
 
 
+def _read_config_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a JSON object: {path}")
+    return data
+
+
+def load_config(config_path: Path | None = None) -> Config:
+    """Load agent-server config from JSON file and environment variables.
+
+    Values from ``OH_*`` environment variables override values from the JSON
+    config file so deployment-specific environment overrides keep working.
+    """
+    resolved_path = config_path
+    if resolved_path is None:
+        resolved_path = Path(os.getenv(CONFIG_PATH_ENV, DEFAULT_CONFIG_PATH))
+
+    file_data = _read_config_file(resolved_path)
+    parser = get_env_parser(Config, _get_default_parsers())
+    env_data = parser.from_env(ENVIRONMENT_VARIABLE_PREFIX)
+
+    if env_data is MISSING:
+        data = file_data
+    else:
+        data = merge(file_data, env_data)
+
+    if not data:
+        return Config()
+    return Config.model_validate(data)
+
+
 def get_default_config() -> Config:
     """Get the default local server config shared across the server"""
     global _default_config
     if _default_config is None:
-        # Get the config from the environment variables
-        _default_config = from_env(Config, ENVIRONMENT_VARIABLE_PREFIX)
+        _default_config = load_config()
         assert _default_config is not None
     return _default_config

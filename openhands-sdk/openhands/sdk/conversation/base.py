@@ -10,13 +10,16 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    TraceMetadataValue,
 )
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
-    end_active_span,
+    RootSpan,
+    end_root_span,
     should_enable_observability,
-    start_active_span,
+    start_child_span,
+    start_root_span,
 )
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -25,6 +28,14 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.workspace.base import BaseWorkspace
+
+
+def _conversation_tag_attributes(
+    tags: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    if not tags:
+        return None
+    return {f"conversation.tags.{key}": value for key, value in tags.items()}
 
 
 if TYPE_CHECKING:
@@ -118,21 +129,57 @@ class BaseConversation(ABC):
     def __init__(self) -> None:
         """Initialize the base conversation with span tracking."""
         self._span_ended = False
+        # Owned root span. The ``observe`` decorator looks up this attribute
+        # (by name ``_observability_root_span``) on ``self`` at every entry
+        # point and re-attaches it via ``Laminar.use_span`` so that nested
+        # spans correctly join the conversation trace even when the method
+        # is called from a different asyncio task or thread than the one
+        # that constructed the conversation.
+        self._observability_root_span: RootSpan | None = None
 
-    def _start_observability_span(self, session_id: str) -> None:
-        """Start an observability span if observability is enabled.
+    def _start_observability_span(
+        self,
+        session_id: str,
+        span_name: str = "conversation",
+        user_id: str | None = None,
+        metadata: dict[str, TraceMetadataValue] | None = None,
+        tags: list[str] | None = None,
+        conversation_tags: Mapping[str, str] | None = None,
+    ) -> None:
+        """Start a per-conversation observability root span.
 
         Args:
-            session_id: The session ID to associate with the span
+            session_id: The session ID to associate with the trace
+            span_name: Optional child span name to emit under the conversation root.
+            user_id: Optional user ID to associate with the trace
+            metadata: Optional trace-level metadata to attach to observability backends
+            tags: Optional span tags to attach to the conversation root span
+            conversation_tags: Optional conversation tags to add as root span attributes
         """
-        if should_enable_observability():
-            start_active_span("conversation", session_id=session_id)
+        if not should_enable_observability():
+            return
+        if self._observability_root_span is not None:
+            # Idempotent: never start two roots for one conversation.
+            return
+        self._observability_root_span = start_root_span(
+            "conversation",
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            tags=tags,
+            attributes=_conversation_tag_attributes(conversation_tags),
+        )
+        if span_name != "conversation":
+            start_child_span(self._observability_root_span, span_name, tags=tags)
 
     def _end_observability_span(self) -> None:
         """End the observability span if it hasn't been ended already."""
-        if not self._span_ended and should_enable_observability():
-            end_active_span()
-            self._span_ended = True
+        if self._span_ended:
+            return
+        if self._observability_root_span is not None:
+            end_root_span(self._observability_root_span)
+        self._observability_root_span = None
+        self._span_ended = True
 
     @property
     @abstractmethod
@@ -169,6 +216,15 @@ class BaseConversation(ABC):
         """
         ...
 
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Default implementation delegates to the synchronous ``run()``.
+        Subclasses (e.g., :class:`LocalConversation`) should override this
+        to use async agent steps for non-blocking LLM I/O.
+        """
+        self.run()
+
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy for the conversation."""
@@ -203,6 +259,25 @@ class BaseConversation(ABC):
 
     @abstractmethod
     def pause(self) -> None: ...
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()`` LLM call.
+
+        Unlike :meth:`pause`, which waits for the current LLM request to
+        finish, ``interrupt()`` cancels the asyncio task that is driving
+        ``arun()``, so the cancellation takes effect at the very next
+        ``await`` boundary — typically inside the streaming HTTP read.
+
+        If no async run is in progress (e.g. the synchronous ``run()`` is
+        active instead), the call silently falls back to :meth:`pause`.
+
+        After an interrupt the conversation status is set to ``PAUSED``
+        and an :class:`~openhands.sdk.event.InterruptEvent` is emitted,
+        so the conversation can be resumed with a subsequent ``run()``
+        or ``arun()`` call.
+        """
+        # Default: fall back to pause for subclasses that don't override.
+        self.pause()
 
     @abstractmethod
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None: ...
@@ -306,6 +381,51 @@ class BaseConversation(ABC):
         Raises:
             KeyError: If the tool is not found in the agent's tools
             NotImplementedError: If the tool has no executor
+        """
+        ...
+
+    def load_plugin(self, plugin_ref: str) -> None:
+        """Load a plugin from a registered marketplace.
+
+        Implementations that support marketplace-registered plugins resolve the
+        reference against the conversation agent's registered marketplaces and
+        merge the plugin's skills, hooks, and MCP configuration into the agent.
+
+        Args:
+            plugin_ref: Plugin reference, either ``plugin-name`` or
+                ``plugin-name@marketplace-name``.
+        """
+        raise NotImplementedError("This conversation does not support loading plugins")
+
+    @abstractmethod
+    def fork(
+        self,
+        *,
+        conversation_id: ConversationID | None = None,
+        agent: "AgentBase | None" = None,
+        title: str | None = None,
+        tags: dict[str, str] | None = None,
+        reset_metrics: bool = True,
+    ) -> "BaseConversation":
+        """Deep-copy this conversation with a new ID.
+
+        Events are copied so the source remains immutable. The fork starts
+        in ``execution_status='idle'``; calling ``run()`` resumes from the
+        copied state — meaning the agent has full event memory of the source.
+
+        Args:
+            conversation_id: ID for the forked conversation (auto-generated
+                if ``None``).
+            agent: Agent for the fork. Defaults to a deep-copy of the
+                source agent.
+            title: Optional title for the forked conversation.
+            tags: Optional tags for the forked conversation.
+            reset_metrics: If ``True`` (default), cost/token stats start
+                fresh on the fork.
+
+        Returns:
+            A new conversation that shares the same event history but has
+            its own identity and independent state going forward.
         """
         ...
 

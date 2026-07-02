@@ -344,22 +344,50 @@ def test_base_slug_edge_case_exact_max_len():
     assert len(result) == 15
 
 
-def test_versioned_tags_single_custom_tag():
-    """Test versioned_tags with a single custom tag."""
+def test_release_tag_aliases_expand_semver_parts():
+    from openhands.agent_server.docker.build import _release_tag_aliases
+
+    assert _release_tag_aliases("v1.2.3") == ["v1", "v1.2", "v1.2.3"]
+    assert _release_tag_aliases("1.2.3") == ["1", "1.2", "1.2.3"]
+
+
+def test_release_tag_aliases_sanitize_non_semver_tags():
+    from openhands.agent_server.docker.build import _release_tag_aliases
+
+    assert _release_tag_aliases("release/v1.2.3+build") == ["release-v1.2.3-build"]
+
+
+def test_versioned_tags_use_sdk_version_for_semver_git_tags():
+    """Semver git tags (v1.2.3) defer to sdk_version (PEP 440, no 'v')."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
         custom_tags="python",
-        sdk_version="1.2.0",
+        git_ref="refs/tags/v1.2.3",
+        sdk_version="1.2.3",
         include_versioned_tag=True,
     )
 
-    versioned_tags = opts.versioned_tags
-    assert versioned_tags == ["1.2.0-python"]
+    # Docker tags use bare semver from sdk_version, not the git tag.
+    assert opts.versioned_tags == ["1-python", "1.2-python", "1.2.3-python"]
 
 
-def test_versioned_tags_multiple_custom_tags():
-    """Test versioned_tags with multiple custom tags."""
+def test_versioned_tags_semver_git_tag_strips_v_when_sdk_version_unknown():
+    """Semver git tags still produce bare semver even if sdk_version is unknown."""
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        custom_tags="python",
+        git_ref="refs/tags/v1.2.3",
+        sdk_version="unknown",
+        include_versioned_tag=True,
+    )
+
+    assert opts.versioned_tags == ["1-python", "1.2-python", "1.2.3-python"]
+
+
+def test_versioned_tags_fallback_to_sdk_version_aliases():
+    """Test versioned_tags fall back to the SDK version when no git tag exists."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
@@ -368,8 +396,31 @@ def test_versioned_tags_multiple_custom_tags():
         include_versioned_tag=True,
     )
 
-    versioned_tags = opts.versioned_tags
-    assert versioned_tags == ["1.2.0-python", "1.2.0-java", "1.2.0-golang"]
+    assert opts.versioned_tags == [
+        "1-python",
+        "1.2-python",
+        "1.2.0-python",
+        "1-java",
+        "1.2-java",
+        "1.2.0-java",
+        "1-golang",
+        "1.2-golang",
+        "1.2.0-golang",
+    ]
+
+
+def test_versioned_tags_non_semver_git_tag_preserved():
+    """Test non-semver git tags are published exactly once per custom tag."""
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        custom_tags="python",
+        git_ref="refs/tags/build-docker",
+        sdk_version="1.2.0",
+        include_versioned_tag=True,
+    )
+
+    assert opts.versioned_tags == ["build-docker-python"]
 
 
 def test_versioned_tags_no_custom_tags():
@@ -382,31 +433,50 @@ def test_versioned_tags_no_custom_tags():
         include_versioned_tag=True,
     )
 
-    versioned_tags = opts.versioned_tags
-    assert versioned_tags == []
+    assert opts.versioned_tags == []
+
+
+def test_all_tags_include_short_long_sha_and_branch():
+    """Test that all_tags includes short SHA, long SHA, and sanitized branch tags."""
+    from openhands.agent_server.docker.build import BuildOptions
+
+    opts = BuildOptions(
+        custom_tags="python",
+        git_sha="abc1234567890fedcba",
+        git_ref="refs/heads/Feature/Release_1",
+        include_base_tag=False,
+    )
+
+    assert opts.all_tags == [
+        "ghcr.io/openhands/agent-server:abc1234-python",
+        "ghcr.io/openhands/agent-server:abc1234567890fedcba-python",
+        "ghcr.io/openhands/agent-server:feature-release-1-python",
+    ]
 
 
 def test_all_tags_includes_versioned_tags():
-    """Test that all_tags includes versioned tags when enabled."""
+    """Test that all_tags includes bare semver aliases when enabled for a tag build."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
         custom_tags="python,java",
+        git_ref="refs/tags/v1.2.0",
         sdk_version="1.2.0",
         git_sha="abc1234567890",
         include_versioned_tag=True,
-        include_base_tag=False,  # Simplify by excluding base tag
+        include_base_tag=False,
     )
 
     all_tags = opts.all_tags
 
-    # Should include commit-based tags
     assert "ghcr.io/openhands/agent-server:abc1234-python" in all_tags
-    assert "ghcr.io/openhands/agent-server:abc1234-java" in all_tags
-
-    # Should include versioned tags
+    assert "ghcr.io/openhands/agent-server:abc1234567890-python" in all_tags
+    # Versioned tags use bare semver (no "v" prefix)
+    assert "ghcr.io/openhands/agent-server:1-python" in all_tags
+    assert "ghcr.io/openhands/agent-server:1.2-python" in all_tags
     assert "ghcr.io/openhands/agent-server:1.2.0-python" in all_tags
     assert "ghcr.io/openhands/agent-server:1.2.0-java" in all_tags
+    assert "ghcr.io/openhands/agent-server:1-java" in all_tags
 
 
 def test_all_tags_excludes_versioned_tags_when_disabled():
@@ -417,25 +487,26 @@ def test_all_tags_excludes_versioned_tags_when_disabled():
         custom_tags="python",
         sdk_version="1.2.0",
         git_sha="abc1234567890",
+        git_ref="refs/heads/main",
         include_versioned_tag=False,
         include_base_tag=False,
     )
 
     all_tags = opts.all_tags
 
-    # Should include commit-based tag
     assert "ghcr.io/openhands/agent-server:abc1234-python" in all_tags
-
-    # Should NOT include versioned tags
-    assert "ghcr.io/openhands/agent-server:1.2.0-python" not in all_tags
+    assert "ghcr.io/openhands/agent-server:abc1234567890-python" in all_tags
+    assert "ghcr.io/openhands/agent-server:main-python" in all_tags
+    assert "ghcr.io/openhands/agent-server:1-python" not in all_tags
 
 
 def test_all_tags_with_arch_suffix():
-    """Test that versioned tags include architecture suffix."""
+    """Test that expanded release tags include architecture suffixes."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
         custom_tags="python",
+        git_ref="refs/tags/v1.2.0",
         sdk_version="1.2.0",
         git_sha="abc1234567890",
         arch="amd64",
@@ -445,19 +516,22 @@ def test_all_tags_with_arch_suffix():
 
     all_tags = opts.all_tags
 
-    # Should include versioned tag with arch suffix
+    # Versioned tags use bare semver (no "v" prefix)
+    assert "ghcr.io/openhands/agent-server:1-python-amd64" in all_tags
+    assert "ghcr.io/openhands/agent-server:1.2-python-amd64" in all_tags
     assert "ghcr.io/openhands/agent-server:1.2.0-python-amd64" in all_tags
-    assert "ghcr.io/openhands/agent-server:abc1234-python-amd64" in all_tags
+    assert "ghcr.io/openhands/agent-server:abc1234567890-python-amd64" in all_tags
 
 
 def test_all_tags_with_target_suffix():
-    """Test that versioned tags include target suffix for non-binary targets."""
+    """Test expanded release tags on non-binary targets."""
     from openhands.agent_server.docker.build import BuildOptions
 
     opts = BuildOptions(
         custom_tags="python",
         sdk_version="1.2.0",
         git_sha="abc1234567890",
+        git_ref="refs/heads/main",
         target="source",
         include_versioned_tag=True,
         include_base_tag=False,
@@ -465,26 +539,10 @@ def test_all_tags_with_target_suffix():
 
     all_tags = opts.all_tags
 
-    # Should include versioned tag with target suffix
+    assert "ghcr.io/openhands/agent-server:1-python-source" in all_tags
+    assert "ghcr.io/openhands/agent-server:1.2-python-source" in all_tags
     assert "ghcr.io/openhands/agent-server:1.2.0-python-source" in all_tags
-    assert "ghcr.io/openhands/agent-server:abc1234-python-source" in all_tags
-
-
-def test_versioned_tags_format_without_v_prefix():
-    """Test that versioned tags don't include 'v' prefix."""
-    from openhands.agent_server.docker.build import BuildOptions
-
-    opts = BuildOptions(
-        custom_tags="python",
-        sdk_version="1.2.0",
-        include_versioned_tag=True,
-    )
-
-    versioned_tags = opts.versioned_tags
-
-    # Should be "1.2.0-python", not "v1.2.0-python"
-    assert versioned_tags == ["1.2.0-python"]
-    assert not any(tag.startswith("v") for tag in versioned_tags)
+    assert "ghcr.io/openhands/agent-server:abc1234567890-python-source" in all_tags
 
 
 def test_make_build_context_reuses_prebuilt_sdist_without_running_uv_build(

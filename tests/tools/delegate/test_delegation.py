@@ -2,11 +2,9 @@
 
 import json
 import uuid
-import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
@@ -23,7 +21,7 @@ from openhands.tools.delegate import (
     DelegateExecutor,
     DelegateObservation,
 )
-from openhands.tools.delegate.definition import DelegateAction, DelegateTool
+from openhands.tools.delegate.definition import DelegateAction
 from openhands.tools.preset import register_builtins_agents
 
 
@@ -522,7 +520,9 @@ def test_spawn_inherits_persistence_dir_from_parent():
     sub_persistence_dir = sub_conv._state.persistence_dir
     assert sub_persistence_dir is not None
     assert Path(sub_persistence_dir).exists()
-    assert "/tmp/conversations/abc123/subagents" in sub_persistence_dir
+    assert Path(sub_persistence_dir).parent == (
+        Path(parent_conversation.state.persistence_dir) / "subagents"
+    )
 
 
 def test_spawn_no_persistence_when_parent_has_none():
@@ -549,22 +549,3 @@ def test_spawn_no_persistence_when_parent_has_none():
     sub_conv = executor._sub_agents["sub1"]
     # The sub-conversation should have no persistence_dir
     assert sub_conv._state.persistence_dir is None
-
-
-def test_delegate_tool_create_emits_deprecation_warning():
-    """DelegateTool.create() emits a deprecation warning."""
-    register_builtins_agents()
-
-    conv_state = MagicMock()
-    conv_state.workspace.working_dir = "/tmp"
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        DelegateTool.create(conv_state)
-
-    deprecation_warnings = [
-        warning for warning in w if issubclass(warning.category, DeprecatedWarning)
-    ]
-    assert len(deprecation_warnings) == 1
-    assert "DelegateTool" in str(deprecation_warnings[0].message)
-    assert "TaskToolSet" in str(deprecation_warnings[0].message)

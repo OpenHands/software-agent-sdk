@@ -1,9 +1,6 @@
-"""Tests for marketplace module deprecation warnings."""
-
-import warnings
+"""Tests for marketplace module (canonical location) and removed shims."""
 
 import pytest
-from deprecation import DeprecatedWarning
 
 from openhands.sdk.marketplace import (
     MARKETPLACE_MANIFEST_DIRS,
@@ -32,99 +29,24 @@ def test_new_import_location_has_all_exports():
     assert MarketplaceMetadata is not None
 
 
-def test_deprecated_import_from_plugin_warns():
-    """Test that importing from openhands.sdk.plugin emits deprecation warning."""
-    with warnings.catch_warnings(record=True) as caught_warnings:
-        warnings.simplefilter("always")
-        from openhands.sdk.plugin import Marketplace as OldMarketplace
+def test_removed_import_from_plugin_raises():
+    """Test that importing marketplace classes from plugin raises AttributeError."""
+    from openhands.sdk import plugin
 
-        # Find deprecation warnings for this import
-        deprecation_warnings = [
-            w
-            for w in caught_warnings
-            if issubclass(w.category, DeprecatedWarning)
-            and "openhands.sdk.plugin" in str(w.message)
-            and "Marketplace" in str(w.message)
-        ]
-        assert len(deprecation_warnings) > 0, "Expected deprecation warning not found"
-
-        # Verify the warning message
-        warning_msg = str(deprecation_warnings[0].message)
-        assert "openhands.sdk.marketplace" in warning_msg
-
-        # Verify the class is the same
-        assert OldMarketplace is Marketplace
+    with pytest.raises(AttributeError):
+        plugin.Marketplace  # type: ignore[attr-defined]  # noqa: B018
 
 
-def test_deprecated_import_from_plugin_types_warns():
-    """Test that importing from openhands.sdk.plugin.types emits deprecation warning."""
-    with warnings.catch_warnings(record=True) as caught_warnings:
-        warnings.simplefilter("always")
-        from openhands.sdk.plugin.types import MarketplaceOwner as OldMarketplaceOwner
+def test_removed_import_from_plugin_types_raises():
+    """Test that importing marketplace classes from plugin.types raises."""
+    from openhands.sdk.plugin import types
 
-        # Find deprecation warnings for this import
-        deprecation_warnings = [
-            w
-            for w in caught_warnings
-            if issubclass(w.category, DeprecatedWarning)
-            and "openhands.sdk.plugin.types" in str(w.message)
-            and "MarketplaceOwner" in str(w.message)
-        ]
-        assert len(deprecation_warnings) > 0, "Expected deprecation warning not found"
-
-        # Verify the class is the same
-        assert OldMarketplaceOwner is MarketplaceOwner
-
-
-def test_deprecated_constant_import_warns():
-    """Test that importing constants from old location emits deprecation warning."""
-    with warnings.catch_warnings(record=True) as caught_warnings:
-        warnings.simplefilter("always")
-        from openhands.sdk.plugin.types import (
-            MARKETPLACE_MANIFEST_FILE as OLD_MANIFEST_FILE,
-        )
-
-        # Find deprecation warnings for this import
-        deprecation_warnings = [
-            w
-            for w in caught_warnings
-            if issubclass(w.category, DeprecatedWarning)
-            and "MARKETPLACE_MANIFEST_FILE" in str(w.message)
-        ]
-        assert len(deprecation_warnings) > 0, "Expected deprecation warning not found"
-
-        # Verify the constant is the same
-        assert OLD_MANIFEST_FILE == MARKETPLACE_MANIFEST_FILE
-
-
-@pytest.mark.parametrize(
-    "class_name",
-    [
-        "Marketplace",
-        "MarketplaceEntry",
-        "MarketplaceOwner",
-        "MarketplacePluginEntry",
-        "MarketplacePluginSource",
-        "MarketplaceMetadata",
-    ],
-)
-def test_all_deprecated_classes_from_plugin(class_name: str):
-    """Test all marketplace classes emit deprecation warnings from plugin."""
-    import openhands.sdk.marketplace as marketplace_module
-
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        from openhands.sdk import plugin
-
-        old_class = getattr(plugin, class_name)
-        new_class = getattr(marketplace_module, class_name)
-
-        # Verify the class is the same
-        assert old_class is new_class
+    with pytest.raises(AttributeError):
+        types.MarketplaceOwner  # type: ignore[attr-defined]  # noqa: B018
 
 
 def test_marketplace_functionality_preserved():
-    """Test that Marketplace class functionality works from new location."""
+    """Test that Marketplace class functionality works from canonical location."""
     owner = MarketplaceOwner(name="Test Team")
     assert owner.name == "Test Team"
 

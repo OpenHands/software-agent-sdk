@@ -43,6 +43,35 @@ def _is_abstract(type_: type) -> bool:
         return False
 
 
+def get_handler_class_name(handler: SerializerFunctionWrapHandler) -> str:
+    """Extract the class name from a Pydantic serializer handler's repr string.
+
+    WARNING: This is a fragile approach that relies on Pydantic's internal
+    repr format for SerializerFunctionWrapHandler. The handler is a Pydantic
+    wrapper around a Rust function that provides no public API for determining
+    which class it serializes. Parsing the repr string is the only available
+    mechanism.
+
+    Expected format: `SerializationCallable(serializer=<ClassName>)`
+
+    If Pydantic changes this format, multiple unit tests will fail immediately,
+    including tests in test_discriminated_union.py that verify serialization
+    behavior across the class hierarchy.
+
+    Args:
+        handler: The Pydantic serializer function wrap handler
+
+    Returns:
+        The class name extracted from the handler's repr string
+    """
+    repr_str = str(handler)
+    # Format is `SerializationCallable(serializer=<NAME>)`
+    # Get everything after =
+    _, name = repr_str.split("=", 1)
+    # Cut off the trailing )
+    return name[:-1]
+
+
 def kind_of(obj) -> str:
     """Get the string value for the kind tag"""
     if isinstance(obj, dict):
@@ -63,9 +92,42 @@ def _get_all_subclasses(cls) -> set[type]:
     return result
 
 
-def get_known_concrete_subclasses(cls) -> list[type]:
+# ---------------------------------------------------------------------------
+# Subclass-hierarchy caching
+#
+# get_known_concrete_subclasses() and _get_checked_concrete_subclasses() are
+# called on every event deserialization (via _validate_subtype).  Walking the
+# full class hierarchy each time dominated per-step CPU (~47 % of self-time
+# in wall profiles).
+#
+# The cache is keyed by (cls, _subclass_generation).  The generation counter
+# is bumped automatically via DiscriminatedUnionMixin.__init_subclass__
+# whenever a new subclass is defined, so callers never need to invalidate
+# manually — the cache self-invalidates.
+# ---------------------------------------------------------------------------
+_subclass_generation: int = 0
+_subclass_generation_lock = threading.Lock()
+_concrete_cache: dict[type, tuple[int, tuple[type, ...]]] = {}
+_checked_cache: dict[type, tuple[int, dict[str, type]]] = {}
+
+
+def _bump_subclass_generation() -> None:
+    global _subclass_generation
+    with _subclass_generation_lock:
+        _subclass_generation += 1
+
+
+def get_known_concrete_subclasses(cls) -> tuple[type, ...]:
     """Recursively returns all concrete subclasses in a stable order,
-    without deduping classes that share the same (module, name)."""
+    without deduping classes that share the same (module, name).
+
+    Results are cached and automatically invalidated when new
+    DiscriminatedUnionMixin subclasses are defined.
+    """
+    cached = _concrete_cache.get(cls)
+    if cached is not None and cached[0] == _subclass_generation:
+        return cached[1]
+
     out: list[type] = []
     for sub in cls.__subclasses__():
         # Recurse first so deeper classes appear after their parents
@@ -75,11 +137,17 @@ def get_known_concrete_subclasses(cls) -> list[type]:
 
     # Use qualname to distinguish nested/local classes (like test-local Cat)
     out.sort(key=lambda t: (t.__module__, getattr(t, "__qualname__", t.__name__)))
-    return out
+    result = tuple(out)
+    _concrete_cache[cls] = (_subclass_generation, result)
+    return result
 
 
 def _get_checked_concrete_subclasses(cls: type) -> dict[str, type]:
-    result = {}
+    cached = _checked_cache.get(cls)
+    if cached is not None and cached[0] == _subclass_generation:
+        return cached[1]
+
+    result: dict[str, type] = {}
     for sub in get_known_concrete_subclasses(cls):
         existing = result.get(sub.__name__)
         if existing:
@@ -95,7 +163,19 @@ def _get_checked_concrete_subclasses(cls: type) -> dict[str, type]:
                 "(Since they may not exist at deserialization time)"
             )
         result[sub.__name__] = sub
+    _checked_cache[cls] = (_subclass_generation, result)
     return result
+
+
+def clear_subclass_cache() -> None:
+    """Invalidate cached results of :func:`get_known_concrete_subclasses`
+    and :func:`_get_checked_concrete_subclasses`.
+
+    Normally not needed — the cache auto-invalidates when new
+    DiscriminatedUnionMixin subclasses are defined.  This function exists
+    for edge cases involving non-DiscriminatedUnionMixin hierarchies.
+    """
+    _bump_subclass_generation()
 
 
 class OpenHandsModel(BaseModel):
@@ -110,6 +190,10 @@ class OpenHandsModel(BaseModel):
 
 
 class DiscriminatedUnionMixin(OpenHandsModel):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        _bump_subclass_generation()
+
     @computed_field
     @property
     def kind(self) -> str:
@@ -175,31 +259,12 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def _is_handler_for_current_class(
         self, handler: SerializerFunctionWrapHandler
     ) -> bool:
-        """Check if the handler is for this class by parsing its repr string.
+        """Check if the handler is for this class.
 
-        WARNING: This is a fragile approach that relies on Pydantic's internal
-        repr format for SerializerFunctionWrapHandler. The handler is a Pydantic
-        wrapper around a Rust function that provides no public API for determining
-        which class it serializes. Parsing the repr string is the only available
-        mechanism.
-
-        Expected format: `SerializationCallable(serializer=<ClassName>)`
-
-        If Pydantic changes this format, multiple unit tests will fail immediately,
-        including tests in test_discriminated_union.py that verify serialization
-        behavior across the class hierarchy.
+        See get_handler_class_name() for details on the fragile string parsing
+        this relies on.
         """
-        # should be in the format `SerializationCallable(serializer=<NAME>)`
-        repr_str = str(handler)
-
-        # Get everything after =
-        _, name = repr_str.split("=", 1)
-
-        # Cut off the )
-        name = name[:-1]
-
-        result = self.__class__.__name__ == name
-        return result
+        return self.__class__.__name__ == get_handler_class_name(handler)
 
     @classmethod
     def __get_pydantic_json_schema__(

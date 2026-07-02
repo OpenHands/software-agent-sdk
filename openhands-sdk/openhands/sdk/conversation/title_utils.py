@@ -118,7 +118,11 @@ def generate_title_with_llm(message: str, llm: LLM, max_length: int = 50) -> str
             ),
         ]
 
-        # Get completion from LLM
+        # Force non-streaming: the title is consumed whole with no on_token
+        # callback, which a streaming LLM requires.
+        if llm.stream:
+            llm = llm.model_copy(update={"stream": False})
+
         response = llm.completion(messages)
 
         # Extract the title from the response
@@ -161,7 +165,10 @@ def generate_title_from_message(
     message: str, llm: LLM | None = None, max_length: int = 50
 ) -> str:
     """Generate a title from an already-extracted user message."""
-    llm_to_use = None if llm and llm.model == "acp-managed" else llm
+    # Skip the ACP sentinel LLM — it has no credentials and cannot be
+    # called. Detected via ``usage_id`` so the real model name can still
+    # appear in logs and serialized state.
+    llm_to_use = None if llm and llm.usage_id == "acp-managed" else llm
 
     if llm_to_use:
         llm_title = generate_title_with_llm(message, llm_to_use, max_length)
