@@ -863,6 +863,11 @@ class EventService:
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
+            # Crash recovery scans the full log, not the active branch: the
+            # process may have died between writing an event file and persisting
+            # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
+            # branching is unsupported — #3749 — so there are no abandoned
+            # branches to exclude here anyway.)
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]

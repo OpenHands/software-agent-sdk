@@ -47,9 +47,8 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm import LLMCallContext
@@ -193,11 +192,12 @@ class LocalConversation(BaseConversation):
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
-        # Appended at the end (not grouped with max_iteration_per_run) to avoid
-        # shifting the position of any existing positional argument.
+        # Appended at the end to avoid shifting the position of any existing
+        # positional argument.
         max_budget_per_run: float | None = None,
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
+        file_store: FileStore | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -213,7 +213,8 @@ class LocalConversation(BaseConversation):
                 semantics: skills override by name (last wins), MCP config
                 override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
-                Can be a string path or Path object.
+                Can be a string path or Path object. When file_store is provided,
+                this value is still used to derive environment observation paths.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -252,6 +253,9 @@ class LocalConversation(BaseConversation):
             prompt_cache_key: Override for the prompt-cache shard key. Defaults
                 to the conversation's own ID. Sub-conversations set this to
                 the parent's ID to share the same cache shard.
+            file_store: Optional FileStore to use for conversation state and EventLog
+                persistence. If provided, this takes precedence over persistence_dir
+                for state and EventLog storage.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -315,6 +319,7 @@ class LocalConversation(BaseConversation):
             persistence_dir=self.get_persistence_dir(persistence_dir, desired_id)
             if persistence_dir
             else None,
+            file_store=file_store,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
@@ -328,15 +333,9 @@ class LocalConversation(BaseConversation):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
-            # Advance HEAD to the just-appended event (parent_id was stamped
-            # upstream by _tree_stamping). This is the single append site, so the
-            # leaf always names a real event even when a hook swaps the in-flight
-            # one. ConversationStateUpdateEvent is excluded: it is a state-sync
-            # artifact, not a tree node, and advancing the leaf for it recurses
-            # (moving the leaf re-emits a ConversationStateUpdateEvent here).
-            if not isinstance(e, ConversationStateUpdateEvent):
-                self._state.leaf_event_id = e.id
+            # Single chokepoint: stamps parent_id (catching any event a hook
+            # swapped in downstream of _tree_stamping) and advances HEAD.
+            self._state.append_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -452,23 +451,15 @@ class LocalConversation(BaseConversation):
     def _tree_stamping(
         self, inner: ConversationCallbackType
     ) -> ConversationCallbackType:
-        """Wrap an event callback so every emitted event is placed in the tree.
+        """Wrap a callback so in-flight subscribers see a lineage-bearing event.
 
-        Stamps ``parent_id`` (to the current active leaf) on any event lacking
-        one, then forwards it to ``inner``. Stamping at the front of the chain
-        lets every subscriber and persistence see the same lineage-bearing event.
-
-        HEAD is advanced where the event is actually appended
-        (``_default_callback``), not here, so the leaf always names a real event
-        even when a hook swaps the in-flight one.
+        Convenience only: the authoritative stamp is
+        ``ConversationState.append_event``, which re-stamps anything a hook swaps
+        in downstream. HEAD advances at the append site, not here.
         """
 
         def wrapped(event: Event) -> None:
-            if event.parent_id is None:
-                event = event.model_copy(
-                    update={"parent_id": self._state._resolve_active_leaf()}
-                )
-            inner(event)
+            inner(self._state._stamp_parent_id(event))
 
         return cast(ConversationCallbackType, wrapped)
 
@@ -634,8 +625,8 @@ class LocalConversation(BaseConversation):
         # Hold the state lock while reading mutable state from the source
         # conversation to avoid torn reads if run() is executing concurrently.
         with self._state:
-            # Validate the branch point before constructing the fork, so an
-            # unknown id raises without leaving an orphaned persistence dir.
+            # Validate before constructing the fork so an unknown branch point
+            # does not leave an orphaned persistence directory behind.
             if from_event_id is not None and from_event_id not in self._state.events:
                 raise ValueError(f"Unknown from_event_id: {from_event_id}")
 
@@ -677,6 +668,11 @@ class LocalConversation(BaseConversation):
             for event in source_events:
                 fork_conv._state.events.append(_copy_event_for_fork(event))
             fork_conv._state.leaf_event_id = fork_leaf
+            # A full fork inherits the source's empty-HEAD state; a branch slice
+            # roots HEAD at a real event (from_event_id), so it is never empty.
+            fork_conv._state.head_is_empty = (
+                self._state.head_is_empty if from_event_id is None else False
+            )
             # Full rebuild: the copied events may need property enforcement
             # (same posture as cold load).
             fork_conv._state.rebuild_view()
@@ -730,6 +726,10 @@ class LocalConversation(BaseConversation):
             if event_id is not None and event_id not in self._state.events:
                 raise ValueError(f"Unknown event_id: {event_id}")
             self._state.leaf_event_id = event_id  # autosaves base_state.json
+            # Mark an explicit empty HEAD so it is not misread as a legacy/unset
+            # leaf (which would resolve back to the last event). See
+            # ConversationState._resolve_active_leaf.
+            self._state.head_is_empty = event_id is None
             self._state.rebuild_view()
 
     def _ensure_plugins_loaded(self) -> None:
@@ -1862,7 +1862,7 @@ class LocalConversation(BaseConversation):
 
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         if last_acp_prompt_user_message_id is None:
@@ -1977,7 +1977,7 @@ class LocalConversation(BaseConversation):
                     with self._state:
                         acp_prompt_messages = [
                             event
-                            for event in self._state.events
+                            for event in self._state.active_branch()
                             if _is_acp_prompt_message(event)
                         ]
                         latest_acp_prompt_message_id = (
@@ -2075,7 +2075,7 @@ class LocalConversation(BaseConversation):
 
                     acp_prompt_messages = [
                         event
-                        for event in self._state.events
+                        for event in self._state.active_branch()
                         if _is_acp_prompt_message(event)
                     ]
                     latest_acp_prompt_message_id = (
@@ -2218,7 +2218,9 @@ class LocalConversation(BaseConversation):
         This is a non-invasive method to reject actions between run() calls.
         Also clears the agent_waiting_for_confirmation flag.
         """
-        pending_actions = ConversationState.get_unmatched_actions(self._state.events)
+        pending_actions = ConversationState.get_unmatched_actions(
+            self._state.active_branch()
+        )
 
         with self._state:
             # Always clear the agent_waiting_for_confirmation flag
@@ -2254,7 +2256,7 @@ class LocalConversation(BaseConversation):
 
         Must be called while holding ``self._state``.
         """
-        orphans = ConversationState.get_unmatched_actions(self._state.events)
+        orphans = ConversationState.get_unmatched_actions(self._state.active_branch())
         for ae in orphans:
             logger.info(
                 "Emitting synthetic error for orphaned action %s (%s)",
@@ -2442,9 +2444,12 @@ class LocalConversation(BaseConversation):
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
+            # stream=False: the reply is consumed whole with no on_token
+            # callback, which a streaming LLM requires.
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
+                    "stream": False,
                 },
                 deep=True,
             )
@@ -2487,7 +2492,9 @@ class LocalConversation(BaseConversation):
         """
         effective_llm = llm if llm is not None else self.agent.llm
         return generate_conversation_title(
-            events=self._state.events, llm=effective_llm, max_length=max_length
+            events=self._state.active_branch(),
+            llm=effective_llm,
+            max_length=max_length,
         )
 
     def condense(self) -> None:

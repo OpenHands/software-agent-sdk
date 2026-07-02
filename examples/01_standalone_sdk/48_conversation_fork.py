@@ -15,6 +15,7 @@ A/B-testing prompts, fork-on-tool-change, edit-a-past-turn-and-re-run.
 import os
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.event import MessageEvent
 from openhands.tools.terminal import TerminalTool
 
 
@@ -97,9 +98,6 @@ print(f"Fork events : {len(fork_alt.state.events)}")
 # =================================================================
 # Fork from the first user message: copies only path_to_root(event) and sets
 # the fork's HEAD there.
-from openhands.sdk.event import MessageEvent  # noqa: E402
-
-
 cut_event_id = next(
     e.id
     for e in source.state.events
@@ -118,9 +116,10 @@ print(f"Fork HEAD             : {fork_slice.state.leaf_event_id}")
 assert len(fork_slice.state.events) <= len(source.state.events)
 assert fork_slice.state.leaf_event_id == cut_event_id
 
-fork_slice.send_message("Given only my first request, run `echo sliced-branch`.")
+fork_slice.send_message("Run `echo sliced-branch` in the terminal.")
 fork_slice.run()
 print(f"Fork events after run : {len(fork_slice.state.events)}")
+assert any("sliced-branch" in str(e) for e in fork_slice.state.events)
 
 # =================================================================
 # 5. In-conversation navigation: move HEAD and create a sibling branch

@@ -585,7 +585,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         state = conversation.state
         # Check for pending actions (implicit confirmation)
         # and execute them before sampling new actions.
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
+        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",
@@ -769,7 +769,7 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
         """
         state = conversation.state
         # Check for pending actions (implicit confirmation)
-        pending_actions = ConversationState.get_unmatched_actions(state.events)
+        pending_actions = ConversationState.get_unmatched_actions(state.active_branch())
         if pending_actions:
             logger.info(
                 "Confirmation mode: Executing %d pending action(s)",

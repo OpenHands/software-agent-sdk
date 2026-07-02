@@ -12,7 +12,7 @@ from pydantic import Field, PrivateAttr
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.event_store import ROOT_PARENT_ID, EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
 from openhands.sdk.conversation.secret_registry import SecretRegistry
@@ -173,6 +173,12 @@ class ConversationState(OpenHandsModel):
         ),
     )
 
+    # Distinguishes a deliberate empty HEAD (navigate_to(None)) from an unset
+    # ``leaf_event_id``, which triggers legacy back-compat. Without it, emptying a
+    # single-root tree is indistinguishable from a pre-tree conversation. Persisted
+    # so the empty HEAD survives a save/reload. See _resolve_active_leaf.
+    head_is_empty: bool = Field(default=False)
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -248,18 +254,61 @@ class ConversationState(OpenHandsModel):
     def _resolve_active_leaf(self) -> EventID | None:
         """The effective HEAD, resolving a ``None`` ``leaf_event_id`` by lineage.
 
-        A set leaf is returned as-is. A ``None`` leaf falls back to the last
-        event only for pre-feature conversations (last event has no
-        ``parent_id``), so legacy history loads unbranched; once events are
-        stamped, ``None`` is a deliberate empty HEAD (e.g. ``navigate_to(None)``).
+        A set leaf is returned as-is. ``head_is_empty`` marks a deliberate empty
+        HEAD (``navigate_to(None)``) -> no active branch. Otherwise a ``None`` leaf
+        falls back to the last event only for pre-feature conversations (last
+        event has no ``parent_id``), so legacy history loads unbranched.
         """
         if self.leaf_event_id is not None:
             return self.leaf_event_id
+        if self.head_is_empty:
+            return None
         if (n := len(self._events)) == 0:
             return None
         if self._events[n - 1].parent_id is not None:
             return None
         return self._events.get_id(n - 1)
+
+    def active_branch(self, limit: int | None = None) -> list[Event]:
+        """Raw events on the active branch (``path_to_root(leaf)``), root-first.
+
+        Excludes abandoned branches, so consumers reasoning about the *current*
+        conversation (stuck detection, pending actions) see only the live path.
+        ``limit`` returns just the last ``limit`` events, kept O(limit).
+        """
+        return self._events.path_to_root(self._resolve_active_leaf(), limit=limit)
+
+    def _stamp_parent_id(self, event: Event) -> Event:
+        """Return ``event`` with ``parent_id`` set to the active leaf if unset."""
+        if event.parent_id is not None:
+            return event
+        parent = self._resolve_active_leaf()
+        # Empty HEAD over a non-empty log = deliberate new root (navigate_to(None));
+        # mark it so it is not misread as a legacy event chained to its neighbour.
+        if parent is None and len(self._events) > 0:
+            parent = ROOT_PARENT_ID
+        return event.model_copy(update={"parent_id": parent})
+
+    def append_event(self, event: Event) -> Event:
+        """Single storage chokepoint: stamp parent_id, append, advance HEAD.
+
+        Stamping here (not only at the emit callback) ensures no event enters the
+        log unstamped, even one a hook swaps in downstream. ``fork`` copies
+        pre-stamped events and sets HEAD itself, so it bypasses this.
+        """
+        event = self._stamp_parent_id(event)
+        self._events.append(event)
+        # ConversationStateUpdateEvent is a state-sync artifact, not a tree node;
+        # advancing HEAD for it would recurse (moving HEAD re-emits one).
+        from openhands.sdk.event.conversation_state import (
+            ConversationStateUpdateEvent,
+        )
+
+        if not isinstance(event, ConversationStateUpdateEvent):
+            self.leaf_event_id = event.id
+            if self.head_is_empty:  # HEAD now points at a real event again
+                self.head_is_empty = False
+        return event
 
     @property
     def view(self) -> View:
@@ -381,6 +430,7 @@ class ConversationState(OpenHandsModel):
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        file_store: FileStore | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -401,7 +451,10 @@ class ConversationState(OpenHandsModel):
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
             workspace: Working directory for agent operations
-            persistence_dir: Directory for persisting state and events
+            persistence_dir: Directory for persisting state and events when
+                file_store is not provided. When file_store is provided, this
+                value is still stored on the state and used for environment
+                observation paths.
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
             cipher: Optional cipher for encrypting/decrypting secrets in
@@ -410,6 +463,9 @@ class ConversationState(OpenHandsModel):
                     are redacted (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            file_store: Optional FileStore to use for state and EventLog
+                persistence. If provided, this takes precedence over
+                persistence_dir for state and EventLog storage.
 
         Returns:
             ConversationState ready for use
@@ -418,16 +474,17 @@ class ConversationState(OpenHandsModel):
             ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
-        if persistence_dir:
-            file_store = LocalFileStore(
-                persistence_dir, cache_limit_size=max_iterations
-            )
-        else:
-            logger.warning(
-                "No persistence_dir provided; falling back to InMemoryFileStore. "
-                "EventLog data will not persist across requests."
-            )
-            file_store = InMemoryFileStore()
+        if file_store is None:
+            if persistence_dir:
+                file_store = LocalFileStore(
+                    persistence_dir, cache_limit_size=max_iterations
+                )
+            else:
+                logger.warning(
+                    "No persistence_dir provided; falling back to InMemoryFileStore. "
+                    "EventLog data will not persist across requests."
+                )
+                file_store = InMemoryFileStore()
 
         try:
             base_text = file_store.read(BASE_STATE)
@@ -526,14 +583,15 @@ class ConversationState(OpenHandsModel):
                     logger.exception("Auto-persist base_state failed", exc_info=True)
                     raise e
 
-            # Call state change callback if set. leaf_event_id is skipped: it
-            # changes every event and the server persists broadcasts, so it would
-            # ~double the log — and the new HEAD is the just-appended event's id.
+            # Call state change callback if set. leaf_event_id/head_is_empty are
+            # skipped: they are internal HEAD bookkeeping (leaf_event_id changes
+            # every event, so broadcasting it would ~double the persisted log) and
+            # the HEAD is recoverable from the just-appended event.
             callback = getattr(self, "_on_state_change", None)
             if (
                 callback is not None
                 and old is not _sentinel
-                and name != "leaf_event_id"
+                and name not in ("leaf_event_id", "head_is_empty")
             ):
                 try:
                     # Import here to avoid circular imports

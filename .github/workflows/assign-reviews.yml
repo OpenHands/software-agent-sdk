@@ -148,7 +148,7 @@ jobs:
             LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             - name: Set up Python
               uses: actions/setup-python@v6

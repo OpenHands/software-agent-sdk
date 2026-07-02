@@ -20,6 +20,7 @@ from pydantic import (
     Field,
     Tag,
     TypeAdapter,
+    ValidationError,
 )
 
 from openhands.sdk.settings.model import (
@@ -27,6 +28,7 @@ from openhands.sdk.settings.model import (
     CondenserSettingsConfig,
     CriticMode,
     LLMSummarizingCondenserSettings,
+    VerificationSettings,
 )
 from openhands.sdk.skills import Skill
 
@@ -50,6 +52,26 @@ class ProfileVerificationSettings(BaseModel):
     max_refinement_iterations: int = Field(default=3, ge=1)
     critic_server_url: str | None = None
     critic_model_name: str | None = None
+
+
+def build_profile_verification(
+    v: VerificationSettings,
+) -> ProfileVerificationSettings:
+    """Project the secret-free subset of ``VerificationSettings`` onto a profile.
+
+    Drops ``critic_api_key`` — the profile is secret-free; the critic reuses the
+    resolved LLM profile's key. Hoisted from the agent-server router so the
+    local and cloud seeds build verification identically.
+    """
+    return ProfileVerificationSettings(
+        critic_enabled=v.critic_enabled,
+        critic_mode=v.critic_mode,
+        enable_iterative_refinement=v.enable_iterative_refinement,
+        critic_threshold=v.critic_threshold,
+        max_refinement_iterations=v.max_refinement_iterations,
+        critic_server_url=v.critic_server_url,
+        critic_model_name=v.critic_model_name,
+    )
 
 
 class AgentProfileBase(BaseModel):
@@ -87,6 +109,24 @@ class AgentProfileBase(BaseModel):
         description=(
             "Which of the user's globally configured MCP servers to expose. "
             "null = all; [] = none; a non-null list = filter to the named keys."
+        ),
+    )
+    # On the base because both variants consume skills as prompt context. null
+    # (all discovered) and [] (none) are distinct; the default is [] — NOT null,
+    # unlike ``mcp_server_refs`` — because auto-injecting the whole catalog isn't
+    # behavior-preserving and a profile persisted before this field existed must
+    # not silently start pulling it on load. ``default_factory=list`` makes an
+    # absent field ([]) distinct from an explicit ``null`` (None), the opt-in for
+    # "all discovered".
+    skill_refs: list[str] | None = Field(
+        default_factory=list,
+        description=(
+            "Which of the server-discovered skills to expose in the agent's "
+            "prompt, selected by name (mirrors ``mcp_server_refs`` over "
+            "``mcp_config``). null = all discovered; [] = none (the default); a "
+            "non-null list = filter to the named skills. For OpenHands profiles, "
+            "any explicitly embedded ``skills`` are always included on top of "
+            "the filtered set."
         ),
     )
 
@@ -140,6 +180,14 @@ class OpenHandsAgentProfile(AgentProfileBase):
         default=False,
         description="Enable sub-agent delegation via TaskToolSet.",
     )
+    enable_switch_llm_tool: bool = Field(
+        default=True,
+        description=(
+            "Enable the built-in switch_llm tool for switching between saved "
+            "LLM profiles. Defaults True to match the global agent settings "
+            "default (AgentSettingsConfig.enable_switch_llm_tool)."
+        ),
+    )
     tool_concurrency_limit: int = Field(
         default=1,
         ge=1,
@@ -167,6 +215,9 @@ class ACPAgentProfile(AgentProfileBase):
             "ACP-delegating agent."
         ),
     )
+    # ``skill_refs`` is inherited from ``AgentProfileBase`` with the safe []
+    # default (no discovered skills injected unless a null/list is set) — ACP
+    # agents own their tooling, so that default is exactly right here.
     acp_server: ACPServerKind = Field(
         default="claude-code",
         description=(
@@ -339,3 +390,16 @@ def validate_agent_profile(
         raise TypeError("AgentProfile payload must be a mapping or BaseModel.")
     payload = _apply_persisted_migrations(payload)
     return _AGENT_PROFILE_ADAPTER.validate_python(payload, context=context)
+
+
+def safe_validation_error_detail(exc: ValidationError) -> list[dict[str, Any]]:
+    """Secret-safe ``detail`` for a 422 from a failed profile validation.
+
+    Surfaces only ``loc``/``type`` per error and **drops ``msg``/``input``** — a
+    nested ``skills[].mcp_tools`` ``MCPConfig`` error embeds the offending input,
+    which may carry secrets. Shaped like FastAPI's request-validation ``detail``
+    (a list of error objects) so routers can hand it straight to ``HTTPException``.
+    Hoisted from the agent-server router so the local and cloud routers redact
+    identically.
+    """
+    return [{"loc": err["loc"], "type": err["type"]} for err in exc.errors()]

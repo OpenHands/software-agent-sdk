@@ -32,6 +32,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
+from openhands.agent_server.skills_service import discover_profile_skills_if_needed
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
 from openhands.sdk.agent.base import AgentBase
@@ -263,6 +264,7 @@ def _resolve_agent_from_profile(
     Raises:
         ProfileNotFound: No stored profile has ``profile_id``.
         DanglingMcpServerRef: A referenced MCP server is absent from the global config.
+        DanglingSkillRef: A referenced skill is absent from the discovered catalog.
         ValueError: Profile load or settings validation failure.
     """
     from openhands.agent_server.persistence.store import (
@@ -287,10 +289,24 @@ def _resolve_agent_from_profile(
             f"Failed to load agent profile '{profile_name}': {exc}"
         ) from exc
 
+    # Both variants honor ``skill_refs``; the helper skips discovery when it
+    # selects none. A genuine discovery failure fails the launch loudly rather
+    # than silently producing a zero-skill agent.
+    try:
+        available_skills = discover_profile_skills_if_needed(profile)
+    except Exception as exc:
+        raise ValueError(
+            f"Skill discovery failed for profile '{profile_name}': {exc}"
+        ) from exc
+
     llm_store = get_llm_profile_store()
     try:
         settings_config = resolve_agent_profile(
-            profile, llm_store=llm_store, mcp_config=mcp_config, cipher=cipher
+            profile,
+            llm_store=llm_store,
+            mcp_config=mcp_config,
+            available_skills=available_skills,
+            cipher=cipher,
         )
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Profile '{profile_name}' failed to resolve: {exc}") from exc

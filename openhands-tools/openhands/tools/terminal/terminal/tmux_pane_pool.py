@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Final
@@ -18,12 +18,15 @@ from typing import Final
 import libtmux
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     HISTORY_LIMIT,
     TMUX_SESSION_HEIGHT,
     TMUX_SESSION_WIDTH,
     TMUX_SOCKET_NAME,
+)
+from openhands.tools.terminal.env import (
+    build_terminal_env,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
@@ -80,6 +83,7 @@ class TmuxPanePool:
 
     work_dir: str
     username: str | None = None
+    env: Mapping[str, str] | None = None
     max_panes: int = DEFAULT_MAX_PANES
 
     # tmux handles
@@ -105,6 +109,7 @@ class TmuxPanePool:
     def __post_init__(self) -> None:
         if self.max_panes < 1:
             raise ValueError(f"max_panes must be >= 1, but got {self.max_panes}.")
+        self.env = normalize_terminal_env(self.env)
         self._semaphore = threading.Semaphore(self.max_panes)
 
     def initialize(self) -> None:
@@ -112,7 +117,7 @@ class TmuxPanePool:
         if self._initialized:
             return
 
-        env = sanitized_env()
+        env = build_terminal_env(self.env)
         self._server = libtmux.Server(socket_name=TMUX_SOCKET_NAME, environment=env)
         session_name = f"openhands-pool-{self.username}-{uuid.uuid4()}"
         self._session = self._server.new_session(
@@ -182,7 +187,11 @@ class TmuxPanePool:
 
         # Use PooledTmuxTerminal which overrides close() to only kill
         # this terminal's window instead of the entire shared tmux session.
-        terminal = PooledTmuxTerminal(work_dir=self.work_dir, username=self.username)
+        terminal = PooledTmuxTerminal(
+            work_dir=self.work_dir,
+            username=self.username,
+            env=self.env,
+        )
         terminal.server = self._server  # type: ignore[assignment]
         terminal.session = self._session
         terminal.window = window

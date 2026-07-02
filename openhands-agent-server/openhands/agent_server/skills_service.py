@@ -21,6 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 
@@ -54,6 +55,10 @@ from openhands.sdk.skills.utils import (
 )
 from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.path import to_posix_path
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.profiles import ACPAgentProfile, OpenHandsAgentProfile
 
 
 logger = get_logger(__name__)
@@ -450,6 +455,47 @@ def load_all_skills(
     logger.info("Loaded %d skills", len(all_skills))
 
     return SkillLoadResult(skills=all_skills, sources=sources)
+
+
+def discover_profile_skills() -> list[Skill]:
+    """Skill catalog for ``AgentProfile.skill_refs`` resolution (#3868).
+
+    Returns the merged user + public skills — the deterministic sources of
+    :func:`load_all_skills` that ``resolve_agent_profile`` filters by name.
+    ``load_all_skills`` already absorbs and logs benign per-source failures, so
+    this does not swallow errors: an unexpected failure propagates rather than
+    silently resolving the profile to a zero-skill agent.
+
+    Org / project skills need auth / workspace context not available at resolve
+    time, so they are not in this catalog (a follow-up). Because the resolver
+    now hard-fails dangling ``skill_refs`` (mirroring MCP), a profile that
+    selects an org/project skill via the picker would fail launch here until the
+    catalog is broadened — the SaaS app-server, which has that context, is
+    expected to supply the fuller catalog the same way it does for the picker.
+    """
+    return list(
+        load_all_skills(
+            load_public=True,
+            load_user=True,
+            load_org=False,
+            load_project=False,
+        ).skills
+    )
+
+
+def discover_profile_skills_if_needed(
+    profile: "OpenHandsAgentProfile | ACPAgentProfile",
+) -> list[Skill] | None:
+    """Discover the skill catalog a profile needs, or ``None`` to skip discovery.
+
+    ``skill_refs == []`` selects no discovered skills, so the (potentially
+    network-bound) discovery is skipped and the resolver receives ``None``. Any
+    other value — ``None`` (all discovered) or a name list — needs the catalog.
+    Centralizes the skip guard shared by conversation start and the dry-run.
+    """
+    if profile.skill_refs == []:
+        return None
+    return discover_profile_skills()
 
 
 def sync_public_skills() -> tuple[bool, str]:

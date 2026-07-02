@@ -3,10 +3,10 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 from rich.text import Text
 
-from openhands.sdk.event.types import EventID, SourceType
+from openhands.sdk.event.types import ROOT_PARENT_ID, EventID, SourceType
 from openhands.sdk.llm import ImageContent, Message, TextContent
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
@@ -38,6 +38,15 @@ class Event(DiscriminatedUnionMixin, ABC):
             "rule). Events sharing a parent_id are sibling branches."
         ),
     )
+
+    @field_validator("id")
+    @classmethod
+    def _reject_reserved_id(cls, v: EventID) -> EventID:
+        # ROOT_PARENT_ID is a reserved parent_id sentinel; an event whose id
+        # equalled it would make its children look parentless in the tree.
+        if v == ROOT_PARENT_ID:
+            raise ValueError(f"Event id may not equal reserved sentinel {v!r}")
+        return v
 
     @property
     def visualize(self) -> Text:

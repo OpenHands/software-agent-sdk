@@ -7,16 +7,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from litellm import ChatCompletionMessageToolCall
+from litellm.types.utils import Function
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import Conversation, LocalConversation
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.event import ActionEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import MessageEvent
-from openhands.sdk.event.types import SourceType
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.event.types import ROOT_PARENT_ID, SourceType
+from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
+from openhands.sdk.tool.schema import Action
 
 
 def _agent() -> Agent:
@@ -51,6 +56,11 @@ def _msg(text: str, source: SourceType = "user") -> MessageEvent:
         source=source,
         llm_message=Message(role=role, content=[TextContent(text=text)]),
     )
+
+
+def _by_id(events, event_id: str) -> Event:
+    """Look up a stored event by id."""
+    return next(e for e in events if e.id == event_id)
 
 
 def _view_ids(conv: LocalConversation) -> list[str]:
@@ -113,7 +123,7 @@ def test_navigate_then_emit_creates_sibling_branch():
         assert _view_ids(conv) == [e0.id]
 
         e3 = _emit(conv, _msg("b1"))  # branch B forks off the root
-        assert conv.state.events.get_by_id(e3.id).parent_id == e0.id
+        assert _by_id(conv.state.events, e3.id).parent_id == e0.id
 
         # Abandoned branch A is still on disk...
         assert e1.id in conv.state.events
@@ -124,7 +134,8 @@ def test_navigate_then_emit_creates_sibling_branch():
         assert view_ids == [e0.id, e3.id]
 
         # Both branches hang off the root as siblings.
-        assert set(conv.state.events.children_of(e0.id)) == {e1.id, e3.id}
+        assert _by_id(conv.state.events, e1.id).parent_id == e0.id
+        assert _by_id(conv.state.events, e3.id).parent_id == e0.id
 
 
 @pytest.mark.parametrize(
@@ -154,6 +165,37 @@ def test_navigate_to_none_empties_the_active_branch():
         assert _view_ids(conv) == []
 
 
+def test_navigate_to_none_then_emit_starts_a_fresh_root():
+    """After navigate_to(None), the next event is a genuine root — not silently
+    re-parented onto the abandoned branch's leaf.
+
+    A stamped root landing at a non-zero storage index has parent_id=None, the
+    same shape as a legacy event; without an explicit marker the effective-parent
+    rule would treat it as a legacy child (idx-1) and resurrect the whole
+    abandoned branch into the active view.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))  # branch A: root -> a1, then abandoned
+
+        conv.navigate_to(None)  # deliberate empty HEAD
+        assert _view_ids(conv) == []
+
+        fresh = _emit(conv, _msg("fresh"))  # a new root over a non-empty log
+
+        events = conv.state.events
+        stored = _by_id(events, fresh.id)
+        # Effective parent is None: a genuine root, not chained to a1.
+        assert events._effective_parent_id(events.get_index(fresh.id), stored) is None
+        # Active branch is exactly the fresh root; branch A stays off-view.
+        assert _view_ids(conv) == [fresh.id]
+        # Both roots hang off None as siblings: e0 is a genuine root, and the
+        # fresh event carries the explicit ROOT_PARENT_ID sentinel.
+        assert _by_id(events, e0.id).parent_id is None
+        assert _by_id(events, fresh.id).parent_id == ROOT_PARENT_ID
+
+
 def test_fork_from_event_slices_the_branch():
     with tempfile.TemporaryDirectory() as tmp:
         conv = _conversation(tmp)
@@ -173,7 +215,7 @@ def test_fork_from_event_slices_the_branch():
 
         # Running the fork continues from the cut point.
         e3 = _emit(fork, _msg("c"))
-        assert fork.state.events.get_by_id(e3.id).parent_id == e1.id
+        assert _by_id(fork.state.events, e3.id).parent_id == e1.id
 
 
 def test_fork_after_condensation_replays_correctly():
@@ -268,7 +310,7 @@ def test_legacy_conversation_resumes_and_continues():
 
         # A new event seamlessly continues the chain off the last legacy event.
         new = _emit(resumed, _msg("after-resume"))
-        assert resumed.state.events.get_by_id(new.id).parent_id == legacy[-1].id
+        assert _by_id(resumed.state.events, new.id).parent_id == legacy[-1].id
         assert resumed.state.leaf_event_id == new.id
         assert [e.id for e in resumed.state.events.path_to_root(new.id)] == [
             *(e.id for e in legacy),
@@ -317,3 +359,166 @@ def test_fork_from_event_on_an_abandoned_branch():
         assert [e.id for e in fork.state.events] == [e0.id, e1.id, e2.id]
         assert fork.state.leaf_event_id == e2.id
         assert _view_ids(fork) == _ground_truth_view_ids(fork) == [e0.id, e1.id, e2.id]
+
+
+def test_append_event_stamps_swapped_event_to_active_leaf_not_storage_tail():
+    """An unstamped event (as a hook swaps in downstream of _tree_stamping) is
+    stamped to the active leaf at append_event — not left to the idx-1 fallback,
+    which after a navigate would chain it onto the abandoned branch.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))
+        _emit(conv, _msg("a2"))  # branch A (abandoned); a2 is the storage tail
+
+        conv.navigate_to(e0.id)  # active leaf is e0, but storage tail is a2
+
+        swapped = _msg("swapped")  # brand-new event, parent_id is None
+        with conv._state:
+            conv._state.append_event(swapped)
+
+        stored = _by_id(conv.state.events, swapped.id)
+        assert stored.parent_id == e0.id  # active leaf, not a2 (idx - 1)
+        assert conv.state.leaf_event_id == swapped.id
+        assert _view_ids(conv) == [e0.id, swapped.id]  # branch A stays off-view
+
+
+class _MockAction(Action):
+    command: str
+
+
+def _action_event(call_id: str = "call_1") -> ActionEvent:
+    """A minimal executable ActionEvent — pending until a matching observation."""
+    tool_call = ChatCompletionMessageToolCall(
+        id=call_id,
+        type="function",
+        function=Function(name="test_tool", arguments='{"command": "x"}'),
+    )
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text="t")],
+        action=_MockAction(command="x"),
+        tool_name="test_tool",
+        tool_call_id=call_id,
+        tool_call=MessageToolCall.from_chat_tool_call(tool_call),
+        llm_response_id="resp-1",
+    )
+
+
+def test_active_branch_returns_live_path_and_tail():
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        _emit(conv, _msg("a1"))
+        _emit(conv, _msg("a2"))  # branch A, to be abandoned
+        conv.navigate_to(e0.id)
+        e3 = _emit(conv, _msg("b1"))  # branch B
+
+        # Only the live path; abandoned a1/a2 excluded.
+        assert [e.id for e in conv.state.active_branch()] == [e0.id, e3.id]
+        # limit walks back from the leaf.
+        assert [e.id for e in conv.state.active_branch(limit=1)] == [e3.id]
+
+
+def test_pending_actions_ignore_abandoned_branch():
+    """get_unmatched_actions over the active branch drops an abandoned branch's
+    orphaned action — so navigating away can't leave phantom pending actions.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        e0 = _emit(conv, _msg("root"))
+        pending = _emit(conv, _action_event("call_A"))  # unmatched on branch A
+
+        conv.navigate_to(e0.id)  # abandon branch A
+
+        # The full log still shows the orphaned action...
+        assert [
+            a.id
+            for a in ConversationState.get_unmatched_actions(list(conv.state.events))
+        ] == [pending.id]
+        # ...but the active branch (what the consumers now read) does not.
+        assert ConversationState.get_unmatched_actions(conv.state.active_branch()) == []
+
+
+def test_navigate_to_none_empties_single_root_tree():
+    """navigate_to(None) must empty even a one-event tree, and the next event must
+    be a fresh root — not chained onto the abandoned one. (The legacy fallback in
+    _resolve_active_leaf used to resurrect a lone root.)
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+        assert conv.state.leaf_event_id is None
+        assert conv.state.head_is_empty is True
+        assert _view_ids(conv) == []
+
+        fresh = _emit(conv, _msg("fresh"))
+        assert _by_id(conv.state.events, fresh.id).parent_id == ROOT_PARENT_ID
+        assert _view_ids(conv) == [fresh.id]
+
+
+def test_empty_head_survives_reload():
+    """A deliberate empty HEAD persists across save/reload (head_is_empty), instead
+    of being resurrected by the legacy fallback on cold load.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp, delete_on_close=False)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+        cid = conv.id
+        conv.close()
+
+        resumed = _conversation(tmp, conversation_id=cid, delete_on_close=False)
+        assert resumed.state.head_is_empty is True
+        assert resumed.state.leaf_event_id is None
+        assert _view_ids(resumed) == []
+
+
+def test_generate_title_reads_active_branch(monkeypatch):
+    """generate_title() extracts the first user message from the active branch, not
+    an abandoned branch's message.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("old root"))
+        _emit(conv, _msg("reply", "agent"))  # 2-event prefix so navigate empties
+        conv.navigate_to(None)
+        _emit(conv, _msg("fresh root"))
+
+        captured: dict = {}
+
+        def _fake_generate(events, llm, max_length=50):
+            captured["events"] = list(events)
+            return "title"
+
+        monkeypatch.setattr(
+            "openhands.sdk.conversation.impl.local_conversation."
+            "generate_conversation_title",
+            _fake_generate,
+        )
+        conv.generate_title()
+
+        texts = [
+            c.text
+            for e in captured["events"]
+            if isinstance(e, MessageEvent)
+            for c in e.llm_message.content
+            if isinstance(c, TextContent)
+        ]
+        assert texts == ["fresh root"]
+
+
+def test_fork_preserves_empty_head():
+    """A full fork of an empty-HEAD conversation stays empty (head_is_empty is
+    copied), instead of the legacy fallback resurrecting the last event.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conv = _conversation(tmp)
+        _emit(conv, _msg("only"))
+        conv.navigate_to(None)
+
+        fork = conv.fork()
+        assert fork.state.head_is_empty is True
+        assert _view_ids(fork) == []
