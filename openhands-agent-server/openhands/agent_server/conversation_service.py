@@ -1,10 +1,12 @@
 import asyncio
 import importlib
 import logging
-from collections.abc import Awaitable, Callable
+from bisect import bisect_left, insort
+from collections.abc import Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
@@ -45,7 +47,10 @@ from openhands.sdk.conversation.title_utils import (
     generate_title_from_message,
 )
 from openhands.sdk.event import MessageEvent
-from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.conversation_state import (
+    FULL_STATE_KEY,
+    ConversationStateUpdateEvent,
+)
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.tool.client_tool import register_client_tools
@@ -392,6 +397,43 @@ def _compose_conversation_info(
     )
 
 
+ConversationMetadataEntry = tuple[datetime, str, UUID]
+
+
+@dataclass(frozen=True)
+class _ConversationMetadata:
+    conversation_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    execution_status: ConversationExecutionStatus
+
+    @property
+    def created_entry(self) -> ConversationMetadataEntry:
+        return (self.created_at, self.conversation_id.hex, self.conversation_id)
+
+    @property
+    def updated_entry(self) -> ConversationMetadataEntry:
+        return (self.updated_at, self.conversation_id.hex, self.conversation_id)
+
+
+def _execution_status_from_update_event(
+    event: ConversationStateUpdateEvent,
+) -> ConversationExecutionStatus | None:
+    value: Any
+    if event.key == "execution_status":
+        value = event.value
+    elif event.key == FULL_STATE_KEY and isinstance(event.value, dict):
+        value = event.value.get("execution_status")
+    else:
+        return None
+    if isinstance(value, ConversationExecutionStatus):
+        return value
+    if isinstance(value, str):
+        with suppress(ValueError):
+            return ConversationExecutionStatus(value)
+    return None
+
+
 def _compose_webhook_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
@@ -468,6 +510,18 @@ class ConversationService:
     )
     _lease_renewal_task: asyncio.Task | None = field(default=None, init=False)
     _run_executor: ThreadPoolExecutor | None = field(default=None, init=False)
+    _conversation_metadata: dict[UUID, _ConversationMetadata] = field(
+        default_factory=dict, init=False
+    )
+    _created_at_index: list[ConversationMetadataEntry] = field(
+        default_factory=list, init=False
+    )
+    _updated_at_index: list[ConversationMetadataEntry] = field(
+        default_factory=list, init=False
+    )
+    _conversation_counts_by_status: dict[ConversationExecutionStatus, int] = field(
+        default_factory=dict, init=False
+    )
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -476,6 +530,9 @@ class ConversationService:
         if event_service is None:
             return None
         state = await event_service.get_state()
+        self._set_conversation_metadata_from_stored(
+            event_service.stored, state.execution_status
+        )
         return _compose_conversation_info(event_service.stored, state)
 
     async def get_acp_conversation(
@@ -487,7 +544,136 @@ class ConversationService:
         if event_service is None:
             return None
         state = await event_service.get_state()
+        self._set_conversation_metadata_from_stored(
+            event_service.stored, state.execution_status
+        )
         return _compose_conversation_info(event_service.stored, state)
+
+    def _clear_conversation_metadata(self) -> None:
+        self._conversation_metadata.clear()
+        self._created_at_index.clear()
+        self._updated_at_index.clear()
+        self._conversation_counts_by_status.clear()
+
+    def _increment_conversation_count(
+        self, execution_status: ConversationExecutionStatus, delta: int
+    ) -> None:
+        count = self._conversation_counts_by_status.get(execution_status, 0) + delta
+        if count <= 0:
+            self._conversation_counts_by_status.pop(execution_status, None)
+        else:
+            self._conversation_counts_by_status[execution_status] = count
+
+    def _remove_index_entry(
+        self, index: list[ConversationMetadataEntry], entry: ConversationMetadataEntry
+    ) -> None:
+        position = bisect_left(index, entry)
+        if position < len(index) and index[position] == entry:
+            index.pop(position)
+
+    def _remove_conversation_metadata(self, conversation_id: UUID) -> None:
+        metadata = self._conversation_metadata.pop(conversation_id, None)
+        if metadata is None:
+            return
+        self._remove_index_entry(self._created_at_index, metadata.created_entry)
+        self._remove_index_entry(self._updated_at_index, metadata.updated_entry)
+        self._increment_conversation_count(metadata.execution_status, -1)
+
+    def _set_conversation_metadata(self, metadata: _ConversationMetadata) -> None:
+        self._remove_conversation_metadata(metadata.conversation_id)
+        self._conversation_metadata[metadata.conversation_id] = metadata
+        insort(self._created_at_index, metadata.created_entry)
+        insort(self._updated_at_index, metadata.updated_entry)
+        self._increment_conversation_count(metadata.execution_status, 1)
+
+    def _set_conversation_metadata_from_stored(
+        self,
+        stored: StoredConversation,
+        execution_status: ConversationExecutionStatus | None = None,
+    ) -> None:
+        existing = self._conversation_metadata.get(stored.id)
+        if execution_status is None:
+            if existing is None:
+                return
+            execution_status = existing.execution_status
+        self._set_conversation_metadata(
+            _ConversationMetadata(
+                conversation_id=stored.id,
+                created_at=stored.created_at,
+                updated_at=stored.updated_at,
+                execution_status=execution_status,
+            )
+        )
+
+    def _update_conversation_status(
+        self, conversation_id: UUID, execution_status: ConversationExecutionStatus
+    ) -> None:
+        metadata = self._conversation_metadata.get(conversation_id)
+        if metadata is None or metadata.execution_status == execution_status:
+            return
+        self._increment_conversation_count(metadata.execution_status, -1)
+        self._conversation_metadata[conversation_id] = replace(
+            metadata, execution_status=execution_status
+        )
+        self._increment_conversation_count(execution_status, 1)
+
+    async def _reconcile_missing_conversation_metadata(self) -> None:
+        event_services = self._event_services
+        if event_services is None:
+            raise ValueError("inactive_service")
+        if len(self._conversation_metadata) == len(event_services):
+            return
+        event_service_ids = set(event_services)
+        for conversation_id in set(self._conversation_metadata) - event_service_ids:
+            self._remove_conversation_metadata(conversation_id)
+        for conversation_id in event_service_ids - set(self._conversation_metadata):
+            event_service = event_services[conversation_id]
+            state = await event_service.get_state()
+            self._set_conversation_metadata_from_stored(
+                event_service.stored, state.execution_status
+            )
+
+    def _ordered_conversation_entries(
+        self, sort_order: ConversationSortOrder
+    ) -> tuple[list[ConversationMetadataEntry], bool]:
+        if sort_order in (
+            ConversationSortOrder.UPDATED_AT,
+            ConversationSortOrder.UPDATED_AT_DESC,
+        ):
+            index = self._updated_at_index
+        else:
+            index = self._created_at_index
+        return index, sort_order in (
+            ConversationSortOrder.CREATED_AT_DESC,
+            ConversationSortOrder.UPDATED_AT_DESC,
+        )
+
+    def _iter_conversation_ids(
+        self, sort_order: ConversationSortOrder, page_id: str | None
+    ) -> Iterator[UUID]:
+        index, reverse = self._ordered_conversation_entries(sort_order)
+        start = 0
+        page_uuid: UUID | None = None
+        if page_id:
+            with suppress(ValueError):
+                page_uuid = UUID(hex=page_id)
+        if page_uuid is not None:
+            metadata = self._conversation_metadata.get(page_uuid)
+            if metadata is not None:
+                entry = (
+                    metadata.updated_entry
+                    if index is self._updated_at_index
+                    else metadata.created_entry
+                )
+                position = bisect_left(index, entry)
+                if position < len(index) and index[position] == entry:
+                    start = len(index) - 1 - position if reverse else position
+        if reverse:
+            for position in range(len(index) - 1 - start, -1, -1):
+                yield index[position][2]
+        else:
+            for position in range(start, len(index)):
+                yield index[position][2]
 
     async def search_conversations(
         self,
@@ -534,51 +720,36 @@ class ConversationService:
     ) -> tuple[list[ConversationInfo], str | None]:
         if self._event_services is None:
             raise ValueError("inactive_service")
+        await self._reconcile_missing_conversation_metadata()
 
-        # Collect all conversations with their info
-        all_conversations = []
-        for id, event_service in self._event_services.items():
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
-            # Apply status filter if provided
+        items: list[ConversationInfo] = []
+        next_page_id = None
+        for conversation_id in self._iter_conversation_ids(sort_order, page_id):
+            metadata = self._conversation_metadata.get(conversation_id)
+            if metadata is None:
+                continue
             if (
                 execution_status is not None
-                and conversation_info.execution_status != execution_status
+                and metadata.execution_status != execution_status
             ):
                 continue
-
-            all_conversations.append((id, conversation_info))
-
-        # Sort conversations based on sort_order
-        if sort_order == ConversationSortOrder.CREATED_AT:
-            all_conversations.sort(key=lambda x: x[1].created_at)
-        elif sort_order == ConversationSortOrder.CREATED_AT_DESC:
-            all_conversations.sort(key=lambda x: x[1].created_at, reverse=True)
-        elif sort_order == ConversationSortOrder.UPDATED_AT:
-            all_conversations.sort(key=lambda x: x[1].updated_at)
-        elif sort_order == ConversationSortOrder.UPDATED_AT_DESC:
-            all_conversations.sort(key=lambda x: x[1].updated_at, reverse=True)
-
-        # Handle pagination
-        items = []
-        start_index = 0
-
-        # Find the starting point if page_id is provided
-        if page_id:
-            for i, (id, _) in enumerate(all_conversations):
-                if id.hex == page_id:
-                    start_index = i
-                    break
-
-        # Collect items for this page
-        next_page_id = None
-        for i in range(start_index, len(all_conversations)):
             if len(items) >= limit:
-                # We have more items, set next_page_id
-                if i < len(all_conversations):
-                    next_page_id = all_conversations[i][0].hex
+                next_page_id = conversation_id.hex
                 break
-            items.append(all_conversations[i][1])
+            event_service = self._event_services.get(conversation_id)
+            if event_service is None:
+                self._remove_conversation_metadata(conversation_id)
+                continue
+            state = await event_service.get_state()
+            self._set_conversation_metadata_from_stored(
+                event_service.stored, state.execution_status
+            )
+            if (
+                execution_status is not None
+                and state.execution_status != execution_status
+            ):
+                continue
+            items.append(_compose_conversation_info(event_service.stored, state))
 
         return items, next_page_id
 
@@ -595,21 +766,10 @@ class ConversationService:
         """Count conversations matching the given filters."""
         if self._event_services is None:
             raise ValueError("inactive_service")
-
-        count = 0
-        for event_service in self._event_services.values():
-            state = await event_service.get_state()
-
-            # Apply status filter if provided
-            if (
-                execution_status is not None
-                and state.execution_status != execution_status
-            ):
-                continue
-
-            count += 1
-
-        return count
+        await self._reconcile_missing_conversation_metadata()
+        if execution_status is None:
+            return len(self._conversation_metadata)
+        return self._conversation_counts_by_status.get(execution_status, 0)
 
     async def batch_get_conversations(
         self, conversation_ids: list[UUID]
@@ -876,6 +1036,7 @@ class ConversationService:
             raise ValueError("inactive_service")
         event_service = self._event_services.pop(conversation_id, None)
         if event_service:
+            self._remove_conversation_metadata(conversation_id)
             # Notify conversation webhooks about the stopped conversation before closing
             try:
                 state = await event_service.get_state()
@@ -942,6 +1103,9 @@ class ConversationService:
                 None, _update_state_tags_sync, state, request.tags
             )
         event_service.stored.updated_at = utc_now()
+        self._set_conversation_metadata_from_stored(
+            event_service.stored, state.execution_status
+        )
         # Save the updated metadata to disk
         await event_service.save_meta()
 
@@ -1096,6 +1260,7 @@ class ConversationService:
             thread_name_prefix="conversation-run",
         )
         self._event_services = {}
+        self._clear_conversation_metadata()
         for conversation_dir in self.conversations_dir.iterdir():
             stored: StoredConversation | None = None
             try:
@@ -1207,6 +1372,7 @@ class ConversationService:
         if event_services is None:
             return
         self._event_services = None
+        self._clear_conversation_metadata()
         # This stops conversations and saves meta
         await asyncio.gather(
             *[
@@ -1259,11 +1425,17 @@ class ConversationService:
             # its initial-state push synchronously and any failure surfaces to
             # the caller instead of being silently logged on a later publish.
             await event_service.subscribe_to_events(
-                _EventSubscriber(service=event_service)
+                _EventSubscriber(
+                    service=event_service,
+                    conversation_service=self,
+                )
             )
             if stored.autotitle and stored.title is None:
                 await event_service.subscribe_to_events(
-                    AutoTitleSubscriber(service=event_service)
+                    AutoTitleSubscriber(
+                        service=event_service,
+                        conversation_service=self,
+                    )
                 )
             await asyncio.gather(
                 *[
@@ -1287,27 +1459,35 @@ class ConversationService:
             raise
 
         event_services[stored.id] = event_service
+        state = await event_service.get_state()
+        self._set_conversation_metadata_from_stored(stored, state.execution_status)
         return event_service
 
 
 @dataclass
 class _EventSubscriber(Subscriber):
     service: EventService
+    conversation_service: ConversationService
 
     async def __call__(self, _event: Event):
-        # Skip updating timestamp for ConversationStateUpdateEvent, which is
-        # published during startup/state changes and doesn't represent actual
-        # conversation activity. This prevents updated_at from being reset
-        # on every server restart.
         if isinstance(_event, ConversationStateUpdateEvent):
+            execution_status = _execution_status_from_update_event(_event)
+            if execution_status is not None:
+                self.conversation_service._update_conversation_status(
+                    self.service.stored.id, execution_status
+                )
             return
         self.service.stored.updated_at = utc_now()
+        self.conversation_service._set_conversation_metadata_from_stored(
+            self.service.stored
+        )
         update_last_execution_time()
 
 
 @dataclass
 class AutoTitleSubscriber(Subscriber):
     service: EventService
+    conversation_service: ConversationService | None = None
 
     async def __call__(self, event: Event) -> None:
         # Only act on incoming user messages
@@ -1345,6 +1525,10 @@ class AutoTitleSubscriber(Subscriber):
                 if title and self.service.stored.title is None:
                     self.service.stored.title = title
                     self.service.stored.updated_at = utc_now()
+                    if self.conversation_service is not None:
+                        self.conversation_service._set_conversation_metadata_from_stored(
+                            self.service.stored
+                        )
                     await self.service.save_meta()
             except Exception:
                 logger.warning(
