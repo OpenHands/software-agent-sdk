@@ -139,6 +139,12 @@ async def test_expired_lease_takeover_fences_stale_writer_with_disk_events(tmp_p
             conversations_dir=conversations_dir
         ) as secondary:
             assert secondary._event_services is not None
+            assert conversation_info.id not in secondary._event_services
+
+            secondary_event_service = await secondary.get_event_service(
+                conversation_info.id
+            )
+            assert secondary_event_service is not None
             assert conversation_info.id in secondary._event_services
 
             disk_events = _load_disk_events(conversation_dir)

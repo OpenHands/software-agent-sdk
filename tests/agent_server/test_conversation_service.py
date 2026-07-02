@@ -356,7 +356,10 @@ async def test_stale_owner_cannot_append_after_lease_takeover(tmp_path):
             conversations_dir=conversations_dir,
         ) as secondary:
             assert secondary._event_services is not None
-            secondary_event_service = secondary._event_services[conversation_info.id]
+            secondary_event_service = await secondary.get_event_service(
+                conversation_info.id
+            )
+            assert secondary_event_service is not None
             secondary_state = await secondary_event_service.get_state()
 
             assert any(
@@ -529,13 +532,61 @@ async def test_restart_resumes_conversations_after_non_graceful_shutdown(tmp_pat
     }
     lease_path.write_text(json.dumps(forged_payload))
 
+    with patch(
+        "openhands.agent_server.conversation_lease._is_pid_alive",
+        return_value=False,
+    ):
+        async with ConversationService(
+            conversations_dir=conversations_dir
+        ) as restarted:
+            assert restarted._event_services is not None
+            assert restarted._event_services == {}
+
+            restarted_event_service = await restarted.get_event_service(conversation_id)
+            assert restarted_event_service is not None, (
+                "Restart failed to pick up an existing conversation whose lease "
+                "was left orphaned by a non-graceful shutdown."
+            )
+
+
+@pytest.mark.asyncio
+async def test_search_conversations_reads_persisted_state_without_startup_hydration(
+    tmp_path,
+):
+    conversations_dir = tmp_path / "conversations"
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir()
+
+    request = StartConversationRequest(
+        agent=Agent(llm=LLM(model="gpt-4o", usage_id="test-llm"), tools=[]),
+        workspace=LocalWorkspace(working_dir=str(workspace_dir)),
+        confirmation_policy=NeverConfirm(),
+    )
+
+    async with ConversationService(conversations_dir=conversations_dir) as primary:
+        conversation_info, _ = await primary.start_conversation(request)
+
     async with ConversationService(conversations_dir=conversations_dir) as restarted:
-        assert restarted._event_services is not None
-        # The conversation must be present in the restarted service.
-        assert conversation_id in restarted._event_services, (
-            "Restart failed to pick up an existing conversation whose lease "
-            "was left orphaned by a non-graceful shutdown."
-        )
+        assert restarted._event_services == {}
+
+        with (
+            patch.object(
+                restarted,
+                "_start_event_service",
+                side_effect=AssertionError("search should not hydrate event services"),
+            ),
+            patch.object(
+                restarted,
+                "_prepare_persisted_conversation_runtime",
+                side_effect=AssertionError("search should not prepare runtime"),
+            ),
+        ):
+            result = await restarted.search_conversations()
+            count = await restarted.count_conversations()
+
+        assert [item.id for item in result.items] == [conversation_info.id]
+        assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
+        assert count == 1
 
 
 class TestConversationServiceSearchConversations:
