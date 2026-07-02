@@ -48,7 +48,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
-from openhands.sdk.io import LocalFileStore
+from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent, content_to_str
 from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm import LLMCallContext
@@ -192,11 +192,12 @@ class LocalConversation(BaseConversation):
         client_tools: list[ClientToolSpec] | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
-        # Appended at the end (not grouped with max_iteration_per_run) to avoid
-        # shifting the position of any existing positional argument.
+        # Appended at the end to avoid shifting the position of any existing
+        # positional argument.
         max_budget_per_run: float | None = None,
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
+        file_store: FileStore | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -212,7 +213,8 @@ class LocalConversation(BaseConversation):
                 semantics: skills override by name (last wins), MCP config
                 override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
-                Can be a string path or Path object.
+                Can be a string path or Path object. When file_store is provided,
+                this value is still used to derive environment observation paths.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -251,6 +253,9 @@ class LocalConversation(BaseConversation):
             prompt_cache_key: Override for the prompt-cache shard key. Defaults
                 to the conversation's own ID. Sub-conversations set this to
                 the parent's ID to share the same cache shard.
+            file_store: Optional FileStore to use for conversation state and EventLog
+                persistence. If provided, this takes precedence over persistence_dir
+                for state and EventLog storage.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -314,6 +319,7 @@ class LocalConversation(BaseConversation):
             persistence_dir=self.get_persistence_dir(persistence_dir, desired_id)
             if persistence_dir
             else None,
+            file_store=file_store,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
             cipher=cipher,
@@ -2435,9 +2441,12 @@ class LocalConversation(BaseConversation):
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
+            # stream=False: the reply is consumed whole with no on_token
+            # callback, which a streaming LLM requires.
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
+                    "stream": False,
                 },
                 deep=True,
             )

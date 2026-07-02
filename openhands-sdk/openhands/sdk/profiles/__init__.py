@@ -8,11 +8,15 @@ from openhands.sdk.profiles.agent_profile import (
     LaunchedAgentProfile,
     OpenHandsAgentProfile,
     ProfileVerificationSettings,
+    build_profile_verification,
+    safe_validation_error_detail,
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import (
     AgentProfileStore,
+    AgentProfileStoreProtocol,
     ProfileLimitExceeded,
+    save_profile_preserving_identity,
 )
 from openhands.sdk.profiles.profile_refs import (
     ProfileReferenced,
@@ -24,9 +28,14 @@ from openhands.sdk.profiles.profile_refs import (
 from openhands.sdk.profiles.resolver import (
     AgentProfileDiagnostics,
     DanglingMcpServerRef,
+    DanglingSkillRef,
     ProfileNotFound,
     resolve_agent_profile,
     resolve_agent_profile_dry_run,
+)
+from openhands.sdk.profiles.seed import (
+    SEED_PROFILE_NAME,
+    build_seed_profile,
 )
 
 
@@ -37,18 +46,25 @@ __all__ = [
     "AgentProfileBase",
     "AgentProfileDiagnostics",
     "AgentProfileStore",
+    "AgentProfileStoreProtocol",
     "DanglingMcpServerRef",
+    "DanglingSkillRef",
     "LaunchedAgentProfile",
     "OpenHandsAgentProfile",
     "ProfileLimitExceeded",
     "ProfileNotFound",
     "ProfileReferenced",
     "ProfileVerificationSettings",
+    "SEED_PROFILE_NAME",
+    "build_profile_verification",
+    "build_seed_profile",
     "cascade_rename",
     "delete_llm_profile",
     "find_referrers",
     "rename_llm_profile",
     "resolve_agent_profile",
     "resolve_agent_profile_dry_run",
+    "safe_validation_error_detail",
+    "save_profile_preserving_identity",
     "validate_agent_profile",
 ]

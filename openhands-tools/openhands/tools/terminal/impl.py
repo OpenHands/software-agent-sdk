@@ -1,6 +1,6 @@
-import re
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import TYPE_CHECKING, Literal
 
@@ -19,6 +19,10 @@ from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
     looks_like_python_literal_argument,
+)
+from openhands.tools.terminal.env import (
+    ENV_VAR_NAME_RE,
+    normalize_terminal_env,
 )
 from openhands.tools.terminal.terminal.factory import (
     _is_tmux_available,
@@ -55,10 +59,6 @@ _TMUX_RECOVERABLE_ERROR_MARKERS = (
 
 logger = get_logger(__name__)
 
-# Environment variable names must be alphanumeric + underscores, starting with
-# a letter or underscore. This guards against shell injection via key names.
-_ENV_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     shell_path: str | None
@@ -70,6 +70,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess", "powershell"] | None = None,
         shell_path: str | None = None,
+        env: Mapping[str, str] | None = None,
         full_output_save_dir: str | None = None,
         max_panes: int = DEFAULT_MAX_PANES,
     ):
@@ -85,6 +86,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             shell_path: Path to the shell binary. On Unix this applies to the
                        subprocess backend; on Windows it can point to a
                        PowerShell executable.
+            env: Extra environment variables to add to the terminal session.
             full_output_save_dir: Path to directory to save full output
                                   logs and files, used when truncation is needed.
             max_panes: Maximum number of concurrent panes in pool mode.
@@ -94,6 +96,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._username = username
         self._no_change_timeout_seconds = no_change_timeout_seconds
         self._terminal_type = terminal_type
+        self._env = normalize_terminal_env(env)
         self._max_panes = max_panes
         self.full_output_save_dir: str | None = full_output_save_dir
 
@@ -115,6 +118,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
                 shell_path=shell_path,
+                env=self._env,
             )
             self._session.initialize()
             logger.info(
@@ -134,6 +138,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         self._pool = TmuxPanePool(
             self._working_dir,
             self._username,
+            env=self._env,
             max_panes=self._max_panes,
         )
         self._pool.initialize()
@@ -288,7 +293,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     ) -> str:
         valid: dict[str, str] = {}
         for key, value in env_vars.items():
-            if _ENV_VAR_NAME_RE.match(key):
+            if ENV_VAR_NAME_RE.match(key):
                 valid[key] = value
             else:
                 logger.warning("Skipping secret with invalid env var name: %r", key)
@@ -400,6 +405,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             no_change_timeout_seconds=original_no_change_timeout,
             terminal_type=None,
             shell_path=self.shell_path,
+            env=self._env,
         )
         self._session.initialize()
 
