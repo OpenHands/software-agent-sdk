@@ -23,6 +23,73 @@ class MockMCPClient(MCPClient):
         self._tools = []
 
 
+def _nested_object_mcp_tool() -> mcp.types.Tool:
+    return mcp.types.Tool(
+        name="add_diagram_component",
+        description="Add a component to a diagram",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "definition": {
+                    "description": "Component model ID",
+                    "type": "string",
+                },
+                "position": {
+                    "description": "Component position",
+                    "type": "object",
+                    "properties": {
+                        "0": {"type": "number"},
+                        "1": {"type": "number"},
+                    },
+                    "required": ["0", "1"],
+                },
+            },
+            "required": ["definition", "position"],
+        },
+    )
+
+
+def test_mcp_tool_openai_schema_preserves_nested_object_properties():
+    mcp_tool = _nested_object_mcp_tool()
+    tool = MCPToolDefinition.create(mcp_tool, MockMCPClient())[0]
+
+    openai_tool = tool.to_openai_tool()
+    params = openai_tool["function"].get("parameters")
+    assert isinstance(params, dict)
+
+    properties = params["properties"]
+    assert isinstance(properties, dict)
+    position = properties["position"]
+    assert isinstance(position, dict)
+
+    assert position["properties"] == {
+        "0": {"type": "number"},
+        "1": {"type": "number"},
+    }
+    assert position["required"] == ["0", "1"]
+
+
+def test_mcp_tool_responses_schema_preserves_nested_object_properties_with_risk():
+    mcp_tool = _nested_object_mcp_tool()
+    tool = MCPToolDefinition.create(mcp_tool, MockMCPClient())[0]
+
+    responses_tool = tool.to_responses_tool(add_security_risk_prediction=True)
+    params = responses_tool["parameters"]
+    assert isinstance(params, dict)
+
+    properties = params["properties"]
+    assert isinstance(properties, dict)
+    position = properties["position"]
+    assert isinstance(position, dict)
+
+    assert position["properties"] == {
+        "0": {"type": "number"},
+        "1": {"type": "number"},
+    }
+    assert position["required"] == ["0", "1"]
+    assert "security_risk" in properties
+
+
 class TestMCPToolObservation:
     """Test MCPToolObservation functionality."""
 
