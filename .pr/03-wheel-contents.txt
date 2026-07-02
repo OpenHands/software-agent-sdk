@@ -1,0 +1,31 @@
+Full contents of toolshield-0.1.3-py3-none-any.whl (downloaded from PyPI):
+(generated with: unzip -l toolshield-0.1.3-py3-none-any.whl)
+
+Archive:  /tmp/ts-reproduce/_dist/toolshield-0.1.3-py3-none-any.whl
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+      962  2020-02-02 00:00   toolshield/__init__.py
+     1000  2020-02-02 00:00   toolshield/_paths.py
+    27939  2020-02-02 00:00   toolshield/cli.py
+    23357  2020-02-02 00:00   toolshield/exp_generate.py
+     5691  2020-02-02 00:00   toolshield/experience_store.py
+     6848  2020-02-02 00:00   toolshield/inspector.py
+    17827  2020-02-02 00:00   toolshield/iterative_exp_runner.py
+     7264  2020-02-02 00:00   toolshield/mcp_scan.py
+     8832  2020-02-02 00:00   toolshield/post_process_prompts.py
+    47703  2020-02-02 00:00   toolshield/prompts.py
+    50381  2020-02-02 00:00   toolshield/tree_generation.py
+     9040  2020-02-02 00:00   toolshield/data/seed.sql
+     4144  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/filesystem-mcp.json
+    11686  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/gmail-mcp.json
+     3856  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/notion-mcp.json
+     8482  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/playwright-mcp.json
+     2635  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/postgres-mcp.json
+    10326  2020-02-02 00:00   toolshield/experiences/claude-sonnet-4.5/terminal-mcp.json
+    12048  2020-02-02 00:00   toolshield-0.1.3.dist-info/METADATA
+       87  2020-02-02 00:00   toolshield-0.1.3.dist-info/WHEEL
+       51  2020-02-02 00:00   toolshield-0.1.3.dist-info/entry_points.txt
+     1066  2020-02-02 00:00   toolshield-0.1.3.dist-info/licenses/LICENSE
+     2095  2020-02-02 00:00   toolshield-0.1.3.dist-info/RECORD
+---------                     -------
+   263320                     23 files
