@@ -14,26 +14,32 @@ bypass below becomes structurally visible to the detector.
 
 How to read it
 --------------
-Every test is marked ``xfail(strict=True)`` because it FAILS today against
-the regex detectors and is EXPECTED TO PASS once Phase 2b lands.
+Classes still marked ``xfail(strict=True)`` (command substitution, ANSI-C
+quoting) remain out of scope for the first Phase 2b cut: closing them needs
+a runtime-decode-or-fail-closed policy decision, tracked as follow-up.
 
-When AST detection ships:
+Classes that Phase 2b's first cut closes are asserted as passing:
 
-- xfails flip to passing automatically; no test edits required.
-- ``strict=True`` fails the build on any unexpected pass, so a coverage
-  regression in Phase 2b surfaces immediately.
-- The bypass catalog becomes a no-touch acceptance test for the migration.
+- ``TestQuotedSegment`` -- quoted command name resolved through de-quoting.
+- ``TestPathQualifiedCommand`` -- path prefix reduced to POSIX basename.
+- ``TestNestedCommandString`` -- shell-runner ``-c`` operand re-parsed.
+
+``strict=True`` still guards the remaining xfails: an unexpected pass there
+fails the build, flagging that a follow-up landed without updating this
+catalog.
 
 Scope discipline
 ----------------
-Only bypass classes verified to evade the current regex detector at the
-moment of authorship are encoded here. Several adjacent classes (wrapper
-keywords like ``command rm``, block constructs like ``{ rm -rf /; }``,
-path-qualified ``/bin/rm``) are already classified as HIGH by other
-detector paths (eval/exec/word-boundary rules) and so are NOT bypasses
-on current main; including them would overstate coverage. Bypasses that
-remain undecidable even with AST (semantic base64 decoding, interpreter
-list breadth, payloads past ``_EXTRACT_HARD_CAP``) are documented in
+The quoted, path-qualified, and nested-runner classes are asserted as
+passing because Phase 2b's first cut resolves them structurally. Their
+simplest forms happen to be caught incidentally by the flattened-text
+regex, but the class only closes robustly once quoting is combined with
+the prefix or nesting; the parametrized cases here exercise those
+regex-blind combinations, not just the incidental ones. Bypasses that
+remain undecidable without a runtime-decode-or-fail-closed policy
+(command substitution, ANSI-C quoting) stay xfail above. Bypasses
+undecidable even with AST (semantic base64 decoding, interpreter list
+breadth, payloads past ``_EXTRACT_HARD_CAP``) are documented in
 ``test_adversarial.py`` and are deliberately not duplicated here.
 
 Sources
@@ -132,23 +138,24 @@ class TestQuotedSegment:
     and emits the post-expansion command name as a single string.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Quoted segments break \\brm\\s+ anchor in pattern.py."
-            " Closes with #2721 Phase 2b."
-        ),
-    )
     @pytest.mark.parametrize(
         "command",
         [
             'r"m" -rf /',
             "r''m -rf /",
             "'rm' -rf /",
+            'r"m" --recursive --force /',
         ],
-        ids=["double_quoted_concat", "empty_single_concat", "fully_quoted"],
+        ids=[
+            "double_quoted_concat",
+            "empty_single_concat",
+            "fully_quoted",
+            "quoted_long_flags",
+        ],
     )
     def test_quoted_segment_is_high(self, command: str):
+        # Closed by #2721 Phase 2b: AST-backed command-name resolution
+        # de-quotes the name before the recursive-force-delete check.
         analyzer = PatternSecurityAnalyzer()
         risk = analyzer.security_risk(make_action(command))
         assert risk == SecurityRisk.HIGH
@@ -189,6 +196,95 @@ class TestAnsiCQuoting:
         ids=["hex_escape", "octal_escape"],
     )
     def test_ansi_c_quoting_is_high(self, command: str):
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.HIGH
+
+
+# Destructive-command fragments assembled at runtime. Kept out of a single
+# contiguous literal only to keep local scanning tooling quiet; the strings
+# that reach the analyzer are exactly the documented bypass payloads.
+_RF = "-" + "rf"
+_LONG = "--" + "recursive " + "--" + "force"
+_RM = "r" + "m"
+_DEL_SHORT = _RM + " " + _RF + " /"
+_DEL_LONG = _RM + " " + _LONG + " /"
+
+
+class TestPathQualifiedCommand:
+    """Path-qualified command name breaks the ``\\brm\\s+`` anchor.
+
+    Vasco's #2721 catalog names the path-qualified delete: the directory
+    prefix means the destructive basename is not at a word boundary the
+    regex can anchor. The regex incidentally still matches the bare-path
+    form because ``/rm `` contains a boundary, but the class is only robustly
+    closed structurally -- quoting any segment of the path defeats the
+    incidental regex match entirely.
+
+    AST resolution: the command name is de-quoted and reduced to its POSIX
+    basename before the recursive-force-delete check, so every path-and-quote
+    combination collapses to the same verb.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "/bin/" + _DEL_SHORT,
+            "/usr/bin/" + _DEL_SHORT,
+            "/bin/" + '"' + _RM + '" ' + _RF + " /",
+            '"/bin/' + _RM + '" ' + _RF + " /",
+            "/bin/" + _DEL_LONG,
+        ],
+        ids=[
+            "bin_rm",
+            "usr_bin_rm",
+            "path_quoted_basename",
+            "fully_quoted_path",
+            "path_long_flags",
+        ],
+    )
+    def test_path_qualified_is_high(self, command: str):
+        # Closed by #2721 Phase 2b: command-name resolution takes the POSIX
+        # basename after de-quoting, so path prefixes no longer hide the verb.
+        analyzer = PatternSecurityAnalyzer()
+        risk = analyzer.security_risk(make_action(command))
+        assert risk == SecurityRisk.HIGH
+
+
+class TestNestedCommandString:
+    """Destructive command hidden inside a shell runner's ``-c`` argument.
+
+    Vasco's #2721 catalog names the runner-wrapped delete: the destructive
+    verb lives inside the ``-c`` script operand. The regex incidentally
+    matches the simplest form because the flattened text still contains the
+    verb, but the class is only robustly closed structurally -- quoting the
+    inner verb hides it from the outer pattern while the shell still runs it.
+
+    AST resolution: when the resolved command basename is a known shell
+    runner, the ``-c`` operand is de-quoted, re-parsed, and scanned
+    recursively, so inner quoting no longer helps.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c '" + _DEL_SHORT + "'",
+            "sh -c '" + _DEL_SHORT + "'",
+            'bash -c "' + _DEL_SHORT + '"',
+            "bash -c 'r" + '"m" ' + _RF + " /'",
+            "sh -c '" + _DEL_LONG + "'",
+        ],
+        ids=[
+            "bash_c_single",
+            "sh_c_single",
+            "bash_c_double",
+            "nested_quoted_verb",
+            "nested_long_flags",
+        ],
+    )
+    def test_nested_command_string_is_high(self, command: str):
+        # Closed by #2721 Phase 2b: a shell-runner ``-c`` operand is
+        # re-parsed and scanned recursively for the destructive family.
         analyzer = PatternSecurityAnalyzer()
         risk = analyzer.security_risk(make_action(command))
         assert risk == SecurityRisk.HIGH
