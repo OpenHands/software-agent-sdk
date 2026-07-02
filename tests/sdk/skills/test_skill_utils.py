@@ -1,5 +1,6 @@
 """Tests for the skill system."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -13,10 +14,12 @@ from openhands.sdk.context import (
     load_skills_from_dir,
 )
 from openhands.sdk.skills.utils import (
+    find_plugin_manifest,
     find_regular_md_files,
     find_skill_md,
     find_skill_md_directories,
     find_third_party_files,
+    warn_on_plugin_dirs,
 )
 from openhands.sdk.utils.path import to_posix_path
 from tests.platform_utils import require_case_sensitive_fs, symlink_or_skip
@@ -838,3 +841,73 @@ def test_find_third_party_files_collision_winner_deterministic(tmp_path, monkeyp
     monkeypatch.setattr(Path, "iterdir", lambda self: iter(entries))
     files = find_third_party_files(tmp_path, {"agents.md": "agents"})
     assert [f.name for f in files] == ["AGENTS.md"]
+
+
+def _make_plugin_dir(parent: Path, name: str, manifest_dir: str = ".claude-plugin"):
+    """Create a plugin folder containing a manifest but no SKILL.md."""
+    plugin_dir = parent / name
+    (plugin_dir / manifest_dir).mkdir(parents=True)
+    (plugin_dir / manifest_dir / "plugin.json").write_text(
+        json.dumps({"name": name, "version": "1.0.0"})
+    )
+    return plugin_dir
+
+
+@pytest.mark.parametrize("manifest_dir", [".claude-plugin", ".plugin"])
+def test_find_plugin_manifest_detects_both_layouts(tmp_path, manifest_dir):
+    plugin_dir = _make_plugin_dir(tmp_path, "my-plugin", manifest_dir)
+    manifest = find_plugin_manifest(plugin_dir)
+    assert manifest == plugin_dir / manifest_dir / "plugin.json"
+
+
+def test_find_plugin_manifest_returns_none_without_manifest(tmp_path):
+    (tmp_path / "plain").mkdir()
+    assert find_plugin_manifest(tmp_path / "plain") is None
+    assert find_plugin_manifest(tmp_path / "does-not-exist") is None
+
+
+def test_warn_on_plugin_dirs_flags_manifest_only_folder(tmp_path, caplog):
+    plugin_dir = _make_plugin_dir(tmp_path, "my-plugin")
+
+    with caplog.at_level("WARNING"):
+        flagged = warn_on_plugin_dirs(tmp_path, set())
+
+    assert flagged == [plugin_dir]
+    assert "do not auto-load plugins" in caplog.text
+    assert "PluginSource" in caplog.text
+
+
+def test_warn_on_plugin_dirs_skips_loaded_skill_dirs(tmp_path, caplog):
+    """A plugin that also ships a top-level SKILL.md must not be flagged."""
+    plugin_dir = _make_plugin_dir(tmp_path, "skill-and-plugin")
+    (plugin_dir / "SKILL.md").write_text(CONTENT)
+
+    with caplog.at_level("WARNING"):
+        flagged = warn_on_plugin_dirs(tmp_path, {plugin_dir})
+
+    assert flagged == []
+    assert caplog.text == ""
+
+
+def test_warn_on_plugin_dirs_ignores_plain_folders(tmp_path):
+    (tmp_path / "not-a-plugin").mkdir()
+    assert warn_on_plugin_dirs(tmp_path, set()) == []
+
+
+def test_load_skills_from_dir_warns_on_plugin_folder(tmp_path, caplog):
+    """Integration: loading a skills dir warns about a dropped-in plugin."""
+    _make_plugin_dir(tmp_path, "my-plugin")
+    # A real skill alongside the plugin should still load normally.
+    real_skill = tmp_path / "real-skill"
+    real_skill.mkdir()
+    (real_skill / "SKILL.md").write_text(CONTENT)
+
+    with caplog.at_level("WARNING"):
+        repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(tmp_path)
+
+    # The plugin folder is ignored (not loaded as a skill)...
+    all_loaded = {**repo_skills, **knowledge_skills, **agent_skills}
+    assert "my-plugin" not in all_loaded
+    assert "real-skill" in all_loaded
+    # ...but the user gets a clear, actionable warning.
+    assert "do not auto-load plugins" in caplog.text
