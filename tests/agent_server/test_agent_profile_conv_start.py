@@ -375,7 +375,7 @@ class TestConversationServiceStartFromProfile:
                     metrics=None,
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
-                    parent_conversation_id=None,
+                    forked_from_conversation_id=None,
                     forked_from_event_id=None,
                 )
 

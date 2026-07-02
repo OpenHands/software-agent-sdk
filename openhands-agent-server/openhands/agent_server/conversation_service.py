@@ -384,7 +384,7 @@ def _compose_conversation_info(
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
-        parent_conversation_id=stored.parent_conversation_id,
+        forked_from_conversation_id=stored.forked_from_conversation_id,
         forked_from_event_id=stored.forked_from_event_id,
         current_model_id=current_model_id,
         available_models=available_models,
@@ -1080,7 +1080,7 @@ class ConversationService:
             "title": title,
             "created_at": utc_now(),
             "updated_at": utc_now(),
-            "parent_conversation_id": source_id,
+            "forked_from_conversation_id": source_id,
             "forked_from_event_id": from_event_id,
         }
         if reset_metrics:

@@ -2982,13 +2982,13 @@ class TestConversationTreeForkAndNavigate:
             )
 
             assert fork_info is not None
-            assert fork_info.parent_conversation_id == info.id
+            assert fork_info.forked_from_conversation_id == info.id
             assert fork_info.forked_from_event_id == branch_point.id
             assert fork_info.leaf_event_id == branch_point.id
-            # parent_conversation_id must JSON-serialize in the same (dashed)
+            # forked_from_conversation_id must JSON-serialize in the same (dashed)
             # shape as ``id`` so clients can correlate the two over the wire.
             dumped = fork_info.model_dump(mode="json")
-            assert dumped["parent_conversation_id"] == str(info.id)
+            assert dumped["forked_from_conversation_id"] == str(info.id)
 
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
@@ -3017,7 +3017,7 @@ class TestConversationTreeForkAndNavigate:
             fork_info = await svc.fork_conversation(info.id)
 
             assert fork_info is not None
-            assert fork_info.parent_conversation_id == info.id
+            assert fork_info.forked_from_conversation_id == info.id
             assert fork_info.forked_from_event_id is None
             fork_service = await svc.get_event_service(fork_info.id)
             assert fork_service is not None
@@ -3113,5 +3113,5 @@ class TestConversationTreeForkAndNavigate:
             assert reloaded_src is not None
             assert reloaded_src.leaf_event_id == target_leaf
             assert reloaded_fork is not None
-            assert reloaded_fork.parent_conversation_id == src_id
+            assert reloaded_fork.forked_from_conversation_id == src_id
             assert reloaded_fork.forked_from_event_id == branch_point

@@ -92,7 +92,7 @@ class StoredConversation(StartConversationRequest):
     metrics: MetricsSnapshot | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
-    parent_conversation_id: OpenHandsUUID | None = Field(
+    forked_from_conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
             "ID of the conversation this one was forked from. ``None`` for "
@@ -220,7 +220,7 @@ class _ConversationInfoBase(BaseModel):
     updated_at: datetime = Field(default_factory=utc_now)
     # Plain ``UUID`` (not ``OpenHandsUUID``) so it JSON-serializes dashed, exactly
     # like the ``id`` field above — clients must be able to correlate the two.
-    parent_conversation_id: UUID | None = Field(
+    forked_from_conversation_id: UUID | None = Field(
         default=None,
         description=(
             "ID of the conversation this one was forked from. ``None`` for "
