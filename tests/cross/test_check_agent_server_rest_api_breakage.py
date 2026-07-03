@@ -239,6 +239,56 @@ def test_rest_deprecation_regex_matches_deprecation_check_regex():
     assert _rest_route_deprecation_re.flags == _deprecation_check_re.flags
 
 
+def test_accepted_cloud_proxy_removal_detection_is_exact():
+    assert _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "post", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "get", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy/other", "method": "post", "deprecated": False}
+    )
+    assert not _prod._is_accepted_cloud_proxy_removal(
+        {"path": "/api/cloud-proxy", "method": "post", "deprecated": True}
+    )
+
+
+def test_accepted_cloud_proxy_path_removal_detection_is_exact():
+    assert _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "POST",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "GET",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy/other",
+            "operation": "POST",
+            "operationId": "cloud_proxy_api_cloud_proxy_post",
+        }
+    )
+    assert not _prod._is_accepted_cloud_proxy_path_removal(
+        {
+            "id": "api-path-removed-without-deprecation",
+            "path": "/api/cloud-proxy",
+            "operation": "POST",
+            "operationId": "other_operation",
+        }
+    )
+
+
 def test_parse_openapi_deprecation_description_extracts_versions_from_example():
     description = (
         "Nice description here with more context for API consumers.\n\n"
@@ -416,6 +466,80 @@ def test_validate_removed_schema_properties_requires_removal_target_to_be_reache
         "version(s): v1.20.0 (current version: v1.19.0). REST API property "
         "removals require 5 minor releases of deprecation runway."
     ]
+
+
+def test_main_allows_accepted_cloud_proxy_removal(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.28.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.28.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "removed-operation",
+                    "details": {
+                        "path": "/api/cloud-proxy",
+                        "method": "post",
+                        "deprecated": False,
+                    },
+                    "text": "removed POST /api/cloud-proxy",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Accepted removal of POST /api/cloud-proxy" in captured.out
+    assert "accepted POST /api/cloud-proxy removal" in captured.out
+
+
+def test_main_allows_accepted_cloud_proxy_path_removal(monkeypatch, capsys):
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.28.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.28.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "api-path-removed-without-deprecation",
+                    "text": "api path removed without deprecation",
+                    "operation": "POST",
+                    "operationId": "cloud_proxy_api_cloud_proxy_post",
+                    "path": "/api/cloud-proxy",
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Accepted removal of POST /api/cloud-proxy" in captured.out
+    assert "accepted POST /api/cloud-proxy removal" in captured.out
 
 
 def test_main_allows_scheduled_removal_with_documented_target(monkeypatch, capsys):
@@ -722,6 +846,97 @@ def test_split_breaking_changes_separates_three_buckets():
         "response-body-changed",
     }
     assert any("`status`" in change["text"] for change in other)
+
+
+def test_parse_response_property_type_widening_requires_response_property():
+    change = {
+        "id": "response-property-type-changed",
+        "text": (
+            "response property `agent/registered_marketplaces/items/auto_load` "
+            "list-of-types was widened by adding types `array` to media type "
+            "`application/json` of response `200`"
+        ),
+    }
+
+    widening = _prod._parse_response_property_type_widening(change)
+
+    assert widening == _prod.ResponsePropertyTypeWidening(
+        property_path="agent/registered_marketplaces/items/auto_load",
+        added_types="array",
+        media_type="application/json",
+        response_status="200",
+        text=change["text"],
+    )
+    assert not _prod._is_additive_response_property_type_widening(
+        {
+            "id": "request-property-type-changed",
+            "text": (
+                "request property `agent/registered_marketplaces/items/auto_load` "
+                "list-of-types was widened by adding types `array` to media type "
+                "`application/json` of request body"
+            ),
+        }
+    )
+
+
+def test_main_passes_and_reports_response_property_type_widening(
+    monkeypatch, tmp_path, capsys
+):
+    change_text = (
+        "response property `agent/registered_marketplaces/items/auto_load` "
+        "list-of-types was widened by adding types `array` to media type "
+        "`application/json` of response `200`"
+    )
+    report_path = tmp_path / "rest-type-widening.json"
+    since_base = _prod.ResponsePropertyTypeWidening(
+        property_path="agent/registered_marketplaces/items/auto_load",
+        added_types="array",
+        media_type="application/json",
+        response_status="200",
+        text=change_text,
+    )
+    monkeypatch.setenv(_prod.RESPONSE_TYPE_WIDENING_REPORT_ENV, str(report_path))
+    monkeypatch.setenv(_prod.AGENT_SERVER_REST_API_BASE_REF_ENV, "base-sha")
+    monkeypatch.setattr(_prod, "_read_version_from_pyproject", lambda _path: "1.15.0")
+    monkeypatch.setattr(
+        _prod, "_get_baseline_version", lambda _distribution, _current: "1.14.0"
+    )
+    monkeypatch.setattr(_prod, "_find_sdk_deprecated_fastapi_routes", lambda _root: [])
+    monkeypatch.setattr(_prod, "_generate_current_openapi", lambda: {"paths": {}})
+    monkeypatch.setattr(_prod, "_find_deprecation_policy_errors", lambda _schema: [])
+    monkeypatch.setattr(
+        _prod, "_generate_openapi_for_git_ref", lambda _ref: {"paths": {}}
+    )
+    monkeypatch.setattr(_prod, "_normalize_openapi_for_oasdiff", lambda schema: schema)
+    monkeypatch.setattr(
+        _prod,
+        "_collect_response_property_type_widenings_since_ref",
+        lambda _base_ref, _current_schema: [since_base],
+    )
+    monkeypatch.setattr(
+        _prod,
+        "_run_oasdiff_breakage_check",
+        lambda _prev, _cur: (
+            [
+                {
+                    "id": "response-property-type-changed",
+                    "details": {},
+                    "text": change_text,
+                }
+            ],
+            1,
+        ),
+    )
+
+    assert _prod.main() == 0
+
+    captured = capsys.readouterr()
+    assert "Additive response property type widenings detected" in captured.out
+    report = json.loads(report_path.read_text())
+    assert report == {
+        "additive_response_property_type_widenings": [since_base.__dict__],
+        "additive_response_property_type_widenings_since_base": [since_base.__dict__],
+    }
 
 
 def test_main_passes_when_only_additive_oneof(monkeypatch, capsys):

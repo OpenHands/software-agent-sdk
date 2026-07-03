@@ -211,7 +211,7 @@ def install_skills_from_marketplace(
         if not skills_dir.exists():
             continue
 
-        for skill_path in skills_dir.iterdir():
+        for skill_path in sorted(skills_dir.iterdir()):
             if skill_path.is_dir() and (skill_path / "SKILL.md").exists():
                 skill_dirs.append((skill_path.name, skill_path))
 

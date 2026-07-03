@@ -23,8 +23,11 @@ jobs:
         steps:
             - name: Check if fork PR
               id: check-fork
+              env:
+                  PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+                  PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
               run: |
-                  if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.event.pull_request.base.repo.full_name }}" ]; then
+                  if [ "$PR_HEAD_REPO" != "$PR_BASE_REPO" ]; then
                     echo "is_fork=true" >> $GITHUB_OUTPUT
                     echo "::notice::Fork PR detected - skipping auto-cleanup (manual removal required)"
                   else
@@ -34,7 +37,7 @@ jobs:
             # Use PAT so the push triggers CI workflows that will complete and
             # satisfy branch protection. We can't use [skip ci] because the Vercel
             # GitHub App creates stuck checks that block merging.
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
               if: steps.check-fork.outputs.is_fork == 'false'
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
@@ -96,7 +99,7 @@ jobs:
             contents: read
             pull-requests: write
         steps:
-            - uses: actions/checkout@v6
+            - uses: actions/checkout@v7
 
             - name: Check for .pr/ directory
               id: check

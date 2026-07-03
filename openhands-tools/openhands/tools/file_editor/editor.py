@@ -2,8 +2,9 @@ import base64
 import mimetypes
 import os
 import re
-import shutil
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import get_args
 
@@ -41,6 +42,15 @@ logger = get_logger(__name__)
 
 # Supported image extensions for viewing as base64-encoded content
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+def _is_encodable(text: str, encoding: str) -> bool:
+    """Return True if text can be encoded with the given encoding."""
+    try:
+        text.encode(encoding)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 class FileEditor:
@@ -204,9 +214,11 @@ class FileEditor:
         if not occurrences:
             # We found no occurrences, possibly because of extra white spaces at
             # either the front or back of the string.
-            # Remove the white spaces and try again.
+            # Strip old_str to retry the *match* only. Do NOT strip new_str: it
+            # is the replacement content, and stripping it would silently drop
+            # meaningful leading/trailing whitespace (e.g. a Markdown hard line
+            # break or intentional indentation) the caller asked to write.
             old_str = old_str.strip()
-            new_str = new_str.strip()
             pattern = re.escape(old_str)
             occurrences = [
                 (
@@ -463,11 +475,60 @@ class FileEditor:
         """
         self.validate_file(path)
         try:
-            # Use open with encoding instead of path.write_text
-            with open(path, "w", encoding=encoding) as f:
-                f.write(file_text)
+            self._atomic_write(path, file_text, encoding)
         except Exception as e:
             raise ToolError(f"Ran into {e} while trying to write to {path}") from None
+
+    def _atomic_write(self, path: Path, file_text: str, encoding: str) -> None:
+        """Write file_text to path atomically, never leaving a truncated file.
+
+        The content is written to a temporary file in the same directory which is
+        then Path.replace'd into place, so a failed write can never destroy the
+        original file. If the file's detected encoding cannot represent the new
+        content, fall back to UTF-8 so an edit may add characters (arrows, emoji,
+        CJK, ...) the original single-byte encoding lacks, instead of failing and
+        truncating the file. Note that the fallback transcodes the whole file to
+        UTF-8.
+        """
+        default = self._encoding_manager.default_encoding
+        if encoding != default and not _is_encodable(file_text, encoding):
+            logger.warning(
+                f"Detected encoding '{encoding}' cannot represent the new content "
+                f"for {path}; writing as '{default}' instead."
+            )
+            encoding = default
+
+        with self._temp_file(path, file_text, encoding) as tmp_path:
+            # Preserve the original file's permission bits when it already exists.
+            if path.exists():
+                os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+            Path.replace(tmp_path, path)
+
+    @contextmanager
+    def _temp_file(self, path: Path, file_text: str, encoding: str) -> Iterator[Path]:
+        """Write file_text to a fresh temp file beside path and yield its Path.
+
+        The temp file is removed on any failure (write, chmod or replace), so the
+        original file is never destroyed and no stray temp file is left behind. The
+        unlink runs after the file is closed because Windows cannot delete an open
+        file.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            encoding=encoding,
+            delete=False,
+        )
+        tmp_path = Path(tmp.name)
+        try:
+            with tmp:
+                tmp.write(file_text)
+            yield tmp_path
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     @with_encoding
     def insert(
@@ -501,33 +562,31 @@ class FileEditor:
 
         new_str_lines = new_str.split("\n")
 
-        # Create temporary file for the new content
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding=encoding, delete=False
-        ) as temp_file:
-            # Copy lines before insert point and save them for history
-            history_lines = []
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i > insert_line:
-                        break
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Build the new content in memory, then write it atomically. Routing the
+        # write through write_file reuses the same atomic, encoding-safe path as
+        # every other edit (no truncation, UTF-8 fallback for new characters).
+        new_lines: list[str] = []
+        history_lines: list[str] = []
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i > insert_line:
+                    break
+                new_lines.append(line)
+                history_lines.append(line)
 
-            # Insert new content
-            for line in new_str_lines:
-                temp_file.write(line + "\n")
+        # Insert new content
+        for line in new_str_lines:
+            new_lines.append(line + "\n")
 
-            # Copy remaining lines and save them for history
-            with open(path, encoding=encoding) as f:
-                for i, line in enumerate(f, 1):
-                    if i <= insert_line:
-                        continue
-                    temp_file.write(line)
-                    history_lines.append(line)
+        # Copy remaining lines and save them for history
+        with open(path, encoding=encoding) as f:
+            for i, line in enumerate(f, 1):
+                if i <= insert_line:
+                    continue
+                new_lines.append(line)
+                history_lines.append(line)
 
-        # Move temporary file to original location
-        shutil.move(temp_file.name, path)
+        self.write_file(path, "".join(new_lines))
 
         # Read just the snippet range
         start_line = max(0, insert_line - SNIPPET_CONTEXT_WINDOW)

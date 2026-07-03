@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from openhands.agent_server.config import WebhookSpec
 from openhands.agent_server.conversation_service import (
@@ -337,7 +337,7 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:3]],
+            json=[event.model_dump(mode="json") for event in sample_events[:3]],
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer token",
@@ -388,10 +388,60 @@ class TestWebhookSubscriberPostEvents:
         mock_client.request.assert_called_once_with(
             method="POST",
             url=expected_url,
-            json=[event.model_dump() for event in sample_events[:2]],
+            json=[event.model_dump(mode="json") for event in sample_events[:2]],
             headers=expected_headers,
             timeout=30.0,
         )
+
+    @pytest.mark.asyncio
+    @patch("httpx.AsyncClient")
+    async def test_post_events_serializes_set_and_secretstr(
+        self,
+        mock_client_class,
+        mock_event_service,
+        webhook_spec,
+        sample_conversation_id,
+    ):
+        """Regression: events containing set / SecretStr must serialize.
+
+        Plain model_dump() leaves set and SecretStr as Python objects that
+        httpx's JSON encoder cannot serialize ("Object of type set/SecretStr is
+        not JSON serializable"), failing every retry and dropping the events.
+        model_dump(mode="json") makes them JSON-safe.
+        """
+        import json as _json
+
+        # Test event with types that model_dump() leaves non-JSON-serializable.
+        # Note: deliberately not a ConversationEvent; we only care about serialization
+        # of pydantic models with tricky field types for the webhook POST payload.
+        class _EventWithTrickyTypes(BaseModel):
+            tags: set[str]
+            secret: SecretStr
+
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.raise_for_status.return_value = None
+        mock_client.request.return_value = mock_response
+        mock_client_class.return_value.__aenter__.return_value = mock_client
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+        # Deliberately assign non-ConversationEvent for regression test.
+        subscriber.queue = [
+            _EventWithTrickyTypes(tags={"a", "b"}, secret=SecretStr("shh"))  # type: ignore[assignment]
+        ]
+
+        await subscriber._post_events()
+
+        posted_json = mock_client.request.call_args.kwargs["json"]
+        # httpx serializes this internally; it must not raise TypeError.
+        _json.dumps(posted_json)
+        assert isinstance(posted_json[0]["tags"], list)
+        # SecretStr is masked, not leaked, in JSON mode.
+        assert posted_json[0]["secret"] != "shh"
 
     @pytest.mark.asyncio
     async def test_post_events_empty_queue(
@@ -442,18 +492,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify queue is cleared after success
         assert subscriber.queue == []
@@ -487,17 +537,18 @@ class TestWebhookSubscriberPostEvents:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber._post_events()
+            await subscriber._post_events()
 
         # Verify all retries were attempted (num_retries + 1 = 3 total attempts)
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Verify events are re-queued after failure
         assert len(subscriber.queue) == 2
@@ -762,12 +813,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:2]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3  # num_retries + 1
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 2
@@ -796,12 +853,18 @@ class TestWebhookSubscriberErrorHandling:
 
         subscriber.queue = sample_events[:1]
 
-        with patch("asyncio.sleep") as mock_sleep:
-            await subscriber._post_events()
+        # Record on the instance's own seam, not the global asyncio.sleep.
+        sleep_calls: list[float] = []
+
+        async def record_sleep(delay):
+            sleep_calls.append(delay)
+
+        subscriber._sleep = record_sleep
+        await subscriber._post_events()
 
         # Verify retries were attempted
         assert mock_client.request.call_count == 3
-        assert mock_sleep.call_count == 2
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
         # Events should be re-queued after failure
         assert len(subscriber.queue) == 1
@@ -1168,18 +1231,18 @@ class TestConversationWebhookSubscriber:
         async def mock_sleep(delay):
             sleep_calls.append(delay)
 
+        subscriber._sleep = mock_sleep
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.request = mock_request
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with patch("asyncio.sleep", side_effect=mock_sleep):
-                await subscriber.post_conversation_info(conversation_info)
+            await subscriber.post_conversation_info(conversation_info)
 
         # Verify retries were attempted
         assert len(retry_attempts) == 3
-        assert len(sleep_calls) == 2  # Sleep between retries
-        assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+        # Only this instance's delays are recorded — no global-sleep pollution.
+        assert sleep_calls == [webhook_spec.retry_delay] * 2
 
 
 class TestWebhookSubscriberTimerBehavior:

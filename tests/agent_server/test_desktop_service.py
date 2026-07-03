@@ -1,5 +1,6 @@
 """Tests for desktop service."""
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -214,6 +215,44 @@ class TestDesktopService:
         ):
             result = await service.start()
             assert result is False
+
+    @pytest.mark.asyncio
+    async def test_start_offloads_blocking_calls_to_thread(self):
+        """start() is async, so its synchronous subprocess.run / is_running
+        calls must be dispatched via asyncio.to_thread; otherwise they block the
+        event loop (the managed noVNC process already uses
+        await create_subprocess_exec). Regression guard for that inconsistency.
+        """
+        service = DesktopService()
+
+        mock_xvnc = MagicMock()
+        mock_xvnc.returncode = 1  # Xvnc not running -> start vncserver
+        mock_vncserver = MagicMock()
+        mock_vncserver.returncode = 0  # vncserver ok
+        mock_novnc = MagicMock()
+        mock_novnc.returncode = 0  # noVNC already running -> no create_subprocess_exec
+
+        real_to_thread = asyncio.to_thread
+        with (
+            # False at entry (proceed), True at the final health check (success)
+            patch.object(service, "is_running", side_effect=[False, True]),
+            patch("pathlib.Path.mkdir"),
+            patch("pathlib.Path.exists", return_value=True),
+            patch(
+                "subprocess.run",
+                side_effect=[mock_xvnc, mock_vncserver, mock_novnc],
+            ) as run_mock,
+            patch("asyncio.sleep"),
+            patch("asyncio.to_thread", wraps=real_to_thread) as to_thread_spy,
+        ):
+            result = await service.start()
+            offloaded = [c.args[0] for c in to_thread_spy.call_args_list if c.args]
+
+        assert result is True
+        assert run_mock in offloaded, (
+            "blocking subprocess.run must be offloaded via asyncio.to_thread, "
+            "not executed directly on the event loop"
+        )
 
     @pytest.mark.asyncio
     async def test_stop_desktop_no_process(self):

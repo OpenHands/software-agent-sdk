@@ -2,10 +2,12 @@ from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     ContextWindowExceededError,
+    InternalServerError,
 )
 
 from openhands.sdk.llm.exceptions import (
     is_context_window_exceeded,
+    is_prompt_cache_too_small,
     looks_like_auth_error,
     looks_like_malformed_conversation_history_error,
 )
@@ -37,6 +39,19 @@ def test_is_context_window_exceeded_via_text():
     )
     assert is_context_window_exceeded(e1) is True
     assert is_context_window_exceeded(e2) is True
+
+
+def test_is_context_window_exceeded_llama_cpp_token_counts():
+    error = BadRequestError(
+        (
+            "OpenAIException - request (138229 tokens) exceeds the available "
+            "context size (133376 tokens), try increasing it"
+        ),
+        MODEL,
+        PROVIDER,
+    )
+
+    assert is_context_window_exceeded(error) is True
 
 
 def test_is_context_window_exceeded_minimax_api_connection_error():
@@ -86,6 +101,20 @@ def test_looks_like_malformed_conversation_history_error_moonshot():
     assert is_context_window_exceeded(error) is False
 
 
+def test_looks_like_malformed_conversation_history_error_openai_tool_json_parse():
+    error = InternalServerError(
+        (
+            "OpenAIException - Failed to parse tool call arguments as JSON: "
+            "[json.exception.parse_error.101] parse error at line 1, column 113"
+        ),
+        PROVIDER,
+        MODEL,
+    )
+
+    assert looks_like_malformed_conversation_history_error(error) is True
+    assert is_context_window_exceeded(error) is False
+
+
 def test_looks_like_malformed_conversation_history_error_anthropic_first_sentence():
     error = BadRequestError(
         (
@@ -119,3 +148,35 @@ def test_looks_like_auth_error_negative():
         looks_like_auth_error(BadRequestError("Something else", MODEL, PROVIDER))
         is False
     )
+
+
+def test_is_prompt_cache_too_small_positive():
+    """Vertex AI rejects caching when cached content is below minimum token count."""
+    vertex_error = BadRequestError(
+        (
+            "Vertex_aiException BadRequestError - "
+            '{"error":{"code":400,'
+            '"message":"The cached content is of 1171 tokens. '
+            'The minimum token count to start caching is 4096.",'
+            '"status":"INVALID_ARGUMENT"}}'
+        ),
+        MODEL,
+        PROVIDER,
+    )
+    assert is_prompt_cache_too_small(vertex_error) is True
+
+
+def test_is_prompt_cache_too_small_negative():
+    assert (
+        is_prompt_cache_too_small(BadRequestError("irrelevant", MODEL, PROVIDER))
+        is False
+    )
+
+
+def test_is_prompt_cache_too_small_context_window_not_cache_too_small():
+    """Context window exceeded is a different error from cache too small."""
+    ctx_error = BadRequestError(
+        "The request exceeds the available context size", MODEL, PROVIDER
+    )
+    assert is_prompt_cache_too_small(ctx_error) is False
+    assert is_context_window_exceeded(ctx_error) is True

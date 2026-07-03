@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from queue import Empty, Queue
 from typing import TYPE_CHECKING, SupportsIndex, overload
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 import websockets
@@ -32,6 +32,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     StuckDetectionThresholds,
+    TraceMetadataValue,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -45,6 +46,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
@@ -53,6 +55,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -195,7 +198,7 @@ class WebSocketCallbackClient:
 
         # Add API key as query parameter if provided
         if self.api_key:
-            ws_url += f"?session_api_key={self.api_key}"
+            ws_url += f"?session_api_key={quote(self.api_key, safe='')}"
 
         delay = 1.0
         while not self._stop.is_set():
@@ -671,6 +674,10 @@ class RemoteConversation(BaseConversation):
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
         user_id: str | None = None,
+        client_tools: list[ClientToolSpec] | None = None,
+        observability_metadata: dict[str, TraceMetadataValue] | None = None,
+        observability_tags: list[str] | None = None,
+        observability_span_name: str = "conversation",
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -700,6 +707,14 @@ class RemoteConversation(BaseConversation):
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
             user_id: Optional user ID to associate with observability traces
+            client_tools: Optional list of client-defined tool specs. These tools
+                      have no server-side executor — when the agent calls them an
+                      ActionEvent is emitted over the WebSocket and the client
+                      handles execution via callbacks.
+            observability_metadata: Optional trace metadata for observability backends.
+            observability_tags: Optional root span tags for observability backends.
+            observability_span_name: Optional child span name for observability
+                      backends. The root span remains named "conversation".
         """
         super().__init__()  # Initialize base class with span tracking
         self.agent = agent
@@ -712,6 +727,12 @@ class RemoteConversation(BaseConversation):
         self._cleanup_initiated = False
         self._terminal_status_queue: Queue[str] = Queue()
         self._run_armed = threading.Event()
+
+        # Client tool specs the server already has persisted for this
+        # conversation (populated when re-attaching to an existing one). These
+        # must be registered locally before the initial event sync so that
+        # persisted ``ClientAction_*`` events can be deserialized.
+        attached_client_tools: list[ClientToolSpec] = []
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -726,11 +747,18 @@ class RemoteConversation(BaseConversation):
                 # Conversation doesn't exist, we'll create it
                 should_create = True
             else:
-                agent_payload = resp.json().get("agent")
+                info = resp.json()
+                agent_payload = info.get("agent")
                 if agent_payload is not None:
                     remote_agent = _validate_remote_agent(agent_payload)
                     if remote_agent.agent_kind != agent.agent_kind:
                         raise ValueError(_agent_kind_mismatch_message(conversation_id))
+                # Capture persisted client tool specs so we can register their
+                # dynamic action types before RemoteState syncs events.
+                for raw_spec in info.get("client_tools") or []:
+                    attached_client_tools.append(
+                        ClientToolSpec.model_validate(raw_spec)
+                    )
                 # Conversation exists, use the provided ID
                 self._id = conversation_id
 
@@ -765,9 +793,25 @@ class RemoteConversation(BaseConversation):
                 "plugins": [p.model_dump() for p in plugins] if plugins else None,
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
-                # Include tags if provided
-                "tags": tags or {},
+                # Include client-defined tool specs (no server-side executor)
+                "client_tools": (
+                    [s.model_dump(mode="json") for s in client_tools]
+                    if client_tools
+                    else []
+                ),
+                # Include tags and observability metadata if provided
+                "tags": tags if tags is not None else {},
+                "observability_metadata": observability_metadata
+                if observability_metadata is not None
+                else {},
+                "observability_tags": observability_tags
+                if observability_tags is not None
+                else [],
+                "observability_span_name": observability_span_name,
+                "user_id": user_id,
             }
+            if user_id:
+                payload["user_id"] = user_id
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
                 if isinstance(stuck_detection_thresholds, Mapping):
@@ -796,6 +840,18 @@ class RemoteConversation(BaseConversation):
             self._id = uuid.UUID(cid)
 
             workspace.register_conversation(str(self._id))
+
+        # Register client tool action types locally so WebSocket/persisted
+        # events with ClientAction_* action_type can be deserialized by the
+        # event loop. This must cover both the specs the caller passed in and
+        # the specs the server already had persisted (when re-attaching), so a
+        # plain reattach by conversation_id can still sync persisted events.
+        seen_client_tool_names: set[str] = set()
+        for spec in [*(client_tools or []), *attached_client_tools]:
+            if spec.name in seen_client_tool_names:
+                continue
+            seen_client_tool_names.add(spec.name)
+            ClientTool.from_spec(spec)
 
         # Initialize the remote state
         self._state = RemoteState(
@@ -920,7 +976,14 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id), user_id=user_id)
+        self._start_observability_span(
+            str(self._id),
+            span_name=observability_span_name,
+            user_id=user_id,
+            metadata=observability_metadata,
+            tags=observability_tags,
+            conversation_tags=tags,
+        )
         # All hooks (including SessionStart/SessionEnd) are executed server-side.
         # hook_config is sent in the creation payload.
         self.delete_on_close = delete_on_close
@@ -1315,6 +1378,14 @@ class RemoteConversation(BaseConversation):
             f"{self._conversation_action_base_path}/{self._id}/interrupt",
         )
 
+    def load_plugin(self, plugin_ref: str) -> None:
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/load_plugin",
+            json={"plugin_ref": plugin_ref},
+        )
+
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
         from openhands.sdk.secret.secrets import SecretSource
 
@@ -1415,6 +1486,7 @@ class RemoteConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "RemoteConversation":
         """Fork this conversation on the remote agent server.
 
@@ -1431,6 +1503,9 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, fork only the branch up to and including this
+                event (``path_to_root``) and set the fork's HEAD there. If
+                ``None`` (default), copy the whole conversation.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
@@ -1438,6 +1513,8 @@ class RemoteConversation(BaseConversation):
 
         Raises:
             NotImplementedError: If ``agent`` is provided.
+            httpx.HTTPStatusError: If the server rejects the request (e.g. 404
+                for an unknown ``from_event_id``).
         """
         if agent is not None:
             raise NotImplementedError(
@@ -1452,6 +1529,8 @@ class RemoteConversation(BaseConversation):
             body["title"] = title
         if tags is not None:
             body["tags"] = tags
+        if from_event_id is not None:
+            body["from_event_id"] = from_event_id
 
         resp = _send_request(
             self._client,
@@ -1479,6 +1558,29 @@ class RemoteConversation(BaseConversation):
             delete_on_close=self.delete_on_close,
             tags=server_tags,
         )
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event on the remote server.
+
+        Posts to the server's ``/navigate`` route, which re-roots the active
+        branch in place (no new conversation). The cached state is refreshed so
+        a subsequent ``state`` read reflects the new HEAD — ``leaf_event_id`` is
+        not broadcast over the WebSocket.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
+                for an unknown event).
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            json={"event_id": event_id},
+        )
+        self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.

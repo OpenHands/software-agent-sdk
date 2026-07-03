@@ -7,6 +7,7 @@ The Terminal Tool provides a persistent shell session for executing bash command
 - **Persistent session**: Environment variables, virtual environments, and working directory persist between commands
 - **Multiple backend support**: Auto-detects and uses tmux when available, falls back to subprocess-based PTY
 - **Configurable shell**: Support for custom shell binaries (useful on Nix, macOS, or custom environments)
+- **Client-configured environment**: Add SDK-provided session environment variables without exposing them as tool-call parameters
 - **Long-running command support**: Handle commands with soft timeouts and interrupt capabilities
 - **Terminal reset**: Ability to reset the terminal session if it becomes unresponsive
 
@@ -36,6 +37,31 @@ tools = TerminalTool.create(
 If no explicit `shell_path` is provided, the tool automatically finds bash in your PATH using the equivalent of `which bash`. This works like `#!/usr/bin/env bash` and is portable across different systems.
 
 If bash cannot be found in PATH, the tool will raise a clear error asking you to provide an explicit `shell_path`.
+
+## Environment Configuration
+
+SDK clients can provide extra environment variables when creating the terminal
+tool. These values are merged with the sanitized process environment and apply to
+the terminal session until it is reset or closed. They are not part of
+`TerminalAction` and are not exposed in the model-facing tool schema.
+
+```python
+from openhands.sdk import Conversation
+from openhands.tools.terminal.definition import TerminalTool
+
+conversation = Conversation()
+tools = TerminalTool.create(
+    conv_state=conversation.state,
+    env={
+        "UV_INDEX_URL": "https://example.internal/simple",
+        "UV_CACHE_DIR": "/workspace/.cache/uv",
+    },
+)
+```
+
+Raw secret values passed through `env` become session-scoped environment
+variables. Use the SDK secret registry when you need command-scoped secret
+injection behavior.
 
 ## Usage Examples
 
@@ -155,4 +181,4 @@ chmod +x /path/to/bash  # If needed
 
 - The `shell_path` configuration only affects the subprocess terminal type; tmux terminals will use whatever shell tmux is configured to use
 - The shell must be bash-compatible for proper operation
-- On reset, the terminal session will preserve the originally configured shell path
+- On reset, the terminal session will preserve the originally configured shell path and client environment

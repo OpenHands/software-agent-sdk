@@ -54,6 +54,7 @@ def get_shortest_prefix_above_token_count(
     events: Sequence[LLMConvertibleEvent],
     llm: LLM,
     token_count: int,
+    base_events: Sequence[LLMConvertibleEvent] | None = None,
 ) -> int:
     """Find the length of the shortest prefix whose token count exceeds the target.
 
@@ -88,8 +89,11 @@ def get_shortest_prefix_above_token_count(
     if not events:
         return 0
 
+    base_events = base_events or []
+    base_tokens = get_total_token_count(base_events, llm) if base_events else 0
+
     # Check if all events combined don't exceed the token count
-    total_tokens = get_total_token_count(events, llm)
+    total_tokens = get_total_token_count([*base_events, *events], llm) - base_tokens
     if total_tokens <= token_count:
         return len(events)
 
@@ -98,7 +102,9 @@ def get_shortest_prefix_above_token_count(
 
     while left < right:
         mid = (left + right) // 2
-        prefix_tokens = get_total_token_count(events[:mid], llm)
+        prefix_tokens = (
+            get_total_token_count([*base_events, *events[:mid]], llm) - base_tokens
+        )
 
         if prefix_tokens > token_count:
             # This prefix exceeds the count, try to find a shorter one
@@ -114,6 +120,7 @@ def get_suffix_length_for_token_reduction(
     events: Sequence[LLMConvertibleEvent],
     llm: LLM,
     token_reduction: int,
+    base_events: Sequence[LLMConvertibleEvent] | None = None,
 ) -> int:
     """Find how many suffix events can be kept while reducing tokens by target amount.
 
@@ -153,7 +160,12 @@ def get_suffix_length_for_token_reduction(
         return len(events)
 
     # Find the shortest prefix that exceeds the token reduction target
-    prefix_length = get_shortest_prefix_above_token_count(events, llm, token_reduction)
+    prefix_length = get_shortest_prefix_above_token_count(
+        events,
+        llm,
+        token_reduction,
+        base_events=base_events,
+    )
 
     # The suffix length is what remains after removing the prefix
     suffix_length = len(events) - prefix_length

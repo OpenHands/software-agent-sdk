@@ -2,6 +2,8 @@
 
 from openhands.sdk.utils.redact import (
     SENSITIVE_URL_PARAMS,
+    redact_url_credentials,
+    redact_url_credentials_in_text,
     redact_url_params,
 )
 
@@ -174,3 +176,74 @@ class TestRedactUrlParams:
         assert "secret" not in result
         # The non-sensitive param value should be preserved (possibly re-encoded)
         assert "hello" in result
+
+
+# ---------------------------------------------------------------------------
+# redact_url_credentials_in_text
+# ---------------------------------------------------------------------------
+
+
+class TestRedactUrlCredentialsInText:
+    """Tests for redact_url_credentials_in_text() (substring-capable)."""
+
+    def test_redacts_credentials_embedded_in_larger_string(self):
+        """The key limitation of the anchored helper: creds inside a message."""
+        s = "fatal: unable to access 'https://oauth2:SECRET@github.com/o/r.git/': 403"
+        result = redact_url_credentials_in_text(s)
+        assert "SECRET" not in result
+        assert "oauth2" not in result
+        assert result == (
+            "fatal: unable to access 'https://****@github.com/o/r.git/': 403"
+        )
+
+    def test_redacts_token_only_credential(self):
+        s = "Cloning https://ghp_supersecrettoken@github.com/o/r.git failed"
+        result = redact_url_credentials_in_text(s)
+        assert "ghp_supersecrettoken" not in result
+        assert "https://****@github.com/o/r.git" in result
+
+    def test_redacts_http_scheme(self):
+        s = "warn http://user:pw@internal.example.com/x done"
+        result = redact_url_credentials_in_text(s)
+        assert "user:pw" not in result
+        assert "http://****@internal.example.com/x" in result
+
+    def test_redacts_multiple_embedded_urls(self):
+        s = "a https://t1@github.com/o/r.git b https://user:t2@gitlab.com/o/r.git c"
+        result = redact_url_credentials_in_text(s)
+        assert "t1" not in result
+        assert "t2" not in result
+        assert result.count("****@") == 2
+
+    def test_redacts_url_encoded_credentials(self):
+        s = "url 'https://user%40domain:p%40ss@github.com/repo.git'"
+        result = redact_url_credentials_in_text(s)
+        assert "user%40domain" not in result
+        assert "p%40ss" not in result
+        assert "https://****@github.com/repo.git" in result
+
+    def test_leaves_credential_free_url_untouched(self):
+        s = "Cloning https://github.com/owner/repo.git into ./repo"
+        assert redact_url_credentials_in_text(s) == s
+
+    def test_does_not_match_at_sign_in_path(self):
+        """An '@' after a path segment is not userinfo and must be left alone."""
+        s = "see https://github.com/owner/repo/blob/main/x@v1.txt"
+        assert redact_url_credentials_in_text(s) == s
+
+    def test_leaves_ssh_url_untouched(self):
+        s = "remote git@github.com:owner/repo.git fetched"
+        assert redact_url_credentials_in_text(s) == s
+
+    def test_empty_string(self):
+        assert redact_url_credentials_in_text("") == ""
+
+    def test_no_url_string(self):
+        assert redact_url_credentials_in_text("nothing to redact here") == (
+            "nothing to redact here"
+        )
+
+    def test_matches_whole_url_like_anchored_helper(self):
+        """For a bare whole-URL string both helpers agree."""
+        url = "https://oauth2:SECRET@gitlab.com/org/repo.git"
+        assert redact_url_credentials_in_text(url) == redact_url_credentials(url)

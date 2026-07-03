@@ -6,22 +6,27 @@ import asyncio
 import json
 import threading
 import uuid
-from base64 import urlsafe_b64encode
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from acp.exceptions import RequestError as ACPRequestError
-from acp.schema import PromptResponse
-from pydantic import Field, SecretStr
+from acp.schema import NewSessionResponse, PromptResponse
+from pydantic import SecretStr
 
 from openhands.sdk.agent.acp_agent import (
     ACPAgent,
+    _acp_error_detail,
+    _acp_error_indicates_auth,
+    _apply_acp_model,
     _classify_acp_init_error,
+    _classify_acp_turn_error,
     _codex_auth_file,
     _codex_base_url_overrides,
+    _codex_model_config_options,
     _estimate_cost_from_tokens,
     _extract_session_models,
     _extract_token_usage,
@@ -33,10 +38,13 @@ from openhands.sdk.agent.acp_agent import (
     _reapply_session_model_on_resume,
     _select_auth_method,
     _serialize_tool_content,
+    _stringify_acp_error_data,
+    _strip_inherited_npm_env,
 )
 from openhands.sdk.agent.acp_models import ACPModelInfo
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context import AgentContext
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -83,11 +91,6 @@ def _make_agent(**kwargs) -> ACPAgent:
     return ACPAgent(acp_command=["echo", "test"], **kwargs)
 
 
-def _make_cipher() -> Cipher:
-    """Deterministic Fernet cipher for round-trip tests."""
-    return Cipher(urlsafe_b64encode(b"a" * 32).decode("ascii"))
-
-
 def _make_state(tmp_path) -> ConversationState:
     agent = _make_agent()
     workspace = LocalWorkspace(working_dir=str(tmp_path))
@@ -116,6 +119,23 @@ class TestACPAgentInstantiation:
         agent = _make_agent()
         assert agent.include_default_tools == []
 
+    def test_strip_inherited_npm_env_keeps_subprocesses_out_of_parent_context(self):
+        env = {
+            "INIT_CWD": "/repo",
+            "npm_config_prefix": "/repo",
+            "npm_package_name": "parent-package",
+            "NPM_CONFIG_PREFIX": "/repo",
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
+
+        _strip_inherited_npm_env(env)
+
+        assert env == {
+            "PATH": "/usr/bin",
+            "USER_VALUE": "kept",
+        }
+
     def test_requires_acp_command(self):
         with pytest.raises(Exception):
             ACPAgent()  # type: ignore[call-arg]
@@ -127,10 +147,6 @@ class TestACPAgentInstantiation:
     def test_acp_args_default_empty(self):
         agent = _make_agent()
         assert agent.acp_args == []
-
-    def test_acp_env_default_empty(self):
-        agent = _make_agent()
-        assert agent.acp_env == {}
 
     def test_get_all_llms_yields_sentinel(self):
         agent = _make_agent()
@@ -191,80 +207,12 @@ class TestACPAgentSerialization:
         agent = ACPAgent(
             acp_command=["npx", "-y", "claude-agent-acp"],
             acp_args=["--verbose"],
-            acp_env={"FOO": "bar"},
         )
-        # ``acp_env`` is redacted by default, so a value-preserving round-trip
-        # requires expose_secrets=True (same contract as ``LLM.api_key``).
-        dumped = agent.model_dump_json(context={"expose_secrets": True})
+        dumped = agent.model_dump_json()
         restored = AgentBase.model_validate_json(dumped)
         assert isinstance(restored, ACPAgent)
         assert restored.acp_command == agent.acp_command
         assert restored.acp_args == agent.acp_args
-        assert restored.acp_env == agent.acp_env
-
-    def test_acp_env_redacted_by_default(self):
-        """``acp_env`` values must be masked in default serialization output.
-
-        Regression guard: trace dumps consumed by evaluation tooling embed the
-        full ACPAgent state under ``history[*].value.agent``. Before masking,
-        live proxy keys leaked into shareable archives.
-        """
-        agent = ACPAgent(
-            acp_command=["echo", "test"],
-            acp_env={
-                "OPENAI_API_KEY": "sk-real-secret-do-not-leak",
-                "GEMINI_API_KEY": "sk-other-secret",
-                "GEMINI_BASE_URL": "https://llm-proxy.example/",
-            },
-        )
-
-        # In-memory state still holds the real values — only serialization masks.
-        assert agent.acp_env["OPENAI_API_KEY"] == "sk-real-secret-do-not-leak"
-
-        # model_dump returns SecretStr objects — real values are hidden.
-        dumped = agent.model_dump()
-        for v in dumped["acp_env"].values():
-            assert str(v) == REDACTED_SECRET_VALUE
-
-        # JSON path that produced the original leaks must not contain any of
-        # the real values.
-        dumped_json = agent.model_dump_json()
-        assert "sk-real-secret-do-not-leak" not in dumped_json
-        assert "sk-other-secret" not in dumped_json
-        assert "https://llm-proxy.example/" not in dumped_json
-        assert REDACTED_SECRET_VALUE in dumped_json
-
-    def test_acp_env_exposed_with_expose_secrets(self):
-        """``expose_secrets=True`` returns the real values for transport use."""
-        secrets = {
-            "OPENAI_API_KEY": "sk-real-secret",
-            "BASE_URL": "https://llm-proxy.example/",
-        }
-        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(secrets))
-
-        dumped = agent.model_dump(context={"expose_secrets": True})
-        assert dumped["acp_env"] == secrets
-
-        # Round-trip with expose_secrets must reconstruct the original values.
-        json_blob = agent.model_dump_json(context={"expose_secrets": True})
-        restored = AgentBase.model_validate_json(json_blob)
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == secrets
-
-    def test_acp_env_serializer_does_not_mutate_in_memory_state(self):
-        """Serialization must not mutate ``self.acp_env`` — the runtime path
-        (:meth:`ACPAgent._start_acp_server`) reads it directly to populate the
-        subprocess environment.
-        """
-        original = {"OPENAI_API_KEY": "sk-real-secret"}
-        agent = ACPAgent(acp_command=["echo", "test"], acp_env=dict(original))
-
-        # Multiple dumps in different modes must leave the live dict alone.
-        agent.model_dump()
-        agent.model_dump_json()
-        agent.model_dump(context={"expose_secrets": True})
-
-        assert agent.acp_env == original
 
     def test_deserialization_from_dict(self):
         data = {
@@ -274,104 +222,6 @@ class TestACPAgentSerialization:
         agent = AgentBase.model_validate(data)
         assert isinstance(agent, ACPAgent)
         assert agent.acp_command == ["echo", "test"]
-
-    def test_acp_env_decrypts_ciphertext_with_cipher_in_context(self):
-        """Round-trip Fernet-encrypted ``acp_env`` values via cipher context.
-
-        Regression for a real production bug in v1.24.0: the on-disk →
-        ACPAgentSettings → ACPAgent path could leave Fernet ciphertext as
-        the field value because only the settings-side variant had a
-        decryption ``field_validator``. The conversation-start flow
-        validates the full :class:`StoredConversation` with cipher
-        context after the agent was already constructed (without cipher)
-        from ``StartConversationRequest.agent_settings`` — and without
-        the validator here, the ciphertext survives that re-validation
-        and reaches the ACP subprocess as the env-var value. The
-        provider call then fails (e.g. Anthropic reads the Fernet token
-        as ``ANTHROPIC_BASE_URL`` and 400s on URL parsing).
-        """
-        cipher = _make_cipher()
-        encrypted_key = cipher.encrypt(SecretStr("sk-real"))
-        encrypted_url = cipher.encrypt(SecretStr("https://api.example.com"))
-        assert encrypted_key is not None
-        assert encrypted_url is not None
-
-        # Build the wire payload an agent-server would receive: an
-        # ACPAgent dict whose ``acp_env`` values are Fernet ciphertext.
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {
-                "ANTHROPIC_API_KEY": encrypted_key,
-                "ANTHROPIC_BASE_URL": encrypted_url,
-            },
-        }
-
-        restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {
-            "ANTHROPIC_API_KEY": "sk-real",
-            "ANTHROPIC_BASE_URL": "https://api.example.com",
-        }
-
-    def test_acp_env_no_cipher_in_context_leaves_ciphertext_untouched(self):
-        """The ``cipher is None`` branch of the validator is exercised on
-        every code path that round-trips an agent dict without supplying
-        a cipher (e.g. test serialization helpers, JSON-only diagnostic
-        dumps). In that mode the ciphertext must survive verbatim — both
-        because there's nothing to decrypt with, and because mutating it
-        would defeat a downstream caller that *will* validate again with
-        the cipher present (the conversation-start re-validation step).
-        """
-        cipher = _make_cipher()
-        encrypted = cipher.encrypt(SecretStr("sk-real"))
-        assert encrypted is not None
-
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"ANTHROPIC_API_KEY": encrypted},
-        }
-        restored = AgentBase.model_validate(data)
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"ANTHROPIC_API_KEY": encrypted}
-
-    def test_acp_env_plaintext_passes_through_with_cipher(self):
-        """First writes from clients that never went through the encryption
-        pipeline carry plaintext. They must still validate cleanly when the
-        server happens to have a cipher in context."""
-        cipher = _make_cipher()
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"FOO": "plaintext-value"},
-        }
-        restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"FOO": "plaintext-value"}
-
-    def test_acp_env_undecryptable_ciphertext_passes_through_with_warning(self, caplog):
-        """Cipher mismatch / corruption shouldn't crash agent construction.
-
-        Mirrors the MCP env/header pattern: a ciphertext we can't decrypt
-        is left in place with a logged warning so the operator can repair
-        it, rather than turning into a hard failure that bricks the
-        agent.
-        """
-        cipher = _make_cipher()
-        # Looks like a Fernet token (prefix matches) but isn't a valid
-        # one — try_decrypt_str returns None.
-        bogus = "gAAAAA" + ("x" * 80)
-        data = {
-            "kind": "ACPAgent",
-            "acp_command": ["echo", "test"],
-            "acp_env": {"BUSTED": bogus},
-        }
-        with caplog.at_level("WARNING"):
-            restored = AgentBase.model_validate(data, context={"cipher": cipher})
-        assert isinstance(restored, ACPAgent)
-        assert restored.acp_env == {"BUSTED": bogus}
-        assert any("could not be decrypted" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -455,8 +305,8 @@ class TestACPAgentValidation:
         prompt = context.to_acp_prompt_context()
 
         assert prompt is not None
-        # Reuses the same system_message_suffix.j2 template as the general
-        # agent, so the rendered sections are identical.
+        # Assembled by the same prompt registry the general agent uses, so the
+        # rendered dynamic-tier sections are identical.
         assert "<CURRENT_DATETIME>" in prompt
         assert "2026-04-24T00:00:00" in prompt
         assert "<name>review</name>" in prompt
@@ -856,6 +706,20 @@ class TestACPAgentInitState:
         assert "protocol handshake timed out" in errors[0].detail
         assert state.execution_status == ConversationExecutionStatus.ERROR
 
+    def test_init_state_surfaces_request_error_data(self, tmp_path):
+        """A ``RequestError`` cold-start failure surfaces its ``.code`` and
+        ``.data`` — not the bare "Internal error" that ``str(exc)`` yields — so the
+        real cause (an auth marker here) reaches the user and is classified."""
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "401 Unauthorized from provider"}
+        )
+        _state, events = self._init_state_failure(tmp_path, exc)
+        errors = [e for e in events if isinstance(e, ConversationErrorEvent)]
+        assert len(errors) == 1
+        assert errors[0].code == "ACPAuthRequired"
+        assert "401 Unauthorized from provider" in errors[0].detail
+        assert "-32603" in errors[0].detail
+
     def test_init_state_truncates_long_detail(self, tmp_path):
         """detail is capped at 500 chars, matching the run-loop error path."""
         exc = RuntimeError("x" * 1000)
@@ -911,6 +775,185 @@ class TestClassifyACPInitError:
 
     def test_generic_exception_is_init_error(self):
         assert _classify_acp_init_error(RuntimeError("x")) == "ACPInitError"
+
+    def test_auth_marker_in_internal_error_is_auth_required(self):
+        # Servers collapse upstream 401/403s into a generic -32603 instead of
+        # -32000; the message/data still reveal the credential failure, which must
+        # map to ACPAuthRequired so the client can offer re-auth.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "401 Unauthorized: invalid api key"}
+        )
+        assert _classify_acp_init_error(exc) == "ACPAuthRequired"
+
+    def test_benign_internal_error_stays_init_error(self):
+        # A -32603 with no auth marker is a generic init failure, not auth.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "disk full"})
+        assert _classify_acp_init_error(exc) == "ACPInitError"
+
+
+# ---------------------------------------------------------------------------
+# _stringify_acp_error_data
+# ---------------------------------------------------------------------------
+
+
+class TestStringifyACPErrorData:
+    def test_none_is_empty(self):
+        assert _stringify_acp_error_data(None) == ""
+
+    def test_bare_string_passthrough(self):
+        assert _stringify_acp_error_data("OPENAI_API_KEY is not set") == (
+            "OPENAI_API_KEY is not set"
+        )
+
+    def test_dict_prefers_message_key(self):
+        # codex turn errors send {"message", "codex_error_info"}.
+        out = _stringify_acp_error_data(
+            {"message": "model not found", "codex_error_info": "gpt-9"}
+        )
+        assert out == "model not found (gpt-9)"
+
+    def test_dict_details_key(self):
+        # the claude SDK catch-all wraps non-RequestError exceptions as {"details"}.
+        assert _stringify_acp_error_data({"details": "boom"}) == "boom"
+
+    def test_opaque_dict_falls_back_to_json(self):
+        out = _stringify_acp_error_data({"foo": "bar"})
+        assert "foo" in out and "bar" in out
+
+
+# ---------------------------------------------------------------------------
+# _acp_error_indicates_auth
+# ---------------------------------------------------------------------------
+
+
+class TestACPErrorIndicatesAuth:
+    def test_explicit_auth_code(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32000, "Authentication required")
+        )
+
+    def test_marker_in_message(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32603, "Internal error: please run /login")
+        )
+
+    def test_marker_in_data(self):
+        assert _acp_error_indicates_auth(
+            ACPRequestError(-32603, "Internal error", {"message": "token expired"})
+        )
+
+    def test_marker_in_plain_exception(self):
+        assert _acp_error_indicates_auth(RuntimeError("HTTP 401 Unauthorized"))
+
+    def test_no_marker(self):
+        assert not _acp_error_indicates_auth(ACPRequestError(-32603, "Internal error"))
+        assert not _acp_error_indicates_auth(RuntimeError("timed out"))
+
+    def test_http_401_as_word_matches(self):
+        assert _acp_error_indicates_auth(RuntimeError("HTTP 401 Unauthorized"))
+
+    def test_digit_substring_in_timeout_does_not_match(self):
+        # "4031ms" contains "403" but must not fire — word-boundary check.
+        assert not _acp_error_indicates_auth(RuntimeError("timeout after 4031ms"))
+
+    def test_model_id_with_401_does_not_match(self):
+        assert not _acp_error_indicates_auth(
+            ACPRequestError(
+                -32603, "Internal error", {"message": "model id '401b' not found"}
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# _classify_acp_turn_error
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyACPTurnError:
+    def test_generic_turn_error(self):
+        assert _classify_acp_turn_error(RuntimeError("boom")) == "ACPPromptError"
+
+    def test_usage_policy_refusal(self):
+        exc = RuntimeError("blocked by usage policy")
+        assert _classify_acp_turn_error(exc) == "UsagePolicyRefusal"
+
+    def test_content_policy_refusal(self):
+        exc = ACPRequestError(-32603, "Internal error", {"message": "content policy"})
+        assert _classify_acp_turn_error(exc) == "UsagePolicyRefusal"
+
+    def test_auth_failure_maps_to_auth_required(self):
+        # A bad credential surfaced mid-turn as -32603 must still route to re-auth.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "401 unauthorized"})
+        assert _classify_acp_turn_error(exc) == "ACPAuthRequired"
+
+
+# ---------------------------------------------------------------------------
+# _acp_error_detail
+# ---------------------------------------------------------------------------
+
+
+class TestACPErrorDetail:
+    def test_plain_exception_is_str(self):
+        assert _acp_error_detail(RuntimeError("boom")) == "boom"
+
+    def test_request_error_keeps_code_and_data(self):
+        # The bug this fixes: str(RequestError) is just "Internal error"; the real
+        # cause lives in .code/.data and must reach the user.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "model gpt-9 not found"}
+        )
+        detail = _acp_error_detail(exc)
+        assert "-32603" in detail
+        assert "model gpt-9 not found" in detail
+
+    def test_request_error_bare_data_string(self):
+        exc = ACPRequestError(-32603, "Internal error", "OPENAI_API_KEY is not set")
+        detail = _acp_error_detail(exc)
+        assert "OPENAI_API_KEY is not set" in detail
+
+    def test_no_duplicate_when_data_matches_message(self):
+        exc = ACPRequestError(-32000, "Authentication required")
+        detail = _acp_error_detail(exc)
+        assert detail == "[-32000] Authentication required"
+
+    def test_data_appended_when_it_differs_from_message(self):
+        # data["message"] differs from exc.message → must be included.
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "model gpt-9 not found"}
+        )
+        detail = _acp_error_detail(exc)
+        assert "model gpt-9 not found" in detail
+        assert "Internal error" in detail
+
+    def test_data_not_duplicated_when_equal_to_message(self):
+        # When data["message"] == exc.message, nothing extra to add — avoid
+        # "[-32603] Internal error: Internal error" redundancy.
+        exc = ACPRequestError(-32603, "Internal error", {"message": "Internal error"})
+        detail = _acp_error_detail(exc)
+        assert detail == "[-32603] Internal error"
+
+    def test_truncated_to_500_chars(self):
+        exc = ACPRequestError(-32603, "Internal error", "x" * 1000)
+        assert len(_acp_error_detail(exc)) == 500
+
+    def test_pattern_redaction_of_data(self):
+        # redact_text_secrets scrubs api_key=... even without a registry.
+        exc = ACPRequestError(-32603, "Internal error", "api_key='sk-leakme123'")
+        detail = _acp_error_detail(exc)
+        assert "sk-leakme123" not in detail
+        assert "<redacted>" in detail
+
+    def test_registry_masks_tracked_secret_value(self):
+        registry = SecretRegistry()
+        registry.update_secrets({"PROVIDER_TOKEN": "supersecretvalue"})
+        # Resolve once so the value is tracked for masking.
+        registry.get_all_secrets_as_env_vars()
+        exc = ACPRequestError(
+            -32603, "Internal error", {"message": "rejected supersecretvalue"}
+        )
+        detail = _acp_error_detail(exc, registry)
+        assert "supersecretvalue" not in detail
+        assert "<secret-hidden>" in detail
 
 
 # ---------------------------------------------------------------------------
@@ -1217,6 +1260,40 @@ class TestACPActivityHeartbeat:
         client.reset()
         assert client._last_activity_signal == 999.0
 
+    def test_idle_clock_unarmed_reports_infinite_idle(self):
+        """Before arming, the idle clock reports an unbounded gap."""
+        client = _OpenHandsACPBridge()
+        assert client.seconds_since_last_activity() == float("inf")
+
+    def test_arm_activity_clock_resets_idle(self):
+        client = _OpenHandsACPBridge()
+        client.arm_activity_clock()
+        # Just armed → effectively zero seconds since activity.
+        assert client.seconds_since_last_activity() < 1.0
+
+    @pytest.mark.asyncio
+    async def test_session_update_records_activity_for_idle_clock(self):
+        """Every session_update resets the idle clock, even when throttled.
+
+        The throttled heartbeat (_last_activity_signal) and the idle clock
+        (_last_activity_monotonic) are independent: a second update inside the
+        throttle window does not re-fire on_activity but still counts as
+        progress for the idle timeout.
+        """
+        from acp.schema import AgentThoughtChunk, TextContentBlock
+
+        client = _OpenHandsACPBridge()
+        client._last_activity_monotonic = float("-inf")
+
+        # A thought chunk does not fire the on_activity heartbeat at all, but
+        # must still count as activity for the idle clock.
+        chunk = MagicMock(spec=AgentThoughtChunk)
+        chunk.content = MagicMock(spec=TextContentBlock)
+        chunk.content.text = "thinking"
+        await client.session_update("sess-1", chunk)
+
+        assert client.seconds_since_last_activity() < 1.0
+
     @pytest.mark.asyncio
     async def test_tool_call_start_signals_activity(self):
         from acp.schema import ToolCallStart
@@ -1399,6 +1476,103 @@ class TestACPActivityHeartbeat:
         # And that it was cleared afterward so a late session_update
         # cannot fire the per-turn heartbeat callback out-of-band.
         assert agent._client.on_activity is None
+
+
+# ---------------------------------------------------------------------------
+# Prompt idle (inactivity) timeout
+# ---------------------------------------------------------------------------
+
+
+class TestACPPromptIdleTimeout:
+    """The prompt deadline is an idle timeout: ACP activity resets it.
+
+    Regression coverage for agent-canvas#1245 — long-running ACP prompts must
+    keep working as long as the agent makes progress, rather than dying at a
+    hard wall-clock deadline.
+    """
+
+    @pytest.mark.asyncio
+    async def test_active_prompt_outlives_idle_window(self):
+        """A prompt that keeps streaming updates is not killed at the deadline.
+
+        The agent runs for well over ``acp_prompt_timeout`` of total wall-clock
+        time, but emits a ``session_update`` far more often than the idle window,
+        so the deadline keeps resetting and the prompt completes normally.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        agent = _make_agent(acp_prompt_timeout=0.3)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        sentinel = object()
+
+        async def _active_prompt() -> Any:
+            # ~0.5s total (> 0.3s idle window) but a tick every 0.02s
+            # (<< 0.3s), so the idle clock never elapses.
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+                chunk = MagicMock(spec=AgentMessageChunk)
+                chunk.content = MagicMock(spec=TextContentBlock)
+                chunk.content.text = "tick"
+                await client.session_update("sess-1", chunk)
+            return sentinel
+
+        result = await agent._await_with_idle_deadline(
+            _active_prompt(), cancel_on_exit=True
+        )
+        assert result is sentinel
+
+    @pytest.mark.asyncio
+    async def test_silent_prompt_times_out_after_idle_window(self):
+        """A prompt that produces no activity is aborted after the idle window."""
+        agent = _make_agent(acp_prompt_timeout=0.1)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        cancelled = asyncio.Event()
+
+        async def _silent_prompt() -> Any:
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return object()
+
+        with pytest.raises(TimeoutError, match="no activity"):
+            await agent._await_with_idle_deadline(_silent_prompt(), cancel_on_exit=True)
+
+        # The helper cancels the underlying prompt on timeout.
+        await asyncio.wait_for(cancelled.wait(), timeout=1.0)
+
+    @pytest.mark.asyncio
+    async def test_late_activity_extends_then_idle_times_out(self):
+        """Activity extends the deadline; silence after it still times out."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        agent = _make_agent(acp_prompt_timeout=0.15)
+        client = _OpenHandsACPBridge()
+        agent._client = client
+        client.arm_activity_clock()
+
+        async def _active_then_silent() -> Any:
+            # One burst of activity past the first idle window...
+            await asyncio.sleep(0.1)
+            chunk = MagicMock(spec=AgentMessageChunk)
+            chunk.content = MagicMock(spec=TextContentBlock)
+            chunk.content.text = "tick"
+            await client.session_update("sess-1", chunk)
+            # ...then go silent so the (extended) idle window elapses.
+            await asyncio.sleep(5.0)
+            return object()
+
+        with pytest.raises(TimeoutError, match="no activity"):
+            await agent._await_with_idle_deadline(
+                _active_then_silent(), cancel_on_exit=True
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1916,6 +2090,128 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_restarts_session_off_caller_loop(self, tmp_path):
+        """Restart init can synchronously resolve loopback LookupSecret values.
+
+        ``astep`` must keep that restart work off the caller loop so the
+        agent-server can serve those loopback HTTP requests instead of waiting
+        for each secret lookup to time out.
+        """
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+        agent._restart_session_on_next_turn = True
+
+        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            mock_client.accumulated_text.append("answer")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+
+        executor = AsyncExecutor()
+
+        async def _run_restart() -> None:
+            caller_loop = asyncio.get_running_loop()
+            caller_thread_id = threading.get_ident()
+            restart_entered = asyncio.Event()
+            release_restart = threading.Event()
+            restart_thread_ids: list[int] = []
+
+            def _blocking_restart(self, state, on_event):  # noqa: ARG001
+                assert self is agent
+                restart_thread_ids.append(threading.get_ident())
+                caller_loop.call_soon_threadsafe(restart_entered.set)
+                assert release_restart.wait(5.0)
+                agent._restart_session_on_next_turn = False
+
+            with patch.object(
+                ACPAgent,
+                "_restart_session_after_drain_timeout",
+                new=_blocking_restart,
+            ):
+                task = asyncio.create_task(
+                    agent.astep(conversation, on_event=emitted.append)
+                )
+                await asyncio.wait_for(restart_entered.wait(), timeout=5.0)
+                assert len(restart_thread_ids) == 1
+                assert restart_thread_ids[0] != caller_thread_id
+                release_restart.set()
+                await asyncio.wait_for(task, timeout=5.0)
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_restart())
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert emitted
+
+    def test_astep_active_prompt_survives_idle_window(self, tmp_path):
+        """End-to-end via the real portal: an actively-streaming prompt that
+        runs well past ``acp_prompt_timeout`` finalizes normally.
+
+        Exercises the full concurrency model — the prompt runs on the portal
+        loop while the idle watchdog polls on the caller loop, and each
+        bridge ``session_update`` (fired across the loop boundary) resets the
+        deadline. Regression coverage for agent-canvas#1245.
+        """
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent(acp_prompt_timeout=0.3)
+        conversation = self._make_conversation_with_message(tmp_path)
+        emitted: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+        agent._session_id = "test-session"
+
+        async def _fake_prompt(prompt_blocks, session_id):  # noqa: ARG001
+            # ~0.5s total (> 0.3s idle window), one update every 0.02s so the
+            # deadline keeps resetting; then complete the turn.
+            for _ in range(25):
+                await asyncio.sleep(0.02)
+                chunk = MagicMock(spec=AgentMessageChunk)
+                chunk.content = MagicMock(spec=TextContentBlock)
+                chunk.content.text = "tick"
+                await mock_client.session_update(session_id, chunk)
+            return None
+
+        agent._conn.prompt = _fake_prompt
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+            asyncio.run(agent.astep(conversation, on_event=emitted.append))
+        finally:
+            executor.close()
+
+        assert (
+            conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+        )
+        assert not any(
+            isinstance(e, MessageEvent)
+            and any(
+                isinstance(c, TextContent) and "timed out" in c.text
+                for c in e.llm_message.content
+            )
+            for e in emitted
+        )
+
     def test_astep_emits_error_and_reraises_on_exception(self, tmp_path):
         """astep's error path must call ``_emit_turn_error`` AND re-raise.
 
@@ -1975,13 +2271,15 @@ class TestACPAgentAstep:
         )
         assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
-    def test_astep_times_out_while_tool_call_is_inflight(self, tmp_path):
-        """A hard ACP prompt timeout still fires during an active tool call.
+    def test_astep_times_out_when_idle_with_inflight_tool_call(self, tmp_path):
+        """The idle timeout fires when a tool call hangs with no further updates.
 
-        Mirroring OpenHands command handling, active output/heartbeats keep the
-        runtime alive but do not let a never-ending command suppress the hard
-        turn deadline. The timeout path must cancel the ACP session and close
-        any streamed tool cards as failed.
+        The deadline is an inactivity timeout: a tool card that was opened but
+        then produces no further ``session_update`` (the prompt future never
+        resolves and nothing streams) is silent, so the idle window elapses and
+        the timeout path must cancel the ACP session and close the streamed tool
+        card as failed. (Ongoing activity instead resets the clock — see
+        ``TestACPPromptIdleTimeout``.)
         """
         from concurrent.futures import Future
 
@@ -3949,6 +4247,9 @@ class TestClientForkTextRouting:
 # ---------------------------------------------------------------------------
 
 
+_CHATGPT_AUTH_JSON = '{"tokens": {"id_token": "x", "access_token": "y"}}'
+
+
 class TestSelectAuthMethod:
     """Test auto-detection of ACP auth method from env vars."""
 
@@ -3983,7 +4284,7 @@ class TestSelectAuthMethod:
         ]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         env = {"OPENAI_API_KEY": "sk-test"}
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
@@ -4012,7 +4313,7 @@ class TestSelectAuthMethod:
         methods = [self._make_auth_method("chatgpt")]
         auth_dir = tmp_path / ".codex"
         auth_dir.mkdir()
-        (auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+        (auth_dir / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
 
         with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
             assert _select_auth_method(methods, {}) == "chatgpt"
@@ -4082,7 +4383,7 @@ class TestSelectAuthMethod:
         even though ~/.codex/auth.json does not exist."""
         codex_home = tmp_path / "conv" / "acp" / "codex"
         codex_home.mkdir(parents=True)
-        (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        (codex_home / "auth.json").write_text(_CHATGPT_AUTH_JSON, encoding="utf-8")
         methods = [self._make_auth_method("chatgpt")]
         empty_home = tmp_path / "home"
         empty_home.mkdir()
@@ -4116,6 +4417,44 @@ class TestSelectAuthMethod:
             assert _codex_auth_file({}) == home / ".codex" / "auth.json"
         ch = tmp_path / "ch"
         assert _codex_auth_file({"CODEX_HOME": str(ch)}) == ch / "auth.json"
+
+    # -- apikey-format auth.json must not be treated as chatgpt (#3627) -----
+
+    def test_apikey_format_auth_file_falls_back_to_api_key(self, tmp_path):
+        """Codex rewrites $CODEX_HOME/auth.json with {"auth_mode": "apikey", ...}
+        during apikey-mode sessions. On a restart, that file must NOT be picked
+        as ``chatgpt`` or codex-acp hangs on browser-based OAuth (issue #3627).
+        """
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            '{"auth_mode": "apikey", "OPENAI_API_KEY": "sk-test"}',
+            encoding="utf-8",
+        )
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
+    def test_malformed_auth_file_falls_back_to_api_key(self, tmp_path):
+        """A non-JSON / unreadable auth.json must not trip chatgpt selection."""
+        codex_home = tmp_path / "codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text("not-json{", encoding="utf-8")
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        empty_home = tmp_path / "home"
+        empty_home.mkdir()
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=empty_home):
+            assert _select_auth_method(methods, env) == "openai-api-key"
 
     # -- Gemini Vertex AI service-account detection (issue #1020) ----------
 
@@ -4213,6 +4552,20 @@ class TestCodexBaseUrlOverrides:
         )
 
 
+class TestCodexModelConfigOptions:
+    def test_splits_combined_model_and_reasoning_effort(self):
+        assert _codex_model_config_options("gpt-5.5/high") == (
+            ("model", "gpt-5.5"),
+            ("reasoning_effort", "high"),
+        )
+
+    def test_leaves_base_or_custom_model_id_unchanged(self):
+        assert _codex_model_config_options("gpt-5.5") == (("model", "gpt-5.5"),)
+        assert _codex_model_config_options("custom/provider/model") == (
+            ("model", "custom/provider/model"),
+        )
+
+
 # ---------------------------------------------------------------------------
 # ACP model overrides
 # ---------------------------------------------------------------------------
@@ -4220,50 +4573,127 @@ class TestCodexBaseUrlOverrides:
 
 class TestMaybeSetSessionModel:
     @pytest.mark.asyncio
-    async def test_codex_agent_uses_protocol_model_override(self):
+    async def test_set_session_model_mechanism(self):
+        # ``via_config_option=False`` (gemini-cli, older codex/claude with the
+        # ``models`` capability) applies the model via ``set_session_model``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
-            conn, "codex-acp", "session-1", "gpt-5.4"
+            conn, "codex-acp", "session-1", "gpt-5.4", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gpt-5.4",
             session_id="session-1",
         )
+        conn.set_config_option.assert_not_called()
         # The override was actually pushed to the server via the protocol call.
         assert applied is True
 
     @pytest.mark.asyncio
-    async def test_meta_key_provider_skips_protocol_override_at_init(self):
-        # claude-agent-acp selects its *initial* model via session _meta, so the
-        # one-shot init set_session_model call is skipped (even though the
-        # provider now supports the protocol call for runtime switches).
+    async def test_set_config_option_mechanism(self):
+        # ``via_config_option=True`` (codex-acp 0.16+, claude-agent-acp 0.44+)
+        # applies the model via ``set_config_option(configId="model")``.
         conn = AsyncMock()
         applied = await _maybe_set_session_model(
             conn,
             "claude-agent-acp",
             "session-1",
-            "claude-opus-4-6",
+            "opus[1m]",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="opus[1m]",
+            session_id="session-1",
         )
         conn.set_session_model.assert_not_called()
-        # Not applied *via this call* — claude rode the model in via _meta on
-        # new_session, which the caller accounts for separately.
-        assert applied is False
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_codex_config_option_splits_reasoning_effort(self):
+        # Canvas may persist Codex ids as ``model/effort``; codex-acp 0.16
+        # exposes effort as its own config option.
+        conn = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn, "codex-acp", "session-1", "gpt-5.4/low", via_config_option=True
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.4", session_id="session-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="low",
+                    session_id="session-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        assert applied is True
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_protocol_override(self):
         conn = AsyncMock()
-        applied = await _maybe_set_session_model(conn, "codex-acp", "session-1", None)
+        applied = await _maybe_set_session_model(
+            conn, "codex-acp", "session-1", None, via_config_option=True
+        )
         conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_not_called()
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_does_not_apply_override_at_init(self):
-        # An unknown/custom server gets neither _meta nor the protocol call on a
-        # fresh session, so the override never reaches the server.
-        conn = AsyncMock()
+    async def test_unknown_provider_applies_via_detected_mechanism(self):
+        # An unknown/custom server applies the model via whichever mechanism its
+        # session/new advertised (detected upstream), not a hardcoded guess.
+        conn_cfg = AsyncMock()
         applied = await _maybe_set_session_model(
-            conn, "some-custom-acp", "session-1", "whatever"
+            conn_cfg, "devin-cli", "session-1", "kimi-k2-6", via_config_option=True
         )
+        conn_cfg.set_config_option.assert_awaited_once_with(
+            config_id="model", value="kimi-k2-6", session_id="session-1"
+        )
+        conn_cfg.set_session_model.assert_not_called()
+        assert applied is True
+
+        conn_set = AsyncMock()
+        applied = await _maybe_set_session_model(
+            conn_set, "devin-cli", "session-1", "kimi-k2-6", via_config_option=False
+        )
+        conn_set.set_session_model.assert_awaited_once_with(
+            model_id="kimi-k2-6", session_id="session-1"
+        )
+        conn_set.set_config_option.assert_not_called()
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_apply_failure_is_tolerated(self):
+        # If the model-apply fails for an unknown provider, we log a warning but
+        # don't break session creation.
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32601, message="method not found"
+        )
+        applied = await _maybe_set_session_model(
+            conn, "some-custom-acp", "session-1", "whatever", via_config_option=True
+        )
+        conn.set_config_option.assert_awaited_once()
+        assert applied is False
+
+    @pytest.mark.asyncio
+    async def test_known_provider_apply_rejection_is_tolerated(self):
+        # claude-agent-acp's ``model`` select is dynamic/account-dependent and
+        # rejects an absent curated id (e.g. ``sonnet`` on accounts without it,
+        # dressed as -32603). A rejected *initial* model must not fail session
+        # creation — it degrades to the server default (applied=False) like the
+        # unknown-provider path, since the curated list is a suggestion not an
+        # access check. (Runtime switches via set_acp_model surface the error.)
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32603, message="Invalid value for config option model: sonnet"
+        )
+        applied = await _maybe_set_session_model(
+            conn, "claude-agent-acp", "session-1", "sonnet", via_config_option=True
+        )
+        conn.set_config_option.assert_awaited_once()
         conn.set_session_model.assert_not_called()
         assert applied is False
 
@@ -4272,15 +4702,18 @@ class TestReapplySessionModelOnResume:
     """Resume reapplies the persisted model via the runtime-switch gate."""
 
     @pytest.mark.asyncio
-    async def test_claude_reapplies_persisted_model_on_resume(self):
-        # claude selects its initial model via _meta (supports_set_session_model
-        # =False) but DOES support set_session_model for runtime switches.
-        # load_session() carries no _meta, so on resume the persisted model must
-        # be reapplied via the runtime-switch gate — _maybe_set_session_model
-        # would skip it.
+    async def test_reapply_via_set_session_model_mechanism(self):
+        # load_session() carries no model selection, so on resume the persisted
+        # model must be reapplied via the runtime-switch gate. Servers with the
+        # ``models`` capability (gemini-cli, older codex/claude) use
+        # ``set_session_model``.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "claude-agent-acp", "sess-1", "claude-haiku-4-5-20251001"
+            conn,
+            "claude-agent-acp",
+            "sess-1",
+            "claude-haiku-4-5-20251001",
+            via_config_option=False,
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="claude-haiku-4-5-20251001", session_id="sess-1"
@@ -4288,37 +4721,62 @@ class TestReapplySessionModelOnResume:
         assert applied is True
 
     @pytest.mark.asyncio
-    async def test_codex_reapplies_persisted_model_on_resume(self):
+    async def test_reapply_via_set_config_option_mechanism(self):
+        # codex-acp 0.16+/claude-agent-acp 0.44+ reapply via
+        # ``set_config_option(configId="model")`` with the bare preset id.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "codex-acp", "sess-1", "gpt-5.4/low"
+            conn, "codex-acp", "sess-1", "gpt-5.5", via_config_option=True
         )
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="gpt-5.4/low", session_id="sess-1"
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="gpt-5.5", session_id="sess-1"
         )
+        conn.set_session_model.assert_not_called()
+        assert applied is True
+
+    @pytest.mark.asyncio
+    async def test_codex_reapply_splits_reasoning_effort(self):
+        conn = AsyncMock()
+        applied = await _reapply_session_model_on_resume(
+            conn, "codex-acp", "sess-1", "gpt-5.4/low", via_config_option=True
+        )
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.4", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="low",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
         assert applied is True
 
     @pytest.mark.asyncio
     async def test_missing_model_skips_reapply(self):
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "claude-agent-acp", "sess-1", None
+            conn, "claude-agent-acp", "sess-1", None, via_config_option=True
         )
         conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_not_called()
         assert applied is False
 
     @pytest.mark.asyncio
-    async def test_unknown_provider_attempts_reapply(self):
-        # provider=None (custom server) is allowed to attempt the switch by
-        # set_acp_model, and such switches are persisted as authoritative — so
-        # resume must mirror that and attempt the reapply too (otherwise the
-        # resumed session would silently revert to the server default).
+    async def test_unknown_provider_reapplies_via_detected_mechanism(self):
+        # provider=None (custom server) reapplies via whichever mechanism the
+        # resumed session advertised, not a hardcoded guess.
         conn = AsyncMock()
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever"
+            conn, "devin-cli", "sess-1", "kimi-k2-6", via_config_option=True
         )
-        conn.set_session_model.assert_awaited_once_with(
-            model_id="whatever", session_id="sess-1"
+        conn.set_session_model.assert_not_called()
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model",
+            value="kimi-k2-6",
+            session_id="sess-1",
         )
         assert applied is True
 
@@ -4344,7 +4802,7 @@ class TestReapplySessionModelOnResume:
             return_value=unsupported,
         ):
             applied = await _reapply_session_model_on_resume(
-                conn, "legacy-acp", "sess-1", "x"
+                conn, "legacy-acp", "sess-1", "x", via_config_option=False
             )
         conn.set_session_model.assert_not_called()
         assert applied is False
@@ -4355,13 +4813,13 @@ class TestReapplySessionModelOnResume:
         # the call, or invalid model id) must not break resume — mirrors the
         # load_session fallback. The error is logged, not raised.
         conn = AsyncMock()
-        conn.set_session_model.side_effect = ACPRequestError(
+        conn.set_config_option.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         applied = await _reapply_session_model_on_resume(
-            conn, "some-custom-acp", "sess-1", "whatever"
+            conn, "some-custom-acp", "sess-1", "whatever", via_config_option=True
         )
-        conn.set_session_model.assert_awaited_once()
+        conn.set_config_option.assert_awaited_once()
         # Rejected => the live session kept the server default, so the override
         # must NOT be reported as applied.
         assert applied is False
@@ -4376,35 +4834,160 @@ class TestReapplySessionModelOnResume:
             code=-32603, message="internal error"
         )
         applied = await _reapply_session_model_on_resume(
-            conn, "codex-acp", "sess-1", "gpt-5.4/low"
+            conn, "codex-acp", "sess-1", "gpt-5.5", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once()
         assert applied is False
 
 
-class TestSetACPModel:
-    """Runtime (mid-conversation) model switching via set_session_model."""
+class TestHasLiveACPSession:
+    """The public predicate LocalConversation branches on for model switching."""
 
-    @staticmethod
-    def _wire(agent: ACPAgent, agent_name: str) -> ACPAgent:
+    def test_false_before_session(self):
+        # Freshly constructed: no connection / session / executor wired yet.
+        agent = _make_agent()
+        assert agent.has_live_acp_session is False
+
+    def test_true_when_fully_wired(self):
+        agent = _make_agent()
         agent._conn = MagicMock()
         agent._session_id = "sess-1"
+        agent._executor = MagicMock()
+        assert agent.has_live_acp_session is True
+
+    @pytest.mark.parametrize(
+        "conn,session_id,executor",
+        [
+            (None, "sess-1", "exec"),
+            ("conn", None, "exec"),
+            ("conn", "sess-1", None),
+        ],
+    )
+    def test_false_when_partially_wired(self, conn, session_id, executor):
+        # Every one of the three runtime handles must be present; a partial
+        # teardown / bootstrap must not read as a live session.
+        agent = _make_agent()
+        agent._conn = MagicMock() if conn else None
+        agent._session_id = session_id
+        agent._executor = MagicMock() if executor else None
+        assert agent.has_live_acp_session is False
+
+    def test_set_acp_model_raises_when_no_live_session(self):
+        # The low-level primitive still rejects a pre-session call (the deferral
+        # lives in LocalConversation.switch_acp_model, which branches on the
+        # predicate); guards that the two stay in sync.
+        agent = _make_agent()
+        assert not agent.has_live_acp_session
+        with pytest.raises(RuntimeError, match="not initialized"):
+            agent.set_acp_model("gpt-5.4")
+
+
+class TestSetACPModel:
+    """Runtime (mid-conversation) model switching via the session's mechanism."""
+
+    @staticmethod
+    def _wire(
+        agent: ACPAgent, agent_name: str, *, via_config_option: bool = False
+    ) -> ACPAgent:
+        conn = MagicMock()
+        conn.set_session_model = AsyncMock()
+        conn.set_config_option = AsyncMock()
+        agent._conn = conn
+        agent._session_id = "sess-1"
         agent._agent_name = agent_name
+        agent._model_via_config_option = via_config_option
         executor = MagicMock()
-        executor.run_async = MagicMock()
+
+        # run_async actually drives the (async) apply coroutine to completion so
+        # the AsyncMock conn calls fire — exercising the real apply/split path.
+        def _run(coro: Any, timeout: Any = None) -> Any:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+
+        executor.run_async = MagicMock(side_effect=_run)
         agent._executor = executor
         return agent
 
     def test_switches_model_on_live_codex_session(self):
+        # Default (models-capability) session ⇒ set_session_model, id as-is.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent.set_acp_model("gpt-5.4/low")
-        agent._conn.set_session_model.assert_called_once_with(
-            model_id="gpt-5.4/low", session_id="sess-1"
+        agent.set_acp_model("gpt-5.5")
+        agent._conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.5", session_id="sess-1"
         )
+        agent._conn.set_config_option.assert_not_called()
         agent._executor.run_async.assert_called_once()
         # Sentinel LLM + metrics reflect the live model for cost/token tracking.
-        assert agent.llm.model == "gpt-5.4/low"
-        assert agent.llm.metrics.model_name == "gpt-5.4/low"
+        assert agent.llm.model == "gpt-5.5"
+        assert agent.llm.metrics.model_name == "gpt-5.5"
+
+    def test_switches_codex_via_config_option_single_call(self):
+        # codex-acp 0.16 configOptions: the bare preset id applies as a single
+        # `model` selection.
+        agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
+        agent.set_acp_model("gpt-5.5")
+        agent._conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="gpt-5.5", session_id="sess-1"
+        )
+        agent._conn.set_session_model.assert_not_called()
+        assert agent.llm.model == "gpt-5.5"
+        assert agent._current_model_id == "gpt-5.5"
+
+    def test_switches_codex_via_config_option_splits_reasoning_effort(self):
+        agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
+        agent.set_acp_model("gpt-5.5/high")
+        agent._conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="high",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert agent._conn.set_config_option.await_count == 2
+        agent._conn.set_session_model.assert_not_called()
+        assert agent.llm.model == "gpt-5.5/high"
+        assert agent._current_model_id == "gpt-5.5/high"
+
+    def test_switches_claude_via_config_option_single_call(self):
+        # A bare id (no `/`) applies as a single `model` selection — no effort.
+        agent = self._wire(_make_agent(), "claude-agent-acp", via_config_option=True)
+        agent.set_acp_model("sonnet")
+        agent._conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="sonnet", session_id="sess-1"
+        )
+        assert agent._current_model_id == "sonnet"
+
+    def test_switch_method_not_found_raises_no_fallback(self):
+        # No cross-mechanism fallback: a -32601 surfaces as a ValueError naming
+        # the advertised mechanism, and the other call is never attempted.
+        agent = self._wire(_make_agent(), "codex-acp", via_config_option=False)
+        agent._conn.set_session_model.side_effect = ACPRequestError(
+            code=-32601, message="Method not found"
+        )
+        with pytest.raises(ValueError, match="rejected set_session_model"):
+            agent.set_acp_model("gpt-5.5")
+        agent._conn.set_config_option.assert_not_called()
+        agent._executor.run_async.assert_called_once()
+        # Mechanism + sentinel model are left unchanged on a failed switch.
+        assert agent._model_via_config_option is False
+        assert agent.llm.model != "gpt-5.5"
+
+    def test_switch_invalid_model_raises_value_error(self):
+        # A -32602 invalid-params is a real client error, not a wrong-mechanism
+        # signal: surface it as ValueError without a second call.
+        agent = self._wire(_make_agent(), "codex-acp", via_config_option=True)
+        agent._conn.set_config_option.side_effect = ACPRequestError(
+            code=-32602, message="Invalid params"
+        )
+        with pytest.raises(ValueError, match="rejected set_config_option"):
+            agent.set_acp_model("nonsense")
+        agent._executor.run_async.assert_called_once()
 
     def test_claude_provider_supports_runtime_switch(self):
         agent = self._wire(_make_agent(), "claude-agent-acp")
@@ -4459,8 +5042,10 @@ class TestSetACPModel:
         # A protocol-level rejection (e.g. method-not-found on a custom server,
         # or an invalid model id) must surface as a ValueError — not leak as a
         # raw acp.exceptions.RequestError — so the agent-server maps it to 400.
+        # The rejection is raised by the conn (driven through the real apply
+        # coroutine), exercising set_acp_model's actual error path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._executor.run_async.side_effect = ACPRequestError(
+        agent._conn.set_session_model.side_effect = ACPRequestError(
             code=-32601, message="method not found"
         )
         with pytest.raises(ValueError, match="rejected set_session_model"):
@@ -4474,7 +5059,7 @@ class TestSetACPModel:
         # than be mislabeled as a 400-class ValueError, mirroring the retriable
         # handling on the prompt path.
         agent = self._wire(_make_agent(), "codex-acp")
-        agent._executor.run_async.side_effect = ACPRequestError(
+        agent._conn.set_session_model.side_effect = ACPRequestError(
             code=-32603, message="internal error"
         )
         with pytest.raises(ACPRequestError):
@@ -4486,7 +5071,7 @@ class TestSetACPModel:
         # The protocol round-trip runs under the conversation state lock, so it
         # must be bounded to avoid wedging the lock if the server never answers.
         agent = self._wire(_make_agent(acp_prompt_timeout=42.0), "codex-acp")
-        agent.set_acp_model("gpt-5.4/low")
+        agent.set_acp_model("gpt-5.5")
         _, kwargs = agent._executor.run_async.call_args
         assert kwargs["timeout"] == 42.0
 
@@ -4774,9 +5359,11 @@ class TestACPPromptRetry:
 class TestGeminiSessionModel:
     @pytest.mark.asyncio
     async def test_gemini_cli_uses_protocol_model_override(self):
+        # gemini-cli keeps the ``models`` capability, so model selection rides
+        # ``set_session_model`` (via_config_option=False).
         conn = AsyncMock()
         await _maybe_set_session_model(
-            conn, "gemini-cli", "session-1", "gemini-3-flash"
+            conn, "gemini-cli", "session-1", "gemini-3-flash", via_config_option=False
         )
         conn.set_session_model.assert_awaited_once_with(
             model_id="gemini-3-flash",
@@ -5744,10 +6331,8 @@ class TestACPSessionIdPersistence:
             "acp_session_id": "stored-sess",
             "acp_session_cwd": str(tmp_path),
         }
-        # Name the server "codex-acp" so _maybe_set_session_model routes
-        # acp_model through conn.set_session_model (claude-acp uses _meta,
-        # which only applies on new_session and so wouldn't exercise the
-        # protocol-level override on the resume path).
+        # Named "codex-acp"; any built-in provider routes acp_model through
+        # conn.set_session_model on this path.
         conn = self._make_conn()
         conn.initialize.return_value.agent_info.name = "codex-acp"
         conn.initialize.return_value.auth_methods = []
@@ -5780,13 +6365,11 @@ class TestACPSessionIdPersistence:
         models.available_models = entries
         return models
 
-    def test_unknown_provider_surfaces_server_model_not_unapplied_override(
-        self, tmp_path
-    ):
+    def test_unknown_provider_applies_override_via_detected_mechanism(self, tmp_path):
         """Fresh session on an unknown/custom provider with ``acp_model`` set:
-        the override is never pushed to the server (no ``_meta``, no protocol
-        call), so ``current_model_id`` must reflect what the server reported —
-        not the override the live session isn't actually running.
+        the override is pushed via the mechanism the session advertised — here a
+        ``models``-capability response, so ``set_session_model`` — and
+        ``current_model_id`` must reflect the applied override.
         """
         agent = _make_agent(acp_model="caller-model")
         state = _make_state(tmp_path)
@@ -5794,15 +6377,18 @@ class TestACPSessionIdPersistence:
         new_response.session_id = "fresh-sess"
         new_response.models = self._models_block("server-model", ["server-model"])
         conn = self._make_conn()
+        conn.set_config_option = AsyncMock()
         conn.initialize.return_value.agent_info.name = "some-custom-acp"
         conn.initialize.return_value.auth_methods = []
         conn.new_session = AsyncMock(return_value=new_response)
 
         self._patched_start_acp_server(agent, state, conn=conn)
 
-        # Unknown provider => the override never reached the server.
-        conn.set_session_model.assert_not_awaited()
-        assert agent.current_model_id == "server-model"
+        conn.set_config_option.assert_not_awaited()
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="caller-model", session_id="fresh-sess"
+        )
+        assert agent.current_model_id == "caller-model"
 
     def test_known_provider_surfaces_applied_override(self, tmp_path):
         """Fresh session on a provider that applies the override via the
@@ -5929,10 +6515,8 @@ class TestACPSecretsEnvInjection:
     env so the ACP server (Claude Code, Codex CLI, etc.) can use them. They
     reach the subprocess through ``state.secret_registry``: ``LocalConversation``
     seeds ``agent_context.secrets`` into the registry at init (covering
-    canvas-local, which folds ``llm.api_key`` into ``agent_context.secrets``
-    server-side via ``create_agent`` but never lifts it into ``request.secrets``),
-    and ``_start_acp_server`` injects the registry. ``acp_env`` entries take
-    precedence over registry secrets.
+    callers that never lift them into ``request.secrets``), and
+    ``_start_acp_server`` injects the registry.
     """
 
     @staticmethod
@@ -6051,33 +6635,6 @@ class TestACPSecretsEnvInjection:
             conv.close()
         assert env.get("GITHUB_TOKEN") == "ghp_test123"
 
-    def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
-        """An explicit acp_env entry wins over the same key in agent_context.secrets.
-
-        ``agent_context.secrets`` reach env via the registry (seeded at
-        ``LocalConversation.__init__``); ``acp_env`` is applied last and wins.
-        """
-        from pydantic import SecretStr
-
-        from openhands.sdk.conversation.impl.local_conversation import (
-            LocalConversation,
-        )
-        from openhands.sdk.secret import StaticSecret
-
-        agent = _make_agent(
-            acp_env={"MY_TOKEN": "acp-env-wins"},
-            agent_context=AgentContext(
-                secrets={"MY_TOKEN": StaticSecret(value=SecretStr("secret-panel"))}
-            ),
-        )
-        conv = LocalConversation(agent, workspace=str(tmp_path))
-        try:
-            with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-                env = self._run_start_capturing_env(agent, tmp_path, state=conv.state)
-        finally:
-            conv.close()
-        assert env.get("MY_TOKEN") == "acp-env-wins"
-
     def test_none_value_secret_not_injected(self, tmp_path):
         """A StaticSecret with value=None is not added to the subprocess env."""
         from openhands.sdk.secret import StaticSecret
@@ -6104,35 +6661,6 @@ class TestACPSecretsEnvInjection:
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
 
-    def test_acp_env_still_injected(self, tmp_path):
-        """``acp_env`` (user arbitrary env vars) is still injected at spawn."""
-        agent = _make_agent(acp_env={"MY_TOKEN": "acp-env-value"})
-        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-            env = self._run_start_capturing_env(agent, tmp_path)
-        assert env.get("MY_TOKEN") == "acp-env-value"
-
-    def test_empty_acp_env_does_not_warn(self, tmp_path):
-        """An empty ``acp_env`` must not emit the deprecation warning."""
-        import warnings
-
-        agent = _make_agent()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self._run_start_capturing_env(agent, tmp_path)
-        assert not [w for w in caught if "acp_env" in str(w.message)]
-
-
-class _CountingLookupSecret(SecretSource):
-    """A lookup source that records each ``get_value()`` call (to assert it is
-    *not* invoked when ``acp_env`` shadows the key)."""
-
-    stored_value: str
-    calls: list[int] = Field(default_factory=list)
-
-    def get_value(self) -> str | None:
-        self.calls.append(1)
-        return self.stored_value
-
 
 class _BrokenSecret(SecretSource):
     """A source whose ``get_value()`` raises, to verify a failing lookup is
@@ -6152,7 +6680,7 @@ class TestACPSecretRegistryEnvInjection:
     registry at ``LocalConversation.__init__`` (below ``request.secrets``), so
     the registry is the single channel ``_start_acp_server`` injects from.
 
-    Same-key precedence is ``acp_env > secret_registry > os.environ``.
+    Same-key precedence is ``secret_registry > os.environ``.
     Registry secrets override ambient ``os.environ`` so an explicit
     per-conversation/provider secret wins over a same-named server env var.
     """
@@ -6260,33 +6788,6 @@ class TestACPSecretRegistryEnvInjection:
         )
         assert env.get("OPENAI_API_KEY") == "sk-fake-openai"
 
-    def test_acp_env_takes_precedence_over_registry_secret(self, tmp_path):
-        """An explicit ``acp_env`` entry wins over the same key in the registry."""
-        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
-        env = self._run_start_capturing_env(
-            agent,
-            tmp_path,
-            registry_secrets={"GITHUB_TOKEN": "from-registry"},
-        )
-        assert env.get("GITHUB_TOKEN") == "from-acp-env"
-
-    def test_acp_env_shadow_skips_registry_lookup(self, tmp_path):
-        """``acp_env`` shadowing a key must not trigger ``get_value()``.
-
-        LookupSecret performs an HTTP request in production; calling it for
-        a key that ``acp_env`` is about to override wastes a round-trip and
-        can emit spurious lookup-failure warnings.
-        """
-        secret = _CountingLookupSecret(stored_value="from-registry")
-        agent = _make_agent(acp_env={"GITHUB_TOKEN": "from-acp-env"})
-        env = self._run_start_capturing_env(
-            agent,
-            tmp_path,
-            registry_secrets={"GITHUB_TOKEN": secret},
-        )
-        assert env.get("GITHUB_TOKEN") == "from-acp-env"
-        assert secret.calls == []
-
     def test_request_secret_wins_and_context_only_secret_still_reaches_env(
         self, tmp_path
     ):
@@ -6327,9 +6828,10 @@ class TestACPSecretRegistryEnvInjection:
 
     def test_empty_registry_does_not_change_behaviour(self, tmp_path):
         """An empty secret_registry must not raise or alter the spawn env."""
-        agent = _make_agent(acp_env={"FOO": "bar"})
+        agent = _make_agent()
         env = self._run_start_capturing_env(agent, tmp_path, registry_secrets=None)
-        assert env.get("FOO") == "bar"
+        # No secrets to inject; spawn still succeeds and produces an env dict.
+        assert isinstance(env, dict)
 
     def test_failing_registry_lookup_swallowed(self, tmp_path):
         """A secret source that raises is dropped, not propagated.
@@ -6397,15 +6899,16 @@ class TestACPSecretRegistryEnvInjection:
 
 
 class TestACPEnvConflictSuppression:
-    """CLAUDE_CONFIG_DIR OAuth auth must not coexist with API-key env vars.
+    """An active CLAUDE_CODE_OAUTH_TOKEN must not coexist with API-key env vars.
 
-    When CLAUDE_CONFIG_DIR is present in the subprocess environment the agent
-    uses a credential file for OAuth.  If ANTHROPIC_API_KEY or
-    ANTHROPIC_BASE_URL are also present they redirect requests to a proxy that
-    does not support OAuth bearer tokens, breaking auth silently.
+    When CLAUDE_CODE_OAUTH_TOKEN is present the subprocess authenticates with
+    that bearer against api.anthropic.com.  A co-present ANTHROPIC_API_KEY would
+    take precedence (bypassing the subscription) and an ANTHROPIC_BASE_URL would
+    route the bearer to a proxy that rejects it, breaking auth silently.
 
     _start_acp_server must strip the conflicting vars regardless of where they
-    came from: acp_env, os.environ, secret_registry, or agent_context.secrets.
+    came from: os.environ, secret_registry, or agent_context.secrets.
+    The strip is keyed on the token, not on CLAUDE_CONFIG_DIR (#3588).
     """
 
     @staticmethod
@@ -6489,75 +6992,57 @@ class TestACPEnvConflictSuppression:
 
         return captured
 
-    def test_claude_config_dir_suppresses_api_key_from_acp_env(self, tmp_path):
-        """ANTHROPIC_API_KEY from acp_env is stripped when CLAUDE_CONFIG_DIR present."""
-        agent = _make_agent(
-            acp_env={
-                "CLAUDE_CONFIG_DIR": "/tmp/claude-creds",
-                "ANTHROPIC_API_KEY": "sk-conflict",
-                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
-            }
-        )
-        env = self._run_start_capturing_env(agent, tmp_path)
-
-        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-creds"
-        assert "ANTHROPIC_API_KEY" not in env
-        assert "ANTHROPIC_BASE_URL" not in env
-
-    def test_claude_config_dir_suppresses_api_key_from_os_environ(self, tmp_path):
+    def test_oauth_token_suppresses_api_key_from_os_environ(self, tmp_path):
         """ANTHROPIC_API_KEY leaking in from os.environ is stripped too."""
-        agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
-        )
+        agent = _make_agent()
         env = self._run_start_capturing_env(
             agent,
             tmp_path,
+            registry_secrets={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
             extra_os_env={
                 "ANTHROPIC_API_KEY": "sk-leaked",
                 "ANTHROPIC_BASE_URL": "https://proxy.example.com",
             },
         )
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_claude_config_dir_suppresses_api_key_from_registry(self, tmp_path):
-        """ANTHROPIC_API_KEY injected via secret_registry is stripped too.
+    def test_oauth_token_suppresses_api_key_from_registry(self, tmp_path):
+        """The token + conflicting vars all injected via secret_registry.
 
         This is the channel provider creds now travel on (folded into
         ``agent_context.secrets`` by ``create_agent`` → lifted into the
         registry by ``create_request``).
         """
-        agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
-        )
+        agent = _make_agent()
         env = self._run_start_capturing_env(
             agent,
             tmp_path,
             registry_secrets={
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-from-registry",
                 "ANTHROPIC_API_KEY": "sk-from-registry",
                 "ANTHROPIC_BASE_URL": "https://proxy.example.com",
             },
         )
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-from-registry"
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_claude_config_dir_suppresses_api_key_from_secrets(self, tmp_path):
-        """ANTHROPIC_API_KEY drained from agent_context.secrets is stripped too.
+    def test_oauth_token_suppresses_api_key_from_secrets(self, tmp_path):
+        """Conflicting vars drained from agent_context.secrets are stripped too.
 
         Covers the canvas-local channel: provider creds folded into
         ``agent_context.secrets`` reach env via the drain, and must still be
-        stripped when CLAUDE_CONFIG_DIR is active.
+        stripped when the OAuth token is active.
         """
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
-            acp_env={"CLAUDE_CONFIG_DIR": "/tmp/claude-creds"},
             agent_context=AgentContext(
                 secrets={
                     "ANTHROPIC_API_KEY": StaticSecret(
@@ -6569,22 +7054,45 @@ class TestACPEnvConflictSuppression:
                 }
             ),
         )
-        with pytest.warns(DeprecationWarning, match=r"ACPAgent\.acp_env"):
-            env = self._run_start_capturing_env(agent, tmp_path)
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"CLAUDE_CODE_OAUTH_TOKEN": "oauth-tok"},
+        )
 
-        assert "CLAUDE_CONFIG_DIR" in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
         assert "ANTHROPIC_API_KEY" not in env
         assert "ANTHROPIC_BASE_URL" not in env
 
-    def test_no_suppression_without_claude_config_dir(self, tmp_path):
-        """Without CLAUDE_CONFIG_DIR, ANTHROPIC_API_KEY passes through unchanged."""
-        agent = _make_agent(
-            acp_env={"ANTHROPIC_API_KEY": "sk-valid"},
+    def test_no_suppression_without_oauth_token(self, tmp_path):
+        """Without the OAuth token, ANTHROPIC_API_KEY passes through unchanged."""
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={"ANTHROPIC_API_KEY": "sk-valid"},
         )
-        env = self._run_start_capturing_env(agent, tmp_path)
 
         assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
-        assert "CLAUDE_CONFIG_DIR" not in env
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+    def test_config_dir_alone_does_not_suppress_api_key(self, tmp_path):
+        """Regression (#3588): CLAUDE_CONFIG_DIR without the OAuth token must NOT
+        strip ANTHROPIC_API_KEY. The config dir is a location lever (data-dir
+        isolation), orthogonal to auth mode — keying the strip on it used to
+        delete a working API key during isolation."""
+        agent = _make_agent()
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            registry_secrets={
+                "CLAUDE_CONFIG_DIR": "/tmp/claude-isolated",
+                "ANTHROPIC_API_KEY": "sk-valid",
+            },
+        )
+
+        assert env["CLAUDE_CONFIG_DIR"] == "/tmp/claude-isolated"
+        assert env.get("ANTHROPIC_API_KEY") == "sk-valid"
 
 
 class TestACPAgentCurrentModelIdProperty:
@@ -6647,7 +7155,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = "default"
         response.models.available_models = [m1]
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur == "default"
         # Normalized into our stable ACPModelInfo, not the raw acp type.
         assert avail == [
@@ -6662,7 +7170,7 @@ class TestExtractSessionModels:
         # Older agents don't include the ``models`` block at all -> None, so
         # callers know nothing was reported (and can preserve prior state).
         response = MagicMock(spec=[])
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur is None
         assert avail is None
 
@@ -6673,19 +7181,19 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = "gpt-5"
         response.models.available_models = None
-        cur, avail = _extract_session_models(response)
+        cur, avail, _ = _extract_session_models(response)
         assert cur == "gpt-5"
         assert avail == []
 
     def test_returns_none_list_when_response_is_none(self):
         # ``load_session`` can return ``None`` for servers that don't
         # implement the call — the helper must not crash, and reports "absent".
-        assert _extract_session_models(None) == (None, None)
+        assert _extract_session_models(None) == (None, None, False)
 
     def test_returns_none_list_when_models_field_is_none(self):
         response = MagicMock()
         response.models = None
-        assert _extract_session_models(response) == (None, None)
+        assert _extract_session_models(response) == (None, None, False)
 
     def test_returns_none_when_current_model_id_is_empty_string(self):
         # An empty string is treated the same as a missing field — we don't
@@ -6695,7 +7203,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = ""
         response.models.available_models = []
-        assert _extract_session_models(response) == (None, [])
+        assert _extract_session_models(response) == (None, [], False)
 
     def test_returns_none_when_current_model_id_is_not_a_string(self):
         # Defensive: an agent returning a non-string here is malformed.
@@ -6703,7 +7211,7 @@ class TestExtractSessionModels:
         response.models = MagicMock()
         response.models.current_model_id = 42
         response.models.available_models = []
-        assert _extract_session_models(response) == (None, [])
+        assert _extract_session_models(response) == (None, [], False)
 
 
 class TestExtractSessionModelsNormalization:
@@ -6724,15 +7232,15 @@ class TestExtractSessionModelsNormalization:
     def test_maps_fields_through(self):
         response = MagicMock()
         response.models = MagicMock()
-        response.models.current_model_id = "gpt-5.4/low"
+        response.models.current_model_id = "gpt-5.4"
         response.models.available_models = [
-            self._raw("gpt-5.4/low", "gpt-5.4 (low)", "Strong everyday model."),
+            self._raw("gpt-5.4", "GPT-5.4", "Strong everyday model."),
         ]
-        _cur, avail = _extract_session_models(response)
+        _cur, avail, _ = _extract_session_models(response)
         assert avail == [
             ACPModelInfo(
-                model_id="gpt-5.4/low",
-                name="gpt-5.4 (low)",
+                model_id="gpt-5.4",
+                name="GPT-5.4",
                 description="Strong everyday model.",
             )
         ]
@@ -6749,8 +7257,341 @@ class TestExtractSessionModelsNormalization:
             self._raw(model_id="good", name="Good"),
             self._raw(model_id="", name="Empty"),  # empty -> dropped
         ]
-        _cur, avail = _extract_session_models(response)
+        _cur, avail, _ = _extract_session_models(response)
         assert avail == [ACPModelInfo(model_id="good", name="Good", description=None)]
+
+
+class TestConfigOptionModelMechanism:
+    """Model selection via the ``model`` ``configOptions`` select.
+
+    codex-acp 0.16+ and claude-agent-acp 0.44+ dropped the UNSTABLE ``models``
+    capability + ``session/set_model`` in favour of a ``model`` config-option
+    select driven by ``session/set_config_option``. ``_extract_session_models``
+    reads that select and reports the apply mechanism as its third return value
+    (``via_config_option``) in the same scan.
+    """
+
+    def _select(self, *, id="model", type="select", current_value, options):
+        opt = SimpleNamespace(
+            id=id, type=type, current_value=current_value, options=options
+        )
+        return opt
+
+    def _opt(self, value, name=None, description=None):
+        return SimpleNamespace(value=value, name=name, description=description)
+
+    def _response(self, *, models=None, config_options):
+        return SimpleNamespace(models=models, config_options=config_options)
+
+    def test_extracts_model_state_from_config_option(self):
+        # claude-agent-acp 0.44: model select with short aliases.
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="opus[1m]",
+                    options=[
+                        self._opt("default", "Default (recommended)", "Opus 4.8 · 1M"),
+                        self._opt("opus[1m]", "Opus", "Opus 4.8 · 1M"),
+                        self._opt("sonnet", "Sonnet", "Sonnet 4.6"),
+                        self._opt("haiku", "Haiku", "Haiku 4.5"),
+                    ],
+                )
+            ],
+        )
+        cur, avail, via = _extract_session_models(response)
+        assert cur == "opus[1m]"
+        assert via is True
+        assert avail == [
+            ACPModelInfo(
+                model_id="default",
+                name="Default (recommended)",
+                description="Opus 4.8 · 1M",
+            ),
+            ACPModelInfo(model_id="opus[1m]", name="Opus", description="Opus 4.8 · 1M"),
+            ACPModelInfo(model_id="sonnet", name="Sonnet", description="Sonnet 4.6"),
+            ACPModelInfo(model_id="haiku", name="Haiku", description="Haiku 4.5"),
+        ]
+
+    def test_unwraps_rootmodel_wrapped_config_option(self):
+        # agent-client-protocol 0.8.x wraps each entry in a SessionConfigOption
+        # RootModel (the option lives under ``.root``); detection must unwrap it,
+        # else ``opt.id`` is None and the SDK wrongly falls back to set_model.
+        select = self._select(
+            current_value="opus[1m]",
+            options=[self._opt("opus[1m]", "Opus"), self._opt("sonnet", "Sonnet")],
+        )
+        wrapped = SimpleNamespace(root=select)  # mimics the RootModel wrapper
+        response = self._response(config_options=[wrapped])
+        cur, avail, via = _extract_session_models(response)
+        assert via is True
+        assert cur == "opus[1m]"
+        assert avail is not None
+        assert [m.model_id for m in avail] == ["opus[1m]", "sonnet"]
+
+    def test_models_capability_wins_over_config_option(self):
+        # If a server somehow carries both, the ``models`` capability is used.
+        models = MagicMock()
+        models.current_model_id = "from-models"
+        models.available_models = []
+        response = self._response(
+            models=models,
+            config_options=[
+                self._select(
+                    current_value="from-config", options=[self._opt("from-config", "X")]
+                )
+            ],
+        )
+        cur, avail, via = _extract_session_models(response)
+        assert cur == "from-models"
+        assert avail == []
+        assert via is False
+
+    def test_detects_config_option_mechanism(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="gpt-5.5", options=[self._opt("gpt-5.5", "GPT-5.5")]
+                )
+            ],
+        )
+        assert _extract_session_models(response)[2] is True
+
+    def test_ignores_non_model_config_options(self):
+        # A ``mode`` select alongside no ``model`` select ⇒ old mechanism, and
+        # the default (False) is reported since neither block was present.
+        response = self._response(
+            config_options=[
+                SimpleNamespace(
+                    id="mode",
+                    type="select",
+                    current_value="default",
+                    options=[self._opt("default", "Default")],
+                ),
+            ],
+        )
+        assert _extract_session_models(response) == (None, None, False)
+
+    def test_drops_options_without_usable_value(self):
+        response = self._response(
+            config_options=[
+                self._select(
+                    current_value="ok",
+                    options=[
+                        self._opt(value=42),  # non-string -> dropped
+                        self._opt("ok", "Ok"),
+                        self._opt(value="", name="Empty"),  # empty -> dropped
+                    ],
+                )
+            ],
+        )
+        cur, avail, _ = _extract_session_models(response)
+        assert cur == "ok"
+        assert avail == [ACPModelInfo(model_id="ok", name="Ok", description=None)]
+
+    def test_none_response_is_not_config_option(self):
+        assert _extract_session_models(None)[2] is False
+
+    def test_default_via_config_option_used_when_no_block_present(self):
+        # On resume a load_session that omits both the models capability and the
+        # model config-option must not blindly default to set_session_model: the
+        # caller passes the persisted mechanism hint, which is honored (#3772).
+        response = self._response(config_options=[])
+        assert _extract_session_models(response)[2] is False
+        assert (
+            _extract_session_models(response, default_via_config_option=True)[2] is True
+        )
+        # A present block still wins over the hint.
+        present = self._response(
+            config_options=[
+                self._select(current_value="x", options=[self._opt("x", "X")])
+            ]
+        )
+        assert (
+            _extract_session_models(present, default_via_config_option=False)[2] is True
+        )
+
+
+# Real ``session/new`` wire payloads (by-alias) captured from the pinned CLIs.
+# Parsed through the real ``NewSessionResponse`` so the test exercises the
+# genuine schema, INCLUDING the ``SessionConfigOption`` RootModel wrapper the
+# ``agent-client-protocol`` lib applies to ``config_options`` on 0.8.x (where a
+# naive ``opt.id`` read returns ``None``). The detection helper unwraps
+# ``.root`` so it works on 0.8.x + 0.10.x.
+def _select_dict(opt_id, current, values, category=None):
+    return {
+        "id": opt_id,
+        "name": opt_id,
+        "type": "select",
+        "category": category,
+        "currentValue": current,
+        "options": [{"value": v, "name": v} for v in values],
+    }
+
+
+_CLAUDE_046_SESSION = {
+    "sessionId": "sess-claude",
+    "models": None,
+    "configOptions": [
+        _select_dict("mode", "default", ["default", "acceptEdits"]),
+        _select_dict(
+            "model",
+            "opus[1m]",
+            ["default", "opus[1m]", "sonnet", "haiku"],
+            category="model",
+        ),
+        _select_dict("effort", "xhigh", ["xhigh", "low"]),
+    ],
+}
+_CODEX_016_SESSION = {
+    "sessionId": "sess-codex",
+    "models": None,
+    "configOptions": [
+        _select_dict("mode", "read-only", ["read-only", "full-access"]),
+        _select_dict(
+            "model",
+            "gpt-5.5",
+            ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+            category="model",
+        ),
+        _select_dict("reasoning_effort", "xhigh", ["xhigh", "low"]),
+    ],
+}
+_GEMINI_046_SESSION = {
+    "sessionId": "sess-gemini",
+    "configOptions": None,
+    "models": {
+        "currentModelId": "gemini-3-flash-preview",
+        "availableModels": [
+            {"modelId": mid, "name": mid}
+            for mid in (
+                "auto",
+                "gemini-3-pro-preview",
+                "gemini-3-flash-preview",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-3.1-flash-lite",
+            )
+        ],
+    },
+}
+
+
+class TestDetectionAgainstRealSessionResponses:
+    """Detection + extraction against the real CLI ``session/new`` wire shapes,
+    parsed through the actual ``acp.schema.NewSessionResponse``.
+
+    Guards a schema-shape regression: on ``agent-client-protocol`` 0.8.x each
+    ``config_options`` entry is a ``SessionConfigOption`` RootModel (``.root``),
+    so a naive ``opt.id`` read is ``None`` and the SDK would fall back to the
+    removed ``session/set_model``.
+    """
+
+    def test_config_options_is_the_schema_field_name(self):
+        # The SDK reads ``response.config_options``; pin that this is the real
+        # field on the schema.
+        assert "config_options" in NewSessionResponse.model_fields
+
+    def test_claude_046_uses_config_option(self):
+        resp = NewSessionResponse.model_validate(_CLAUDE_046_SESSION)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is True
+        assert cur == "opus[1m]"
+        assert avail is not None
+        assert [m.model_id for m in avail] == ["default", "opus[1m]", "sonnet", "haiku"]
+
+    def test_codex_016_uses_config_option(self):
+        resp = NewSessionResponse.model_validate(_CODEX_016_SESSION)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is True
+        assert cur == "gpt-5.5"
+        assert avail is not None
+        assert [m.model_id for m in avail] == ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"]
+
+    def test_gemini_046_uses_set_session_model(self):
+        resp = NewSessionResponse.model_validate(_GEMINI_046_SESSION)
+        cur, avail, via = _extract_session_models(resp)
+        assert via is False
+        assert cur == "gemini-3-flash-preview"
+        assert avail is not None
+        assert "gemini-3-pro-preview" in [m.model_id for m in avail]
+
+
+class TestApplyAcpModelNoFallback:
+    """``_apply_acp_model`` applies via the advertised mechanism only — there is
+    no cross-mechanism fallback. Response-detection is deterministic from the
+    session/new shape and correct for every validated CLI, so any rejection is a
+    real error (invalid model id, or a genuinely mis-advertised server) and
+    propagates rather than silently trying the other call.
+    """
+
+    @pytest.mark.asyncio
+    async def test_config_option_rejection_propagates(self):
+        conn = AsyncMock()
+        conn.set_config_option.side_effect = ACPRequestError(
+            code=-32601, message="Method not found"
+        )
+        with pytest.raises(ACPRequestError):
+            await _apply_acp_model(conn, "sess-1", "opus[1m]", via_config_option=True)
+        conn.set_session_model.assert_not_called()  # no fallback
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_rejection_propagates(self):
+        conn = AsyncMock()
+        conn.set_session_model.side_effect = ACPRequestError(
+            code=-32601, message="Method not found"
+        )
+        with pytest.raises(ACPRequestError):
+            await _apply_acp_model(
+                conn, "sess-1", "gemini-3-flash", via_config_option=False
+            )
+        conn.set_config_option.assert_not_called()  # no fallback
+
+
+class TestApplyAcpModel:
+    """``_apply_acp_model`` uses the mechanism the session advertised."""
+
+    @pytest.mark.asyncio
+    async def test_config_option_single_call(self):
+        conn = AsyncMock()
+        await _apply_acp_model(conn, "sess-1", "gpt-5.5", via_config_option=True)
+        conn.set_config_option.assert_awaited_once_with(
+            config_id="model", value="gpt-5.5", session_id="sess-1"
+        )
+        conn.set_session_model.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_set_session_model_branch(self):
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn, "sess-1", "gemini-2.5-pro", via_config_option=False
+        )
+        conn.set_session_model.assert_awaited_once_with(
+            model_id="gemini-2.5-pro", session_id="sess-1"
+        )
+        conn.set_config_option.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_codex_config_option_splits_reasoning_effort(self):
+        conn = AsyncMock()
+        await _apply_acp_model(
+            conn,
+            "sess-1",
+            "gpt-5.5/xhigh",
+            agent_name="codex-acp",
+            via_config_option=True,
+        )
+        conn.set_config_option.assert_has_awaits(
+            [
+                call(config_id="model", value="gpt-5.5", session_id="sess-1"),
+                call(
+                    config_id="reasoning_effort",
+                    value="xhigh",
+                    session_id="sess-1",
+                ),
+            ]
+        )
+        assert conn.set_config_option.await_count == 2
+        conn.set_session_model.assert_not_called()
 
 
 class TestACPAgentAvailableModelsProperty:
@@ -6787,11 +7628,12 @@ class TestACPAgentAvailableModelsProperty:
 
 
 class TestACPAgentSupportsRuntimeModelSwitch:
-    """``supports_runtime_model_switch`` mirrors ``set_acp_model``'s gate.
+    """``supports_runtime_model_switch`` gates the live-switch picker.
 
-    It refuses only for a *known* provider that declares no support, attempts
-    optimistically for unknown/custom servers, and is ``False`` before a
-    session exists.
+    ``True`` only for known providers that declare ``session/set_model`` support.
+    Unknown/custom providers use ``set_config_option`` for initial model selection
+    but that is a generic config write, not a guaranteed live-switch primitive,
+    so the picker is hidden for them. ``False`` before a session exists.
     """
 
     def test_false_before_session(self):
@@ -6806,13 +7648,13 @@ class TestACPAgentSupportsRuntimeModelSwitch:
         agent._agent_name = "codex-acp"
         assert agent.supports_runtime_model_switch is True
 
-    def test_optimistic_true_for_unknown_provider(self):
-        # Mirrors set_acp_model, which attempts the call for unknown/custom
-        # servers rather than refusing — so the picker isn't needlessly hidden.
+    def test_false_for_unknown_provider(self):
+        # Unknown/custom providers use set_config_option for initial model
+        # selection only; the live-switch picker is hidden for them.
         agent = _make_agent()
         agent._session_id = "sess-1"
         agent._agent_name = "some-third-party-acp-server"
-        assert agent.supports_runtime_model_switch is True
+        assert agent.supports_runtime_model_switch is False
 
     def test_false_for_known_unsupported_provider(self, monkeypatch):
         # A known provider that declares no support is the one case we refuse.
@@ -6889,6 +7731,39 @@ class TestMcpConfigToAcpServers:
         assert out[0].url == "https://h/mcp"
         assert [(h.name, h.value) for h in out[0].headers] == [
             ("Authorization", "Bearer y")
+        ]
+
+    def test_http_auth_maps_to_bearer_header(self):
+        from acp.schema import HttpMcpServer
+
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert len(out) == 1
+        assert isinstance(out[0], HttpMcpServer)
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("Authorization", "Bearer token-y")
+        ]
+
+    def test_http_auth_does_not_override_authorization_header(self):
+        cfg = {
+            "mcpServers": {
+                "remote": {
+                    "url": "https://h/mcp",
+                    "headers": {"authorization": "Bearer explicit"},
+                    "auth": "token-y",
+                }
+            }
+        }
+        out = _mcp_config_to_acp_servers(cfg, self._caps(http=True, sse=False))
+        assert [(h.name, h.value) for h in out[0].headers] == [
+            ("authorization", "Bearer explicit")
         ]
 
     def test_sse_gated_on_capability(self):
@@ -7188,30 +8063,6 @@ class TestACPFileSecretMaterialisation:
         assert auth_file.read_text(encoding="utf-8") == '{"a": 1}'
         assert "CODEX_AUTH_JSON" not in env
 
-    def test_acp_env_pin_wins_and_credential_seeds_where_it_points(self, tmp_path):
-        """An explicit acp_env[CODEX_HOME] keeps its precedence, and the
-        credential is seeded *there* so the file and env stay consistent."""
-        from openhands.sdk.secret import StaticSecret
-
-        pinned = tmp_path / "pinned_codex"
-        # Pre-create the pinned dir with deliberately wide (0755) perms.
-        pinned.mkdir()
-        pinned.chmod(0o755)
-        agent = _make_agent(acp_env={"CODEX_HOME": str(pinned)})
-        state = self._state(tmp_path)
-        state.secret_registry.update_secrets(
-            {"CODEX_AUTH_JSON": StaticSecret(value=SecretStr('{"k": 1}'))}
-        )
-        env = self._run_start(agent, state, conn=self._make_conn())
-
-        assert env["CODEX_HOME"] == str(pinned)
-        # The credential lands under the pinned dir, not the conversation root.
-        assert (pinned / "auth.json").read_text(encoding="utf-8") == '{"k": 1}'
-        # The pinned dir's user-chosen perms are NOT silently narrowed...
-        assert pinned.stat().st_mode & 0o777 == 0o755
-        # ...but the credential file itself is still 0600.
-        assert (pinned / "auth.json").stat().st_mode & 0o777 == 0o600
-
     def test_fallback_root_when_not_persisted(self, tmp_path):
         """With no persistence_dir, the file lands under the workspace tree —
         still seed-if-absent, no TemporaryDirectory."""
@@ -7424,13 +8275,6 @@ class TestACPDataDirIsolation:
         assert "CODEX_HOME" not in env
         assert "CLAUDE_CONFIG_DIR" not in env
 
-    def test_acp_env_pin_wins(self, tmp_path):
-        agent = self._agent(["codex-acp"], acp_env={"CODEX_HOME": "/pinned/codex"})
-        state = self._H._state(tmp_path)
-        with patch.dict("os.environ", {}, clear=True):
-            env = self._H._run_start(agent, state, conn=self._H._make_conn())
-        assert env["CODEX_HOME"] == "/pinned/codex"
-
     def test_falls_back_to_workspace_when_not_persisted(self, tmp_path):
         agent = self._agent(["codex-acp"])
         state = self._H._state(tmp_path, persisted=False)
@@ -7462,13 +8306,15 @@ class TestACPDataDirIsolation:
             encoding="utf-8"
         ) == '{"tokens": "x"}'
 
-    # --- Claude carve-out: must not knock out an active API key --------------
+    # --- Claude: isolation applies under either auth mode (#3588) ------------
 
-    def test_claude_skips_when_api_key_active(self, tmp_path):
+    def test_claude_isolates_under_api_key(self, tmp_path):
         from openhands.sdk.secret import StaticSecret
 
         agent = self._agent(["npx", "-y", "@agentclientprotocol/claude-agent-acp"])
         state = self._H._state(tmp_path)
+        persist = state.persistence_dir
+        assert persist is not None
         state.secret_registry.update_secrets(
             {"ANTHROPIC_API_KEY": StaticSecret(value=SecretStr("sk-live"))}
         )
@@ -7476,9 +8322,10 @@ class TestACPDataDirIsolation:
             env = self._H._run_start(
                 agent, state, conn=self._H._make_conn(agent_name="claude-agent-acp")
             )
-        # Setting CLAUDE_CONFIG_DIR would trip _ENV_CONFLICT_MAP and strip the
-        # key, so isolation is skipped and the working key survives.
-        assert "CLAUDE_CONFIG_DIR" not in env
+        # #3588: the conflict strip is keyed on CLAUDE_CODE_OAUTH_TOKEN, not on
+        # CLAUDE_CONFIG_DIR, so relocating the data dir no longer strips a working
+        # API key — API-key Claude gets the same per-conversation isolation.
+        assert Path(env["CLAUDE_CONFIG_DIR"]) == Path(persist) / "acp" / "claude-code"
         assert env["ANTHROPIC_API_KEY"] == "sk-live"
 
     def test_claude_isolates_under_oauth_token(self, tmp_path):

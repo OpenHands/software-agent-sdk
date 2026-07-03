@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from abc import abstractmethod
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import (
     Field,
@@ -7,13 +10,16 @@ from pydantic import (
     model_validator,
 )
 
-from openhands.sdk.llm.llm import _RETURN_METRICS_DETAILS, LLM
+from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
 from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
-from openhands.sdk.utils.deprecation import warn_deprecated
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm import LLMCallContext
 
 
 logger = get_logger(__name__)
@@ -52,9 +58,9 @@ class RouterLLM(LLM):
         self,
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
-        return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
+        call_context: LLMCallContext | None = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -64,8 +70,6 @@ class RouterLLM(LLM):
         Args:
             messages: List of conversation messages
             tools: Optional list of tools available to the model
-            return_metrics: Deprecated and ignored; metrics are always returned
-                via ``LLMResponse.metrics``. Scheduled for removal in ``1.29.0``.
             add_security_risk_prediction: Add security_risk field to tool schemas
             on_token: Optional callback for streaming tokens
             **kwargs: Additional arguments passed to the LLM API
@@ -74,27 +78,19 @@ class RouterLLM(LLM):
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        if return_metrics:
-            warn_deprecated(
-                "RouterLLM.completion(return_metrics=...)",
-                deprecated_in="1.24.0",
-                removed_in="1.29.0",
-                details=_RETURN_METRICS_DETAILS,
-            )
-
         # Select appropriate LLM
         selected_model = self.select_llm(messages)
         self.active_llm = self.llms_for_routing[selected_model]
 
         logger.info(f"RouterLLM routing to {selected_model}...")
 
-        # Delegate to selected LLM. ``return_metrics`` is intentionally not
-        # forwarded: it is a no-op and the warning above already fired.
+        # Delegate to selected LLM.
         return self.active_llm.completion(
             messages=messages,
             tools=tools,
             add_security_risk_prediction=add_security_risk_prediction,
             on_token=on_token,
+            call_context=call_context,
             **kwargs,
         )
 

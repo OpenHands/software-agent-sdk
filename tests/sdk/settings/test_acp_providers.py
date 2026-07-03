@@ -35,14 +35,14 @@ class TestACPProviderInfo:
         assert info.base_url_env_var == "ANTHROPIC_BASE_URL"
         assert info.default_session_mode == "bypassPermissions"
         assert "claude-agent" in info.agent_name_patterns
-        # claude-agent-acp selects its *initial* model via _meta (session_meta_key),
-        # so it does NOT use set_session_model at session creation ...
-        assert info.supports_set_session_model is False
-        # ... but it DOES support session/set_model for mid-conversation switches.
+        # Initial selection rides a protocol call — claude-agent-acp ignores the
+        # session-_meta payload (#3654), which is still sent as best-effort
+        # (session_meta_key below). On 0.44.0 the call is set_config_option.
+        assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key == "claudeCode"
-        assert info.default_model == "claude-opus-4-7"
-        assert any(m.id == "claude-opus-4-7" for m in info.available_models)
+        assert info.default_model == "opus[1m]"
+        assert any(m.id == "opus[1m]" for m in info.available_models)
         # Pinned binary exposed by the agent-server image wrappers.
         assert info.binary_name == "claude-agent-acp"
         assert info.data_dir_env_var == "CLAUDE_CONFIG_DIR"
@@ -59,8 +59,8 @@ class TestACPProviderInfo:
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model == "gpt-5.5/medium"
-        assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
+        assert info.default_model == "gpt-5.5"
+        assert any(m.id == "gpt-5.5" for m in info.available_models)
         assert info.binary_name == "codex-acp"
         assert info.data_dir_env_var == "CODEX_HOME"
 
@@ -71,13 +71,13 @@ class TestACPProviderInfo:
         assert "--acp" in info.default_command
         assert info.api_key_env_var == "GEMINI_API_KEY"
         assert info.base_url_env_var == "GEMINI_BASE_URL"
-        assert info.default_session_mode == "yolo"
+        assert info.default_session_mode == "default"
         assert "gemini-cli" in info.agent_name_patterns
         assert info.supports_set_session_model is True
         assert info.supports_runtime_model_switch is True
         assert info.session_meta_key is None
-        assert info.default_model == "auto-gemini-2.5"
-        assert any(m.id == "auto-gemini-2.5" for m in info.available_models)
+        assert info.default_model == "auto"
+        assert any(m.id == "auto" for m in info.available_models)
         # The Gemini CLI's ACP binary is just ``gemini`` (the ``--acp`` flag is
         # a trailing arg, preserved by resolve_acp_command on rewrite).
         assert info.binary_name == "gemini"

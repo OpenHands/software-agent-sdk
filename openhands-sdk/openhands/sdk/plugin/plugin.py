@@ -350,7 +350,7 @@ class Plugin(BaseModel):
             return []
 
         plugins: list[Plugin] = []
-        for item in plugins_path.iterdir():
+        for item in sorted(plugins_path.iterdir()):
             if item.is_dir():
                 try:
                     plugin = cls.load(item)
@@ -412,7 +412,7 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
         return []
 
     skills: list[Skill] = []
-    for item in skills_dir.iterdir():
+    for item in sorted(skills_dir.iterdir()):
         if item.is_dir():
             skill_md = find_skill_md(item)
             if skill_md:
@@ -495,7 +495,7 @@ def _load_agents(plugin_dir: Path) -> list[AgentDefinition]:
         return []
 
     agents: list[AgentDefinition] = []
-    for item in agents_dir.iterdir():
+    for item in sorted(agents_dir.iterdir()):
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
                 agent = AgentDefinition.load(item)
@@ -514,7 +514,7 @@ def _load_commands(plugin_dir: Path) -> list[CommandDefinition]:
         return []
 
     commands: list[CommandDefinition] = []
-    for item in commands_dir.iterdir():
+    for item in sorted(commands_dir.iterdir()):
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
                 command = CommandDefinition.load(item)

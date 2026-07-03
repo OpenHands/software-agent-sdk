@@ -1,0 +1,55 @@
+{
+  "__expected__": {
+    "active_profile": "fixture-v2-profile",
+    "agent_settings.agent_kind": "openhands",
+    "agent_settings.llm.model": "fixture-v2-persisted-llm",
+    "agent_settings.tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ],
+    "conversation_settings.max_iterations": 240,
+    "conversation_settings.confirmation_mode": true,
+    "misc_settings.theme": "dark",
+    "misc_settings.ui.sidebar": "open",
+    "misc_settings.ui.tags": [
+      "alpha",
+      "beta"
+    ]
+  },
+  "schema_version": 2,
+  "agent_settings": {
+    "schema_version": 3,
+    "agent_kind": "openhands",
+    "llm": {
+      "model": "fixture-v2-persisted-llm"
+    },
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      }
+    ],
+    "verification": {
+      "critic_enabled": true
+    }
+  },
+  "conversation_settings": {
+    "schema_version": 1,
+    "max_iterations": 240,
+    "confirmation_mode": true,
+    "security_analyzer": "llm"
+  },
+  "active_profile": "fixture-v2-profile",
+  "misc_settings": {
+    "theme": "dark",
+    "ui": {
+      "sidebar": "open",
+      "tags": [
+        "alpha",
+        "beta"
+      ]
+    }
+  }
+}
