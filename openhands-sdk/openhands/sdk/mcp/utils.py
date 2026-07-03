@@ -1,10 +1,12 @@
 """Utility functions for MCP integration."""
 
 import logging
+from typing import Any
 
 import mcp.types
+from fastmcp.client.auth import OAuth
 from fastmcp.client.logging import LogMessage
-from fastmcp.mcp_config import MCPConfig
+from fastmcp.mcp_config import MCPConfig, RemoteMCPServer
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
@@ -14,6 +16,61 @@ from openhands.sdk.mcp.tool import MCPToolDefinition
 
 logger = get_logger(__name__)
 LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
+
+
+def _oauth_auth_from_authentication_config(
+    authentication: dict[str, Any] | None,
+) -> OAuth | None:
+    """Build FastMCP OAuth auth from explicit OpenHands MCP auth metadata."""
+    if not authentication or authentication.get("type") != "oauth":
+        return None
+
+    additional_client_metadata = dict(
+        authentication.get("additional_client_metadata") or {}
+    )
+    client_auth_method = authentication.get("client_auth_method")
+    if client_auth_method is not None:
+        if client_auth_method not in {
+            "none",
+            "client_secret_post",
+            "client_secret_basic",
+        }:
+            raise ValueError(
+                "MCP OAuth authentication.client_auth_method must be one of "
+                "'none', 'client_secret_post', or 'client_secret_basic'"
+            )
+        additional_client_metadata["token_endpoint_auth_method"] = client_auth_method
+
+    kwargs: dict[str, Any] = {}
+    if additional_client_metadata:
+        kwargs["additional_client_metadata"] = additional_client_metadata
+    for source_key, target_key in (
+        ("scopes", "scopes"),
+        ("client_name", "client_name"),
+        ("client_metadata_url", "client_metadata_url"),
+    ):
+        value = authentication.get(source_key)
+        if value is not None:
+            kwargs[target_key] = value
+
+    return OAuth(**kwargs)
+
+
+def _prepare_mcp_config(config: dict | MCPConfig) -> MCPConfig:
+    """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
+    if isinstance(config, dict):
+        prepared = MCPConfig.model_validate(config)
+    else:
+        prepared = config.model_copy(deep=True)
+
+    for server in prepared.mcpServers.values():
+        if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
+            continue
+        oauth_auth = _oauth_auth_from_authentication_config(server.authentication)
+        if oauth_auth is not None:
+            server.auth = oauth_auth
+
+    return prepared
 
 
 async def log_handler(message: LogMessage):
@@ -53,8 +110,7 @@ def create_mcp_tools(
                 # use tool
         # Connection automatically closed
     """
-    if isinstance(config, dict):
-        config = MCPConfig.model_validate(config)
+    config = _prepare_mcp_config(config)
     client = MCPClient(config, log_handler=log_handler)
 
     try:

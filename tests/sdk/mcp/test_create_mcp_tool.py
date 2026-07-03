@@ -12,9 +12,12 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from fastmcp import FastMCP
+from fastmcp.client.auth import OAuth
+from fastmcp.mcp_config import RemoteMCPServer
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
+from openhands.sdk.mcp.utils import _prepare_mcp_config
 
 
 logger = logging.getLogger(__name__)
@@ -154,6 +157,56 @@ def test_create_mcp_tools_empty_config():
     config = {}
     with pytest.raises(ValueError, match="No MCP servers defined"):
         create_mcp_tools(config)
+
+
+def test_prepare_mcp_config_preserves_bare_oauth_auth_string():
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(config)
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    assert server.auth == "oauth"
+
+
+def test_prepare_mcp_config_applies_explicit_oauth_authentication():
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+                "authentication": {
+                    "type": "oauth",
+                    "client_auth_method": "none",
+                    "additional_client_metadata": {
+                        "application_type": "native",
+                    },
+                    "scopes": ["email", "offline_access"],
+                    "client_name": "OpenHands",
+                },
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(config)
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+
+    assert isinstance(auth, OAuth)
+    assert auth._additional_client_metadata == {
+        "application_type": "native",
+        "token_endpoint_auth_method": "none",
+    }
+    assert auth._scopes == ["email", "offline_access"]
+    assert auth._client_name == "OpenHands"
 
 
 def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):

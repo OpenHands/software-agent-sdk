@@ -390,7 +390,9 @@ def test_mcp_test_bearer_token_in_auth_header(
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_test_accepts_auth_oauth_field(client: TestClient, http_mcp_server: MCPTestServer):
+def test_mcp_test_accepts_auth_oauth_field(
+    client: TestClient, http_mcp_server: MCPTestServer
+):
     """The ``auth: "oauth"`` field should be accepted and forwarded to fastmcp.
 
     We can't complete a real OAuth handshake in a unit test, but we can verify
@@ -454,6 +456,52 @@ def test_mcp_test_rejects_auth_oauth_with_auth_header(client: TestClient):
     assert response.status_code == 422
 
 
+def test_mcp_test_accepts_explicit_oauth_authentication(
+    client: TestClient, http_mcp_server: MCPTestServer
+):
+    """Structured OAuth metadata should round-trip through the test endpoint."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
+                "auth": "oauth",
+                "authentication": {
+                    "type": "oauth",
+                    "client_auth_method": "none",
+                },
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert set(body["tools"]) == {"echo", "add"}
+
+
+def test_mcp_test_rejects_oauth_authentication_without_oauth(client: TestClient):
+    """OAuth metadata is only valid when the server opts into OAuth auth."""
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "authentication": {
+                    "type": "oauth",
+                    "client_auth_method": "none",
+                },
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_remote_spec_to_fastmcp_dict_includes_auth():
     """to_fastmcp_dict should forward the auth field when set."""
     from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
@@ -467,6 +515,26 @@ def test_remote_spec_to_fastmcp_dict_includes_auth():
     assert d["auth"] == "oauth"
     assert d["transport"] == "http"  # shttp collapsed to http
     assert "headers" not in d  # no headers when auth=oauth
+
+
+def test_remote_spec_to_fastmcp_dict_includes_authentication():
+    """to_fastmcp_dict should forward explicit OAuth authentication metadata."""
+    from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
+
+    spec = _RemoteMCPServerSpec.model_validate(
+        {
+            "type": "shttp",
+            "url": "https://mcp.example.com/mcp",
+            "auth": "oauth",
+            "authentication": {"type": "oauth", "client_auth_method": "none"},
+        }
+    )
+    d = spec.to_fastmcp_dict()
+    assert d["authentication"] == {
+        "type": "oauth",
+        "client_auth_method": "none",
+        "additional_client_metadata": {},
+    }
 
 
 def test_remote_spec_to_fastmcp_dict_omits_auth_when_unset():

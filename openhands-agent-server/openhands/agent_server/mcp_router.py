@@ -62,6 +62,40 @@ class _StdioMCPServerSpec(BaseModel):
     cwd: str | None = None
 
 
+class _OAuthAuthenticationSpec(BaseModel):
+    """OpenHands-specific runtime OAuth options for remote MCP clients."""
+
+    type: Literal["oauth"] = "oauth"
+    client_auth_method: (
+        Literal["none", "client_secret_post", "client_secret_basic"] | None
+    ) = Field(
+        default=None,
+        description=(
+            "OAuth token endpoint client authentication method to request "
+            "during dynamic client registration."
+        ),
+    )
+    scopes: str | list[str] | None = Field(
+        default=None,
+        description="Optional OAuth scopes to request before server metadata is read.",
+    )
+    client_name: str | None = Field(
+        default=None,
+        description="Optional OAuth client name for dynamic client registration.",
+    )
+    client_metadata_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional HTTPS client metadata document URL for MCP providers "
+            "that support CIMD."
+        ),
+    )
+    additional_client_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional OAuth client metadata forwarded to fastmcp.",
+    )
+
+
 class _RemoteMCPServerSpec(BaseModel):
     """Remote (HTTP / SSE) MCP server spec."""
 
@@ -80,21 +114,29 @@ class _RemoteMCPServerSpec(BaseModel):
     auth: Literal["oauth"] | None = Field(
         default=None,
         description=(
-            "Set to \"oauth\" to let fastmcp perform the OAuth flow "
+            'Set to "oauth" to let fastmcp perform the OAuth flow '
             "(RFC 9728 + PKCE) with the MCP server.  Mutually exclusive "
             "with ``api_key`` and explicit ``Authorization`` headers."
+        ),
+    )
+    authentication: _OAuthAuthenticationSpec | None = Field(
+        default=None,
+        description=(
+            "Optional structured OAuth client metadata used when ``auth`` is "
+            '"oauth". This keeps provider-specific OAuth requirements '
+            "explicit instead of changing the meaning of bare ``auth: oauth``."
         ),
     )
 
     @model_validator(mode="after")
     def _no_auth_conflict(self) -> _RemoteMCPServerSpec:
-        if self.auth == "oauth" and (
-            self.api_key or "Authorization" in self.headers
-        ):
+        if self.auth == "oauth" and (self.api_key or "Authorization" in self.headers):
             raise ValueError(
                 "'auth: oauth' cannot be combined with 'api_key' or an "
                 "explicit 'Authorization' header."
             )
+        if self.authentication is not None and self.auth != "oauth":
+            raise ValueError("'authentication' is only supported with 'auth: oauth'.")
         return self
 
     def to_fastmcp_dict(self) -> dict[str, Any]:
@@ -104,6 +146,8 @@ class _RemoteMCPServerSpec(BaseModel):
         out: dict[str, Any] = {"url": self.url, "transport": transport}
         if self.auth:
             out["auth"] = self.auth
+        if self.authentication:
+            out["authentication"] = self.authentication.model_dump(exclude_none=True)
         headers = dict(self.headers)
         if self.api_key:
             # Don't clobber a caller-provided Authorization header.
