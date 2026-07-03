@@ -323,7 +323,10 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
             "server": {
                 "type": "shttp",
                 "url": "https://mcp.linear.app/mcp",
-                "auth": cipher.encrypt(SecretStr("lin-real-token")),
+                "auth": {
+                    "strategy": "bearer",
+                    "value": cipher.encrypt(SecretStr("lin-real-token")),
+                },
             },
             "timeout": 10.0,
         },
@@ -434,7 +437,7 @@ def test_mcp_test_bearer_token_in_auth_field(
             "server": {
                 "type": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
-                "auth": "test-token-123",
+                "auth": {"strategy": "bearer", "value": "test-token-123"},
             },
             "timeout": 10.0,
         },
@@ -452,10 +455,10 @@ def test_mcp_test_bearer_token_in_auth_field(
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_test_accepts_auth_oauth_field(
+def test_mcp_test_accepts_oauth_auth_credential(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
-    """The ``auth: "oauth"`` field should be accepted and forwarded to fastmcp.
+    """The OAuth auth credential should be accepted and forwarded to fastmcp.
 
     We can't complete a real OAuth handshake in a unit test, but we can verify
     the field is accepted at the schema layer and doesn't crash the request
@@ -468,7 +471,7 @@ def test_mcp_test_accepts_auth_oauth_field(
             "server": {
                 "type": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
-                "auth": "oauth",
+                "auth": {"strategy": "oauth2"},
             },
             "timeout": 10.0,
         },
@@ -492,7 +495,7 @@ def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
             "server": {
                 "type": "http",
                 "url": "https://example.com/mcp",
-                "auth": "some-token",
+                "auth": {"strategy": "bearer", "value": "some-token"},
                 "headers": {"Authorization": "Bearer other-token"},
             },
             "timeout": 5.0,
@@ -517,15 +520,15 @@ def test_mcp_test_rejects_legacy_remote_api_key_field(client: TestClient):
     assert response.status_code == 422
 
 
-def test_mcp_test_rejects_auth_oauth_with_auth_header(client: TestClient):
-    """``auth: oauth`` is mutually exclusive with an Authorization header."""
+def test_mcp_test_rejects_oauth_auth_with_auth_header(client: TestClient):
+    """OAuth auth is mutually exclusive with a top-level Authorization header."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
                 "type": "http",
                 "url": "https://example.com/mcp",
-                "auth": "oauth",
+                "auth": {"strategy": "oauth2"},
                 "headers": {"Authorization": "Bearer some-token"},
             },
             "timeout": 5.0,
@@ -544,10 +547,12 @@ def test_mcp_test_accepts_explicit_oauth_authentication(
             "server": {
                 "type": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
-                "auth": "oauth",
-                "authentication": {
-                    "type": "oauth",
-                    "client_auth_method": "none",
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
                 },
             },
             "timeout": 10.0,
@@ -608,8 +613,13 @@ def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
             "server": {
                 "type": "http",
                 "url": "https://mcp.example.com/mcp",
-                "auth": "oauth",
-                "authentication": {"type": "oauth", "client_auth_method": "none"},
+                "auth": {
+                    "strategy": "oauth2",
+                    "authentication": {
+                        "type": "oauth",
+                        "client_auth_method": "none",
+                    },
+                },
             },
             "timeout": 10.0,
         },
@@ -619,8 +629,8 @@ def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
     body = response.json()
     assert body["ok"] is True
     assert len(calls) == 1
-    assert body["server"]["auth"] == "oauth"
-    oauth_value = body["server"]["oauth_credentials"]["mcp-oauth-token"][
+    assert body["server"]["auth"]["strategy"] == "oauth2"
+    oauth_value = body["server"]["auth"]["credentials"]["mcp-oauth-token"][
         "https://mcp.example.com/mcp/tokens"
     ]["value"]
     assert oauth_value["access_token"].startswith("gAAAA")
@@ -628,8 +638,8 @@ def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
     assert oauth_value["access_token"] != "oauth-access-token"
 
 
-def test_mcp_test_rejects_oauth_authentication_without_oauth(client: TestClient):
-    """OAuth metadata is only valid when the server opts into OAuth auth."""
+def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClient):
+    """OAuth metadata now belongs inside the OAuth auth credential."""
     response = client.post(
         "/api/mcp/test",
         json={
@@ -648,47 +658,49 @@ def test_mcp_test_rejects_oauth_authentication_without_oauth(client: TestClient)
     assert response.status_code == 422
 
 
-def test_remote_spec_to_fastmcp_dict_includes_auth():
-    """to_fastmcp_dict should forward the auth field when set."""
+def test_remote_spec_to_openhands_dict_includes_auth():
+    """to_openhands_dict should preserve the tagged auth object."""
     from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
 
     spec = _RemoteMCPServerSpec(
         type="shttp",
         url="https://mcp.example.com/mcp",
-        auth="oauth",
+        auth={"strategy": "oauth2"},
     )
-    d = spec.to_fastmcp_dict()
-    assert d["auth"] == "oauth"
+    d = spec.to_openhands_dict()
+    assert d["auth"] == {"strategy": "oauth2"}
     assert d["transport"] == "http"  # shttp collapsed to http
-    assert "headers" not in d  # no headers when auth=oauth
+    assert "headers" not in d
 
 
-def test_remote_spec_to_fastmcp_dict_includes_authentication():
-    """to_fastmcp_dict should forward explicit OAuth authentication metadata."""
+def test_remote_spec_to_openhands_dict_includes_authentication():
+    """to_openhands_dict should keep OAuth authentication metadata under auth."""
     from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
 
     spec = _RemoteMCPServerSpec.model_validate(
         {
             "type": "shttp",
             "url": "https://mcp.example.com/mcp",
-            "auth": "oauth",
-            "authentication": {"type": "oauth", "client_auth_method": "none"},
+            "auth": {
+                "strategy": "oauth2",
+                "authentication": {"type": "oauth", "client_auth_method": "none"},
+            },
         }
     )
-    d = spec.to_fastmcp_dict()
-    assert d["authentication"] == {
+    d = spec.to_openhands_dict()
+    assert d["auth"]["authentication"] == {
         "type": "oauth",
         "client_auth_method": "none",
     }
 
 
-def test_remote_spec_to_fastmcp_dict_omits_auth_when_unset():
-    """to_fastmcp_dict should omit auth when not set."""
+def test_remote_spec_to_openhands_dict_omits_auth_when_unset():
+    """to_openhands_dict should omit auth when not set."""
     from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
 
     spec = _RemoteMCPServerSpec(
         type="http",
         url="https://mcp.example.com/mcp",
     )
-    d = spec.to_fastmcp_dict()
+    d = spec.to_openhands_dict()
     assert "auth" not in d

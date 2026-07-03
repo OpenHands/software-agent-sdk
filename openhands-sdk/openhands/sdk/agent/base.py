@@ -92,6 +92,31 @@ def _decrypt_mcp_secret_values(
         auth = server.get("auth")
         if isinstance(auth, str) and auth != "oauth":
             server["auth"] = _decrypt_mcp_value_or_keep(cipher, auth)
+        elif isinstance(auth, dict):
+            strategy = auth.get("strategy")
+            if strategy in {"api_key", "bearer"}:
+                value = auth.get("value")
+                if isinstance(value, str):
+                    auth["value"] = _decrypt_mcp_value_or_keep(cipher, value)
+            elif strategy == "basic":
+                password = auth.get("password")
+                if isinstance(password, str):
+                    auth["password"] = _decrypt_mcp_value_or_keep(cipher, password)
+            elif strategy == "header":
+                mapping = auth.get("headers")
+                if isinstance(mapping, dict):
+                    auth["headers"] = {
+                        name: _decrypt_mcp_value_or_keep(cipher, value)
+                        if isinstance(value, str)
+                        else value
+                        for name, value in mapping.items()
+                    }
+            elif strategy == "oauth2":
+                credentials = auth.get("credentials")
+                if isinstance(credentials, dict):
+                    auth["credentials"] = _decrypt_mcp_secret_leaves(
+                        cipher, credentials
+                    )
         for key in ("env", "headers"):
             if key not in server:
                 continue
@@ -107,11 +132,6 @@ def _decrypt_mcp_secret_values(
                 else value
                 for name, value in mapping.items()
             }
-        oauth_credentials = server.get("oauth_credentials")
-        if isinstance(oauth_credentials, dict):
-            server["oauth_credentials"] = _decrypt_mcp_secret_leaves(
-                cipher, oauth_credentials
-            )
     return config
 
 

@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr
 
 from openhands.agent_server.config import Config
@@ -16,6 +15,7 @@ from openhands.agent_server.persistence import (
     get_settings_store,
     reset_stores,
 )
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 
 
 @pytest.mark.asyncio
@@ -32,15 +32,17 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_config": MCPConfig.model_validate(
+                "mcp_config": OpenHandsMCPConfig.model_validate(
                     {
                         "mcpServers": {
                             "superhuman": {
                                 "url": "https://mcp.example.com/mcp",
-                                "auth": "oauth",
-                                "authentication": {
-                                    "type": "oauth",
-                                    "client_auth_method": "none",
+                                "auth": {
+                                    "strategy": "oauth2",
+                                    "authentication": {
+                                        "type": "oauth",
+                                        "client_auth_method": "none",
+                                    },
                                 },
                             }
                         }
@@ -73,7 +75,7 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
         on_disk = json.loads(on_disk_text)
         stored_value = on_disk["agent_settings"]["mcp_config"]["mcpServers"][
             "superhuman"
-        ]["oauth_credentials"]["mcp-oauth-token"][key]["value"]
+        ]["auth"]["credentials"]["mcp-oauth-token"][key]["value"]
         assert stored_value["access_token"].startswith("gAAAA")
         assert stored_value["refresh_token"].startswith("gAAAA")
 
@@ -83,7 +85,7 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
         server = loaded.agent_settings.mcp_config.model_dump(
             exclude_none=True, exclude_defaults=True
         )["mcpServers"]["superhuman"]
-        assert server["oauth_credentials"]["mcp-oauth-token"][key]["value"] == value
+        assert server["auth"]["credentials"]["mcp-oauth-token"][key]["value"] == value
     finally:
         reset_stores()
 
@@ -102,7 +104,7 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
-                "mcp_config": MCPConfig.model_validate(
+                "mcp_config": OpenHandsMCPConfig.model_validate(
                     {
                         "mcpServers": {
                             "plain": {
@@ -130,6 +132,6 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         server = loaded.agent_settings.mcp_config.model_dump(
             exclude_none=True, exclude_defaults=True
         )["mcpServers"]["plain"]
-        assert "oauth_credentials" not in server
+        assert "credentials" not in server.get("auth", {})
     finally:
         reset_stores()

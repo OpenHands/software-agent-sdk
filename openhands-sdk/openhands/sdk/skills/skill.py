@@ -11,7 +11,6 @@ from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 import yaml
-from fastmcp.mcp_config import MCPConfig
 from pydantic import (
     BaseModel,
     Field,
@@ -47,6 +46,12 @@ from openhands.sdk.utils.path import to_posix_path
 
 
 logger = get_logger(__name__)
+
+
+def _validate_openhands_mcp_config(value: dict):
+    from openhands.sdk.mcp.config import OpenHandsMCPConfig
+
+    return OpenHandsMCPConfig.model_validate(value)
 
 
 class SkillInfo(BaseModel):
@@ -271,7 +276,7 @@ class Skill(BaseModel):
             return v
         if isinstance(v, dict):
             try:
-                MCPConfig.model_validate(v)
+                _validate_openhands_mcp_config(v)
             except Exception as e:
                 raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
         return v
@@ -293,7 +298,7 @@ class Skill(BaseModel):
             return value
         from openhands.sdk.settings.model import serialize_mcp_config
 
-        return serialize_mcp_config(MCPConfig.model_validate(value), info)
+        return serialize_mcp_config(_validate_openhands_mcp_config(value), info)
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",

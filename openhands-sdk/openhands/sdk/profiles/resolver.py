@@ -29,10 +29,10 @@ import shlex
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -135,7 +135,7 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_settings: dict[str, Any] | None = None
 
 
-def _server_names(mcp_config: MCPConfig | None) -> list[str]:
+def _server_names(mcp_config: OpenHandsMCPConfig | None) -> list[str]:
     return list(mcp_config.mcpServers.keys()) if mcp_config is not None else []
 
 
@@ -161,9 +161,9 @@ def _partition_refs(
 
 
 def _compute_mcp_filter(
-    mcp_config: MCPConfig | None,
+    mcp_config: OpenHandsMCPConfig | None,
     refs: list[str] | None,
-) -> tuple[MCPConfig | None, list[str], list[str]]:
+) -> tuple[OpenHandsMCPConfig | None, list[str], list[str]]:
     """Resolve ``mcp_server_refs`` against the user's ``mcp_config``.
 
     ``None`` → passthrough (all servers); a non-null list filters to the named
@@ -175,7 +175,7 @@ def _compute_mcp_filter(
     available = mcp_config.mcpServers if mcp_config is not None else {}
     resolved, dangling = _partition_refs(refs, available)
     filtered = {k: available[k] for k in resolved}
-    filtered_config = MCPConfig(mcpServers=filtered) if filtered else None
+    filtered_config = OpenHandsMCPConfig(mcpServers=filtered) if filtered else None
     return filtered_config, resolved, dangling
 
 
@@ -276,7 +276,7 @@ def _acp_credential_channels(
 def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
-    mcp_config: MCPConfig | None,
+    mcp_config: OpenHandsMCPConfig | None,
     cipher: Cipher | None,
     filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
@@ -309,7 +309,7 @@ def _build_openhands_settings(
 
 def _build_acp_settings(
     profile: ACPAgentProfile,
-    mcp_config: MCPConfig | None,
+    mcp_config: OpenHandsMCPConfig | None,
     filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
@@ -354,7 +354,7 @@ def resolve_agent_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
     llm_store: LLMProfileLoader,
-    mcp_config: MCPConfig | None,
+    mcp_config: OpenHandsMCPConfig | None,
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentSettingsConfig:
@@ -407,7 +407,7 @@ def resolve_agent_profile_dry_run(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
     llm_store: LLMProfileLoader,
-    mcp_config: MCPConfig | None,
+    mcp_config: OpenHandsMCPConfig | None,
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentProfileDiagnostics:

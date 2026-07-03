@@ -11,6 +11,7 @@ from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -62,15 +63,15 @@ def _oauth_auth_from_authentication_config(
 
 
 def _prepare_mcp_config(
-    config: dict | MCPConfig,
+    config: dict | MCPConfig | OpenHandsMCPConfig,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,
 ) -> MCPConfig:
     """Validate MCP config and apply explicit OpenHands runtime auth metadata."""
-    if isinstance(config, dict):
-        prepared = MCPConfig.model_validate(config)
-    else:
+    if isinstance(config, MCPConfig):
         prepared = config.model_copy(deep=True)
+    else:
+        prepared = MCPConfig.model_validate(to_fastmcp_mcp_config(config))
 
     for server in prepared.mcpServers.values():
         if not isinstance(server, RemoteMCPServer) or server.auth != "oauth":
@@ -112,7 +113,7 @@ async def _connect_and_list_tools(client: MCPClient) -> None:
 
 
 def create_mcp_tools(
-    config: dict | MCPConfig,
+    config: dict | MCPConfig | OpenHandsMCPConfig,
     timeout: float = 30.0,
     *,
     mcp_oauth_token_storage: AsyncKeyValue | None = None,

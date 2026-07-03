@@ -50,9 +50,13 @@ if TYPE_CHECKING:
         VerificationSettings,
         apply_agent_settings_diff,
         create_agent_from_settings,
+        decrypt_agent_settings_secret_values,
         default_agent_settings,
+        dump_agent_settings_for_storage,
+        encrypt_agent_settings_secret_values,
         export_agent_settings_schema,
         export_settings_schema,
+        load_agent_settings_from_storage,
         validate_agent_settings,
     )
 
@@ -76,9 +80,13 @@ _MODEL_EXPORTS = {
     "VerificationSettings",
     "apply_agent_settings_diff",
     "create_agent_from_settings",
+    "decrypt_agent_settings_secret_values",
     "default_agent_settings",
+    "dump_agent_settings_for_storage",
+    "encrypt_agent_settings_secret_values",
     "export_agent_settings_schema",
     "export_settings_schema",
+    "load_agent_settings_from_storage",
     "validate_agent_settings",
 }
 
@@ -119,12 +127,16 @@ __all__ = [
     "VerificationSettings",
     "apply_agent_settings_diff",
     "create_agent_from_settings",
+    "decrypt_agent_settings_secret_values",
     "default_agent_settings",
     "detect_acp_provider_by_agent_name",
+    "dump_agent_settings_for_storage",
+    "encrypt_agent_settings_secret_values",
     "export_agent_settings_schema",
     "export_settings_schema",
     "field_meta",
     "get_acp_provider",
+    "load_agent_settings_from_storage",
     "validate_agent_settings",
 ]
 

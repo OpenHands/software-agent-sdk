@@ -1,6 +1,11 @@
 """MCP (Model Context Protocol) integration for agent-sdk."""
 
 from openhands.sdk.mcp.client import MCPClient
+from openhands.sdk.mcp.config import (
+    MCPAuthCredential,
+    OpenHandsMCPConfig,
+    to_fastmcp_mcp_config,
+)
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.tool import (
@@ -14,11 +19,14 @@ from openhands.sdk.mcp.utils import (
 
 __all__ = [
     "MCPClient",
+    "MCPAuthCredential",
+    "OpenHandsMCPConfig",
     "MCPToolDefinition",
     "MCPToolAction",
     "MCPToolObservation",
     "MCPToolExecutor",
     "create_mcp_tools",
+    "to_fastmcp_mcp_config",
     "MCPError",
     "MCPTimeoutError",
 ]

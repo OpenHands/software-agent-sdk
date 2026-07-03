@@ -13,7 +13,7 @@ The optional tool call exists because listing tools does not exercise the
 credentials many servers only use inside tool handlers (e.g. the Slack MCP
 server starts fine with a bogus token); callers must pick a read-only tool.
 For OAuth MCP servers, any token/client metadata acquired during the probe is
-returned on the success response's ``server.oauth_credentials`` field so the
+returned on the success response's ``server.auth.credentials`` field so the
 caller can persist one complete MCP server object through the settings API.
 """
 
@@ -33,6 +33,11 @@ from openhands.agent_server.mcp_oauth_store import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import (
+    MCPAuthCredential,
+    MCPOAuthAuthCredential,
+    to_fastmcp_mcp_config,
+)
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
@@ -80,25 +85,11 @@ class _RemoteMCPServerSpec(BaseModel):
     type: Literal["http", "shttp", "streamable-http", "sse"]
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
-    auth: str | None = Field(
+    auth: MCPAuthCredential | None = Field(
         default=None,
         description=(
-            "FastMCP auth field: a bearer token string, or the literal "
-            '"oauth" to let fastmcp perform the MCP OAuth flow. Mutually '
-            "exclusive with explicit ``Authorization`` headers."
-        ),
-    )
-    authentication: dict[str, Any] | None = Field(
-        default=None,
-        description=(
-            'Optional FastMCP OAuth client metadata used when ``auth`` is "oauth".'
-        ),
-    )
-    oauth_credentials: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "OAuth tokens and dynamic-client metadata acquired for this MCP "
-            "server. This is persisted as an encrypted settings secret subtree."
+            "Tagged MCP auth credential. The strategy vocabulary mirrors the "
+            "OpenHands extensions catalog auth.strategy field."
         ),
     )
 
@@ -109,21 +100,16 @@ class _RemoteMCPServerSpec(BaseModel):
         )
         if self.auth is not None and has_authorization_header:
             raise ValueError(
-                "'auth' cannot be combined with an explicit 'Authorization' header."
+                "'auth' cannot be combined with an explicit top-level "
+                "'Authorization' header; use auth.strategy='header' instead."
             )
-        if self.authentication is not None and self.auth != "oauth":
-            raise ValueError("'authentication' is only supported with 'auth: oauth'.")
         return self
 
-    def to_fastmcp_dict(self) -> dict[str, Any]:
-        # fastmcp's RemoteMCPServer accepts "http", "streamable-http", "sse";
-        # collapse the OpenHands-specific "shttp" alias to "http".
+    def to_openhands_dict(self) -> dict[str, Any]:
         transport = "http" if self.type == "shttp" else self.type
         out: dict[str, Any] = {"url": self.url, "transport": transport}
-        if self.auth:
-            out["auth"] = self.auth
-        if self.authentication:
-            out["authentication"] = copy.deepcopy(self.authentication)
+        if self.auth is not None:
+            out["auth"] = self.auth.model_dump(exclude_none=True, exclude_defaults=True)
         headers = dict(self.headers)
         if headers:
             out["headers"] = headers
@@ -273,6 +259,41 @@ def _walk_string_leaves(value: Any, transform: Any) -> Any:
     return value
 
 
+def _decrypt_remote_auth(cipher: Cipher | None, auth: Any) -> Any:
+    if cipher is None or not isinstance(auth, dict):
+        return copy.deepcopy(auth)
+    auth = copy.deepcopy(auth)
+    strategy = auth.get("strategy")
+    if strategy in {"api_key", "bearer"}:
+        value = auth.get("value")
+        if isinstance(value, str):
+            auth["value"] = decrypt_str_with_cipher_or_keep(
+                cipher, value, description="MCP test auth"
+            )
+    elif strategy == "basic":
+        password = auth.get("password")
+        if isinstance(password, str):
+            auth["password"] = decrypt_str_with_cipher_or_keep(
+                cipher, password, description="MCP test auth"
+            )
+    elif strategy == "header":
+        headers = auth.get("headers")
+        if isinstance(headers, dict):
+            auth["headers"] = {
+                key: decrypt_str_with_cipher_or_keep(
+                    cipher, value, description="MCP test auth"
+                )
+                if isinstance(value, str)
+                else value
+                for key, value in headers.items()
+            }
+    elif strategy == "oauth2":
+        credentials = auth.get("credentials")
+        if isinstance(credentials, dict):
+            auth["credentials"] = _decrypt_oauth_credentials(cipher, credentials)
+    return auth
+
+
 def _decrypt_oauth_credentials(
     cipher: Cipher | None, credentials: dict[str, Any]
 ) -> dict[str, Any]:
@@ -307,17 +328,14 @@ def _server_to_fastmcp_dict(
         if spec.cwd:
             out["cwd"] = spec.cwd
         return out
-    remote = spec.to_fastmcp_dict()
-    auth = remote.get("auth")
-    if isinstance(auth, str) and auth != "oauth":
-        remote["auth"] = (
-            decrypt_str_with_cipher_or_keep(cipher, auth, description="MCP test auth")
-            if cipher is not None
-            else auth
-        )
+    remote = spec.to_openhands_dict()
+    if "auth" in remote:
+        remote["auth"] = _decrypt_remote_auth(cipher, remote["auth"])
     if "headers" in remote:
         remote["headers"] = _decrypt_mapping(cipher, remote["headers"])
-    return remote
+    return to_fastmcp_mcp_config({"mcpServers": {"server": remote}})["mcpServers"][
+        "server"
+    ]
 
 
 def _run_tool_call(
@@ -378,14 +396,14 @@ def _probe_mcp_server(
         oauth_server = (
             request.server
             if isinstance(request.server, _RemoteMCPServerSpec)
-            and request.server.auth == "oauth"
+            and isinstance(request.server.auth, MCPOAuthAuthCredential)
             else None
         )
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_server is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
                 credentials=_decrypt_oauth_credentials(
-                    cipher, oauth_server.oauth_credentials
+                    cipher, oauth_server.auth.credentials
                 )
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
@@ -407,7 +425,8 @@ def _probe_mcp_server(
                 credentials = oauth_token_storage.export_credentials()
                 if credentials:
                     response_server = oauth_server.model_copy(deep=True)
-                    response_server.oauth_credentials = _encrypt_oauth_credentials(
+                    assert isinstance(response_server.auth, MCPOAuthAuthCredential)
+                    response_server.auth.credentials = _encrypt_oauth_credentials(
                         cipher, credentials
                     )
             return MCPTestSuccess(

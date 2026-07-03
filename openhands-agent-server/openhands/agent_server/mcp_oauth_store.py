@@ -8,19 +8,19 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, SupportsFloat
 
-from fastmcp.mcp_config import MCPConfig
 from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 
 
 logger = get_logger(__name__)
 
 _DEFAULT_COLLECTION = "default"
-_OAUTH_CREDENTIALS_FIELD = "oauth_credentials"
+_OAUTH_CREDENTIALS_FIELD = "credentials"
 _FASTMCP_OAUTH_KEY_SUFFIXES = ("/tokens", "/client_info", "/token_expiry")
 
 
@@ -40,7 +40,7 @@ def _dump_mcp_config(settings: PersistedSettings) -> dict[str, Any]:
     mcp_config = getattr(settings.agent_settings, "mcp_config", None)
     if mcp_config is None:
         return {"mcpServers": {}}
-    if isinstance(mcp_config, MCPConfig):
+    if isinstance(mcp_config, OpenHandsMCPConfig):
         return mcp_config.model_dump(exclude_none=True, exclude_defaults=True)
     if isinstance(mcp_config, dict):
         return copy.deepcopy(mcp_config)
@@ -49,7 +49,7 @@ def _dump_mcp_config(settings: PersistedSettings) -> dict[str, Any]:
 
 def _set_mcp_config(settings: PersistedSettings, mcp_config: dict[str, Any]) -> None:
     settings.agent_settings = settings.agent_settings.model_copy(
-        update={"mcp_config": MCPConfig.model_validate(mcp_config)}
+        update={"mcp_config": OpenHandsMCPConfig.model_validate(mcp_config)}
     )
 
 
@@ -73,7 +73,8 @@ def _find_matching_server(
             server_url, key
         ):
             continue
-        if server.get("auth") == "oauth":
+        auth = server.get("auth")
+        if isinstance(auth, dict) and auth.get("strategy") == "oauth2":
             return server_name, server
     return None
 
@@ -100,8 +101,8 @@ class MCPSettingsOAuthTokenStore:
 
     FastMCP stores tokens under keys derived from the remote MCP server URL.
     We attach those records to the matching persisted MCP server object under
-    ``oauth_credentials`` so every setting required to start future
-    conversations lives in the settings DataModel.
+    ``auth.credentials`` so every setting required to start future conversations
+    lives in the settings DataModel.
     """
 
     def __init__(self, *, now: Any = time.time):
@@ -119,7 +120,10 @@ class MCPSettingsOAuthTokenStore:
         if match is None:
             return None, None
         _, server = match
-        credentials = server.get(_OAUTH_CREDENTIALS_FIELD)
+        auth = server.get("auth")
+        credentials = (
+            auth.get(_OAUTH_CREDENTIALS_FIELD) if isinstance(auth, dict) else None
+        )
         if not isinstance(credentials, dict):
             return None, None
         bucket = credentials.get(_collection_name(collection))
@@ -172,10 +176,14 @@ class MCPSettingsOAuthTokenStore:
                 return settings
 
             _, server = match
-            credentials = server.setdefault(_OAUTH_CREDENTIALS_FIELD, {})
+            auth = server.setdefault("auth", {"strategy": "oauth2"})
+            if not isinstance(auth, dict):
+                auth = {"strategy": "oauth2"}
+                server["auth"] = auth
+            credentials = auth.setdefault(_OAUTH_CREDENTIALS_FIELD, {})
             if not isinstance(credentials, dict):
                 credentials = {}
-                server[_OAUTH_CREDENTIALS_FIELD] = credentials
+                auth[_OAUTH_CREDENTIALS_FIELD] = credentials
             bucket = credentials.setdefault(collection_key, {})
             if not isinstance(bucket, dict):
                 bucket = {}
@@ -213,7 +221,10 @@ class MCPSettingsOAuthTokenStore:
             if match is None:
                 return settings
             _, server = match
-            credentials = server.get(_OAUTH_CREDENTIALS_FIELD)
+            auth = server.get("auth")
+            credentials = (
+                auth.get(_OAUTH_CREDENTIALS_FIELD) if isinstance(auth, dict) else None
+            )
             if not isinstance(credentials, dict):
                 return settings
             bucket = credentials.get(collection_key)
@@ -224,7 +235,7 @@ class MCPSettingsOAuthTokenStore:
             if not bucket:
                 credentials.pop(collection_key, None)
             if not credentials:
-                server.pop(_OAUTH_CREDENTIALS_FIELD, None)
+                auth.pop(_OAUTH_CREDENTIALS_FIELD, None)
             _set_mcp_config(settings, mcp_config)
             return settings
 
