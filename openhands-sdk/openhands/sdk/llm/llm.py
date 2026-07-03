@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -46,7 +46,6 @@ from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
-    CustomStreamWrapper,
     ResponseInputParam,
     acompletion as litellm_acompletion,
     completion as litellm_completion,
@@ -2030,9 +2029,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
+                # litellm returns a ``CustomStreamWrapper`` here, but third-party
+                # instrumentations (e.g. lmnr's litellm wrapper) may swap it for
+                # a plain iterator. The chunks themselves are unchanged, so just
+                # iterate -- ``for`` works on either container type. ``cast`` is
+                # only a static type hint; the iterable types share ``__iter__``.
                 chunks: list[ModelResponseStream] = []
-                for chunk in ret:
+                stream = cast(Iterable[ModelResponseStream], ret)
+                for chunk in stream:
                     on_token(chunk)
                     chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)
@@ -2062,9 +2066,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
+                # litellm returns a ``CustomStreamWrapper`` here, but third-party
+                # instrumentations (e.g. lmnr's litellm wrapper) may swap it for
+                # an async generator. The chunks themselves are unchanged, so
+                # just iterate -- ``async for`` works on either container type.
+                # ``cast`` is only a static type hint; the iterable types share
+                # ``__aiter__``.
                 chunks: list[ModelResponseStream] = []
-                async for chunk in ret:
+                stream = cast(AsyncIterable[ModelResponseStream], ret)
+                async for chunk in stream:
                     await _invoke_token_callback(on_token, chunk)
                     chunks.append(chunk)
                 ret = litellm.stream_chunk_builder(chunks, messages=messages)

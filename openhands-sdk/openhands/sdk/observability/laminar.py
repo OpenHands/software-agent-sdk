@@ -93,21 +93,33 @@ def maybe_init_laminar():
     base_url = get_env("LMNR_BASE_URL") or None
     force_http = _get_bool_env("LMNR_FORCE_HTTP")
 
+    # lmnr's litellm instrumentation replaces ``litellm.completion``/``acompletion``
+    # return values. For streaming calls it returns its own async generator instead
+    # of litellm's ``CustomStreamWrapper``, which breaks the SDK's streaming path
+    # (the chunks pass through unchanged, but the container type differs). The SDK
+    # already records its own LLM telemetry around the transport call, so disable
+    # lmnr's litellm wrapper and rely on the SDK's telemetry instead.
+    disabled_instruments: list[Instruments] = [Instruments.LITELLM]
+
     if _is_otel_backend_laminar():
         Laminar.initialize(
             base_url=base_url,
             http_port=_get_int_env("LMNR_HTTP_PORT"),
             grpc_port=_get_int_env("LMNR_GRPC_PORT"),
+            disabled_instruments=disabled_instruments,
             force_http=force_http,
         )
     else:
         # Do not enable browser session replays for non-laminar backends
-        Laminar.initialize(
-            disabled_instruments=[
+        disabled_instruments.extend(
+            [
                 Instruments.BROWSER_USE_SESSION,
                 Instruments.PATCHRIGHT,
                 Instruments.PLAYWRIGHT,
-            ],
+            ]
+        )
+        Laminar.initialize(
+            disabled_instruments=disabled_instruments,
             force_http=force_http,
         )
 
