@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
@@ -46,7 +46,6 @@ from typing import Final, cast
 
 from litellm import (
     ChatCompletionToolParam,
-    CustomStreamWrapper,
     ResponseInputParam,
     acompletion as litellm_acompletion,
     completion as litellm_completion,
@@ -2030,7 +2029,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
+                if isinstance(ret, ModelResponse) or not isinstance(ret, Iterable):
+                    raise TypeError(
+                        f"Expected streaming response iterable, got {type(ret)}"
+                    )
                 chunks: list[ModelResponseStream] = []
                 for chunk in ret:
                     on_token(chunk)
@@ -2062,7 +2064,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                assert isinstance(ret, CustomStreamWrapper)
+                if not isinstance(ret, AsyncIterable):
+                    raise TypeError(
+                        f"Expected async streaming response iterable, got {type(ret)}"
+                    )
                 chunks: list[ModelResponseStream] = []
                 async for chunk in ret:
                     await _invoke_token_callback(on_token, chunk)

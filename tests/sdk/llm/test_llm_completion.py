@@ -269,6 +269,71 @@ def test_llm_completion_streaming_with_callback(mock_stream_builder, mock_comple
     assert response.message.content[0].text == "Hello world!"
 
 
+@pytest.mark.asyncio
+@patch("openhands.sdk.llm.llm.litellm_acompletion", new_callable=AsyncMock)
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+async def test_llm_acompletion_streaming_accepts_async_iterable(
+    mock_stream_builder, mock_acompletion
+):
+    """Laminar's litellm wrapper returns an async generator for streaming."""
+
+    chunk1 = ModelResponseStream(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="Hello", role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+    chunk2 = ModelResponseStream(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=None, role=None),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    async def async_stream():
+        yield chunk1
+        yield chunk2
+
+    mock_acompletion.return_value = async_stream()
+    mock_stream_builder.return_value = create_mock_response("Hello")
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    received_chunks = []
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    response = await llm.acompletion(
+        messages=messages, stream=True, on_token=received_chunks.append
+    )
+
+    assert received_chunks == [chunk1, chunk2]
+    mock_stream_builder.assert_called_once()
+    assert mock_stream_builder.call_args.args == ([chunk1, chunk2],)
+    assert response.message.role == "assistant"
+    assert isinstance(response.message.content[0], TextContent)
+    assert response.message.content[0].text == "Hello"
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 @patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
 def test_llm_completion_streaming_with_tools(mock_stream_builder, mock_completion):
