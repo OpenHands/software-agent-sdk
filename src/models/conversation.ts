@@ -53,6 +53,13 @@ export interface ConversationInfo {
   updated_at?: string;
   tags?: Record<string, string>;
   /**
+   * HEAD of the conversation tree: the parent of the next appended event.
+   * `null` means an empty tree (or, for pre-feature conversations, the linear
+   * tail). Moving it via `navigate` re-roots the active branch the agent runs
+   * on. See {@link ConversationClient.navigateConversation}.
+   */
+  leaf_event_id?: string | null;
+  /**
    * Provenance of the agent profile that launched this conversation.
    * Present when the conversation was started via `agent_profile_id`; absent
    * for conversations started directly with `agent` or `agent_settings`.
@@ -216,6 +223,19 @@ export interface ForkConversationRequest {
   title?: string;
   tags?: Record<string, string>;
   reset_metrics?: boolean;
+}
+
+/**
+ * Payload to move a conversation's HEAD to an existing event (in-place
+ * re-root). Unlike a fork, this creates no new conversation — all branches
+ * stay on disk and only the active branch the agent runs on next changes.
+ */
+export interface NavigateConversationRequest {
+  /**
+   * Event to make the new HEAD, re-rooting the active branch. Omit or pass
+   * `null` to select the empty tree (a deliberate new root).
+   */
+  event_id?: string | null;
 }
 
 export interface AgentResponseResult {

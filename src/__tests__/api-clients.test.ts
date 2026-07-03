@@ -1591,6 +1591,116 @@ describe('Auxiliary API clients', () => {
     );
   });
 
+  it('ConversationClient.navigateConversation POSTs event_id and returns the re-rooted info', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: 'event-7' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    const info = await client.navigateConversation(
+      'conversation-1',
+      { event_id: 'event-7' },
+      { includeSkills: true }
+    );
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/navigate?include_skills=true',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ event_id: 'event-7' }),
+      })
+    );
+    // The response carries the new HEAD.
+    expect(info.leaf_event_id).toBe('event-7');
+  });
+
+  it('ConversationClient.navigateConversation selects the empty tree with a null event_id', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'conversation-1', leaf_event_id: null }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new ConversationClient({ host: 'http://example.com' });
+    await client.navigateConversation('conversation-1', { event_id: null });
+
+    // No includeSkills option => no query string on the URL.
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conversation-1/navigate',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ event_id: null }),
+      })
+    );
+  });
+
+  it('RemoteConversation.navigateTo POSTs to /navigate then refreshes cached state', async () => {
+    // navigateTo posts to the route and then GETs the conversation to refresh
+    // the cache (leaf_event_id is not broadcast over the WebSocket). Two calls
+    // means each needs its own Response (a body can only be read once).
+    global.fetch = jest.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: 'event-3' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.navigateTo('event-3');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/navigate',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ event_id: 'event-3' }),
+      })
+    );
+    // The trailing refresh re-reads the conversation from the REST API.
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('RemoteConversation.navigateTo passes a null event_id for the empty tree', async () => {
+    // Fresh Response per call: navigateTo posts and then refreshes state.
+    global.fetch = jest.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ id: 'conv-123', leaf_event_id: null }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    ) as typeof fetch;
+
+    const agent = new Agent({ llm: { model: 'gpt-4o', api_key: 'k' } });
+    const workspace = new RemoteWorkspace({ host: 'http://example.com', workingDir: '/tmp' });
+    const conversation = new RemoteConversation(agent, workspace, {
+      conversationId: 'conv-123',
+    });
+
+    await conversation.navigateTo(null);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/conversations/conv-123/navigate',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ event_id: null }),
+      })
+    );
+  });
+
   it('ConversationManager.switchProfile posts the profile name', async () => {
     global.fetch = jest.fn().mockResolvedValue(
       new Response(JSON.stringify({ success: true }), {

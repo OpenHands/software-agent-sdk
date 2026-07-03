@@ -410,4 +410,98 @@ describe('Deterministic API Integration Tests', () => {
     },
     config.testTimeout
   );
+
+  it(
+    'navigate re-roots the HEAD across existing events and back to the empty tree',
+    async () => {
+      // Contract + semantics guard for POST /api/conversations/{id}/navigate
+      // (software-agent-sdk #3923, released in v1.31.0 — the pinned image).
+      // Two user messages create >=2 events without an LLM; navigate then moves
+      // the conversation HEAD (leaf_event_id) across them in place — no fork, no
+      // new conversation. This proves the route exists on the image AND that the
+      // client targets the right path/body while carrying back the new leaf —
+      // client<->server contract drift the mocked unit tests cannot catch.
+      const client = new ConversationClient({ host: config.agentServerUrl });
+      const conversation = await manager.createConversation(createDummyAgent(), {
+        workingDir: config.agentWorkspaceDir,
+      });
+      try {
+        await conversation.sendMessage('First navigate message');
+        await conversation.sendMessage('Second navigate message');
+
+        // Ascending sort => items[0] is the earliest event, last is the tail.
+        const events = await conversation.state.events.search({
+          limit: 50,
+          sort_order: 'TIMESTAMP',
+        });
+        expect(events.items.length).toBeGreaterThanOrEqual(2);
+        const firstEventId = events.items[0].id;
+        const lastEventId = events.items[events.items.length - 1].id;
+
+        // Re-root HEAD onto the earliest event; the response carries the new leaf.
+        const rerooted = await client.navigateConversation(conversation.id, {
+          event_id: firstEventId,
+        });
+        expect(rerooted.leaf_event_id).toBe(firstEventId);
+
+        // A null event_id selects the empty tree (a deliberate new root).
+        const emptied = await client.navigateConversation(conversation.id, {
+          event_id: null,
+        });
+        expect(emptied.leaf_event_id).toBeNull();
+
+        // The high-level wrapper reaches the same route and refreshes cached
+        // state without throwing; restore the HEAD to the original tail and read
+        // it back off the server to prove the move persisted.
+        await conversation.navigateTo(lastEventId);
+        const restored = await manager.getConversations([conversation.id]);
+        expect(restored[0]?.leaf_event_id).toBe(lastEventId);
+      } finally {
+        client.close();
+        await manager.deleteConversation(conversation.id).catch(() => undefined);
+      }
+    },
+    config.testTimeout
+  );
+
+  it(
+    'navigate 404s for an unknown conversation and an unknown event id',
+    async () => {
+      // Both not-found branches of the navigate route. A well-formed but
+      // non-existent conversation UUID reaches the handler -> "Conversation not
+      // found" 404. A real conversation with a bogus event_id hits the server's
+      // event_id ValueError branch -> 404 (not a 500). Together they confirm the
+      // route template resolves and both not-found paths are wired.
+      const client = new ConversationClient({ host: config.agentServerUrl });
+      const missingId = '00000000-0000-0000-0000-000000000000';
+      const conversation = await manager.createConversation(createDummyAgent(), {
+        workingDir: config.agentWorkspaceDir,
+      });
+      try {
+        let unknownConversationStatus: number | undefined;
+        try {
+          await client.navigateConversation(missingId, { event_id: null });
+        } catch (error) {
+          expect(error).toBeInstanceOf(HttpError);
+          unknownConversationStatus = (error as HttpError).status;
+        }
+        expect(unknownConversationStatus).toBe(404);
+
+        let unknownEventStatus: number | undefined;
+        try {
+          await client.navigateConversation(conversation.id, {
+            event_id: 'event-that-does-not-exist',
+          });
+        } catch (error) {
+          expect(error).toBeInstanceOf(HttpError);
+          unknownEventStatus = (error as HttpError).status;
+        }
+        expect(unknownEventStatus).toBe(404);
+      } finally {
+        client.close();
+        await manager.deleteConversation(conversation.id).catch(() => undefined);
+      }
+    },
+    config.testTimeout
+  );
 });

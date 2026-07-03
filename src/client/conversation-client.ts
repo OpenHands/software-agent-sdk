@@ -12,6 +12,7 @@ import type {
   ConversationSearchRequest,
   ConversationSearchResponse,
   ForkConversationRequest,
+  NavigateConversationRequest,
   SetConfirmationPolicyRequest,
   SetSecurityAnalyzerRequest,
   StartGoalRequest,
@@ -307,6 +308,34 @@ export class ConversationClient {
   ): Promise<TConversation> {
     const response = await this.client.post<TConversation>(
       `/api/conversations/${conversationId}/fork`,
+      request,
+      {
+        params:
+          options.includeSkills === undefined
+            ? undefined
+            : { include_skills: options.includeSkills },
+      }
+    );
+    return response.data;
+  }
+
+  /**
+   * Move a conversation's HEAD to an existing event, re-rooting the active
+   * branch the agent runs on next. Unlike {@link forkConversation}, this
+   * creates no new conversation — all branches stay on disk. Pass
+   * `{ event_id: null }` (or an empty request) to select the empty tree.
+   *
+   * Returns the updated {@link ConversationInfo}, carrying the new
+   * `leaf_event_id`. The server answers 404 for an unknown conversation or an
+   * unknown `event_id`.
+   */
+  async navigateConversation<TConversation = ConversationInfo>(
+    conversationId: string,
+    request: NavigateConversationRequest = {},
+    options: { includeSkills?: boolean } = {}
+  ): Promise<TConversation> {
+    const response = await this.client.post<TConversation>(
+      `/api/conversations/${conversationId}/navigate`,
       request,
       {
         params:

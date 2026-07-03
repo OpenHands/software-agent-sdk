@@ -272,6 +272,7 @@ export type {
   ConversationEventSearchOptions,
   ConversationEventCountOptions,
   ForkConversationRequest,
+  NavigateConversationRequest,
   AgentResponseResult,
   ConversationEvent as ConversationApiEvent,
   ConversationEventPage,

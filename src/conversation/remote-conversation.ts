@@ -31,6 +31,7 @@ import {
   SetSecurityAnalyzerRequest,
   AgentResponseResult,
   ForkConversationRequest,
+  NavigateConversationRequest,
   StartGoalRequest,
 } from '../models/conversation';
 import { IConversation, BaseConversationOptions } from './base';
@@ -369,6 +370,22 @@ export class RemoteConversation implements IConversation {
       onError: this.onError,
       hookConfig: response.data.hook_config ?? this.hookConfig,
     });
+  }
+
+  /**
+   * Move this conversation's HEAD to an existing event, re-rooting the active
+   * branch in place. Unlike {@link fork}, this creates no new conversation —
+   * all branches stay on disk and only the branch the agent runs on next
+   * changes. Pass `null` to select the empty tree (a deliberate new root).
+   *
+   * The cached state is refreshed afterwards so a subsequent `state` read
+   * reflects the new HEAD — `leaf_event_id` is not broadcast over the
+   * WebSocket. Throws on 404 if the server rejects the event id.
+   */
+  async navigateTo(eventId: string | null): Promise<void> {
+    const request: NavigateConversationRequest = { event_id: eventId };
+    await this.client.post(`/api/conversations/${this.id}/navigate`, request);
+    await this.state.refresh();
   }
 
   /**
