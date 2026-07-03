@@ -46,14 +46,21 @@ class InMemoryFileStore(FileStore):
         return self.files[path]
 
     def list(self, path: str) -> list[str]:
+        # If path is an exact file, return the file itself
+        # (S3-consistent behavior, matching LocalFileStore.list)
+        if path in self.files:
+            return [path]
+        # Only match across a directory boundary, so that listing "a/b"
+        # doesn't pick up sibling keys like "a/bc.txt"
+        prefix = path if path == "" or path.endswith("/") else path + "/"
         files = []
         for file in self.files:
-            if not file.startswith(path):
+            if not file.startswith(prefix):
                 continue
-            suffix = file.removeprefix(path)
+            suffix = file[len(prefix) :]
+            if not suffix:
+                continue
             parts = suffix.split("/")
-            if parts[0] == "":
-                parts.pop(0)
             if len(parts) == 1:
                 files.append(file)
             else:
