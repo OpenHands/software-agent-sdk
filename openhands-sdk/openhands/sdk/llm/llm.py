@@ -2029,11 +2029,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                # litellm returns a ``CustomStreamWrapper`` here, but third-party
-                # instrumentations (e.g. lmnr's litellm wrapper) may swap it for
-                # a plain iterator. The chunks themselves are unchanged, so just
-                # iterate -- ``for`` works on either container type. ``cast`` is
-                # only a static type hint; the iterable types share ``__iter__``.
                 chunks: list[ModelResponseStream] = []
                 stream = cast(Iterable[ModelResponseStream], ret)
                 for chunk in stream:
@@ -2066,12 +2061,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
             )
             if enable_streaming and on_token is not None:
-                # litellm returns a ``CustomStreamWrapper`` here, but third-party
-                # instrumentations (e.g. lmnr's litellm wrapper) may swap it for
-                # an async generator. The chunks themselves are unchanged, so
-                # just iterate -- ``async for`` works on either container type.
-                # ``cast`` is only a static type hint; the iterable types share
-                # ``__aiter__``.
                 chunks: list[ModelResponseStream] = []
                 stream = cast(AsyncIterable[ModelResponseStream], ret)
                 async for chunk in stream:
