@@ -4,10 +4,12 @@ import { getServerTestConfig } from './test-config';
 import {
   deleteWorkspaceFile,
   readWorkspaceFile,
+  removeWorkspacePath,
   sleep,
   uniqueDirName,
   uniqueFileName,
   workspaceFileExists,
+  writeWorkspaceFile,
 } from './test-utils';
 
 const config = getServerTestConfig();
@@ -56,6 +58,11 @@ describe('Deterministic API Integration Tests', () => {
         load_project: false,
         load_org: false,
       });
+      const subAgents = await manager.subAgents.getSubAgents({
+        load_user: false,
+        load_project: false,
+        load_builtin: true,
+      });
       const vscodeStatus = await manager.vscode.getStatus();
 
       expect(root).toBeDefined();
@@ -70,6 +77,13 @@ describe('Deterministic API Integration Tests', () => {
       expect(conversationSchema.model_name).toBeTruthy();
       expect(Array.isArray(tools)).toBe(true);
       expect(Array.isArray(skills.skills)).toBe(true);
+      // `load_builtin` discovery is best-effort and can be empty (e.g. the
+      // frozen agent-server image ships no built-in agent files), so assert the
+      // contract shape rather than a specific count. Any agent that does come
+      // back from a builtin-only request must be flagged `is_builtin`. A
+      // dedicated test below exercises project-level discovery end-to-end.
+      expect(Array.isArray(subAgents.agents)).toBe(true);
+      expect(subAgents.agents.every((agent) => agent.is_builtin)).toBe(true);
       expect(typeof vscodeStatus.enabled).toBe('boolean');
 
       try {
@@ -78,6 +92,57 @@ describe('Deterministic API Integration Tests', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(HttpError);
         expect((error as HttpError).status).toBe(503);
+      }
+    },
+    config.testTimeout
+  );
+
+  it(
+    'discovers a project-level sub-agent from the workspace',
+    async () => {
+      // Drop a file-based agent into the workspace and confirm the read-only
+      // POST /api/sub-agents endpoint discovers it losslessly.
+      const agentName = uniqueDirName('it-sub-agent');
+      const agentPath = `.openhands/agents/${agentName}.md`;
+      writeWorkspaceFile(
+        agentPath,
+        [
+          '---',
+          `name: ${agentName}`,
+          'description: Integration-test project sub-agent.',
+          'model: inherit',
+          'tools:',
+          '  - bash',
+          '---',
+          'You are an integration-test project sub-agent.',
+        ].join('\n')
+      );
+
+      try {
+        const response = await manager.subAgents.getSubAgents({
+          load_user: false,
+          load_project: true,
+          load_builtin: false,
+          project_dir: config.agentWorkspaceDir,
+        });
+
+        expect(Array.isArray(response.agents)).toBe(true);
+        const discovered = response.agents.find((agent) => agent.name === agentName);
+        expect(discovered).toBeDefined();
+        expect(discovered?.level).toBe('project');
+        expect(discovered?.is_builtin).toBe(false);
+        expect(discovered?.description).toBe('Integration-test project sub-agent.');
+        expect(discovered?.tools).toEqual(['bash']);
+        expect(discovered?.system_prompt).toContain('integration-test project sub-agent');
+        expect(discovered?.source).toContain(agentPath);
+      } finally {
+        // Remove the entire `.openhands` tree this test created, not just the
+        // agent file. Writing it from the host leaves the directory owned by
+        // the test-runner user; if left behind, the agent-server container
+        // (which runs as a different user) later fails to chmod
+        // `workspace/.openhands` during profile activation ("Operation not
+        // permitted" -> 500 Failed to activate profile).
+        removeWorkspacePath('.openhands');
       }
     },
     config.testTimeout

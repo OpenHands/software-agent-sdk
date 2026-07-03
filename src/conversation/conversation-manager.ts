@@ -15,6 +15,7 @@ import { ServerClient } from '../client/server-client';
 import { SettingsClient } from '../client/settings-client';
 import { SharedClient } from '../client/shared-client';
 import { SkillsClient } from '../client/skills-client';
+import { SubAgentsClient } from '../client/sub-agents-client';
 import { ToolClient } from '../client/tool-client';
 import { VSCodeClient } from '../client/vscode-client';
 import { WorkspacesClient } from '../client/workspaces-client';
@@ -86,6 +87,7 @@ export class ConversationManager {
   public readonly metaProfiles: MetaProfilesClient;
   public readonly settings: SettingsClient;
   public readonly skills: SkillsClient;
+  public readonly subAgents: SubAgentsClient;
   public readonly tools: ToolClient;
   public readonly vscode: VSCodeClient;
   public readonly desktop: DesktopClient;
@@ -118,6 +120,7 @@ export class ConversationManager {
     this.metaProfiles = new MetaProfilesClient(clientOptions);
     this.settings = new SettingsClient(clientOptions);
     this.skills = new SkillsClient(clientOptions);
+    this.subAgents = new SubAgentsClient(clientOptions);
     this.tools = new ToolClient(clientOptions);
     this.vscode = new VSCodeClient(clientOptions);
     this.desktop = new DesktopClient(clientOptions);
@@ -401,6 +404,7 @@ export class ConversationManager {
     this.metaProfiles.close();
     this.settings.close();
     this.skills.close();
+    this.subAgents.close();
     this.tools.close();
     this.vscode.close();
     this.desktop.close();

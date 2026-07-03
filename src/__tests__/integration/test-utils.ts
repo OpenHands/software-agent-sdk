@@ -76,6 +76,22 @@ export function deleteWorkspaceFile(relativePath: string): void {
 }
 
 /**
+ * Recursively remove a file or directory from the host workspace directory.
+ *
+ * Writing into the workspace from the host (the test runner) creates paths
+ * owned by the host user, whereas the agent-server container runs as a
+ * different user. If a test leaves a host-owned directory such as `.openhands`
+ * behind, the server later fails to chmod it (e.g. profile activation errors
+ * with "Operation not permitted"). Use this to fully clean up anything a test
+ * writes into the workspace so it doesn't poison later tests.
+ */
+export function removeWorkspacePath(relativePath: string): void {
+  const config = getServerTestConfig();
+  const fullPath = path.join(config.hostWorkspaceDir, relativePath);
+  fs.rmSync(fullPath, { recursive: true, force: true });
+}
+
+/**
  * Clean the workspace directory (remove all files)
  */
 export function cleanWorkspace(): void {

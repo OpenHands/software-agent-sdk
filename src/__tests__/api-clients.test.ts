@@ -28,6 +28,7 @@ import {
   SettingsClient,
   SharedClient,
   SkillsClient,
+  SubAgentsClient,
   WorkspacesClient,
 } from '../clients';
 import * as http from 'node:http';
@@ -85,6 +86,7 @@ describe('Auxiliary API clients', () => {
 
     expect(manager.server).toBeInstanceOf(ServerClient);
     expect(manager.skills).toBeInstanceOf(SkillsClient);
+    expect(manager.subAgents).toBeInstanceOf(SubAgentsClient);
     expect(manager.profiles).toBeInstanceOf(ProfilesClient);
     expect(manager.agentProfiles).toBeInstanceOf(AgentProfilesClient);
     expect(manager.metaProfiles).toBeInstanceOf(MetaProfilesClient);
@@ -590,6 +592,110 @@ describe('Auxiliary API clients', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       'http://example.com/api/skills/installed/my%20skill',
       expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('SubAgentsClient.getSubAgents POSTs the request to /api/sub-agents', async () => {
+    const payload = {
+      agents: [
+        {
+          name: 'general-purpose',
+          description: 'A general-purpose delegate agent',
+          model: 'inherit',
+          color: null,
+          tools: ['bash', 'str_replace_editor'],
+          skills: [],
+          system_prompt: 'You are a helpful sub-agent.',
+          when_to_use_examples: ['Use for broad research tasks'],
+          permission_mode: null,
+          max_iteration_per_run: null,
+          max_budget_per_run: null,
+          mcp_servers: null,
+          profile_store_dir: null,
+          hooks: null,
+          condenser: null,
+          metadata: {},
+          level: 'builtin',
+          source: null,
+          is_builtin: true,
+        },
+        {
+          name: 'code-explorer',
+          description: 'Explores a codebase',
+          model: 'inherit',
+          color: 'blue',
+          tools: ['bash'],
+          skills: ['grep'],
+          system_prompt: 'Explore the repository.',
+          when_to_use_examples: [],
+          permission_mode: 'confirm_risky',
+          max_iteration_per_run: 25,
+          max_budget_per_run: 1.5,
+          mcp_servers: { fetch: { command: 'uvx', args: ['mcp-server-fetch'] } },
+          profile_store_dir: null,
+          hooks: null,
+          condenser: null,
+          metadata: { team: 'core' },
+          level: 'project',
+          source: '/workspace/.openhands/agents/code-explorer.md',
+          is_builtin: false,
+        },
+      ],
+    };
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new SubAgentsClient({ host: 'http://example.com', apiKey: 'secret' });
+    const request = {
+      load_user: true,
+      load_project: true,
+      load_builtin: false,
+      project_dir: '/workspace',
+    };
+    const response = await client.getSubAgents(request);
+
+    expect(response.agents).toHaveLength(2);
+    expect(response.agents[0].name).toBe('general-purpose');
+    expect(response.agents[0].is_builtin).toBe(true);
+    expect(response.agents[0].level).toBe('builtin');
+    expect(response.agents[1].name).toBe('code-explorer');
+    expect(response.agents[1].level).toBe('project');
+    expect(response.agents[1].mcp_servers).toEqual({
+      fetch: { command: 'uvx', args: ['mcp-server-fetch'] },
+    });
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/sub-agents',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(request),
+        headers: expect.objectContaining({ 'X-Session-API-Key': 'secret' }),
+      })
+    );
+  });
+
+  it('SubAgentsClient.getSubAgents defaults to an empty request body', async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ agents: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    ) as typeof fetch;
+
+    const client = new SubAgentsClient({ host: 'http://example.com' });
+    const response = await client.getSubAgents();
+
+    expect(response.agents).toEqual([]);
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://example.com/api/sub-agents',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
     );
   });
 

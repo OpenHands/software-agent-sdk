@@ -160,6 +160,59 @@ export interface MarketplaceResponse {
   skills: MarketplaceSkill[];
 }
 
+/**
+ * Sub-agents: the catalog of file-based and built-in delegate agents available
+ * to a workspace, served by the agent-server's read-only `POST /api/sub-agents`
+ * (mirrors `POST /api/skills`). "Sub-agents" are the delegate agents distinct
+ * from the top-level agent and from `agent-profiles`.
+ */
+
+/** Scope where a sub-agent was discovered (server `AgentDefinitionLevel`). */
+export type SubAgentLevel = 'project' | 'user' | 'builtin' | 'plugin' | 'programmatic';
+
+export interface SubAgentsRequest {
+  /** Load user agents from `~/.agents/agents` and `~/.openhands/agents`. */
+  load_user?: boolean;
+  /** Load project agents from the workspace. */
+  load_project?: boolean;
+  /** Load SDK built-in agents (general-purpose, code-explorer, ...). */
+  load_builtin?: boolean;
+  /** Workspace directory path for project agents. */
+  project_dir?: string | null;
+}
+
+/**
+ * Lossless view of a server `AgentDefinition`: every frontmatter field plus the
+ * discovered `level`/`source`, an `is_builtin` flag, and the inline
+ * `system_prompt` (Markdown body) so a detail view needs no extra fetch.
+ */
+export interface SubAgentInfo {
+  name: string;
+  description: string;
+  model: string;
+  color: string | null;
+  tools: string[];
+  skills: string[];
+  system_prompt: string;
+  when_to_use_examples: string[];
+  permission_mode: string | null;
+  max_iteration_per_run: number | null;
+  max_budget_per_run: number | null;
+  mcp_servers: Record<string, unknown> | null;
+  profile_store_dir: string | null;
+  hooks: HookConfig | null;
+  /** Context condenser spec (opaque discriminated union), or null for default. */
+  condenser: unknown;
+  metadata: Record<string, unknown>;
+  level: SubAgentLevel | null;
+  source: string | null;
+  is_builtin: boolean;
+}
+
+export interface SubAgentsResponse {
+  agents: SubAgentInfo[];
+}
+
 export interface MarketplacePlugin {
   name: string;
   description: string | null;
