@@ -353,8 +353,11 @@ def test_mcp_tools_secrets_encrypted_under_cipher():
         )
     )
     assert _MCP_SECRET not in encrypted
-    # The header/env keys survive; only their values are transformed.
-    assert "Authorization" in encrypted
+    # The legacy Authorization header normalizes into tagged bearer auth; the
+    # server/env keys survive and only secret values are transformed.
+    assert '"svc"' in encrypted
+    assert '"strategy": "bearer"' in encrypted
+    assert '"value"' in encrypted
     assert "API_KEY" in encrypted
 
 
