@@ -62,16 +62,6 @@ logger = get_logger(__name__)
 MCPOAuthTokenStorageFactory = Callable[[], AsyncKeyValue]
 
 
-def mcp_config_uses_oauth(config: dict[str, Any]) -> bool:
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return False
-    return any(
-        isinstance(server, dict) and server.get("auth") == "oauth"
-        for server in servers.values()
-    )
-
-
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
     if not value.startswith(FERNET_TOKEN_PREFIX):
         return value
@@ -732,19 +722,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if self.mcp_config:
                 mcp_oauth_token_storage = (
                     self._mcp_oauth_token_storage_factory()
-                    if (
-                        self._mcp_oauth_token_storage_factory is not None
-                        and mcp_config_uses_oauth(self.mcp_config)
-                    )
+                    if self._mcp_oauth_token_storage_factory is not None
                     else None
                 )
-                kwargs = (
-                    {"mcp_oauth_token_storage": mcp_oauth_token_storage}
-                    if mcp_oauth_token_storage is not None
-                    else {}
-                )
                 future = executor.submit(
-                    create_mcp_tools, self.mcp_config, 30, **kwargs
+                    create_mcp_tools,
+                    self.mcp_config,
+                    30,
+                    mcp_oauth_token_storage=mcp_oauth_token_storage,
                 )
                 futures.append(future)
 

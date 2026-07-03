@@ -12,7 +12,6 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.agent.base import (
     AgentBase,
     MCPOAuthTokenStorageFactory,
-    mcp_config_uses_oauth,
 )
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
@@ -1114,22 +1113,14 @@ class LocalConversation(BaseConversation):
             return []
         mcp_oauth_token_storage = (
             self._mcp_oauth_token_storage_factory()
-            if (
-                self._mcp_oauth_token_storage_factory is not None
-                and mcp_config_uses_oauth(plugin_mcp_config)
-            )
+            if self._mcp_oauth_token_storage_factory is not None
             else None
-        )
-        kwargs = (
-            {"mcp_oauth_token_storage": mcp_oauth_token_storage}
-            if mcp_oauth_token_storage is not None
-            else {}
         )
         return list(
             create_mcp_tools(
                 plugin_mcp_config,
                 _RUNTIME_MCP_TIMEOUT_SECS,
-                **kwargs,
+                mcp_oauth_token_storage=mcp_oauth_token_storage,
             ).tools
         )
 

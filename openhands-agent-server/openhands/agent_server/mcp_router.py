@@ -409,24 +409,26 @@ def _probe_mcp_server(
     }
 
     try:
+        oauth_server = (
+            request.server
+            if isinstance(request.server, _RemoteMCPServerSpec)
+            and request.server.auth == "oauth"
+            else None
+        )
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
-        mcp_oauth_token_storage = None
-        if isinstance(request.server, _RemoteMCPServerSpec) and (
-            request.server.auth == "oauth"
-        ):
+        if oauth_server is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
                 credentials=_decrypt_oauth_credentials(
-                    cipher, request.server.oauth_credentials
+                    cipher, oauth_server.oauth_credentials
                 )
             )
-            mcp_oauth_token_storage = oauth_token_storage
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
         with create_mcp_tools(
             config,
             timeout=request.timeout,
-            mcp_oauth_token_storage=mcp_oauth_token_storage,
+            mcp_oauth_token_storage=oauth_token_storage,
         ) as client:
             tool_names = [tool.name for tool in client.tools]
             tool_result: MCPToolCallResult | None = None
@@ -435,12 +437,10 @@ def _probe_mcp_server(
                     client, request.tool_call, tool_names, request.timeout
                 )
             response_server: _RemoteMCPServerSpec | None = None
-            if oauth_token_storage is not None and isinstance(
-                request.server, _RemoteMCPServerSpec
-            ):
+            if oauth_token_storage is not None and oauth_server is not None:
                 credentials = oauth_token_storage.export_credentials()
                 if credentials:
-                    response_server = request.server.model_copy(deep=True)
+                    response_server = oauth_server.model_copy(deep=True)
                     response_server.oauth_credentials = _encrypt_oauth_credentials(
                         cipher, credentials
                     )

@@ -54,9 +54,7 @@ def _set_mcp_config(settings: PersistedSettings, mcp_config: dict[str, Any]) -> 
 
 
 def _server_url_matches_key(server_url: str, key: str) -> bool:
-    normalized_url = server_url.rstrip("/")
-    target_url = _server_url_from_fastmcp_key(key)
-    return normalized_url == target_url or key.startswith(f"{normalized_url}/")
+    return server_url.rstrip("/") == _server_url_from_fastmcp_key(key)
 
 
 def _find_matching_server(
