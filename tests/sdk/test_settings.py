@@ -1384,6 +1384,29 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
                         "headers": {"X-MCP-Token": "header-secret"},
                         "auth": {"strategy": "bearer", "value": "bearer-secret"},
                     },
+                    "api-key": {
+                        "url": "https://mcp.api-key.example.com",
+                        "auth": {
+                            "strategy": "api_key",
+                            "value": "api-key-secret",
+                            "header_name": "X-API-Key",
+                        },
+                    },
+                    "basic": {
+                        "url": "https://mcp.basic.example.com",
+                        "auth": {
+                            "strategy": "basic",
+                            "username": "service-account",
+                            "password": "basic-password-secret",
+                        },
+                    },
+                    "header-auth": {
+                        "url": "https://mcp.header.example.com",
+                        "auth": {
+                            "strategy": "header",
+                            "headers": {"X-Auth": "header-auth-secret"},
+                        },
+                    },
                     "oauth": {
                         "url": "https://mcp.oauth.example.com",
                         "auth": {
@@ -1394,6 +1417,16 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
                                         "value": {"access_token": "oauth-access-secret"}
                                     }
                                 }
+                            },
+                        },
+                    },
+                    "custom": {
+                        "url": "https://mcp.custom.example.com",
+                        "auth": {
+                            "strategy": "custom",
+                            "fastmcp": {
+                                "auth": "custom-auth-secret",
+                                "nested": {"token": "custom-nested-secret"},
                             },
                         },
                     },
@@ -1412,7 +1445,12 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
         "agent-secret",
         "header-secret",
         "bearer-secret",
+        "api-key-secret",
+        "basic-password-secret",
+        "header-auth-secret",
         "oauth-access-secret",
+        "custom-auth-secret",
+        "custom-nested-secret",
     ):
         assert secret not in serialized
     sparse_stored = dump_agent_settings_for_storage(
@@ -1437,10 +1475,19 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
     servers = loaded.mcp_config.model_dump(exclude_none=True)["mcpServers"]
     assert servers["http"]["headers"]["X-MCP-Token"] == "header-secret"
     assert servers["http"]["auth"]["value"] == "bearer-secret"
+    assert servers["api-key"]["auth"]["value"] == "api-key-secret"
+    assert servers["basic"]["auth"]["username"] == "service-account"
+    assert servers["basic"]["auth"]["password"] == "basic-password-secret"
+    assert servers["header-auth"]["auth"]["headers"]["X-Auth"] == "header-auth-secret"
     oauth_value = servers["oauth"]["auth"]["credentials"]["mcp-oauth-token"][
         "https://mcp.oauth.example.com/tokens"
     ]["value"]
     assert oauth_value["access_token"] == "oauth-access-secret"
+    assert servers["custom"]["auth"]["fastmcp"]["auth"] == "custom-auth-secret"
+    assert (
+        servers["custom"]["auth"]["fastmcp"]["nested"]["token"]
+        == "custom-nested-secret"
+    )
 
 
 def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
@@ -1461,6 +1508,29 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
                     "url": "https://mcp.example.com",
                     "auth": {"strategy": "bearer", "value": "bearer-secret"},
                 },
+                "api-key": {
+                    "url": "https://mcp.api-key.example.com",
+                    "auth": {
+                        "strategy": "api_key",
+                        "value": "api-key-secret",
+                        "header_name": "X-API-Key",
+                    },
+                },
+                "basic": {
+                    "url": "https://mcp.basic.example.com",
+                    "auth": {
+                        "strategy": "basic",
+                        "username": "service-account",
+                        "password": "basic-password-secret",
+                    },
+                },
+                "header-auth": {
+                    "url": "https://mcp.header.example.com",
+                    "auth": {
+                        "strategy": "header",
+                        "headers": {"X-Auth": "header-auth-secret"},
+                    },
+                },
                 "oauth": {
                     "url": "https://mcp.oauth.example.com",
                     "auth": {
@@ -1472,6 +1542,31 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
                                 }
                             }
                         },
+                    },
+                },
+                "custom": {
+                    "url": "https://mcp.custom.example.com",
+                    "auth": {
+                        "strategy": "custom",
+                        "fastmcp": {
+                            "auth": "custom-auth-secret",
+                            "nested": {"token": "custom-nested-secret"},
+                        },
+                    },
+                },
+                "legacy-bearer": {
+                    "url": "https://mcp.legacy-bearer.example.com",
+                    "auth": "legacy-bearer-secret",
+                },
+                "legacy-oauth": {
+                    "url": "https://mcp.legacy-oauth.example.com",
+                    "auth": "oauth",
+                    "oauth_credentials": {
+                        "mcp-oauth-token": {
+                            "https://mcp.legacy-oauth.example.com/tokens": {
+                                "value": {"access_token": "legacy-oauth-secret"}
+                            }
+                        }
                     },
                 },
             }
@@ -1488,7 +1583,14 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
         "agent-secret",
         "env-secret",
         "bearer-secret",
+        "api-key-secret",
+        "basic-password-secret",
+        "header-auth-secret",
         "oauth-access-secret",
+        "custom-auth-secret",
+        "custom-nested-secret",
+        "legacy-bearer-secret",
+        "legacy-oauth-secret",
     ):
         assert secret not in serialized
 
