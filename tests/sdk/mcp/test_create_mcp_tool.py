@@ -14,6 +14,7 @@ import pytest
 from fastmcp import FastMCP
 from fastmcp.client.auth import OAuth
 from fastmcp.mcp_config import RemoteMCPServer
+from key_value.aio.stores.memory import MemoryStore
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -207,6 +208,56 @@ def test_prepare_mcp_config_applies_explicit_oauth_authentication():
     }
     assert auth._scopes == ["email", "offline_access"]
     assert auth._client_name == "OpenHands"
+
+
+def test_prepare_mcp_config_applies_oauth_token_storage_to_explicit_auth():
+    token_storage = MemoryStore()
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+                "authentication": {
+                    "type": "oauth",
+                    "client_auth_method": "none",
+                },
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(
+        config,
+        mcp_oauth_token_storage=token_storage,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._token_storage is token_storage
+
+
+def test_prepare_mcp_config_applies_oauth_token_storage_to_bare_oauth():
+    token_storage = MemoryStore()
+    config = {
+        "mcpServers": {
+            "remote": {
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+            }
+        }
+    }
+
+    prepared = _prepare_mcp_config(
+        config,
+        mcp_oauth_token_storage=token_storage,
+    )
+
+    server = prepared.mcpServers["remote"]
+    assert isinstance(server, RemoteMCPServer)
+    auth = server.auth
+    assert isinstance(auth, OAuth)
+    assert auth._token_storage is token_storage
 
 
 def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):

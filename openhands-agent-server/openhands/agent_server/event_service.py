@@ -22,6 +22,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
+from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
@@ -81,6 +82,7 @@ class EventService:
     stored: StoredConversation
     conversations_dir: Path
     cipher: Cipher | None = None
+    mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
     _conversation: LocalConversation | None = field(default=None, init=False)
@@ -832,6 +834,7 @@ class EventService:
             observability_metadata=self.stored.observability_metadata,
             observability_tags=self.stored.observability_tags,
             observability_span_name=self.stored.observability_span_name,
+            mcp_oauth_token_storage_factory=self.mcp_oauth_token_storage_factory,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)

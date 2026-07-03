@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.base import (
+    AgentBase,
+    MCPOAuthTokenStorageFactory,
+    mcp_config_uses_oauth,
+)
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -167,6 +171,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
+    _mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None
 
     def __init__(
         self,
@@ -200,6 +205,7 @@ class LocalConversation(BaseConversation):
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
+        mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -276,6 +282,7 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
+        self._mcp_oauth_token_storage_factory = mcp_oauth_token_storage_factory
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -303,6 +310,7 @@ class LocalConversation(BaseConversation):
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
+        agent.set_mcp_oauth_token_storage_factory(mcp_oauth_token_storage_factory)
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
@@ -449,6 +457,10 @@ class LocalConversation(BaseConversation):
             conversation_tags=tags,
         )
         self.delete_on_close = delete_on_close
+
+    def _attach_runtime_agent_config(self, agent: AgentBase) -> AgentBase:
+        agent.set_mcp_oauth_token_storage_factory(self._mcp_oauth_token_storage_factory)
+        return agent
 
     def _tree_stamping(
         self, inner: ConversationCallbackType
@@ -963,11 +975,13 @@ class LocalConversation(BaseConversation):
             or project_skills_loaded
             or ambient_plugins_loaded
         ):
-            self.agent = self.agent.model_copy(
-                update={
-                    "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
-                }
+            self.agent = self._attach_runtime_agent_config(
+                self.agent.model_copy(
+                    update={
+                        "agent_context": merged_context,
+                        "mcp_config": merged_mcp,
+                    }
+                )
             )
 
             # Also update the agent in _state so API responses reflect loaded plugins
@@ -1098,8 +1112,25 @@ class LocalConversation(BaseConversation):
     ) -> list[ToolDefinition]:
         if not plugin_mcp_config:
             return []
+        mcp_oauth_token_storage = (
+            self._mcp_oauth_token_storage_factory()
+            if (
+                self._mcp_oauth_token_storage_factory is not None
+                and mcp_config_uses_oauth(plugin_mcp_config)
+            )
+            else None
+        )
+        kwargs = (
+            {"mcp_oauth_token_storage": mcp_oauth_token_storage}
+            if mcp_oauth_token_storage is not None
+            else {}
+        )
         return list(
-            create_mcp_tools(plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS).tools
+            create_mcp_tools(
+                plugin_mcp_config,
+                _RUNTIME_MCP_TIMEOUT_SECS,
+                **kwargs,
+            ).tools
         )
 
     def _runtime_skill_tools_for_agent(self) -> list[ToolDefinition]:
@@ -1175,11 +1206,13 @@ class LocalConversation(BaseConversation):
         )
 
         with self._state:
-            self.agent = self.agent.model_copy(
-                update={
-                    "agent_context": merged_context,
-                    "mcp_config": merged_mcp,
-                }
+            self.agent = self._attach_runtime_agent_config(
+                self.agent.model_copy(
+                    update={
+                        "agent_context": merged_context,
+                        "mcp_config": merged_mcp,
+                    }
+                )
             )
 
             if plugin.agents:
@@ -1390,7 +1423,9 @@ class LocalConversation(BaseConversation):
                     self.agent.llm,
                     new_llm,
                 )
-            self.agent = self.agent.model_copy(update=update)
+            self.agent = self._attach_runtime_agent_config(
+                self.agent.model_copy(update=update)
+            )
             self._state.agent = self.agent
             self._bind_conversation_context(new_llm)
             # Invalidate the cached ask-agent LLM so it re-clones.
@@ -1495,7 +1530,9 @@ class LocalConversation(BaseConversation):
             # Pre-session there is no runtime to hand off, so release_runtime is
             # unnecessary (the discarded agent's close() is already a no-op).
             old_agent = self.agent
-            new_agent = old_agent.model_copy(update={"acp_model": model})
+            new_agent = self._attach_runtime_agent_config(
+                old_agent.model_copy(update={"acp_model": model})
+            )
             if live:
                 old_agent.release_runtime()
             # ``self.agent`` is the live reference used by subsequent ``step()``

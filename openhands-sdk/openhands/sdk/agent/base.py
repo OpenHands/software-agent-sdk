@@ -7,11 +7,12 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from key_value.aio.protocols import AsyncKeyValue
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -58,6 +59,17 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
+MCPOAuthTokenStorageFactory = Callable[[], AsyncKeyValue]
+
+
+def mcp_config_uses_oauth(config: dict[str, Any]) -> bool:
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    return any(
+        isinstance(server, dict) and server.get("auth") == "oauth"
+        for server in servers.values()
+    )
 
 
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
@@ -459,6 +471,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
+    _mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = PrivateAttr(
+        default=None
+    )
+
+    def set_mcp_oauth_token_storage_factory(
+        self,
+        factory: MCPOAuthTokenStorageFactory | None,
+    ) -> None:
+        """Attach a runtime OAuth token store factory for MCP clients.
+
+        The factory is runtime-only and intentionally excluded from serialized
+        agent configuration so OAuth tokens never become part of persisted
+        MCP settings.
+        """
+        object.__setattr__(self, "_mcp_oauth_token_storage_factory", factory)
 
     @property
     def prompt_dir(self) -> str:
@@ -703,7 +730,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Submit MCP tools creation if configured
             if self.mcp_config:
-                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                mcp_oauth_token_storage = (
+                    self._mcp_oauth_token_storage_factory()
+                    if (
+                        self._mcp_oauth_token_storage_factory is not None
+                        and mcp_config_uses_oauth(self.mcp_config)
+                    )
+                    else None
+                )
+                kwargs = (
+                    {"mcp_oauth_token_storage": mcp_oauth_token_storage}
+                    if mcp_oauth_token_storage is not None
+                    else {}
+                )
+                future = executor.submit(
+                    create_mcp_tools, self.mcp_config, 30, **kwargs
+                )
                 futures.append(future)
 
             # Collect results as they complete

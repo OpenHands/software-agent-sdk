@@ -207,6 +207,9 @@ class InitService:
             # through ``get_default_conversation_service`` see the new
             # instance built from the merged config.
             from openhands.agent_server import conversation_service as cs_mod
+            from openhands.agent_server.mcp_oauth_store import (
+                create_mcp_oauth_token_storage_factory,
+            )
 
             service = ConversationService.get_instance(new_config)
             cs_mod._conversation_service = service
@@ -218,6 +221,9 @@ class InitService:
             await service.__aenter__()
             self._entered_service = service
             self._app.state.config = new_config
+            self._app.state.mcp_oauth_token_storage_factory = (
+                create_mcp_oauth_token_storage_factory(new_config)
+            )
             self._app.state.conversation_service = service
             self._app.state.bash_event_service = bash_svc
 

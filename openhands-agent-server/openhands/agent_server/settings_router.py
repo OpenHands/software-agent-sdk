@@ -220,7 +220,8 @@ async def update_settings(
 
     # Apply updates atomically with file locking
     def apply_update(settings: PersistedSettings) -> PersistedSettings:
-        settings.update(cast(SettingsUpdatePayload, update_data))
+        context = {"cipher": config.cipher} if config.cipher is not None else None
+        settings.update(cast(SettingsUpdatePayload, update_data), context=context)
         return settings
 
     client_host = request.client.host if request.client else "unknown"

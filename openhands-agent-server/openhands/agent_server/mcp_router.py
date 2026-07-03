@@ -12,18 +12,25 @@ one caller-chosen tool (``tool_call``), then tears the connection down.
 The optional tool call exists because listing tools does not exercise the
 credentials many servers only use inside tool handlers (e.g. the Slack MCP
 server starts fine with a bogus token); callers must pick a read-only tool.
+For OAuth MCP servers, any token/client metadata acquired during the probe is
+returned on the success response's ``server.oauth_credentials`` field so the
+caller can persist one complete MCP server object through the settings API.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import Annotated, Any, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
+from openhands.agent_server.mcp_oauth_store import (
+    InMemoryMCPOAuthTokenStore,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
@@ -125,6 +132,13 @@ class _RemoteMCPServerSpec(BaseModel):
             "Optional structured OAuth client metadata used when ``auth`` is "
             '"oauth". This keeps provider-specific OAuth requirements '
             "explicit instead of changing the meaning of bare ``auth: oauth``."
+        ),
+    )
+    oauth_credentials: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "OAuth tokens and dynamic-client metadata acquired for this MCP "
+            "server. This is persisted as an encrypted settings secret subtree."
         ),
     )
 
@@ -239,6 +253,13 @@ class MCPTestSuccess(BaseModel):
         default=None,
         description=("Outcome of the requested `tool_call`, when one was supplied."),
     )
+    server: _RemoteMCPServerSpec | None = Field(
+        default=None,
+        description=(
+            "Updated remote server spec when the probe acquired or refreshed "
+            "OAuth credentials. Clients should persist this server object."
+        ),
+    )
 
 
 class MCPTestFailure(BaseModel):
@@ -281,6 +302,40 @@ def _decrypt_mapping(cipher: Cipher | None, mapping: dict[str, str]) -> dict[str
         )
         for key, value in mapping.items()
     }
+
+
+def _walk_string_leaves(value: Any, transform: Any) -> Any:
+    if isinstance(value, str):
+        return transform(value)
+    if isinstance(value, dict):
+        return {k: _walk_string_leaves(v, transform) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_walk_string_leaves(item, transform) for item in value]
+    return value
+
+
+def _decrypt_oauth_credentials(
+    cipher: Cipher | None, credentials: dict[str, Any]
+) -> dict[str, Any]:
+    if cipher is None:
+        return copy.deepcopy(credentials)
+    return _walk_string_leaves(
+        credentials,
+        lambda value: decrypt_str_with_cipher_or_keep(
+            cipher, value, description="MCP OAuth credentials"
+        ),
+    )
+
+
+def _encrypt_oauth_credentials(
+    cipher: Cipher | None, credentials: dict[str, Any]
+) -> dict[str, Any]:
+    if cipher is None:
+        return copy.deepcopy(credentials)
+    return _walk_string_leaves(
+        credentials,
+        lambda value: cipher.encrypt(SecretStr(value)) or value,
+    )
 
 
 def _server_to_fastmcp_dict(
@@ -338,7 +393,8 @@ def _run_tool_call(
 
 
 def _probe_mcp_server(
-    request: MCPTestRequest, cipher: Cipher | None
+    request: MCPTestRequest,
+    cipher: Cipher | None,
 ) -> MCPTestResponse:
     """Synchronous probe -- safe to run inside ``run_in_executor``.
 
@@ -353,17 +409,46 @@ def _probe_mcp_server(
     }
 
     try:
+        oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
+        mcp_oauth_token_storage = None
+        if isinstance(request.server, _RemoteMCPServerSpec) and (
+            request.server.auth == "oauth"
+        ):
+            oauth_token_storage = InMemoryMCPOAuthTokenStore(
+                credentials=_decrypt_oauth_credentials(
+                    cipher, request.server.oauth_credentials
+                )
+            )
+            mcp_oauth_token_storage = oauth_token_storage
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
-        with create_mcp_tools(config, timeout=request.timeout) as client:
+        with create_mcp_tools(
+            config,
+            timeout=request.timeout,
+            mcp_oauth_token_storage=mcp_oauth_token_storage,
+        ) as client:
             tool_names = [tool.name for tool in client.tools]
             tool_result: MCPToolCallResult | None = None
             if request.tool_call is not None:
                 tool_result = _run_tool_call(
                     client, request.tool_call, tool_names, request.timeout
                 )
-            return MCPTestSuccess(tools=tool_names, tool_result=tool_result)
+            response_server: _RemoteMCPServerSpec | None = None
+            if oauth_token_storage is not None and isinstance(
+                request.server, _RemoteMCPServerSpec
+            ):
+                credentials = oauth_token_storage.export_credentials()
+                if credentials:
+                    response_server = request.server.model_copy(deep=True)
+                    response_server.oauth_credentials = _encrypt_oauth_credentials(
+                        cipher, credentials
+                    )
+            return MCPTestSuccess(
+                tools=tool_names,
+                tool_result=tool_result,
+                server=response_server,
+            )
     except MCPTimeoutError as exc:
         logger.info("MCP test timed out for server %r: %s", request.name, exc)
         return MCPTestFailure(error=str(exc), error_kind="timeout")
@@ -395,11 +480,14 @@ def _probe_mcp_server(
 @mcp_router.post(
     "/test",
     response_model=MCPTestResponse,
+    response_model_exclude_none=True,
     summary="Test an MCP server configuration",
     description=(
         "Attempt to connect to a candidate MCP server and list its tools, "
         "without persisting any settings. Useful for validating user input "
         "in 'add MCP server' flows before storing the config. "
+        "For OAuth servers, any acquired credentials are returned in the "
+        "success response so clients can persist them in the MCP server object. "
         "Optionally invokes one caller-chosen (read-only) tool via "
         "`tool_call` and reports its outcome in `tool_result`, so callers "
         "can verify credentials that are only exercised on tool invocation. "
@@ -417,4 +505,9 @@ async def test_mcp_server(
     # reach back into ``http_request.app.state``.
     cipher = get_cipher(http_request)
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _probe_mcp_server, request, cipher)
+    return await loop.run_in_executor(
+        None,
+        _probe_mcp_server,
+        request,
+        cipher,
+    )

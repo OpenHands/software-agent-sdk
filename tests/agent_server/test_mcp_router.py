@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 
@@ -480,6 +481,74 @@ def test_mcp_test_accepts_explicit_oauth_authentication(
     body = response.json()
     assert body["ok"] is True
     assert set(body["tools"]) == {"echo", "add"}
+
+
+def test_mcp_test_returns_encrypted_oauth_credentials_from_probe(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    calls: list[object | None] = []
+
+    class FakeClient:
+        def __init__(self):
+            self.tools: list[object] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_create_mcp_tools(
+        config,
+        timeout=30.0,
+        *,
+        mcp_oauth_token_storage=None,
+    ):
+        calls.append(mcp_oauth_token_storage)
+        assert mcp_oauth_token_storage is not None
+        asyncio.run(
+            mcp_oauth_token_storage.put(
+                key="https://mcp.example.com/mcp/tokens",
+                value={
+                    "access_token": "oauth-access-token",
+                    "refresh_token": "oauth-refresh-token",
+                },
+                collection="mcp-oauth-token",
+            )
+        )
+        return FakeClient()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "auth": "oauth",
+                "authentication": {"type": "oauth", "client_auth_method": "none"},
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is True
+    assert len(calls) == 1
+    assert body["server"]["auth"] == "oauth"
+    oauth_value = body["server"]["oauth_credentials"]["mcp-oauth-token"][
+        "https://mcp.example.com/mcp/tokens"
+    ]["value"]
+    assert oauth_value["access_token"].startswith("gAAAA")
+    assert oauth_value["refresh_token"].startswith("gAAAA")
+    assert oauth_value["access_token"] != "oauth-access-token"
 
 
 def test_mcp_test_rejects_oauth_authentication_without_oauth(client: TestClient):

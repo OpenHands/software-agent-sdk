@@ -92,11 +92,21 @@ def _walk_mcp_secret_values(
     transform: Callable[[str], str],
 ) -> dict[str, Any]:
     """Return a copy of ``config`` with ``transform`` applied to every string
-    value inside each MCP server's ``env`` / ``headers``. Does not mutate input."""
+    value inside each MCP server's secret-bearing fields. Does not mutate input."""
     config = copy.deepcopy(config)
     servers = config.get("mcpServers")
     if not isinstance(servers, dict):
         return config
+
+    def transform_string_leaves(value: Any) -> Any:
+        if isinstance(value, str):
+            return transform(value)
+        if isinstance(value, dict):
+            return {k: transform_string_leaves(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [transform_string_leaves(item) for item in value]
+        return value
+
     for server in servers.values():
         if not isinstance(server, dict):
             continue
@@ -108,16 +118,19 @@ def _walk_mcp_secret_values(
                 k: (transform(v) if isinstance(v, str) else v)
                 for k, v in mapping.items()
             }
+        oauth_credentials = server.get("oauth_credentials")
+        if isinstance(oauth_credentials, dict):
+            server["oauth_credentials"] = transform_string_leaves(oauth_credentials)
     return config
 
 
 def _decrypt_mcp_value_or_keep(cipher: Cipher, value: str) -> str:
-    """Decrypt a single MCP ``env`` / ``headers`` value when it is a
+    """Decrypt a single MCP secret-bearing value when it is a
     Fernet token. Thin local wrapper that binds the user-facing
     log description; the leaf decryption lives in
     :func:`decrypt_str_with_cipher_or_keep` and is shared with every
     other dict-of-string secret-bearing field."""
-    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP env/headers")
+    return decrypt_str_with_cipher_or_keep(cipher, value, description="MCP secrets")
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +149,7 @@ def normalize_empty_mcp_config(value: Any) -> Any:
 
 
 def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
-    """Decrypt MCP ``env`` / ``headers`` values when a cipher is in context.
+    """Decrypt MCP secret-bearing values when a cipher is in context.
 
     The on-disk load path. Values that aren't valid Fernet tokens pass through
     as plaintext (e.g. migrating from a build that wrote them unencrypted).
@@ -155,7 +168,7 @@ def decrypt_mcp_config_secrets(value: Any, info: ValidationInfo) -> Any:
 def serialize_mcp_config(
     value: MCPConfig | None, info: SerializationInfo
 ) -> dict[str, Any]:
-    """Serialize an ``mcp_config`` field, masking/encrypting env+headers per
+    """Serialize an ``mcp_config`` field, masking/encrypting MCP secrets per
     the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
     if value is None:
         return {}
@@ -170,7 +183,7 @@ def serialize_mcp_config(
         cipher: Cipher | None = ctx.get("cipher")
         if cipher is None:
             raise MissingCipherError(
-                "Cannot encrypt MCP env/headers: no cipher configured. "
+                "Cannot encrypt MCP secrets: no cipher configured. "
                 "Set OH_SECRET_KEY environment variable."
             )
         # cipher.encrypt returns None only for None input; SecretStr(v) never is.
