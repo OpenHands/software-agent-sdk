@@ -168,17 +168,14 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             env=sanitized_env(),
         )
 
-        # Parse output into file paths
-        file_paths = []
+        # Parse output into file paths (ripgrep already sorted by --sortr=modified)
+        lines = []
         if result.stdout:
-            for line in result.stdout.strip().split("\n"):
-                if line:
-                    file_paths.append(str(Path(line).resolve()))
-                    # Limit to first 100 files
-                    if len(file_paths) >= 100:
-                        break
+            lines = [line for line in result.stdout.strip().split("\n") if line]
 
-        truncated = len(file_paths) >= 100
+        # Limit to first 100 files; truncated only if matches were actually dropped
+        truncated = len(lines) > 100
+        file_paths = [str(Path(line).resolve()) for line in lines[:100]]
 
         return file_paths, truncated
 

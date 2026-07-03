@@ -171,6 +171,36 @@ def test_glob_executor_truncation():
         assert observation.truncated is True
 
 
+def test_glob_executor_exactly_100_files_not_truncated():
+    """Exactly 100 matches must not be reported as truncated.
+
+    Regression test: the ripgrep backend used to stop collecting at 100 and
+    then flag ``truncated = len >= 100``, so a result set of exactly 100 files
+    was reported as truncated even though nothing was dropped. The Python
+    fallback backend already used a strict ``> 100`` comparison.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for i in range(100):
+            (Path(temp_dir) / f"file_{i:03d}.txt").write_text(f"Content {i}")
+
+        # Default backend (ripgrep when available)
+        executor = GlobExecutor(working_dir=temp_dir)
+        observation = executor(GlobAction(pattern="*.txt"))
+
+        assert observation.is_error is False
+        assert len(observation.files) == 100
+        assert observation.truncated is False
+
+        # Forced Python fallback backend must agree
+        fallback_executor = GlobExecutor(working_dir=temp_dir)
+        fallback_executor._ripgrep_available = False
+        fallback_observation = fallback_executor(GlobAction(pattern="*.txt"))
+
+        assert fallback_observation.is_error is False
+        assert len(fallback_observation.files) == 100
+        assert fallback_observation.truncated is False
+
+
 def test_glob_executor_complex_patterns():
     """Test complex glob patterns."""
     with tempfile.TemporaryDirectory() as temp_dir:
