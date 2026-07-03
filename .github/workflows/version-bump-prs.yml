@@ -517,7 +517,7 @@ jobs:
                     --repo "$REPO" \
                     --base main \
                     --head "$BRANCH" \
-                    --title "Bump agent-server (software-agent-sdk) to v$VERSION" \
+                    --title "chore: agent-server (software-agent-sdk) to v$VERSION" \
                     --body-file pr_body.md
                   echo "✅ PR created for $REPO"
 
