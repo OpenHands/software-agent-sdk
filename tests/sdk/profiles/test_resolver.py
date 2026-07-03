@@ -26,6 +26,7 @@ from openhands.sdk.profiles import (
 )
 from openhands.sdk.settings.model import ACPAgentSettings, OpenHandsAgentSettings
 from openhands.sdk.skills import Skill
+from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 
 
@@ -96,26 +97,28 @@ def test_openhands_resolves_to_settings_with_injected_llm(
     # MCP filtered to the referenced key.
     assert settings.mcp_config is not None
     assert list(settings.mcp_config.mcpServers.keys()) == ["fetch"]
-    # Default exec toolset is attached (#3967); the sub-agent tool set is
-    # included because enable_sub_agents=True.
-    tool_names = [t.name for t in settings.tools]
-    assert {"terminal", "file_editor", "task_tracker"} <= set(tool_names)
-    assert "task_tool_set" in tool_names
-    # Output feeds the unchanged create_agent path, tools included.
+    # The profile's tools default (None) rides through so create_agent is the
+    # single defaulting point (#3967 / #3978); the built agent carries the
+    # standard exec set plus the sub-agent tool set (enable_sub_agents=True).
+    assert settings.tools is None
     agent = settings.create_agent()
     assert isinstance(agent, Agent)
-    assert {"terminal", "file_editor", "task_tracker"} <= {t.name for t in agent.tools}
+    agent_tool_names = [t.name for t in agent.tools]
+    assert {"terminal", "file_editor", "task_tracker"} <= set(agent_tool_names)
+    assert "task_tool_set" in agent_tool_names
 
 
 def test_openhands_resolves_default_exec_tools(
     llm_store: LLMProfileStore,
 ) -> None:
-    """A profile has no ``tools`` field, so resolution must attach the standard
-    exec set (#3967) — otherwise ``create_agent`` yields an agent with only the
-    Finish/Think built-ins and no way to run shell commands or edit files. The
-    sub-agent tool set stays out when ``enable_sub_agents`` is False (default)."""
+    """A profile with no explicit ``tools`` resolves to ``tools=None``, and
+    ``create_agent`` attaches the standard exec set (#3967) — otherwise the
+    agent has only the Finish/Think built-ins and no way to run shell commands
+    or edit files. The sub-agent tool set stays out when ``enable_sub_agents``
+    is False (default)."""
     profile = OpenHandsAgentProfile(name="oh", llm_profile_ref="default")
     assert profile.enable_sub_agents is False
+    assert profile.tools is None
 
     settings = resolve_agent_profile(
         profile,
@@ -125,14 +128,49 @@ def test_openhands_resolves_default_exec_tools(
         cipher=None,
     )
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert [t.name for t in settings.tools] == [
+    assert settings.tools is None
+    # The built agent carries the exec tools, not just the built-ins.
+    agent = settings.create_agent()
+    assert [t.name for t in agent.tools] == [
         "terminal",
         "file_editor",
         "task_tracker",
     ]
-    # The resolved agent carries the exec tools, not just the built-ins.
-    agent = settings.create_agent()
-    assert {"terminal", "file_editor", "task_tracker"} <= {t.name for t in agent.tools}
+
+
+def test_openhands_profile_tools_selection_is_passed_through(
+    llm_store: LLMProfileStore,
+) -> None:
+    """An explicit profile ``tools`` list is authoritative: used exactly as
+    given ([] = deliberately bare), independent of ``enable_sub_agents``."""
+    picked = OpenHandsAgentProfile(
+        name="picked",
+        llm_profile_ref="default",
+        tools=[Tool(name="terminal")],
+        enable_sub_agents=True,
+    )
+    settings = resolve_agent_profile(
+        picked,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.tools == [Tool(name="terminal")]
+    assert [t.name for t in settings.create_agent().tools] == ["terminal"]
+
+    bare = OpenHandsAgentProfile(name="bare", llm_profile_ref="default", tools=[])
+    settings = resolve_agent_profile(
+        bare,
+        llm_store=llm_store,
+        mcp_config=None,
+        available_skills=None,
+        cipher=None,
+    )
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.tools == []
+    assert settings.create_agent().tools == []
 
 
 def test_openhands_copies_skills_and_verification(

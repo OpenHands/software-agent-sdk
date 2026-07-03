@@ -31,6 +31,7 @@ from openhands.sdk.settings.model import (
     VerificationSettings,
 )
 from openhands.sdk.skills import Skill
+from openhands.sdk.tool import Tool
 
 
 AGENT_PROFILE_SCHEMA_VERSION = 1
@@ -159,6 +160,17 @@ class OpenHandsAgentProfile(AgentProfileBase):
     agent: str = Field(
         default="CodeActAgent",
         description="Agent class to build.",
+    )
+    # Same tri-state as the resolved settings' ``tools``: passed through
+    # verbatim by the resolver, so ``create_agent`` is the single defaulting
+    # point (#3978). Secret-free by construction (``Tool`` is name + params).
+    tools: list[Tool] | None = Field(
+        default=None,
+        description=(
+            "Tool selection for the resolved agent. None (the default) = the "
+            "server's standard tool set; [] = an explicitly bare agent; a "
+            "non-empty list is used exactly as given."
+        ),
     )
     skills: list[Skill] = Field(
         default_factory=list,

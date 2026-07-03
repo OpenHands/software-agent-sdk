@@ -63,6 +63,9 @@ def build_seed_profile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
+        # Copy verbatim (None = server default) so a global config with e.g.
+        # browser or client tools seeds a genuinely behavior-preserving profile.
+        tools=agent_settings.tools,
         # Embed the global's already-resolved skills + skill_refs=[] (no further
         # discovery) to reproduce its exact set; skill_refs=None would re-discover
         # user+public and inject skills a partial-source global never had.

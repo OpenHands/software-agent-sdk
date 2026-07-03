@@ -11,6 +11,11 @@ from openhands.sdk.tool.client_tool import (
     ClientToolSpec,
     register_client_tools,
 )
+from openhands.sdk.tool.defaults import (
+    DEFAULT_EXEC_TOOL_NAMES,
+    SUB_AGENT_TOOL_NAME,
+    default_tool_specs,
+)
 from openhands.sdk.tool.registry import (
     list_registered_tools,
     register_tool,
@@ -38,6 +43,9 @@ __all__ = [
     "register_client_tools",
     "DeclaredResources",
     "Tool",
+    "DEFAULT_EXEC_TOOL_NAMES",
+    "SUB_AGENT_TOOL_NAME",
+    "default_tool_specs",
     "ToolDefinition",
     "ToolAnnotations",
     "ToolExecutor",

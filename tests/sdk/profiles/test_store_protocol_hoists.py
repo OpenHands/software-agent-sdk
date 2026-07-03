@@ -243,6 +243,8 @@ def test_build_seed_profile_openhands_branch():
     assert profile.name == SEED_PROFILE_NAME
     assert profile.llm_profile_ref == "my-llm"
     assert profile.mcp_server_refs is None
+    # Default settings carry tools=None -> the seed inherits the server default.
+    assert profile.tools is None
     # Secret-free verification projection (no critic_api_key on the profile type).
     assert "critic_api_key" not in type(profile.verification).model_fields
 
@@ -250,6 +252,22 @@ def test_build_seed_profile_openhands_branch():
     fallback = build_seed_profile(settings, active_llm_profile=None)
     assert isinstance(fallback, OpenHandsAgentProfile)
     assert fallback.llm_profile_ref == SEED_PROFILE_NAME
+
+
+def test_build_seed_profile_copies_explicit_tools():
+    """A global config with an explicit toolset (e.g. browser) seeds a
+    behavior-preserving profile — the tools are copied verbatim, not reset to
+    the server default (#3978)."""
+    settings = validate_agent_settings(
+        {
+            "agent_kind": "openhands",
+            "tools": [{"name": "terminal"}, {"name": "browser_use"}],
+        }
+    )
+    profile = build_seed_profile(settings, active_llm_profile="my-llm")
+    assert isinstance(profile, OpenHandsAgentProfile)
+    assert profile.tools is not None
+    assert [t.name for t in profile.tools] == ["terminal", "browser_use"]
 
 
 def test_build_seed_profile_acp_branch():
