@@ -110,6 +110,9 @@ def _walk_mcp_secret_values(
     for server in servers.values():
         if not isinstance(server, dict):
             continue
+        auth = server.get("auth")
+        if isinstance(auth, str) and auth != "oauth":
+            server["auth"] = transform(auth)
         for key in ("env", "headers"):
             mapping = server.get(key)
             if not isinstance(mapping, dict):
@@ -191,7 +194,7 @@ def serialize_mcp_config(
             dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
         )
 
-    return sanitize_dict(dumped)
+    return sanitize_dict(_walk_mcp_secret_values(dumped, lambda _: "<redacted>"))
 
 
 SettingsValueType = Literal[

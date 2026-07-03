@@ -89,6 +89,9 @@ def _decrypt_mcp_secret_values(
             raise ValueError(
                 f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
             )
+        auth = server.get("auth")
+        if isinstance(auth, str) and auth != "oauth":
+            server["auth"] = _decrypt_mcp_value_or_keep(cipher, auth)
         for key in ("env", "headers"):
             if key not in server:
                 continue
@@ -104,7 +107,22 @@ def _decrypt_mcp_secret_values(
                 else value
                 for name, value in mapping.items()
             }
+        oauth_credentials = server.get("oauth_credentials")
+        if isinstance(oauth_credentials, dict):
+            server["oauth_credentials"] = _decrypt_mcp_secret_leaves(
+                cipher, oauth_credentials
+            )
     return config
+
+
+def _decrypt_mcp_secret_leaves(cipher: Cipher, value: Any) -> Any:
+    if isinstance(value, str):
+        return _decrypt_mcp_value_or_keep(cipher, value)
+    if isinstance(value, dict):
+        return {k: _decrypt_mcp_secret_leaves(cipher, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decrypt_mcp_secret_leaves(cipher, item) for item in value]
+    return value
 
 
 # -- SOUL.md loader -------------------------------------------------------

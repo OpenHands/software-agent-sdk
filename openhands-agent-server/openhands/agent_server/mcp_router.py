@@ -25,7 +25,7 @@ from typing import Annotated, Any, Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -69,42 +69,10 @@ class _StdioMCPServerSpec(BaseModel):
     cwd: str | None = None
 
 
-class _OAuthAuthenticationSpec(BaseModel):
-    """OpenHands-specific runtime OAuth options for remote MCP clients."""
-
-    type: Literal["oauth"] = "oauth"
-    client_auth_method: (
-        Literal["none", "client_secret_post", "client_secret_basic"] | None
-    ) = Field(
-        default=None,
-        description=(
-            "OAuth token endpoint client authentication method to request "
-            "during dynamic client registration."
-        ),
-    )
-    scopes: str | list[str] | None = Field(
-        default=None,
-        description="Optional OAuth scopes to request before server metadata is read.",
-    )
-    client_name: str | None = Field(
-        default=None,
-        description="Optional OAuth client name for dynamic client registration.",
-    )
-    client_metadata_url: str | None = Field(
-        default=None,
-        description=(
-            "Optional HTTPS client metadata document URL for MCP providers "
-            "that support CIMD."
-        ),
-    )
-    additional_client_metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional OAuth client metadata forwarded to fastmcp.",
-    )
-
-
 class _RemoteMCPServerSpec(BaseModel):
     """Remote (HTTP / SSE) MCP server spec."""
+
+    model_config = ConfigDict(extra="forbid")
 
     # ``shttp`` is the alias the OpenHands settings layer uses for
     # streamable-http; we accept both spellings so the UI can forward
@@ -112,26 +80,18 @@ class _RemoteMCPServerSpec(BaseModel):
     type: Literal["http", "shttp", "streamable-http", "sse"]
     url: str = Field(..., min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
-    api_key: str | None = Field(
+    auth: str | None = Field(
         default=None,
         description=(
-            "Bearer token. If provided, sent as 'Authorization: Bearer <token>'."
+            "FastMCP auth field: a bearer token string, or the literal "
+            '"oauth" to let fastmcp perform the MCP OAuth flow. Mutually '
+            "exclusive with explicit ``Authorization`` headers."
         ),
     )
-    auth: Literal["oauth"] | None = Field(
+    authentication: dict[str, Any] | None = Field(
         default=None,
         description=(
-            'Set to "oauth" to let fastmcp perform the OAuth flow '
-            "(RFC 9728 + PKCE) with the MCP server.  Mutually exclusive "
-            "with ``api_key`` and explicit ``Authorization`` headers."
-        ),
-    )
-    authentication: _OAuthAuthenticationSpec | None = Field(
-        default=None,
-        description=(
-            "Optional structured OAuth client metadata used when ``auth`` is "
-            '"oauth". This keeps provider-specific OAuth requirements '
-            "explicit instead of changing the meaning of bare ``auth: oauth``."
+            'Optional FastMCP OAuth client metadata used when ``auth`` is "oauth".'
         ),
     )
     oauth_credentials: dict[str, Any] = Field(
@@ -144,10 +104,12 @@ class _RemoteMCPServerSpec(BaseModel):
 
     @model_validator(mode="after")
     def _no_auth_conflict(self) -> _RemoteMCPServerSpec:
-        if self.auth == "oauth" and (self.api_key or "Authorization" in self.headers):
+        has_authorization_header = any(
+            key.lower() == "authorization" for key in self.headers
+        )
+        if self.auth is not None and has_authorization_header:
             raise ValueError(
-                "'auth: oauth' cannot be combined with 'api_key' or an "
-                "explicit 'Authorization' header."
+                "'auth' cannot be combined with an explicit 'Authorization' header."
             )
         if self.authentication is not None and self.auth != "oauth":
             raise ValueError("'authentication' is only supported with 'auth: oauth'.")
@@ -161,11 +123,8 @@ class _RemoteMCPServerSpec(BaseModel):
         if self.auth:
             out["auth"] = self.auth
         if self.authentication:
-            out["authentication"] = self.authentication.model_dump(exclude_none=True)
+            out["authentication"] = copy.deepcopy(self.authentication)
         headers = dict(self.headers)
-        if self.api_key:
-            # Don't clobber a caller-provided Authorization header.
-            headers.setdefault("Authorization", f"Bearer {self.api_key}")
         if headers:
             out["headers"] = headers
         return out
@@ -349,6 +308,13 @@ def _server_to_fastmcp_dict(
             out["cwd"] = spec.cwd
         return out
     remote = spec.to_fastmcp_dict()
+    auth = remote.get("auth")
+    if isinstance(auth, str) and auth != "oauth":
+        remote["auth"] = (
+            decrypt_str_with_cipher_or_keep(cipher, auth, description="MCP test auth")
+            if cipher is not None
+            else auth
+        )
     if "headers" in remote:
         remote["headers"] = _decrypt_mapping(cipher, remote["headers"])
     return remote

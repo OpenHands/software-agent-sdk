@@ -283,6 +283,67 @@ def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
     assert seen_env == {"bot_token": "xoxb-real-token", "team_id": "T0123"}
 
 
+def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    config = Config(session_api_keys=[], secret_key=SecretStr("test-secret-key"))
+    cipher = config.cipher
+    assert cipher is not None
+    client = TestClient(create_app(config), raise_server_exceptions=False)
+    seen_configs: list[dict] = []
+
+    class FakeClient:
+        def __init__(self):
+            self.tools: list[object] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_create_mcp_tools(
+        config,
+        timeout=30.0,
+        *,
+        mcp_oauth_token_storage=None,
+    ):
+        seen_configs.append(config)
+        return FakeClient()
+
+    monkeypatch.setattr(
+        "openhands.agent_server.mcp_router.create_mcp_tools",
+        fake_create_mcp_tools,
+    )
+
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "name": "linear",
+            "server": {
+                "type": "shttp",
+                "url": "https://mcp.linear.app/mcp",
+                "auth": cipher.encrypt(SecretStr("lin-real-token")),
+            },
+            "timeout": 10.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert seen_configs == [
+        {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "transport": "http",
+                    "auth": "lin-real-token",
+                }
+            }
+        }
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Failure paths -- all should return HTTP 200 with ok=False
 # ---------------------------------------------------------------------------
@@ -363,24 +424,24 @@ def test_mcp_test_clamps_timeout_range(client: TestClient):
     assert response.status_code == 422
 
 
-def test_mcp_test_bearer_token_in_auth_header(
+def test_mcp_test_bearer_token_in_auth_field(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
-    """Providing api_key should not break the connect (request must succeed)."""
+    """Providing bearer-token auth should not break the connect."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
                 "type": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
-                "api_key": "test-token-123",
+                "auth": "test-token-123",
             },
             "timeout": 10.0,
         },
     )
 
     # FastMCP's HTTP server doesn't enforce auth in this fixture, so the
-    # request should still succeed; this guards against the api_key wiring
+    # request should still succeed; this guards against the auth-field wiring
     # itself blowing up (e.g. malformed headers crashing the transport).
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
@@ -423,16 +484,16 @@ def test_mcp_test_accepts_auth_oauth_field(
     assert set(body["tools"]) == {"echo", "add"}
 
 
-def test_mcp_test_rejects_auth_oauth_with_api_key(client: TestClient):
-    """``auth: oauth`` is mutually exclusive with ``api_key``."""
+def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
+    """The FastMCP auth field is mutually exclusive with Authorization headers."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
                 "type": "http",
                 "url": "https://example.com/mcp",
-                "auth": "oauth",
-                "api_key": "some-token",
+                "auth": "some-token",
+                "headers": {"Authorization": "Bearer other-token"},
             },
             "timeout": 5.0,
         },
@@ -440,8 +501,24 @@ def test_mcp_test_rejects_auth_oauth_with_api_key(client: TestClient):
     assert response.status_code == 422
 
 
+def test_mcp_test_rejects_legacy_remote_api_key_field(client: TestClient):
+    response = client.post(
+        "/api/mcp/test",
+        json={
+            "server": {
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "api_key": "some-token",
+            },
+            "timeout": 5.0,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_mcp_test_rejects_auth_oauth_with_auth_header(client: TestClient):
-    """``auth: oauth`` is mutually exclusive with an explicit Authorization header."""
+    """``auth: oauth`` is mutually exclusive with an Authorization header."""
     response = client.post(
         "/api/mcp/test",
         json={
@@ -602,7 +679,6 @@ def test_remote_spec_to_fastmcp_dict_includes_authentication():
     assert d["authentication"] == {
         "type": "oauth",
         "client_auth_method": "none",
-        "additional_client_metadata": {},
     }
 
 

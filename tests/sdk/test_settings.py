@@ -1420,6 +1420,44 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     )
 
 
+def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
+    from openhands.sdk.utils.cipher import Cipher
+
+    mcp_config = MCPConfig.model_validate(
+        {
+            "mcpServers": {
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "auth": "lin-api-secret",
+                },
+                "superhuman": {
+                    "url": "https://mcp.mail.superhuman.com/mcp",
+                    "auth": "oauth",
+                },
+            }
+        }
+    )
+    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    cipher = Cipher(secret_key="test-encryption-key")
+
+    dumped = settings.model_dump(mode="json", context={"cipher": cipher})
+    servers = dumped["mcp_config"]["mcpServers"]
+
+    assert servers["linear"]["auth"].startswith("gAAAA")
+    assert servers["linear"]["auth"] != "lin-api-secret"
+    assert servers["superhuman"]["auth"] == "oauth"
+
+    redacted = settings.model_dump(mode="json")
+    assert redacted["mcp_config"]["mcpServers"]["linear"]["auth"] == "<redacted>"
+    assert redacted["mcp_config"]["mcpServers"]["superhuman"]["auth"] == "oauth"
+
+    restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
+    assert restored.mcp_config is not None
+    restored_servers = restored.mcp_config.model_dump(exclude_none=True)["mcpServers"]
+    assert restored_servers["linear"]["auth"] == "lin-api-secret"
+    assert restored_servers["superhuman"]["auth"] == "oauth"
+
+
 def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() -> None:
     """Loading a settings file that pre-dates per-value encryption (env /
     headers stored as plaintext) must NOT drop those values: each value that
