@@ -393,18 +393,17 @@ def _probe_mcp_server(
     }
 
     try:
-        oauth_server = (
-            request.server
-            if isinstance(request.server, _RemoteMCPServerSpec)
-            and isinstance(request.server.auth, MCPOAuthAuthCredential)
-            else None
-        )
+        oauth_server: _RemoteMCPServerSpec | None = None
+        oauth_auth: MCPOAuthAuthCredential | None = None
+        if isinstance(request.server, _RemoteMCPServerSpec) and isinstance(
+            request.server.auth, MCPOAuthAuthCredential
+        ):
+            oauth_server = request.server
+            oauth_auth = request.server.auth
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
-        if oauth_server is not None:
+        if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                credentials=_decrypt_oauth_credentials(
-                    cipher, oauth_server.auth.credentials
-                )
+                credentials=_decrypt_oauth_credentials(cipher, oauth_auth.credentials)
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager
@@ -425,8 +424,9 @@ def _probe_mcp_server(
                 credentials = oauth_token_storage.export_credentials()
                 if credentials:
                     response_server = oauth_server.model_copy(deep=True)
-                    assert isinstance(response_server.auth, MCPOAuthAuthCredential)
-                    response_server.auth.credentials = _encrypt_oauth_credentials(
+                    response_auth = response_server.auth
+                    assert isinstance(response_auth, MCPOAuthAuthCredential)
+                    response_auth.credentials = _encrypt_oauth_credentials(
                         cipher, credentials
                     )
             return MCPTestSuccess(

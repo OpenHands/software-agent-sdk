@@ -12,7 +12,6 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 """
 
 import asyncio
-import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any
@@ -54,8 +53,8 @@ from openhands.sdk.profiles import (
     validate_agent_profile,
 )
 from openhands.sdk.profiles.agent_profile_store import PROFILE_NAME_PATTERN
+from openhands.sdk.settings import decrypt_agent_settings_secret_values
 from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
 
 logger = get_logger(__name__)
@@ -135,25 +134,11 @@ def _store_errors() -> Iterator[None]:
 
 
 def _decrypt_mcp_tools(tools: dict[str, Any], cipher: Cipher) -> dict[str, Any]:
-    """Return a copy of an ``mcp_tools`` dict with env/headers Fernet tokens
+    """Return a copy of an ``mcp_tools`` dict with MCP Fernet tokens
     decrypted. Non-Fernet (plaintext) values pass through unchanged."""
-    servers = tools.get("mcpServers")
-    if not isinstance(servers, dict):
-        return tools
-    out = copy.deepcopy(tools)
-    for server in out["mcpServers"].values():
-        if not isinstance(server, dict):
-            continue
-        for key in ("env", "headers"):
-            mapping = server.get(key)
-            if isinstance(mapping, dict):
-                server[key] = {
-                    k: decrypt_str_with_cipher_or_keep(
-                        cipher, v, description="MCP env/headers"
-                    )
-                    for k, v in mapping.items()
-                }
-    return out
+    payload = decrypt_agent_settings_secret_values({"mcp_config": tools}, cipher=cipher)
+    decrypted = payload.get("mcp_config")
+    return decrypted if isinstance(decrypted, dict) else tools
 
 
 def _decrypt_profile_mcp_tools(

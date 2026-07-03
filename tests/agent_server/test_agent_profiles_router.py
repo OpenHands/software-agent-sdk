@@ -733,7 +733,7 @@ def client_with_cipher(
     reset_stores()
 
 
-def _profile_with_mcp_secret(header_value: str) -> dict:
+def _profile_with_mcp_secret(token_value: str) -> dict:
     return {
         "llm_profile_ref": "base",
         "skills": [
@@ -744,7 +744,7 @@ def _profile_with_mcp_secret(header_value: str) -> dict:
                     "mcpServers": {
                         "svc": {
                             "url": "https://x.test",
-                            "headers": {"Authorization": header_value},
+                            "headers": {"Authorization": f"Bearer {token_value}"},
                         }
                     }
                 },
@@ -753,9 +753,9 @@ def _profile_with_mcp_secret(header_value: str) -> dict:
     }
 
 
-def _mcp_auth(profile_payload: dict) -> str:
+def _mcp_auth_value(profile_payload: dict) -> str:
     servers = profile_payload["skills"][0]["mcp_tools"]["mcpServers"]
-    return servers["svc"]["headers"]["Authorization"]
+    return servers["svc"]["auth"]["value"]
 
 
 def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
@@ -764,7 +764,7 @@ def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
     Without decrypt-incoming-before-save the re-posted token would be encrypted
     again and the stored value would decrypt to a stale token.
     """
-    secret = "Bearer ghp_roundtrip_secret"
+    secret = "ghp_roundtrip_secret"
 
     created = client_with_cipher.post(
         "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
@@ -775,21 +775,19 @@ def test_mcp_tools_secret_encrypted_roundtrip(client_with_cipher, cipher):
     enc = client_with_cipher.get(
         "/api/agent-profiles/p", headers={"X-Expose-Secrets": "encrypted"}
     ).json()
-    token = _mcp_auth(enc["profile"])
+    token = _mcp_auth_value(enc["profile"])
     assert token != secret
     assert cipher.decrypt(token).get_secret_value() == secret
 
-    # Re-post the encrypted token (an ordinary client edit round-trip).
-    reposted = client_with_cipher.post(
-        "/api/agent-profiles/p", json=_profile_with_mcp_secret(token)
-    )
+    # Re-post the encrypted API payload (an ordinary client edit round-trip).
+    reposted = client_with_cipher.post("/api/agent-profiles/p", json=enc["profile"])
     assert reposted.status_code == 201
 
     # Plaintext GET returns the original secret -> decrypted exactly once.
     plain = client_with_cipher.get(
         "/api/agent-profiles/p", headers={"X-Expose-Secrets": "plaintext"}
     ).json()
-    assert _mcp_auth(plain["profile"]) == secret
+    assert _mcp_auth_value(plain["profile"]) == secret
 
 
 def test_mcp_tools_secret_encrypted_at_rest(
@@ -798,15 +796,13 @@ def test_mcp_tools_secret_encrypted_at_rest(
     """A posted plaintext MCP secret is encrypted on disk, never stored raw."""
     import json
 
-    secret = "Bearer ghp_at_rest_secret"
+    secret = "ghp_at_rest_secret"
     client_with_cipher.post(
         "/api/agent-profiles/p", json=_profile_with_mcp_secret(secret)
     )
 
     raw = json.loads((temp_agent_profiles_dir / "p.json").read_text())
-    stored = raw["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["headers"][
-        "Authorization"
-    ]
+    stored = raw["skills"][0]["mcp_tools"]["mcpServers"]["svc"]["auth"]["value"]
     assert stored != secret
     assert cipher.decrypt(stored).get_secret_value() == secret
 

@@ -6,7 +6,7 @@ import asyncio
 import copy
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, SupportsFloat
+from typing import Any, SupportsFloat, cast
 
 from key_value.aio.protocols import AsyncKeyValue
 
@@ -176,17 +176,23 @@ class MCPSettingsOAuthTokenStore:
                 return settings
 
             _, server = match
-            auth = server.setdefault("auth", {"strategy": "oauth2"})
-            if not isinstance(auth, dict):
-                auth = {"strategy": "oauth2"}
+            auth_value = server.get("auth")
+            if isinstance(auth_value, dict):
+                auth = cast(dict[str, Any], auth_value)
+            else:
+                auth: dict[str, Any] = {"strategy": "oauth2"}
                 server["auth"] = auth
-            credentials = auth.setdefault(_OAUTH_CREDENTIALS_FIELD, {})
-            if not isinstance(credentials, dict):
-                credentials = {}
+            credentials_value = auth.get(_OAUTH_CREDENTIALS_FIELD)
+            if isinstance(credentials_value, dict):
+                credentials = cast(dict[str, Any], credentials_value)
+            else:
+                credentials: dict[str, Any] = {}
                 auth[_OAUTH_CREDENTIALS_FIELD] = credentials
-            bucket = credentials.setdefault(collection_key, {})
-            if not isinstance(bucket, dict):
-                bucket = {}
+            bucket_value = credentials.get(collection_key)
+            if isinstance(bucket_value, dict):
+                bucket = cast(dict[str, Any], bucket_value)
+            else:
+                bucket: dict[str, Any] = {}
                 credentials[collection_key] = bucket
             bucket[key] = {"value": stored_value, "expires_at": expires_at}
             _set_mcp_config(settings, mcp_config)
@@ -221,15 +227,18 @@ class MCPSettingsOAuthTokenStore:
             if match is None:
                 return settings
             _, server = match
-            auth = server.get("auth")
-            credentials = (
-                auth.get(_OAUTH_CREDENTIALS_FIELD) if isinstance(auth, dict) else None
-            )
-            if not isinstance(credentials, dict):
+            auth_value = server.get("auth")
+            if not isinstance(auth_value, dict):
                 return settings
-            bucket = credentials.get(collection_key)
-            if not isinstance(bucket, dict) or key not in bucket:
+            auth = cast(dict[str, Any], auth_value)
+            credentials_value = auth.get(_OAUTH_CREDENTIALS_FIELD)
+            if not isinstance(credentials_value, dict):
                 return settings
+            credentials = cast(dict[str, Any], credentials_value)
+            bucket_value = credentials.get(collection_key)
+            if not isinstance(bucket_value, dict) or key not in bucket_value:
+                return settings
+            bucket = cast(dict[str, Any], bucket_value)
             del bucket[key]
             deleted = True
             if not bucket:

@@ -3,7 +3,6 @@ import shutil
 from typing import Any
 
 import pytest
-from fastmcp.mcp_config import MCPConfig
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import StartConversationRequest
@@ -629,7 +628,7 @@ def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
 
 
 def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
     settings = OpenHandsAgentSettings(mcp_config=mcp_config)
@@ -1340,7 +1339,7 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 
 
 def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
                 "leaky": {
@@ -1507,7 +1506,7 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     """
     from openhands.sdk.utils.cipher import Cipher
 
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
                 "github": {
@@ -1690,7 +1689,7 @@ def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() 
     from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_config=OpenHandsMCPConfig.model_validate(
             {
                 "mcpServers": {
                     "github": {
@@ -1720,7 +1719,7 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
     from openhands.sdk.utils.cipher import Cipher
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_config=OpenHandsMCPConfig.model_validate(
             {
                 "mcpServers": {
                     "github": {
@@ -1747,7 +1746,7 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the runtime real env/headers (the field serializer
     # redacts mcp_config for transit only).
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
                 "leaky": {
@@ -1764,7 +1763,7 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
 
 
 def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
                 "leaky": {
@@ -1791,7 +1790,7 @@ def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
 def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the subprocess real env/headers (the field serializer
     # redacts mcp_config for transit/storage only).
-    mcp_config = MCPConfig.model_validate(
+    mcp_config = OpenHandsMCPConfig.model_validate(
         {
             "mcpServers": {
                 "leaky": {

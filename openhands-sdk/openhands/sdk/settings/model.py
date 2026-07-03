@@ -137,6 +137,15 @@ def _walk_mcp_secret_values(
                 credentials = auth.get("credentials")
                 if isinstance(credentials, dict):
                     auth["credentials"] = transform_string_leaves(credentials)
+            elif strategy == "custom":
+                fastmcp = auth.get("fastmcp")
+                if isinstance(fastmcp, dict):
+                    auth["fastmcp"] = transform_string_leaves(fastmcp)
+        legacy_oauth_credentials = server.get("oauth_credentials")
+        if isinstance(legacy_oauth_credentials, dict):
+            server["oauth_credentials"] = transform_string_leaves(
+                legacy_oauth_credentials
+            )
         for key in ("env", "headers"):
             mapping = server.get(key)
             if not isinstance(mapping, dict):
@@ -145,6 +154,37 @@ def _walk_mcp_secret_values(
                 k: (transform(v) if isinstance(v, str) else v)
                 for k, v in mapping.items()
             }
+    return config
+
+
+_MCP_SERVER_KNOWN_FIELDS = frozenset(
+    {
+        "url",
+        "transport",
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "headers",
+        "auth",
+        "oauth_credentials",
+    }
+)
+
+
+def _sanitize_mcp_extra_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize unknown MCP server fields without collapsing known auth shape."""
+    config = copy.deepcopy(config)
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return sanitize_dict(config)
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        for key, value in list(server.items()):
+            if key in _MCP_SERVER_KNOWN_FIELDS:
+                continue
+            server[key] = sanitize_dict({key: value})[key]
     return config
 
 
@@ -215,7 +255,8 @@ def serialize_mcp_config(
             dumped, lambda v: cast(str, cipher.encrypt(SecretStr(v)))
         )
 
-    return sanitize_dict(_walk_mcp_secret_values(dumped, lambda _: "<redacted>"))
+    redacted = _walk_mcp_secret_values(dumped, lambda _: "<redacted>")
+    return _sanitize_mcp_extra_fields(redacted)
 
 
 def _encrypt_secret_str_or_keep(cipher: Cipher, value: Any) -> Any:

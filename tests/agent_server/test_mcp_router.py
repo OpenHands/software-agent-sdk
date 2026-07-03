@@ -662,10 +662,12 @@ def test_remote_spec_to_openhands_dict_includes_auth():
     """to_openhands_dict should preserve the tagged auth object."""
     from openhands.agent_server.mcp_router import _RemoteMCPServerSpec
 
-    spec = _RemoteMCPServerSpec(
-        type="shttp",
-        url="https://mcp.example.com/mcp",
-        auth={"strategy": "oauth2"},
+    spec = _RemoteMCPServerSpec.model_validate(
+        {
+            "type": "shttp",
+            "url": "https://mcp.example.com/mcp",
+            "auth": {"strategy": "oauth2"},
+        }
     )
     d = spec.to_openhands_dict()
     assert d["auth"] == {"strategy": "oauth2"}

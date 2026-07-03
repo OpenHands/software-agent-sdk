@@ -14,6 +14,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import ACPAgent, Agent
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
 from openhands.sdk.profiles import (
     ACPAgentProfile,
     AgentProfileStore,
@@ -380,8 +381,8 @@ def test_mcp_null_refs_passes_config_through(
         available_skills=None,
         cipher=None,
     )
-    assert settings.mcp_config is mcp_config
     assert settings.mcp_config is not None
+    assert isinstance(settings.mcp_config, OpenHandsMCPConfig)
     assert set(settings.mcp_config.mcpServers.keys()) == {"fetch", "other"}
 
 
@@ -503,7 +504,7 @@ def test_resolver_decrypts_skill_mcp_tools(tmp_path: Path) -> None:
     resolved_tools = settings.agent_context.skills[0].mcp_tools
     assert resolved_tools is not None
     resolved = resolved_tools["mcpServers"]["svc"]
-    assert resolved["headers"]["Authorization"] == f"Bearer {secret}"
+    assert resolved["auth"] == {"strategy": "bearer", "value": secret}
     assert resolved["env"]["API_KEY"] == secret
 
 
