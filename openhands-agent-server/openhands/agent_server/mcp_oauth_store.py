@@ -15,8 +15,6 @@ from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.cipher import Cipher
-from openhands.sdk.utils.pydantic_secrets import decrypt_str_with_cipher_or_keep
 
 
 logger = get_logger(__name__)
@@ -69,7 +67,6 @@ def _find_matching_server(
     if not isinstance(servers, dict):
         return None
 
-    fallback: tuple[str, dict[str, Any]] | None = None
     for server_name, server in servers.items():
         if not isinstance(server, dict):
             continue
@@ -80,9 +77,7 @@ def _find_matching_server(
             continue
         if server.get("auth") == "oauth":
             return server_name, server
-        if fallback is None:
-            fallback = (server_name, server)
-    return fallback
+    return None
 
 
 def _entry_value_and_expiry(
@@ -100,18 +95,6 @@ def _entry_value_and_expiry(
         copy.deepcopy(value),
         float(expires_at) if isinstance(expires_at, (int, float)) else None,
     )
-
-
-def _decrypt_string_leaves(value: Any, cipher: Cipher) -> Any:
-    if isinstance(value, str):
-        return decrypt_str_with_cipher_or_keep(
-            cipher, value, description="MCP OAuth credentials"
-        )
-    if isinstance(value, dict):
-        return {k: _decrypt_string_leaves(v, cipher) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_decrypt_string_leaves(item, cipher) for item in value]
-    return value
 
 
 class MCPSettingsOAuthTokenStore:
@@ -147,12 +130,6 @@ class MCPSettingsOAuthTokenStore:
         value, expires_at = _entry_value_and_expiry(
             bucket.get(key), now=float(self._now())
         )
-        if value is not None and store.cipher is not None:
-            # Credentials saved by the initial OAuth install support could be
-            # encrypted once by /api/mcp/test and then encrypted again by
-            # /api/settings. Loading settings unwraps one layer; this removes
-            # the leftover layer before FastMCP validates the token model.
-            value = _decrypt_string_leaves(value, store.cipher)
         return value, expires_at
 
     async def get(

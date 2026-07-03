@@ -482,8 +482,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """Attach a runtime OAuth token store factory for MCP clients.
 
         The factory is runtime-only and intentionally excluded from serialized
-        agent configuration so OAuth tokens never become part of persisted
-        MCP settings.
+        agent configuration; persisted OAuth credential values live in
+        settings.mcp_config through the storage implementation.
         """
         object.__setattr__(self, "_mcp_oauth_token_storage_factory", factory)
 

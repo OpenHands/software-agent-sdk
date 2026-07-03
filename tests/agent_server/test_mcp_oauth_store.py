@@ -16,13 +16,6 @@ from openhands.agent_server.persistence import (
     get_settings_store,
     reset_stores,
 )
-from openhands.sdk.utils.cipher import Cipher
-
-
-def _encrypt(cipher: Cipher, value: str) -> str:
-    encrypted = cipher.encrypt(SecretStr(value))
-    assert encrypted is not None
-    return encrypted
 
 
 @pytest.mark.asyncio
@@ -96,47 +89,24 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
 
 
 @pytest.mark.asyncio
-async def test_mcp_oauth_token_storage_reads_legacy_double_encrypted_values(
+async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
     tmp_path: Path,
 ):
     reset_stores()
     try:
-        secret_key = "mcp-oauth-test-key"
-        cipher = Cipher(secret_key)
         config = Config(
             session_api_keys=[],
             conversations_path=tmp_path / "conversations",
-            secret_key=SecretStr(secret_key),
+            secret_key=SecretStr("mcp-oauth-test-key"),
         )
-        key = "https://mcp.example.com/mcp/tokens"
         settings = PersistedSettings()
         settings.agent_settings = settings.agent_settings.model_copy(
             update={
                 "mcp_config": MCPConfig.model_validate(
                     {
                         "mcpServers": {
-                            "superhuman": {
+                            "plain": {
                                 "url": "https://mcp.example.com/mcp",
-                                "auth": "oauth",
-                                "oauth_credentials": {
-                                    "mcp-oauth-token": {
-                                        key: {
-                                            "value": {
-                                                "access_token": _encrypt(
-                                                    cipher, "super-secret-token"
-                                                ),
-                                                "refresh_token": _encrypt(
-                                                    cipher, "refresh-token"
-                                                ),
-                                                "token_type": _encrypt(
-                                                    cipher, "Bearer"
-                                                ),
-                                                "expires_in": 432000,
-                                            },
-                                            "expires_at": None,
-                                        }
-                                    }
-                                },
                             }
                         }
                     }
@@ -144,17 +114,22 @@ async def test_mcp_oauth_token_storage_reads_legacy_double_encrypted_values(
             }
         )
         settings_store = get_settings_store(config)
-        # save() adds the at-rest encryption layer around the already-encrypted
-        # values above, reproducing settings written by the previous install path.
         settings_store.save(settings)
 
         store = create_mcp_oauth_token_storage_factory(config)()
 
-        assert await store.get(key=key, collection="mcp-oauth-token") == {
-            "access_token": "super-secret-token",
-            "refresh_token": "refresh-token",
-            "token_type": "Bearer",
-            "expires_in": 432000,
-        }
+        await store.put(
+            key="https://mcp.example.com/mcp/tokens",
+            value={"access_token": "super-secret-token"},
+            collection="mcp-oauth-token",
+        )
+
+        loaded = settings_store.load()
+        assert loaded is not None
+        assert loaded.agent_settings.mcp_config is not None
+        server = loaded.agent_settings.mcp_config.model_dump(
+            exclude_none=True, exclude_defaults=True
+        )["mcpServers"]["plain"]
+        assert "oauth_credentials" not in server
     finally:
         reset_stores()
