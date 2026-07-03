@@ -42,6 +42,10 @@ from openhands.sdk.tool import (
     resolve_tool,
 )
 from openhands.sdk.tool.builtins import InvokeSkillTool
+from openhands.sdk.tool.builtins.vision_inspect import (
+    VisionInspectTool,
+    has_vision_profile_available,
+)
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.models import DiscriminatedUnionMixin, get_handler_class_name
 
@@ -733,6 +737,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             logger.debug(
                 "Auto-attached %s (invocable AgentSkills-format skill present)",
                 InvokeSkillTool.__name__,
+            )
+        if (
+            not self.llm.vision_is_active()
+            and VisionInspectTool.__name__ not in default_tool_names
+            and has_vision_profile_available()
+        ):
+            default_tool_names.append(VisionInspectTool.__name__)
+            logger.debug(
+                "Auto-attached %s (vision profile available for non-vision model)",
+                VisionInspectTool.__name__,
             )
 
         for tool_name in default_tool_names:

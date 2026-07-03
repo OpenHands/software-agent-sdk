@@ -55,17 +55,24 @@ def build_seed_profile(
             ),
             acp_args=list(agent_settings.acp_args) or None,
             mcp_server_refs=None,
+            # ACP default; explicit for symmetry with the OpenHands seed below.
+            skill_refs=[],
         )
     context = agent_settings.agent_context
     return OpenHandsAgentProfile(
         name=name,
         llm_profile_ref=active_llm_profile or SEED_PROFILE_NAME,
         agent=agent_settings.agent,
+        # Embed the global's already-resolved skills + skill_refs=[] (no further
+        # discovery) to reproduce its exact set; skill_refs=None would re-discover
+        # user+public and inject skills a partial-source global never had.
         skills=list(context.skills),
+        skill_refs=[],
         system_message_suffix=context.system_message_suffix,
         condenser=agent_settings.condenser,
         verification=build_profile_verification(agent_settings.verification),
         enable_sub_agents=agent_settings.enable_sub_agents,
+        enable_switch_llm_tool=agent_settings.enable_switch_llm_tool,
         tool_concurrency_limit=agent_settings.tool_concurrency_limit,
         mcp_server_refs=None,
     )

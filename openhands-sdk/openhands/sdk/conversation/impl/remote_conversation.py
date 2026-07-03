@@ -46,6 +46,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.types import EventID
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
@@ -1485,6 +1486,7 @@ class RemoteConversation(BaseConversation):
         title: str | None = None,
         tags: dict[str, str] | None = None,
         reset_metrics: bool = True,
+        from_event_id: EventID | None = None,
     ) -> "RemoteConversation":
         """Fork this conversation on the remote agent server.
 
@@ -1501,6 +1503,9 @@ class RemoteConversation(BaseConversation):
             tags: Optional tags for the forked conversation.
             reset_metrics: If ``True`` (default), cost/token stats start
                 fresh on the fork.
+            from_event_id: If set, fork only the branch up to and including this
+                event (``path_to_root``) and set the fork's HEAD there. If
+                ``None`` (default), copy the whole conversation.
 
         Returns:
             A new ``RemoteConversation`` backed by the forked server-side
@@ -1508,6 +1513,8 @@ class RemoteConversation(BaseConversation):
 
         Raises:
             NotImplementedError: If ``agent`` is provided.
+            httpx.HTTPStatusError: If the server rejects the request (e.g. 404
+                for an unknown ``from_event_id``).
         """
         if agent is not None:
             raise NotImplementedError(
@@ -1522,6 +1529,8 @@ class RemoteConversation(BaseConversation):
             body["title"] = title
         if tags is not None:
             body["tags"] = tags
+        if from_event_id is not None:
+            body["from_event_id"] = from_event_id
 
         resp = _send_request(
             self._client,
@@ -1549,6 +1558,29 @@ class RemoteConversation(BaseConversation):
             delete_on_close=self.delete_on_close,
             tags=server_tags,
         )
+
+    def navigate_to(self, event_id: EventID | None) -> None:
+        """Move the conversation HEAD to an existing event on the remote server.
+
+        Posts to the server's ``/navigate`` route, which re-roots the active
+        branch in place (no new conversation). The cached state is refreshed so
+        a subsequent ``state`` read reflects the new HEAD — ``leaf_event_id`` is
+        not broadcast over the WebSocket.
+
+        Args:
+            event_id: Event to make the new HEAD, or ``None`` for the empty tree.
+
+        Raises:
+            httpx.HTTPStatusError: If the server rejects the event id (e.g. 404
+                for an unknown event).
+        """
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/navigate",
+            json={"event_id": event_id},
+        )
+        self._state.refresh_from_server()
 
     def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
         """Execute a tool directly without going through the agent loop.

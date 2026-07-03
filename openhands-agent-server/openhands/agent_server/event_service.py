@@ -863,6 +863,11 @@ class EventService:
         state = self._conversation.state
         if state.execution_status == ConversationExecutionStatus.RUNNING:
             state.execution_status = ConversationExecutionStatus.ERROR
+            # Crash recovery scans the full log, not the active branch: the
+            # process may have died between writing an event file and persisting
+            # the advanced HEAD, so the leaf can lag the on-disk events. (Remote
+            # branching is unsupported — #3749 — so there are no abandoned
+            # branches to exclude here anyway.)
             unmatched_actions = ConversationState.get_unmatched_actions(state.events)
             if unmatched_actions:
                 first_action = unmatched_actions[0]
@@ -1504,6 +1509,22 @@ class EventService:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.condense)
+
+    async def navigate_to(self, event_id: str | None) -> None:
+        """Move the conversation HEAD to an existing event (in-place re-root).
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+
+        Raises:
+            ValueError: If ``event_id`` is not ``None`` and not in the conversation.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self._conversation.navigate_to, event_id
+        )
 
     def _get_agent_final_response_sync(self) -> str:
         """Extract the agent's final response from the conversation events.

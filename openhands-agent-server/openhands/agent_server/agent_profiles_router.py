@@ -11,6 +11,7 @@ MCP references and returns :class:`~openhands.sdk.profiles.AgentProfileDiagnosti
 (never raises on dangling refs — those appear in the body).
 """
 
+import asyncio
 import copy
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -32,8 +33,15 @@ from openhands.agent_server.persistence import (
     get_llm_profile_store,
     get_settings_store,
 )
+from openhands.agent_server.profiles_router import MAX_PROFILES
+from openhands.agent_server.skills_service import discover_profile_skills_if_needed
+from openhands.sdk.llm import LLM
+from openhands.sdk.llm.llm_profile_store import (
+    ProfileLimitExceeded as LLMProfileLimitExceeded,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.profiles import (
+    SEED_PROFILE_NAME,
     ACPAgentProfile,
     AgentProfileDiagnostics,
     AgentProfileStore,
@@ -174,6 +182,59 @@ def _decrypt_profile_mcp_tools(
     return profile.model_copy(update={"skills": new_skills})
 
 
+def _seed_default_llm_profile(llm: LLM, cipher: Cipher | None) -> str:
+    """Mirror the live LLM config into a ``SEED_PROFILE_NAME`` LLM profile.
+
+    ``build_seed_profile`` falls back to the literal name ``SEED_PROFILE_NAME``
+    when no LLM profile is active, on the assumption that a profile by that
+    name exists — but nothing ever created one, so the seeded agent profile's
+    ``llm_profile_ref`` dangled from birth (#3933). Mirrors the cloud
+    ``SaasSettingsStore``'s legacy-LLM backfill: materialize the current
+    ``agent_settings.llm`` under that name so the reference resolves, unless a
+    profile is already stored there (never clobber it).
+
+    Existence is checked via ``load()``, not ``list()``: the store resolves a
+    name straight to a filesystem path, so on a case-insensitive filesystem
+    (macOS/Windows) a differently-cased ``Default`` profile already occupies
+    the ``default`` path even though it wouldn't case-sensitively match a
+    ``list()`` membership check — that mismatch would otherwise let ``save()``
+    silently clobber it.
+    """
+    llm_store = get_llm_profile_store()
+    with _store_errors():
+        try:
+            llm_store.load(SEED_PROFILE_NAME, cipher=cipher)
+            return SEED_PROFILE_NAME
+        except FileNotFoundError:
+            pass
+        except ValueError:
+            # Something already occupies the name (e.g. corrupted/unparsable
+            # file) — never overwrite it; a broken ref surfaces at
+            # materialize/launch time instead.
+            logger.warning(
+                f"Default LLM profile '{SEED_PROFILE_NAME}' exists but "
+                "failed to load; leaving it as-is"
+            )
+            return SEED_PROFILE_NAME
+        try:
+            llm_store.save(
+                SEED_PROFILE_NAME,
+                llm,
+                include_secrets=True,
+                cipher=cipher,
+                max_profiles=MAX_PROFILES,
+            )
+            logger.info(f"Seeded default LLM profile '{SEED_PROFILE_NAME}'")
+        except LLMProfileLimitExceeded:
+            # Can't mirror the live LLM as a profile; the agent profile's
+            # llm_profile_ref will still dangle, but no worse than before.
+            logger.warning(
+                "Could not seed default LLM profile "
+                f"'{SEED_PROFILE_NAME}': profile limit reached"
+            )
+    return SEED_PROFILE_NAME
+
+
 def _seed_default_profile(
     store: AgentProfileStore,
     request: Request,
@@ -191,7 +252,19 @@ def _seed_default_profile(
         # unlocked).
         if store.list():
             return
-        profile = build_seed_profile(settings.agent_settings, settings.active_profile)
+        active_llm_profile = settings.active_profile
+        # Falsy check (not `is None`): mirrors build_seed_profile's own
+        # `active_llm_profile or SEED_PROFILE_NAME` fallback. A stray empty
+        # string (e.g. a hand-edited/legacy settings.json, or a direct
+        # PersistedSettings(active_profile="") construction — the HTTP PATCH
+        # payload's pattern validator blocks "" but the stored field has no
+        # such constraint) is falsy there too, so the backfill must trigger
+        # on the same condition or the exact #3933 dangling ref reappears.
+        if not active_llm_profile and settings.agent_settings.agent_kind != "acp":
+            active_llm_profile = _seed_default_llm_profile(
+                settings.agent_settings.llm, cipher
+            )
+        profile = build_seed_profile(settings.agent_settings, active_llm_profile)
         # Settings persist skills[].mcp_tools encrypted (and never decrypt on
         # load), so decrypt before re-encrypting at save to avoid double-encrypt.
         profile = _decrypt_profile_mcp_tools(profile, cipher)
@@ -499,10 +572,31 @@ async def materialize_agent_profile(
     settings = get_settings_store(config).load() or PersistedSettings()
     mcp_config = settings.agent_settings.mcp_config
 
+    # Discover skills off the event loop so the dry-run can report which
+    # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
+    # preview: pass ``available_skills=None`` (catalog unknown — the dry-run then
+    # reports nothing dangling, rather than flagging every selected skill) and
+    # surface the failure as its own diagnostic below.
+    discovery_error: str | None = None
+    try:
+        available_skills = await asyncio.to_thread(
+            discover_profile_skills_if_needed, profile
+        )
+    except Exception as exc:
+        available_skills = None
+        discovery_error = str(exc)
+        logger.warning("Skill discovery failed during materialize: %s", exc)
+
     llm_store = get_llm_profile_store()
-    return resolve_agent_profile_dry_run(
+    diagnostics = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
         mcp_config=mcp_config,
+        available_skills=available_skills,
         cipher=cipher,
     )
+    if discovery_error is not None:
+        diagnostics.errors.append(f"Skill discovery failed: {discovery_error}")
+        diagnostics.valid = False
+        diagnostics.resolved_settings = None
+    return diagnostics
