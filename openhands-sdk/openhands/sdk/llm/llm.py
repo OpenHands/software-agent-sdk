@@ -2065,10 +2065,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 chunks: list[ModelResponseStream] = []
                 # Some litellm wrappers (lmnr 0.7.47's instrumentor) hand
                 # back a plain sync generator from ``litellm_acompletion``
-                # even on the async transport path. Detect that at runtime
-                # (``cast`` is only a type hint) and, for sync iterables,
-                # compile the chunks in a background thread so iteration
-                # does not block the event loop.
                 if hasattr(ret, "__aiter__"):
                     stream = cast(AsyncIterable[ModelResponseStream], ret)
                     async for chunk in stream:
