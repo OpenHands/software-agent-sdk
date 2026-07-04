@@ -9,16 +9,15 @@ from typing import Annotated, Any, Literal
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
     SecretStr,
     SerializationInfo,
+    TypeAdapter,
     ValidationInfo,
     field_serializer,
     field_validator,
-    model_validator,
 )
 
 from openhands.sdk.utils.pydantic_secrets import (
@@ -353,17 +352,67 @@ def drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_empty_mcp_config(value: Any) -> Any:
-    """Coerce an empty/absent MCP config to ``None`` (else pass through)."""
-    return None if value in (None, {}) else value
+MCPServers = dict[str, MCPServer]
+_MCP_SERVERS_ADAPTER = TypeAdapter(MCPServers)
 
 
-def serialize_mcp_config(
-    value: MCPConfig | None, info: SerializationInfo
-) -> dict[str, Any]:
-    """Serialize an MCP config, masking/encrypting secrets per expose mode."""
-    if value is None:
+def validate_mcp_servers(value: Any) -> Any:
+    """Validate the SDK-native MCP server map."""
+    if value in (None, {}):
         return {}
+    return value
+
+
+def _extract_mcp_servers(value: Any) -> Any:
+    """Extract a server map from SDK-native or external FastMCP-shaped input."""
+    if value in (None, {}):
+        return {}
+    if isinstance(value, FastMCPConfig):
+        return value.model_dump(exclude_none=True, exclude_defaults=True).get(
+            "mcpServers", {}
+        )
+    if isinstance(value, Mapping) and "mcpServers" in value:
+        servers = value.get("mcpServers")
+        return servers if servers is not None else {}
+    return value
+
+
+def coerce_mcp_servers(
+    value: Any, *, context: dict[str, Any] | None = None
+) -> MCPServers:
+    return _MCP_SERVERS_ADAPTER.validate_python(
+        _extract_mcp_servers(value),
+        context=context,
+    )
+
+
+def serialize_mcp_servers(value: MCPServers, info: SerializationInfo) -> dict[str, Any]:
+    """Serialize MCP servers, masking/encrypting secrets per expose mode."""
+    ctx = info.context or {}
+    mode = resolve_expose_mode(ctx)
+
+    if mode == "encrypted" and ctx.get("cipher") is None:
+        raise MissingCipherError(
+            "Cannot encrypt MCP secrets: no cipher configured. "
+            "Set OH_SECRET_KEY environment variable."
+        )
+
+    return dump_mcp_servers(value, context=ctx)
+
+
+def validate_mcp_config_dict(value: Any) -> Any:
+    """Validate an external FastMCP-shaped config dict."""
+    if isinstance(value, Mapping):
+        FastMCPConfig.model_validate(to_fastmcp_mcp_config(value))
+    return value
+
+
+def serialize_mcp_config_dict(
+    value: Mapping[str, Any] | None, info: SerializationInfo
+) -> dict[str, Any] | None:
+    """Serialize an external FastMCP-shaped config dict with SDK secret handling."""
+    if not value:
+        return dict(value) if isinstance(value, Mapping) else value
     ctx = info.context or {}
     mode = resolve_expose_mode(ctx)
 
@@ -379,6 +428,33 @@ def serialize_mcp_config(
     return dumped
 
 
+def dump_mcp_servers_secret_values(
+    value: Any,
+    *,
+    cipher: Any,
+    expose_secrets: Literal["encrypted", "plaintext"],
+) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+
+    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
+    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
+    return {
+        name: MCPServer.model_validate(
+            server,
+            context=validate_context,
+        ).model_dump(
+            mode="json",
+            context=dump_context,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        if isinstance(server, Mapping)
+        else copy.deepcopy(server)
+        for name, server in value.items()
+    }
+
+
 def dump_mcp_config_secret_values(
     value: Any,
     *,
@@ -391,62 +467,13 @@ def dump_mcp_config_secret_values(
     if not isinstance(servers, Mapping):
         return value
 
-    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
-    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
     updated = copy.deepcopy(dict(value))
-    updated["mcpServers"] = {
-        name: MCPServer.model_validate(
-            server,
-            context=validate_context,
-        ).model_dump(
-            mode="json",
-            context=dump_context,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        if isinstance(server, Mapping)
-        else copy.deepcopy(server)
-        for name, server in servers.items()
-    }
-    return updated
-
-
-class MCPConfig(BaseModel):
-    """MCP config persisted in OpenHands settings.
-
-    It intentionally accepts a richer auth credential object than FastMCP's
-    runtime config. Use :func:`to_fastmcp_mcp_config` at runtime boundaries.
-    """
-
-    model_config = ConfigDict(populate_by_name=True)
-
-    mcp_servers: dict[str, MCPServer] = Field(
-        default_factory=dict,
-        validation_alias=AliasChoices("mcp_servers", "mcpServers"),
-        serialization_alias="mcpServers",
+    updated["mcpServers"] = dump_mcp_servers_secret_values(
+        servers,
+        cipher=cipher,
+        expose_secrets=expose_secrets,
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _from_fastmcp_config(cls, value: Any) -> Any:
-        if isinstance(value, FastMCPConfig):
-            return value.model_dump(exclude_none=True, exclude_defaults=True)
-        return value
-
-    @model_validator(mode="after")
-    def _validate_runtime_shape(self) -> MCPConfig:
-        FastMCPConfig.model_validate(to_fastmcp_mcp_config(self))
-        return self
-
-    def to_plain_dict(self) -> dict[str, Any]:
-        """Dump the config with SecretStr values exposed for local runtime use."""
-        return self.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            by_alias=True,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
+    return updated
 
 
 def _basic_auth_header(username: str, password: str) -> str:
@@ -498,33 +525,54 @@ def _normalize_server_for_fastmcp(server: dict[str, Any]) -> dict[str, Any]:
     return server
 
 
-def dump_mcp_config(
-    config: MCPConfig | FastMCPConfig | dict,
+def dump_mcp_servers(
+    mcp_servers: Mapping[str, MCPServer | Mapping[str, Any]],
     *,
     context: dict[str, Any] | None = None,
-) -> dict:
-    if isinstance(config, MCPConfig):
-        dump_context = {"expose_secrets": "plaintext"} if context is None else context
-        return config.model_dump(
+) -> dict[str, Any]:
+    dump_context = {"expose_secrets": "plaintext"} if context is None else context
+    return {
+        name: server.model_dump(
             mode="json",
             context=dump_context,
-            by_alias=True,
             exclude_none=True,
             exclude_defaults=True,
         )
+        if isinstance(server, MCPServer)
+        else MCPServer.model_validate(server, context=dump_context).model_dump(
+            mode="json",
+            context=dump_context,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        for name, server in mcp_servers.items()
+    }
+
+
+def dump_mcp_config(
+    config: FastMCPConfig | Mapping[str, Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if isinstance(config, FastMCPConfig):
         return config.model_dump(exclude_none=True, exclude_defaults=True)
-    return copy.deepcopy(config)
+    if "mcpServers" in config:
+        servers = config.get("mcpServers")
+        if isinstance(servers, Mapping):
+            return {
+                **copy.deepcopy(dict(config)),
+                "mcpServers": dump_mcp_servers(servers, context=context),
+            }
+    return {"mcpServers": dump_mcp_servers(config, context=context)}
 
 
 def to_fastmcp_mcp_config(
-    config: MCPConfig | FastMCPConfig | dict,
+    config: FastMCPConfig | Mapping[str, Any],
     *,
     cipher: Any | None = None,
 ) -> dict:
-    if cipher is not None and isinstance(config, dict):
-        config = MCPConfig.model_validate(config, context={"cipher": cipher})
-    dumped = dump_mcp_config(config)
+    context = {"cipher": cipher, "expose_secrets": "plaintext"} if cipher else None
+    dumped = dump_mcp_config(config, context=context)
     servers = dumped.get("mcpServers")
     if not isinstance(servers, dict):
         return dumped

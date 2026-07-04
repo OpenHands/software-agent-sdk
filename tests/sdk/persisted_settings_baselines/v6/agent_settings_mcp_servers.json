@@ -1,0 +1,23 @@
+{
+  "__expected__": {
+    "schema_version": 6,
+    "agent_kind": "openhands",
+    "mcp_servers.fetch.command": "uvx",
+    "mcp_servers.fetch.args": [
+      "mcp-server-fetch"
+    ]
+  },
+  "schema_version": 6,
+  "agent_kind": "openhands",
+  "llm": {
+    "model": "openhands/gpt-5.5"
+  },
+  "mcp_servers": {
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    }
+  }
+}

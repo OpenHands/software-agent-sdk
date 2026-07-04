@@ -1,10 +1,10 @@
 {
   "__expected__": {
-    "schema_version": 5,
+    "schema_version": 6,
     "agent_kind": "openhands",
-    "mcp_config.mcpServers.superhuman-mail.auth.strategy": "oauth2",
-    "mcp_config.mcpServers.superhuman-mail.auth.state.tokens.access_token": "token-value",
-    "mcp_config.mcpServers.superhuman-mail.auth.state.client_info.client_id": "client-id"
+    "mcp_servers.superhuman-mail.auth.strategy": "oauth2",
+    "mcp_servers.superhuman-mail.auth.state.tokens.access_token": "token-value",
+    "mcp_servers.superhuman-mail.auth.state.client_info.client_id": "client-id"
   },
   "schema_version": 5,
   "agent_kind": "openhands",

@@ -234,7 +234,7 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     assert agent_settings["verification"]["critic_enabled"] is True
     assert "confirmation_mode" not in agent_settings["verification"]
     assert "security_analyzer" not in agent_settings["verification"]
-    servers = agent_settings["mcp_config"]["mcpServers"]
+    servers = agent_settings["mcp_servers"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
     assert servers["remote"]["auth"] == {
         "strategy": "header",
@@ -276,7 +276,7 @@ def test_get_settings_migrates_legacy_openhands_settings_and_resaves_current(
     body = response.json()
     assert body["agent_settings"]["llm"]["model"] == "post-migration-model"
     assert body["agent_settings"]["llm"]["api_key"] == "sk-legacy-agent-key"
-    servers = body["agent_settings"]["mcp_config"]["mcpServers"]
+    servers = body["agent_settings"]["mcp_servers"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-legacy-mcp-token"
     assert servers["remote"]["auth"] == {
         "strategy": "header",
@@ -442,21 +442,19 @@ def test_mcp_oauth_state_is_encrypted_and_round_trips(
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "mcp_config": {
-                    "mcpServers": {
-                        "superhuman": {
-                            "url": "https://mcp.example.com/mcp",
-                            "auth": {
-                                "strategy": "oauth2",
-                                "state": {
-                                    "tokens": {
-                                        "access_token": "oauth-access-token",
-                                        "refresh_token": "oauth-refresh-token",
-                                    },
-                                    "token_expires_at": 12345.0,
+                "mcp_servers": {
+                    "superhuman": {
+                        "url": "https://mcp.example.com/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "state": {
+                                "tokens": {
+                                    "access_token": "oauth-access-token",
+                                    "refresh_token": "oauth-refresh-token",
                                 },
+                                "token_expires_at": 12345.0,
                             },
-                        }
+                        },
                     }
                 }
             }
@@ -466,18 +464,18 @@ def test_mcp_oauth_state_is_encrypted_and_round_trips(
     assert patch_response.status_code == 200, patch_response.text
     response_agent_settings = patch_response.json()["agent_settings"]
     assert response_agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
-    redacted_state = response_agent_settings["mcp_config"]["mcpServers"]["superhuman"][
-        "auth"
-    ]["state"]
+    redacted_state = response_agent_settings["mcp_servers"]["superhuman"]["auth"][
+        "state"
+    ]
     assert redacted_state["tokens"]["access_token"] == "**********"
 
     on_disk_text = (temp_persistence_dir / "settings.json").read_text()
     assert "oauth-access-token" not in on_disk_text
     assert "oauth-refresh-token" not in on_disk_text
     on_disk = json.loads(on_disk_text)
-    encrypted_value = on_disk["agent_settings"]["mcp_config"]["mcpServers"][
-        "superhuman"
-    ]["auth"]["state"]["tokens"]
+    encrypted_value = on_disk["agent_settings"]["mcp_servers"]["superhuman"]["auth"][
+        "state"
+    ]["tokens"]
     assert encrypted_value["access_token"].startswith("gAAAA")
     assert encrypted_value["refresh_token"].startswith("gAAAA")
 
@@ -485,9 +483,9 @@ def test_mcp_oauth_state_is_encrypted_and_round_trips(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     )
     assert plaintext_response.status_code == 200
-    plaintext_value = plaintext_response.json()["agent_settings"]["mcp_config"][
-        "mcpServers"
-    ]["superhuman"]["auth"]["state"]
+    plaintext_value = plaintext_response.json()["agent_settings"]["mcp_servers"][
+        "superhuman"
+    ]["auth"]["state"]
     assert plaintext_value == {
         "tokens": {
             "access_token": "oauth-access-token",
@@ -501,8 +499,8 @@ def test_mcp_oauth_state_is_encrypted_and_round_trips(
     )
     assert encrypted_response.status_code == 200
     encrypted_round_trip_value = encrypted_response.json()["agent_settings"][
-        "mcp_config"
-    ]["mcpServers"]["superhuman"]["auth"]["state"]["tokens"]
+        "mcp_servers"
+    ]["superhuman"]["auth"]["state"]["tokens"]
     assert encrypted_round_trip_value["access_token"].startswith("gAAAA")
 
 
@@ -515,25 +513,23 @@ def test_patch_settings_decrypts_encrypted_mcp_oauth_state(
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "mcp_config": {
-                    "mcpServers": {
-                        "superhuman": {
-                            "url": "https://mcp.example.com/mcp",
-                            "auth": {
-                                "strategy": "oauth2",
-                                "state": {
-                                    "tokens": {
-                                        "access_token": _encrypt(
-                                            cipher, "oauth-access-token"
-                                        ),
-                                        "refresh_token": _encrypt(
-                                            cipher, "oauth-refresh-token"
-                                        ),
-                                        "token_type": "Bearer",
-                                    },
+                "mcp_servers": {
+                    "superhuman": {
+                        "url": "https://mcp.example.com/mcp",
+                        "auth": {
+                            "strategy": "oauth2",
+                            "state": {
+                                "tokens": {
+                                    "access_token": _encrypt(
+                                        cipher, "oauth-access-token"
+                                    ),
+                                    "refresh_token": _encrypt(
+                                        cipher, "oauth-refresh-token"
+                                    ),
+                                    "token_type": "Bearer",
                                 },
                             },
-                        }
+                        },
                     }
                 }
             }
@@ -546,9 +542,9 @@ def test_patch_settings_decrypts_encrypted_mcp_oauth_state(
         "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
     )
     assert plaintext_response.status_code == 200
-    plaintext_value = plaintext_response.json()["agent_settings"]["mcp_config"][
-        "mcpServers"
-    ]["superhuman"]["auth"]["state"]["tokens"]
+    plaintext_value = plaintext_response.json()["agent_settings"]["mcp_servers"][
+        "superhuman"
+    ]["auth"]["state"]["tokens"]
     assert plaintext_value == {
         "access_token": "oauth-access-token",
         "refresh_token": "oauth-refresh-token",
@@ -780,18 +776,16 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
         "/api/settings",
         json={
             "agent_settings_diff": {
-                "mcp_config": {
-                    "mcpServers": {
-                        "github": {
-                            "command": "uvx",
-                            "args": ["mcp-server-github"],
-                            "env": {"GITHUB_TOKEN": "ghp-router-secret"},
-                        },
-                        "remote": {
-                            "url": "https://example.com/mcp",
-                            "headers": {"Authorization": "Bearer tok-router-secret"},
-                        },
-                    }
+                "mcp_servers": {
+                    "github": {
+                        "command": "uvx",
+                        "args": ["mcp-server-github"],
+                        "env": {"GITHUB_TOKEN": "ghp-router-secret"},
+                    },
+                    "remote": {
+                        "url": "https://example.com/mcp",
+                        "headers": {"Authorization": "Bearer tok-router-secret"},
+                    },
                 }
             }
         },
@@ -808,7 +802,7 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     assert "tok-router-secret" not in on_disk_text
 
     on_disk = json.loads(on_disk_text)
-    servers_on_disk = on_disk["agent_settings"]["mcp_config"]["mcpServers"]
+    servers_on_disk = on_disk["agent_settings"]["mcp_servers"]
     assert servers_on_disk["github"]["env"]["GITHUB_TOKEN"].startswith("gAAAA")
     assert servers_on_disk["remote"]["headers"]["Authorization"].startswith("gAAAA")
     # Non-secret structure must remain readable.
@@ -821,8 +815,8 @@ def test_patch_settings_encrypts_mcp_env_and_headers_on_disk(
     )
     assert response.status_code == 200
     agent_settings = response.json()["agent_settings"]
-    assert agent_settings["schema_version"] == 4
-    servers = agent_settings["mcp_config"]["mcpServers"]
+    assert agent_settings["schema_version"] == AGENT_SETTINGS_SCHEMA_VERSION
+    servers = agent_settings["mcp_servers"]
     assert servers["github"]["env"]["GITHUB_TOKEN"] == "ghp-router-secret"
     assert servers["remote"]["headers"] == {
         "Authorization": "Bearer tok-router-secret",

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from openhands.sdk.mcp.config import dump_mcp_servers
 from openhands.sdk.plugin import Plugin, PluginManifest
 from openhands.sdk.plugin.types import (
     CommandDefinition,
@@ -681,8 +682,8 @@ class TestPluginMcpConfigLoading:
     are NOT prematurely expanded.
     """
 
-    def test_plugin_mcp_config_preserves_unexpanded_variables(self, tmp_path: Path):
-        """Test that MCP config variables WITHOUT defaults are preserved.
+    def test_plugin_mcp_servers_preserve_unexpanded_variables(self, tmp_path: Path):
+        """Test that MCP server variables WITHOUT defaults are preserved.
 
         Variables like ${VAR} should remain as placeholders after plugin loading
         so they can be expanded later with per-conversation secrets.
@@ -717,16 +718,15 @@ class TestPluginMcpConfigLoading:
         plugin = Plugin.load(plugin_dir)
 
         # Variable without default should remain as placeholder
-        assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
-            "headers"
-        ]["Authorization"]
+        auth_header = dump_mcp_servers(plugin.mcp_servers)["test-server"]["headers"][
+            "Authorization"
+        ]
         assert auth_header == "Bearer ${SECRET_TOKEN}", (
             f"Expected placeholder to be preserved, got '{auth_header}'"
         )
 
-    def test_plugin_mcp_config_preserves_variables_with_defaults(self, tmp_path: Path):
-        """Test that MCP config variables WITH defaults are preserved as placeholders.
+    def test_plugin_mcp_servers_preserve_variables_with_defaults(self, tmp_path: Path):
+        """Test that MCP server variables WITH defaults are preserved as placeholders.
 
         Variables like ${VAR:-default} should remain as placeholders after plugin
         loading so they can be expanded later with per-conversation secrets.
@@ -771,10 +771,9 @@ class TestPluginMcpConfigLoading:
 
         # CRITICAL: Variable with default should be preserved as a placeholder,
         # NOT replaced with "fallback" during plugin loading
-        assert plugin.mcp_config is not None
-        auth_header = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
-            "headers"
-        ]["Authorization"]
+        auth_header = dump_mcp_servers(plugin.mcp_servers)["test-server"]["headers"][
+            "Authorization"
+        ]
 
         # This assertion will FAIL with the current implementation
         expected = "Bearer ${SECRET_TOKEN:-fallback}"
@@ -820,9 +819,6 @@ class TestPluginMcpConfigLoading:
         plugin = Plugin.load(plugin_dir)
 
         # SKILL_ROOT should be expanded to the plugin directory
-        assert plugin.mcp_config is not None
-        command = plugin.mcp_config.to_plain_dict()["mcpServers"]["test-server"][
-            "command"
-        ]
+        command = dump_mcp_servers(plugin.mcp_servers)["test-server"]["command"]
         assert str(plugin_dir) in command
         assert "${SKILL_ROOT}" not in command

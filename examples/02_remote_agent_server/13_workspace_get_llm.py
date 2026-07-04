@@ -114,7 +114,7 @@ with ManagedAPIServer(
 
         # Create a RemoteWorkspace with API key authentication!
         # The api_key is used for X-Session-API-Key header on all requests,
-        # including get_llm(), get_secrets(), and get_mcp_config().
+        # including get_llm(), get_secrets(), and get_mcp_servers().
         workspace = RemoteWorkspace(
             host=server.base_url,
             working_dir="/tmp/workspace_get_llm_demo",
@@ -188,7 +188,7 @@ with ManagedAPIServer(
         # Part 5: Demonstrate get_secrets() with API Key Auth
         # ══════════════════════════════════════════════════════════════
         logger.info("\n" + "=" * 60)
-        logger.info("🔐 Demonstrating get_secrets() and get_mcp_config()")
+        logger.info("🔐 Demonstrating get_secrets() and get_mcp_servers()")
         logger.info("=" * 60)
 
         # Store a test secret
@@ -222,9 +222,9 @@ with ManagedAPIServer(
         client.delete("/api/settings/secrets/TEST_SECRET")
         logger.info("   Test secret deleted")
 
-        # get_mcp_config() returns empty dict if no MCP config is set
-        mcp_config = workspace.get_mcp_config()
-        logger.info(f"✅ MCP config: {mcp_config or '(none configured)'}")
+        # get_mcp_servers() returns empty dict if no MCP servers are set
+        mcp_servers = workspace.get_mcp_servers()
+        logger.info(f"✅ MCP servers: {mcp_servers or '(none configured)'}")
 
         logger.info("\n" + "=" * 60)
         logger.info("🎉 Example completed successfully!")
@@ -235,7 +235,7 @@ Key takeaways:
 2. RemoteWorkspace.api_key passes X-Session-API-Key header
 3. workspace.get_llm() retrieves LLM with authentication
 4. workspace.get_secrets() returns LookupSecrets with auth headers
-5. workspace.get_mcp_config() retrieves MCP config with auth
+5. workspace.get_mcp_servers() retrieves MCP servers with auth
 """)
 
     finally:

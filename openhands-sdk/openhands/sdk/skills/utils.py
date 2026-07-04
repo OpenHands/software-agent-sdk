@@ -262,7 +262,7 @@ def load_mcp_config(
         config, variables, get_secret=get_secret, expand_defaults=expand_defaults
     )
 
-    # Validate using MCPConfig
+    # Validate the external .mcp.json shape using FastMCP's config model.
     try:
         MCPConfig.model_validate(config)
     except Exception as e:

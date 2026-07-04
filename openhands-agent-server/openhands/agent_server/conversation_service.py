@@ -55,6 +55,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.mcp.config import MCPServer
     from openhands.sdk.subagent.schema import AgentDefinition
 
 CONVERSATION_WORKTREE_ROOT = Path("/tmp/conversation-worktrees")
@@ -250,14 +251,14 @@ logger = logging.getLogger(__name__)
 def _resolve_agent_from_profile(
     profile_id: "UUID",
     cipher: "Cipher | None",
-    mcp_config: "Any",
+    mcp_servers: "dict[str, MCPServer]",
 ) -> "tuple[AgentBase, LaunchedAgentProfile]":
     """Load and resolve an agent profile by id, returning the built agent + provenance.
 
     Runs synchronously (call via ``asyncio.to_thread`` from async context).
 
     Args:
-        mcp_config: Global MCP config already loaded by the caller using the
+        mcp_servers: Global MCP servers already loaded by the caller using the
             server's cipher.  Passed explicitly so this free function never
             touches the settings-store singleton (which may not have been
             initialised with the correct cipher yet).
@@ -305,7 +306,7 @@ def _resolve_agent_from_profile(
         settings_config = resolve_agent_profile(
             profile,
             llm_store=llm_store,
-            mcp_config=mcp_config,
+            mcp_servers=mcp_servers,
             available_skills=available_skills,
             cipher=cipher,
         )
@@ -710,12 +711,12 @@ class ConversationService:
             )
 
             settings = get_settings_store().load() or PersistedSettings()
-            mcp_config = settings.agent_settings.mcp_config
+            mcp_servers = settings.agent_settings.mcp_servers
             resolved_agent, launched_agent_profile = await asyncio.to_thread(
                 _resolve_agent_from_profile,
                 request.agent_profile_id,
                 self.cipher,
-                mcp_config,
+                mcp_servers,
             )
             request = request.model_copy(update={"agent": resolved_agent})
 

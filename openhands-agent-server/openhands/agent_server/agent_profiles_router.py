@@ -359,7 +359,8 @@ async def save_agent_profile(
     except ValidationError as e:
         # Match FastAPI's request-validation shape (``detail`` is a list of error
         # objects), but surface only ``loc``/``type`` — a nested mcp_tools
-        # MCPConfig error embeds the input (which may carry secrets) in ``msg``.
+        # FastMCP config error embeds the input (which may carry secrets) in
+        # ``msg``.
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=safe_validation_error_detail(e),
@@ -555,7 +556,7 @@ async def materialize_agent_profile(
 
     config = get_config(request)
     settings = get_settings_store(config).load() or PersistedSettings()
-    mcp_config = settings.agent_settings.mcp_config
+    mcp_servers = settings.agent_settings.mcp_servers
 
     # Discover skills off the event loop so the dry-run can report which
     # ``skill_refs`` resolve vs. dangle. A discovery failure must not 500 the
@@ -576,7 +577,7 @@ async def materialize_agent_profile(
     diagnostics = resolve_agent_profile_dry_run(
         profile,
         llm_store=llm_store,
-        mcp_config=mcp_config,
+        mcp_servers=mcp_servers,
         available_skills=available_skills,
         cipher=cipher,
     )

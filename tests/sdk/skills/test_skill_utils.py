@@ -671,7 +671,7 @@ name: invalid-mcp-tools
 type: repo
 version: 1.0.0
 agent: CodeActAgent
-mcp_tools: "this should be a dict or MCPConfig, not a string"
+mcp_tools: "this should be a FastMCP config mapping, not a string"
 ---
 
 # Invalid MCP Tools

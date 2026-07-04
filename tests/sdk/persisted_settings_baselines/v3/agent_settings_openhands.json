@@ -8,7 +8,7 @@
         "params": {}
       }
     ],
-    "mcp_config.mcpServers.fetch.command": "uvx",
+    "mcp_servers.fetch.command": "uvx",
     "verification.critic_enabled": true
   },
   "schema_version": 3,

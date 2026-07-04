@@ -3,19 +3,19 @@
 A profile carries *references* (``llm_profile_ref`` / ``mcp_server_refs`` /
 ``skill_refs``) and is secret-free at rest; an
 :data:`~openhands.sdk.settings.model.AgentSettingsConfig` embeds the resolved
-``llm`` / ``mcp_config`` / skills. This module resolves the former into the
+``llm`` / ``mcp_servers`` / skills. This module resolves the former into the
 latter so ``create_agent`` / ``apply_agent_settings_diff`` /
 ``validate_agent_settings`` stay unchanged. See epic #3713.
 
 ``skill_refs`` is a name filter over the server-discovered skill catalog,
-mirroring how ``mcp_server_refs`` filters ``mcp_config``: the caller passes the
+mirroring how ``mcp_server_refs`` filters ``mcp_servers``: the caller passes the
 discovered skills (``load_all_skills``) and the resolver selects by name, so the
 client never has to round-trip full ``Skill`` objects (#3868).
 
 Resource-specific secret channels:
 
 - **LLM key** → loaded from the LLM profile store into the resolved ``llm``.
-- **MCP env/headers** → ride the filtered ``mcp_config`` (decrypted by the caller).
+- **MCP env/headers** → ride the filtered ``mcp_servers`` (decrypted by the caller).
 - **ACP provider creds** → never touched here; they ride
   ``state.secret_registry`` ← ``request.secrets`` wired at conversation-start
   (#3720). The resolver only *enumerates* the required provider secret names
@@ -28,11 +28,10 @@ import shlex
 from collections.abc import Container
 from typing import TYPE_CHECKING, Any
 
-from fastmcp.mcp_config import MCPConfig as FastMCPConfig
 from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.mcp.config import MCPConfig
+from openhands.sdk.mcp.config import MCPServer
 from openhands.sdk.profiles.agent_profile import (
     ACPAgentProfile,
     OpenHandsAgentProfile,
@@ -62,7 +61,7 @@ class ProfileNotFound(Exception):
 
 
 class DanglingMcpServerRef(Exception):
-    """An ``mcp_server_refs`` entry names a server absent from ``mcp_config``.
+    """An ``mcp_server_refs`` entry names a server absent from ``mcp_servers``.
 
     The router (#3719) maps this to HTTP 422. :attr:`missing` carries the
     offending key(s).
@@ -133,17 +132,8 @@ class AgentProfileDiagnostics(BaseModel):
     resolved_settings: dict[str, Any] | None = None
 
 
-MCPConfigInput = MCPConfig | FastMCPConfig | dict[str, Any] | None
-
-
-def _coerce_mcp_config(mcp_config: MCPConfigInput) -> MCPConfig | None:
-    if mcp_config is None or isinstance(mcp_config, MCPConfig):
-        return mcp_config
-    return MCPConfig.model_validate(mcp_config)
-
-
-def _server_names(mcp_config: MCPConfig | None) -> list[str]:
-    return list(mcp_config.mcp_servers.keys()) if mcp_config is not None else []
+def _server_names(mcp_servers: dict[str, MCPServer]) -> list[str]:
+    return list(mcp_servers)
 
 
 def _partition_refs(
@@ -168,23 +158,18 @@ def _partition_refs(
 
 
 def _compute_mcp_filter(
-    mcp_config: MCPConfigInput,
+    mcp_servers: dict[str, MCPServer],
     refs: list[str] | None,
-) -> tuple[MCPConfig | None, list[str], list[str]]:
-    """Resolve ``mcp_server_refs`` against the user's ``mcp_config``.
+) -> tuple[dict[str, MCPServer], list[str], list[str]]:
+    """Resolve ``mcp_server_refs`` against the user's ``mcp_servers``.
 
     ``None`` → passthrough (all servers); a non-null list filters to the named
-    keys. Returns ``(filtered_config, resolved_names, dangling_names)``; an empty
-    filter result becomes ``None`` (the ``[] = none`` profile semantics).
+    keys. Returns ``(filtered_servers, resolved_names, dangling_names)``.
     """
-    config = _coerce_mcp_config(mcp_config)
     if refs is None:
-        return config, _server_names(config), []
-    available = config.mcp_servers if config is not None else {}
-    resolved, dangling = _partition_refs(refs, available)
-    filtered = {k: available[k] for k in resolved}
-    filtered_config = MCPConfig(mcp_servers=filtered) if filtered else None
-    return filtered_config, resolved, dangling
+        return mcp_servers, _server_names(mcp_servers), []
+    resolved, dangling = _partition_refs(refs, mcp_servers)
+    return {k: mcp_servers[k] for k in resolved}, resolved, dangling
 
 
 def _compute_skill_filter(
@@ -272,7 +257,7 @@ def _acp_credential_channels(
 def _build_openhands_settings(
     profile: OpenHandsAgentProfile,
     llm: LLM,
-    mcp_config: MCPConfigInput,
+    mcp_servers: dict[str, MCPServer],
     cipher: Cipher | None,
     filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
@@ -289,7 +274,7 @@ def _build_openhands_settings(
         "agent_kind": "openhands",
         "agent": profile.agent,
         "llm": llm,
-        "mcp_config": mcp_config,
+        "mcp_servers": mcp_servers,
         "agent_context": AgentContext(
             skills=skills,
             system_message_suffix=profile.system_message_suffix,
@@ -305,7 +290,7 @@ def _build_openhands_settings(
 
 def _build_acp_settings(
     profile: ACPAgentProfile,
-    mcp_config: MCPConfigInput,
+    mcp_servers: dict[str, MCPServer],
     filtered_skills: list[Skill],
 ) -> AgentSettingsConfig:
     """Compose the resolved ``ACPAgentSettings`` from a profile.
@@ -340,7 +325,7 @@ def _build_acp_settings(
         "acp_prompt_timeout": profile.acp_prompt_timeout,
         "acp_command": command,
         "acp_args": list(profile.acp_args) if profile.acp_args else [],
-        "mcp_config": mcp_config,
+        "mcp_servers": mcp_servers,
         "agent_context": agent_context,
     }
     return validate_agent_settings(payload)
@@ -350,18 +335,18 @@ def resolve_agent_profile(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
     llm_store: LLMProfileLoader,
-    mcp_config: MCPConfigInput,
+    mcp_servers: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentSettingsConfig:
     """Resolve a profile's references into a validated ``AgentSettingsConfig``.
 
-    ``mcp_config`` is the user's globally-configured MCP servers, already
-    decrypted by the caller (the agent-server runs ``decrypt_mcp_config_secrets``
+    ``mcp_servers`` is the user's globally-configured MCP server map, already
+    decrypted by the caller (the agent-server runs settings decryption
     before calling). ``available_skills`` is the server-discovered skill catalog
     that ``skill_refs`` filters by name (the agent-server caller passes the
     result of ``load_all_skills``); it feeds both variants — the OpenHands
-    agent_context and the ACP prompt catalog. Like ``mcp_config`` it is a
+    agent_context and the ACP prompt catalog. Like ``mcp_servers`` it is a
     required argument so a caller cannot silently resolve a zero-skill agent by
     forgetting it, and a ``skill_refs`` entry absent from the catalog raises
     :class:`DanglingSkillRef` (mirroring the MCP contract) rather than being
@@ -372,10 +357,12 @@ def resolve_agent_profile(
 
     Raises:
         ProfileNotFound: ``llm_profile_ref`` does not exist (OpenHands path).
-        DanglingMcpServerRef: an ``mcp_server_refs`` entry is not in ``mcp_config``.
+        DanglingMcpServerRef: an ``mcp_server_refs`` entry is not in ``mcp_servers``.
         DanglingSkillRef: a ``skill_refs`` entry is not in ``available_skills``.
     """
-    filtered_mcp, _, dangling = _compute_mcp_filter(mcp_config, profile.mcp_server_refs)
+    filtered_mcp, _, dangling = _compute_mcp_filter(
+        mcp_servers, profile.mcp_server_refs
+    )
     if dangling:
         raise DanglingMcpServerRef(dangling)
 
@@ -403,7 +390,7 @@ def resolve_agent_profile_dry_run(
     profile: OpenHandsAgentProfile | ACPAgentProfile,
     *,
     llm_store: LLMProfileLoader,
-    mcp_config: MCPConfigInput,
+    mcp_servers: dict[str, MCPServer],
     available_skills: list[Skill] | None,
     cipher: Cipher | None = None,
 ) -> AgentProfileDiagnostics:
@@ -416,7 +403,7 @@ def resolve_agent_profile_dry_run(
     catalog unknown, so no skill ref is reported dangling.
     """
     filtered_mcp, resolved, dangling = _compute_mcp_filter(
-        mcp_config, profile.mcp_server_refs
+        mcp_servers, profile.mcp_server_refs
     )
     diagnostics = AgentProfileDiagnostics(
         agent_kind=profile.agent_kind,

@@ -49,9 +49,9 @@ logger = get_logger(__name__)
 
 
 def _validate_openhands_mcp_config(value: dict):
-    from openhands.sdk.mcp.config import MCPConfig
+    from openhands.sdk.mcp.config import validate_mcp_config_dict
 
-    return MCPConfig.model_validate(value)
+    return validate_mcp_config_dict(value)
 
 
 class SkillInfo(BaseModel):
@@ -162,7 +162,7 @@ class Skill(BaseModel):
         default=None,
         description=(
             "MCP tools configuration for the skill (repo skills only). "
-            "It should conform to the MCPConfig schema: "
+            "It should conform to FastMCP's configuration format: "
             "https://gofastmcp.com/clients/client#configuration-format"
         ),
     )
@@ -271,14 +271,16 @@ class Skill(BaseModel):
     @field_validator("mcp_tools")
     @classmethod
     def _validate_mcp_tools(cls, v: dict | None, _info):
-        """Validate mcp_tools conforms to MCPConfig schema."""
+        """Validate mcp_tools conforms to FastMCP's config schema."""
         if v is None:
             return v
         if isinstance(v, dict):
             try:
                 _validate_openhands_mcp_config(v)
             except Exception as e:
-                raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
+                raise SkillValidationError(
+                    f"Invalid FastMCP config dictionary: {e}"
+                ) from e
         return v
 
     @field_serializer("mcp_tools")
@@ -289,15 +291,14 @@ class Skill(BaseModel):
 
         ``mcp_tools`` is an unmodeled ``dict``, so it would otherwise dump its
         MCP server secrets in plaintext wherever a ``Skill`` is serialized.
-        Route it through the same ``serialize_mcp_config`` as settings
-        ``mcp_config``: redacted by default, plaintext under ``expose_secrets``,
-        encrypted under a cipher.
+        Route it through the SDK MCP secret serializer: redacted by default,
+        plaintext under ``expose_secrets``, encrypted under a cipher.
         """
         if not value:
             return value
-        from openhands.sdk.mcp.config import serialize_mcp_config
+        from openhands.sdk.mcp.config import serialize_mcp_config_dict
 
-        return serialize_mcp_config(_validate_openhands_mcp_config(value), info)
+        return serialize_mcp_config_dict(_validate_openhands_mcp_config(value), info)
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",

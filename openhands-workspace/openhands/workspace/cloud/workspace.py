@@ -696,17 +696,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         retry=tenacity.retry_if_exception(_is_retryable_error),
         reraise=True,
     )
-    def get_mcp_config(self) -> dict[str, Any]:
-        """Fetch MCP configuration from the user's SaaS account.
+    def get_mcp_servers(self) -> dict[str, Any]:
+        """Fetch MCP servers from the user's SaaS account.
 
         Calls ``GET /api/v1/users/me`` to retrieve the user's MCP configuration
-        and transforms it into the format expected by the SDK Agent and
-        ``fastmcp.mcp_config.MCPConfig``.
+        and transforms it into the native server map expected by the SDK Agent.
 
         Returns:
-            A dictionary with ``mcpServers`` key containing server configurations
-            (compatible with ``MCPConfig.model_validate()``), or an empty dict
-            if no MCP config is set.
+            A dictionary mapping server names to server configurations, or an
+            empty dict if no MCP servers are configured.
 
         Raises:
             httpx.HTTPStatusError: If the API request fails.
@@ -715,12 +713,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         Example:
             >>> with OpenHandsCloudWorkspace(...) as workspace:
             ...     llm = workspace.get_llm()
-            ...     mcp_config = workspace.get_mcp_config()
-            ...     agent = Agent(llm=llm, mcp_config=mcp_config, tools=...)
-            ...
-            ...     # Or validate as MCPConfig:
-            ...     from fastmcp.mcp_config import MCPConfig
-            ...     config = MCPConfig.model_validate(mcp_config)
+            ...     mcp_servers = workspace.get_mcp_servers()
+            ...     agent = Agent(llm=llm, mcp_servers=mcp_servers, tools=...)
         """
         if not self._sandbox_id:
             raise RuntimeError("Sandbox is not running")
@@ -780,7 +774,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         if not mcp_servers:
             return {}
 
-        return {"mcpServers": mcp_servers}
+        return mcp_servers
 
     @tenacity.retry(
         stop=tenacity.stop_after_attempt(_MAX_RETRIES),

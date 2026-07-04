@@ -15,6 +15,9 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
     model_validator,
 )
 
@@ -27,7 +30,11 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import MCPConfig
+from openhands.sdk.mcp.config import (
+    MCPServer,
+    serialize_mcp_servers,
+    validate_mcp_servers,
+)
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -129,12 +136,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: MCPConfig = Field(
-        default_factory=MCPConfig,
-        description="Optional MCP configuration to create MCP tools.",
-        examples=[
-            {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
-        ],
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="Optional MCP servers to expose as tools.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
     )
     filter_tools_regex: str | None = Field(
         default=None,
@@ -286,6 +291,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "and working directory, so mutations to shared state may race."
         ),
     )
+
+    @field_validator("mcp_servers", mode="before")
+    @classmethod
+    def _validate_mcp_servers(cls, value: Any) -> Any:
+        return validate_mcp_servers(value)
+
+    @field_serializer("mcp_servers")
+    def _serialize_mcp_servers(
+        self, value: dict[str, MCPServer], info: SerializationInfo
+    ) -> dict[str, Any]:
+        return serialize_mcp_servers(value, info)
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)

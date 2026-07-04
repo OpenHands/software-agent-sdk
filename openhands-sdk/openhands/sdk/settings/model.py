@@ -47,12 +47,13 @@ from openhands.sdk.llm.utils.openhands_provider import (
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
-    MCPConfig,
     MCPOAuthState,
+    MCPServer,
     drop_unknown_mcp_server_fields,
     dump_mcp_config_secret_values,
-    normalize_empty_mcp_config,
-    serialize_mcp_config,
+    dump_mcp_servers_secret_values,
+    serialize_mcp_servers,
+    validate_mcp_servers,
 )
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.subagent.schema import AgentDefinition
@@ -91,7 +92,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-# The per-class ``mcp_config`` field stubs below are intentionally one-liners:
+# The per-class ``mcp_servers`` field stubs below are intentionally one-liners:
 # MCP owns serialization, and settings only decides where settings secrets are
 # transformed for storage/migration.
 
@@ -146,6 +147,14 @@ def _transform_agent_settings_secret_values(
     agent_context = updated.get("agent_context")
     if isinstance(agent_context, dict):
         _transform_mapping_secret_values(agent_context.get("secrets"), transform)
+
+    mcp_servers = updated.get("mcp_servers")
+    if isinstance(mcp_servers, dict):
+        updated["mcp_servers"] = dump_mcp_servers_secret_values(
+            mcp_servers,
+            cipher=cipher,
+            expose_secrets=mcp_expose_secrets,
+        )
 
     mcp_config = updated.get("mcp_config")
     if isinstance(mcp_config, dict):
@@ -212,21 +221,9 @@ def dump_agent_settings_for_storage(
 def _agent_settings_payload_requires_current_schema_version(
     payload: Mapping[str, Any],
 ) -> bool:
-    """Return whether a serialized settings payload contains v5-only fields."""
-    mcp_config = payload.get("mcp_config")
-    if not isinstance(mcp_config, Mapping):
-        return False
-
-    servers = mcp_config.get("mcpServers")
-    if not isinstance(servers, Mapping):
-        return False
-
-    for server in servers.values():
-        if not isinstance(server, Mapping):
-            continue
-        if isinstance(server.get("auth"), Mapping):
-            return True
-    return False
+    """Return whether a serialized settings payload contains current-only fields."""
+    servers = payload.get("mcp_servers")
+    return isinstance(servers, Mapping) and bool(servers)
 
 
 def dump_agent_settings_for_api(
@@ -236,10 +233,10 @@ def dump_agent_settings_for_api(
 ) -> dict[str, Any]:
     """Serialize agent settings for the HTTP settings API.
 
-    The persisted settings schema is v5 because MCP settings gained a tagged
-    ``auth`` credential object. Payloads without that v5-only shape are still
-    valid v4 settings, so emit them as v4 for API clients that read ordinary
-    settings through an older SDK.
+    The current persisted settings schema is required whenever MCP servers are
+    present, because the SDK-owned settings shape is ``mcp_servers``. Payloads
+    without MCP servers are still valid v4 settings, so emit them as v4 for API
+    clients that read ordinary settings through an older SDK.
     """
     payload = settings.model_dump(mode="json", context=context)
     if not _agent_settings_payload_requires_current_schema_version(payload):
@@ -624,7 +621,7 @@ def _default_llm_settings() -> LLM:
 
 _RequestT = TypeVar("_RequestT")
 
-AGENT_SETTINGS_SCHEMA_VERSION = 5
+AGENT_SETTINGS_SCHEMA_VERSION = 6
 AGENT_SETTINGS_API_COMPAT_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
@@ -1006,6 +1003,22 @@ def _migrate_agent_settings_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
     return migrated
 
 
+def _migrate_agent_settings_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move SDK-owned MCP settings from FastMCP config wrapper to server map."""
+
+    migrated = dict(payload)
+    mcp_config = migrated.pop("mcp_config", None)
+    if "mcp_servers" not in migrated and isinstance(mcp_config, Mapping):
+        mcp_config = _migrate_mcp_auth_shape(mcp_config)
+        servers = (
+            mcp_config.get("mcpServers") if isinstance(mcp_config, Mapping) else None
+        )
+        if isinstance(servers, Mapping):
+            migrated["mcp_servers"] = copy.deepcopy(dict(servers))
+    migrated["schema_version"] = 6
+    return migrated
+
+
 def _migrate_conversation_settings_v0_to_v1(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1020,6 +1033,7 @@ _AGENT_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     2: _migrate_agent_settings_v2_to_v3,
     3: _migrate_agent_settings_v3_to_v4,
     4: _migrate_agent_settings_v4_to_v5,
+    5: _migrate_agent_settings_v5_to_v6,
 }
 _CONVERSATION_SETTINGS_MIGRATIONS: dict[int, PersistedSettingsMigrator] = {
     0: _migrate_conversation_settings_v0_to_v1,
@@ -1343,12 +1357,12 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    mcp_config: MCPConfig | None = Field(
-        default=None,
-        description="MCP server configuration for the agent.",
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
+        description="MCP servers available to the agent.",
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="MCP configuration",
+                label="MCP servers",
                 prominence=SettingProminence.MINOR,
                 variant="openhands",
             ).model_dump()
@@ -1381,7 +1395,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         },
     )
 
-    # ``mcp_config`` (de)serialization is shared with ACPAgentSettings via the
+    # ``mcp_servers`` (de)serialization is shared with ACPAgentSettings via the
     # module-level helpers — these stubs just bind them to the field.
     @field_validator("condenser", mode="before")
     @classmethod
@@ -1390,16 +1404,16 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             return LLMSummarizingCondenserSettings.model_validate(value.model_dump())
         return value
 
-    @field_validator("mcp_config", mode="before")
+    @field_validator("mcp_servers", mode="before")
     @classmethod
-    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        return normalize_empty_mcp_config(value)
+    def _validate_mcp_servers(cls, value: Any) -> Any:
+        return validate_mcp_servers(value)
 
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: MCPConfig | None, info: SerializationInfo
+    @field_serializer("mcp_servers")
+    def _serialize_mcp_servers(
+        self, value: dict[str, MCPServer], info: SerializationInfo
     ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
+        return serialize_mcp_servers(value, info)
 
     def create_agent(self) -> Agent:
         """Build an :class:`Agent` purely from these settings.
@@ -1416,8 +1430,6 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
 
-        # Bypass ``_serialize_mcp_config``: agent runtime needs real MCP secrets.
-        mcp_config = self.mcp_config or MCPConfig()
         include_default_tools = [tool.__name__ for tool in BUILT_IN_TOOLS]
         if self.enable_switch_llm_tool:
             include_default_tools.append(SwitchLLMTool.__name__)
@@ -1427,7 +1439,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         return Agent(
             llm=llm,
             tools=self.tools,
-            mcp_config=mcp_config,
+            mcp_servers=self.mcp_servers,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
             condenser=condenser,
@@ -1629,8 +1641,8 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump(),
         },
     )
-    mcp_config: MCPConfig | None = Field(
-        default=None,
+    mcp_servers: dict[str, MCPServer] = Field(
+        default_factory=dict,
         description=(
             "MCP servers to make available to the ACP subprocess. Unlike the "
             "OpenHands agent — where these become in-process MCP tools — the "
@@ -1641,24 +1653,24 @@ class ACPAgentSettings(AgentSettingsBase):
         ),
         json_schema_extra={
             SETTINGS_METADATA_KEY: SettingsFieldMetadata(
-                label="MCP configuration",
+                label="MCP servers",
                 prominence=SettingProminence.MINOR,
                 variant="acp",
             ).model_dump(),
         },
     )
 
-    # Same shared ``mcp_config`` (de)serialization as OpenHandsAgentSettings.
-    @field_validator("mcp_config", mode="before")
+    # Same shared ``mcp_servers`` (de)serialization as OpenHandsAgentSettings.
+    @field_validator("mcp_servers", mode="before")
     @classmethod
-    def _normalize_empty_mcp_config(cls, value: Any) -> Any:
-        return normalize_empty_mcp_config(value)
+    def _validate_mcp_servers(cls, value: Any) -> Any:
+        return validate_mcp_servers(value)
 
-    @field_serializer("mcp_config")
-    def _serialize_mcp_config(
-        self, value: MCPConfig | None, info: SerializationInfo
+    @field_serializer("mcp_servers")
+    def _serialize_mcp_servers(
+        self, value: dict[str, MCPServer], info: SerializationInfo
     ) -> dict[str, Any]:
-        return serialize_mcp_config(value, info)
+        return serialize_mcp_servers(value, info)
 
     # Programmatic / downstream-facing knob, deliberately NOT surfaced in the
     # settings-form UI (no SETTINGS_METADATA_KEY): the deploying application sets
@@ -1928,9 +1940,6 @@ class ACPAgentSettings(AgentSettingsBase):
                 ),
             )
 
-        # Bypass ``_serialize_mcp_config``: the subprocess needs real MCP secrets.
-        mcp_config = self.mcp_config or MCPConfig()
-
         return ACPAgent(
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
@@ -1946,7 +1955,7 @@ class ACPAgentSettings(AgentSettingsBase):
             acp_isolate_data_dir=self.acp_isolate_data_dir,
             acp_file_secrets=list(self.acp_file_secrets),
             agent_context=self.agent_context,
-            mcp_config=mcp_config,
+            mcp_servers=self.mcp_servers,
         )
 
 

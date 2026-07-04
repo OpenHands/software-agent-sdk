@@ -34,7 +34,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import (
     MCPAuthCredential,
-    MCPConfig,
     MCPOAuthAuthCredential,
     MCPOAuthState,
     MCPServer,
@@ -52,7 +51,7 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # Request / response models
 # ---------------------------------------------------------------------------
 #
-# We accept a single server spec instead of the full ``MCPConfig`` map. The
+# We accept a single server spec instead of the full MCP server map. The
 # UI flow this powers ("add a new MCP server") always validates one server
 # at a time, and keeping the request shape narrow avoids exposing tuple-of-
 # transports semantics the caller doesn't need.
@@ -159,7 +158,7 @@ class MCPTestRequest(BaseModel):
         min_length=1,
         max_length=128,
         description=(
-            "Name to use for the server inside the temporary MCPConfig. "
+            "Name to use for the server inside the temporary MCP server map. "
             "Only affects error messages -- does not need to match any "
             "persisted setting."
         ),
@@ -186,7 +185,7 @@ class MCPTestRequest(BaseModel):
 
     @model_validator(mode="after")
     def _strip_name(self) -> MCPTestRequest:
-        # Mirror the validation MCPConfig itself applies to server keys --
+        # Mirror the validation the MCP server map itself applies to server keys --
         # whitespace-only names would silently bypass min_length=1 above.
         self.name = self.name.strip() or _DEFAULT_SERVER_NAME
         return self
@@ -205,12 +204,8 @@ class MCPTestRequest(BaseModel):
             return None
         return auth.state.to_plain_dict(cipher=cipher)
 
-    def to_mcp_config(self, *, cipher: Cipher | None = None) -> MCPConfig:
-        return MCPConfig(
-            mcp_servers={
-                self.name: self.server.to_mcp_server(cipher=cipher),
-            }
-        )
+    def to_mcp_servers(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
+        return {self.name: self.server.to_mcp_server(cipher=cipher)}
 
 
 class MCPToolCallResult(BaseModel):
@@ -324,7 +319,7 @@ def _probe_mcp_server(
     threadpool first.
     """
 
-    config = request.to_mcp_config(cipher=cipher)
+    mcp_servers = request.to_mcp_servers(cipher=cipher)
 
     try:
         oauth_auth = request.oauth_auth
@@ -337,7 +332,7 @@ def _probe_mcp_server(
         # and a (possibly long-lived) subprocess. Use the context-manager
         # form so we always tear it down, even when listing succeeded.
         with create_mcp_tools(
-            config,
+            mcp_servers,
             timeout=request.timeout,
             mcp_oauth_token_storage=oauth_token_storage,
         ) as client:

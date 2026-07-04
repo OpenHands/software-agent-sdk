@@ -15,6 +15,7 @@ import pytest
 from fastmcp import FastMCP
 
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.config import coerce_mcp_servers
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
 
@@ -75,7 +76,7 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as client:
+        with create_mcp_tools(coerce_mcp_servers(config), timeout=10.0) as client:
             assert len(client) == 2
 
             echo_tool = next(t for t in client if t.name == "echo")
@@ -110,7 +111,7 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as client:
+        with create_mcp_tools(coerce_mcp_servers(config), timeout=10.0) as client:
             tool = next(t for t in client if t.name == "echo")
             executor = tool.executor
             assert isinstance(executor, MCPToolExecutor)

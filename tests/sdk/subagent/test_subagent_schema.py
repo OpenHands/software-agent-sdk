@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.mcp.config import MCPConfig, MCPServer
+from openhands.sdk.mcp.config import MCPServer, dump_mcp_servers
 from openhands.sdk.subagent.schema import (
     AgentDefinition,
     _extract_examples,
@@ -379,13 +379,12 @@ Content.
         agent = AgentDefinition(name="test")
         assert agent.mcp_servers is None
 
-    def test_mcp_config(self):
-        """Test creating AgentDefinition with typed MCP config."""
+    def test_mcp_servers(self):
+        """Test creating AgentDefinition with typed MCP servers."""
         servers = {"fetch": MCPServer(command="uvx", args=["mcp-server-fetch"])}
-        agent = AgentDefinition(
-            name="mcp-agent", mcp_config=MCPConfig(mcp_servers=servers)
-        )
-        assert agent.mcp_servers == {
+        agent = AgentDefinition(name="mcp-agent", mcp_servers=servers)
+        assert agent.mcp_servers is not None
+        assert dump_mcp_servers(agent.mcp_servers) == {
             "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
         }
 
@@ -414,8 +413,9 @@ You are an agent with MCP tools.
         agent = AgentDefinition.load(agent_md)
         assert agent.mcp_servers is not None
         assert "fetch" in agent.mcp_servers
-        assert agent.mcp_servers["fetch"]["command"] == "uvx"
-        assert agent.mcp_servers["fetch"]["args"] == ["mcp-server-fetch"]
+        servers = dump_mcp_servers(agent.mcp_servers)
+        assert servers["fetch"]["command"] == "uvx"
+        assert servers["fetch"]["args"] == ["mcp-server-fetch"]
         assert "filesystem" in agent.mcp_servers
 
     def test_load_mcp_servers_not_in_metadata(self, tmp_path: Path):
@@ -474,8 +474,9 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
+        dumped = dump_mcp_servers(mcp_servers)
         # Placeholder preserved for runtime expansion with per-conversation secrets
-        assert mcp_servers["my-server"]["env"]["API_KEY"] == "${MY_API_KEY}"
+        assert dumped["my-server"]["env"]["API_KEY"] == "${MY_API_KEY}"
 
     def test_mcp_servers_env_vars_preserved_in_command(self, tmp_path: Path):
         """Test that ${VAR} references in command are preserved."""
@@ -497,9 +498,10 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
+        dumped = dump_mcp_servers(mcp_servers)
         # Placeholders preserved for runtime expansion
-        assert mcp_servers["my-server"]["command"] == "${PLUGIN_ROOT}/bin/server"
-        assert mcp_servers["my-server"]["args"] == [
+        assert dumped["my-server"]["command"] == "${PLUGIN_ROOT}/bin/server"
+        assert dumped["my-server"]["args"] == [
             "--config",
             "${PLUGIN_ROOT}/config.json",
         ]
@@ -524,11 +526,10 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
+        dumped = dump_mcp_servers(mcp_servers)
         # Placeholders preserved for runtime expansion
-        assert mcp_servers["remote"]["url"] == "${API_BASE}/mcp"
-        assert mcp_servers["remote"]["headers"]["Authorization"] == (
-            "Bearer ${AUTH_TOKEN}"
-        )
+        assert dumped["remote"]["url"] == "${API_BASE}/mcp"
+        assert dumped["remote"]["headers"]["Authorization"] == ("Bearer ${AUTH_TOKEN}")
 
     def test_mcp_servers_placeholders_preserved(self, tmp_path: Path):
         """Test that all ${VAR} placeholders are preserved unchanged."""
@@ -547,7 +548,7 @@ Prompt.
         agent = AgentDefinition.load(agent_md)
         mcp_servers = agent.mcp_servers
         assert mcp_servers is not None
-        assert mcp_servers["my-server"]["command"] == "${SOME_VAR}"
+        assert dump_mcp_servers(mcp_servers)["my-server"]["command"] == "${SOME_VAR}"
 
     def test_permission_mode_defaults_to_none(self):
         """Test that permission_mode defaults to None (inherit parent)."""
@@ -712,7 +713,7 @@ System prompt.
 
         # Placeholders should be preserved, not expanded
         assert agent.mcp_servers is not None
-        env = agent.mcp_servers["my-server"]["env"]
+        env = dump_mcp_servers(agent.mcp_servers)["my-server"]["env"]
         assert env["API_TOKEN"] == "${SECRET_TOKEN}"
         assert env["ENDPOINT"] == "${API_URL:-https://default.example.com}"
 
@@ -741,7 +742,7 @@ System prompt.
         agent = AgentDefinition.load(agent_md)
 
         assert agent.mcp_servers is not None
-        server = agent.mcp_servers["server-a"]
+        server = dump_mcp_servers(agent.mcp_servers)["server-a"]
         assert server["command"] == "${CMD:-uvx}"
         assert server["args"][1] == "${TOKEN}"
         assert server["args"][3] == "${URL:-http://localhost:8080}"
@@ -768,7 +769,7 @@ System prompt.
         agent = AgentDefinition.load(agent_md)
 
         assert agent.mcp_servers is not None
-        server = agent.mcp_servers["static-server"]
+        server = dump_mcp_servers(agent.mcp_servers)["static-server"]
         assert server["command"] == "uvx"
         assert server["args"] == ["mcp-server-fetch"]
 

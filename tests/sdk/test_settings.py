@@ -24,7 +24,7 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser, NoOpCondenser
 from openhands.sdk.critic.base import IterativeRefinementConfig
 from openhands.sdk.critic.impl.api import APIBasedCritic
-from openhands.sdk.mcp.config import MCPConfig
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_servers, dump_mcp_servers
 from openhands.sdk.secret import StaticSecret
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
@@ -74,7 +74,7 @@ def test_llm_agent_settings_export_schema_groups_sections() -> None:
         "enable_sub_agents",
         "enable_switch_llm_tool",
         "tool_concurrency_limit",
-        "mcp_config",
+        "mcp_servers",
     }
     assert general_fields["agent"].default == "CodeActAgent"
     assert general_fields["agent"].prominence is SettingProminence.MAJOR
@@ -178,12 +178,12 @@ def test_acp_agent_settings_export_schema_has_acp_section() -> None:
     assert acp_fields["acp_model"].prominence is SettingProminence.CRITICAL
     assert acp_fields["acp_command"].prominence is SettingProminence.MINOR
 
-    # mcp_config is exposed as a single object field (matching the OpenHands
+    # mcp_servers is exposed as a single object field (matching the OpenHands
     # variant) rather than being expanded into nested per-server fields. The
     # servers are forwarded to the ACP subprocess at session creation.
     general_fields = {f.key: f for f in sections["general"].fields}
-    assert "mcp_config" in general_fields
-    assert general_fields["mcp_config"].prominence is SettingProminence.MINOR
+    assert "mcp_servers" in general_fields
+    assert general_fields["mcp_servers"].prominence is SettingProminence.MINOR
 
 
 def test_conversation_settings_export_schema_groups_sections() -> None:
@@ -346,7 +346,7 @@ def test_export_agent_settings_schema_emits_variant_tagged_sections() -> None:
         "enable_sub_agents",
         "enable_switch_llm_tool",
         "tool_concurrency_limit",
-        "mcp_config",
+        "mcp_servers",
     }
     # No agent_kind field — each variant has its own settings page and
     # injects the discriminator on save.
@@ -599,14 +599,7 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
 
     assert isinstance(settings, OpenHandsAgentSettings)
     assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
-    assert settings.mcp_config is not None
-    servers = settings.mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        by_alias=True,
-        exclude_none=True,
-        exclude_defaults=True,
-    )["mcpServers"]
+    servers = dump_mcp_servers(settings.mcp_servers)
 
     assert servers["oauth-top-level"]["auth"] == {
         "strategy": "oauth2",
@@ -661,11 +654,11 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     }
 
 
-def test_openhands_mcp_config_rejects_unknown_server_fields() -> None:
+def test_openhands_mcp_servers_reject_unknown_server_fields() -> None:
     with pytest.raises(ValidationError):
-        MCPConfig.model_validate(
+        OpenHandsAgentSettings.model_validate(
             {
-                "mcpServers": {
+                "mcp_servers": {
                     "server": {
                         "url": "https://mcp.example.com/mcp",
                         "unknown_secret": "not-a-datamodel-field",
@@ -697,13 +690,7 @@ def test_validate_agent_settings_mcp_linear_migration_does_not_duplicate() -> No
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.mcp_config is not None
-    assert settings.mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        by_alias=True,
-        exclude_none=True,
-    )["mcpServers"] == {
+    assert dump_mcp_servers(settings.mcp_servers) == {
         "shttp": {
             "url": "https://mcp.linear.app/mcp",
             "auth": {"strategy": "bearer", "value": "manual-secret"},
@@ -812,33 +799,27 @@ def test_tool_concurrency_limit_invalid_values_rejected(raw: Any) -> None:
     )
 
 
-def test_llm_agent_settings_validates_mcp_config_as_typed_model() -> None:
+def test_llm_agent_settings_validates_mcp_servers_as_typed_model() -> None:
     settings = OpenHandsAgentSettings.model_validate(
-        {
-            "mcp_config": {
-                "mcpServers": {
-                    "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
-                }
-            }
-        }
+        {"mcp_servers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
     )
 
-    assert isinstance(settings.mcp_config, MCPConfig)
-    assert settings.model_dump()["mcp_config"] == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert isinstance(settings.mcp_servers["fetch"], MCPServer)
+    assert settings.model_dump()["mcp_servers"] == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
 
 
-def test_llm_create_agent_serializes_typed_mcp_config_compactly() -> None:
-    mcp_config = MCPConfig.model_validate(
-        {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
+def test_llm_create_agent_serializes_typed_mcp_servers_compactly() -> None:
+    mcp_servers = coerce_mcp_servers(
+        {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     )
-    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    settings = OpenHandsAgentSettings(mcp_servers=mcp_servers)
 
     agent = settings.create_agent()
 
-    assert agent.mcp_config.to_plain_dict() == {
-        "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
+    assert dump_mcp_servers(agent.mcp_servers) == {
+        "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}
     }
 
 
@@ -1540,8 +1521,8 @@ def test_conversation_settings_agent_settings_field_accepts_both_variants() -> N
 # ---------------------------------------------------------------------------
 
 
-def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+def test_openhands_agent_settings_mcp_servers_redacts_env_and_headers() -> None:
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "leaky": {
@@ -1553,14 +1534,14 @@ def test_openhands_agent_settings_mcp_config_redacts_env_and_headers() -> None:
             }
         }
     )
-    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    settings = OpenHandsAgentSettings(mcp_servers=mcp_servers)
 
     blob = settings.model_dump_json()
     assert "sk-mcp-secret" not in blob
     assert "tok-mcp-secret" not in blob
 
     exposed = settings.model_dump(context={"expose_secrets": True})
-    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    leaky = exposed["mcp_servers"]["leaky"]
     assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
     assert leaky["headers"]["X-API-Token"] == "tok-mcp-secret"
 
@@ -1578,7 +1559,7 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
         ),
         verification=VerificationSettings(critic_api_key=SecretStr("critic-secret")),
         agent_context=AgentContext(secrets={"AGENT_TOKEN": "agent-secret"}),
-        mcp_config=MCPConfig.model_validate(
+        mcp_servers=coerce_mcp_servers(
             {
                 "mcpServers": {
                     "http": {
@@ -1643,7 +1624,7 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
         settings, cipher=cipher, exclude_unset=True
     )
     assert "llm" in sparse_stored
-    assert "mcp_config" in sparse_stored
+    assert "mcp_servers" in sparse_stored
 
     loaded = load_agent_settings_from_storage(stored, cipher=cipher)
     assert isinstance(loaded, OpenHandsAgentSettings)
@@ -1657,13 +1638,7 @@ def test_agent_settings_storage_helpers_encrypt_full_payload() -> None:
     assert loaded.llm.aws_session_token.get_secret_value() == "aws-session"
     assert loaded.verification.critic_api_key.get_secret_value() == "critic-secret"
     assert loaded.agent_context.secrets == {"AGENT_TOKEN": "agent-secret"}
-    assert loaded.mcp_config is not None
-    servers = loaded.mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        by_alias=True,
-        exclude_none=True,
-    )["mcpServers"]
+    servers = dump_mcp_servers(loaded.mcp_servers)
     assert servers["http"]["headers"]["X-MCP-Token"] == "header-secret"
     assert servers["http"]["auth"]["value"] == "bearer-secret"
     assert servers["api-key"]["auth"]["value"] == "api-key-secret"
@@ -1684,53 +1659,51 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
         "llm": {"aws_secret_access_key": "aws-secret"},
         "verification": {"critic_api_key": "critic-secret"},
         "agent_context": {"secrets": {"AGENT_TOKEN": "agent-secret"}},
-        "mcp_config": {
-            "mcpServers": {
-                "stdio": {
-                    "command": "node",
-                    "env": {"MCP_TOKEN": "env-secret"},
+        "mcp_servers": {
+            "stdio": {
+                "command": "node",
+                "env": {"MCP_TOKEN": "env-secret"},
+            },
+            "remote": {
+                "url": "https://mcp.example.com",
+                "auth": {"strategy": "bearer", "value": "bearer-secret"},
+            },
+            "api-key": {
+                "url": "https://mcp.api-key.example.com",
+                "auth": {
+                    "strategy": "api_key",
+                    "value": "api-key-secret",
+                    "header_name": "X-API-Key",
                 },
-                "remote": {
-                    "url": "https://mcp.example.com",
-                    "auth": {"strategy": "bearer", "value": "bearer-secret"},
+            },
+            "basic": {
+                "url": "https://mcp.basic.example.com",
+                "auth": {
+                    "strategy": "basic",
+                    "username": "service-account",
+                    "password": "basic-password-secret",
                 },
-                "api-key": {
-                    "url": "https://mcp.api-key.example.com",
-                    "auth": {
-                        "strategy": "api_key",
-                        "value": "api-key-secret",
-                        "header_name": "X-API-Key",
-                    },
+            },
+            "header-auth": {
+                "url": "https://mcp.header.example.com",
+                "auth": {
+                    "strategy": "header",
+                    "headers": {"X-Auth": "header-auth-secret"},
                 },
-                "basic": {
-                    "url": "https://mcp.basic.example.com",
-                    "auth": {
-                        "strategy": "basic",
-                        "username": "service-account",
-                        "password": "basic-password-secret",
-                    },
+            },
+            "oauth": {
+                "url": "https://mcp.oauth.example.com",
+                "auth": {
+                    "strategy": "oauth2",
+                    "state": {"tokens": {"access_token": "oauth-access-secret"}},
                 },
-                "header-auth": {
-                    "url": "https://mcp.header.example.com",
-                    "auth": {
-                        "strategy": "header",
-                        "headers": {"X-Auth": "header-auth-secret"},
-                    },
-                },
-                "oauth": {
-                    "url": "https://mcp.oauth.example.com",
-                    "auth": {
-                        "strategy": "oauth2",
-                        "state": {"tokens": {"access_token": "oauth-access-secret"}},
-                    },
-                },
-            }
+            },
         },
     }
 
     encrypted = encrypt_agent_settings_secret_values(diff, cipher=cipher)
     assert encrypted["llm"].keys() == {"aws_secret_access_key"}
-    assert encrypted["mcp_config"]["mcpServers"]["stdio"]["command"] == "node"
+    assert encrypted["mcp_servers"]["stdio"]["command"] == "node"
     serialized = json.dumps(encrypted)
     for secret in (
         "aws-secret",
@@ -1749,7 +1722,7 @@ def test_agent_settings_secret_value_helpers_preserve_sparse_diffs() -> None:
     assert decrypt_agent_settings_secret_values(encrypted, cipher=cipher) == diff
 
 
-def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
+def test_mcp_servers_encrypts_env_and_headers_with_cipher() -> None:
     """When a cipher is in the serialization context (the on-disk persistence
     path), MCP ``env`` / ``headers`` values must be encrypted per-value with
     that cipher — the same way other secret fields are persisted.
@@ -1759,7 +1732,7 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
     """
     from openhands.sdk.utils.cipher import Cipher
 
-    mcp_config = MCPConfig.model_validate(
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "github": {
@@ -1774,12 +1747,12 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
             }
         }
     )
-    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    settings = OpenHandsAgentSettings(mcp_servers=mcp_servers)
     cipher = Cipher(secret_key="test-encryption-key")
 
     dumped = settings.model_dump(mode="json", context={"cipher": cipher})
 
-    servers = dumped["mcp_config"]["mcpServers"]
+    servers = dumped["mcp_servers"]
     enc_token = servers["github"]["env"]["GITHUB_TOKEN"]
     enc_auth = servers["fetch"]["headers"]["X-API-Token"]
 
@@ -1799,26 +1772,15 @@ def test_mcp_config_encrypts_env_and_headers_with_cipher() -> None:
 
     # Round-trip: decrypt with the same cipher recovers the originals.
     restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
-    assert restored.mcp_config is not None
-    restored_dump = restored.mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        by_alias=True,
-        exclude_none=True,
-    )
-    assert (
-        restored_dump["mcpServers"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
-    )
-    assert (
-        restored_dump["mcpServers"]["fetch"]["headers"]["X-API-Token"]
-        == "tok-mcp-secret"
-    )
+    restored_dump = dump_mcp_servers(restored.mcp_servers)
+    assert restored_dump["github"]["env"]["GITHUB_TOKEN"] == "ghp-mcp-secret"
+    assert restored_dump["fetch"]["headers"]["X-API-Token"] == "tok-mcp-secret"
 
 
-def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
+def test_mcp_servers_encrypts_bearer_auth_with_cipher() -> None:
     from openhands.sdk.utils.cipher import Cipher
 
-    mcp_config = MCPConfig.model_validate(
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "linear": {
@@ -1832,11 +1794,11 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
             }
         }
     )
-    settings = OpenHandsAgentSettings(mcp_config=mcp_config)
+    settings = OpenHandsAgentSettings(mcp_servers=mcp_servers)
     cipher = Cipher(secret_key="test-encryption-key")
 
     dumped = settings.model_dump(mode="json", context={"cipher": cipher})
-    servers = dumped["mcp_config"]["mcpServers"]
+    servers = dumped["mcp_servers"]
 
     assert servers["linear"]["auth"]["strategy"] == "bearer"
     assert servers["linear"]["auth"]["value"].startswith("gAAAA")
@@ -1844,22 +1806,14 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
     assert servers["superhuman"]["auth"] == {"strategy": "oauth2"}
 
     redacted = settings.model_dump(mode="json")
-    assert redacted["mcp_config"]["mcpServers"]["linear"]["auth"] == {
+    assert redacted["mcp_servers"]["linear"]["auth"] == {
         "strategy": "bearer",
         "value": "**********",
     }
-    assert redacted["mcp_config"]["mcpServers"]["superhuman"]["auth"] == {
-        "strategy": "oauth2"
-    }
+    assert redacted["mcp_servers"]["superhuman"]["auth"] == {"strategy": "oauth2"}
 
     restored = OpenHandsAgentSettings.model_validate(dumped, context={"cipher": cipher})
-    assert restored.mcp_config is not None
-    restored_servers = restored.mcp_config.model_dump(
-        mode="json",
-        context={"expose_secrets": "plaintext"},
-        by_alias=True,
-        exclude_none=True,
-    )["mcpServers"]
+    restored_servers = dump_mcp_servers(restored.mcp_servers)
     assert restored_servers["linear"]["auth"] == {
         "strategy": "bearer",
         "value": "lin-api-secret",
@@ -1870,7 +1824,7 @@ def test_mcp_config_encrypts_bearer_auth_with_cipher() -> None:
 
 
 def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> None:
-    mcp_config = MCPConfig.model_validate(
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "linear": {
@@ -1891,9 +1845,9 @@ def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> Non
         }
     )
 
-    agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
+    agent = OpenHandsAgentSettings(mcp_servers=mcp_servers).create_agent()
 
-    servers = agent.mcp_config.to_plain_dict()["mcpServers"]
+    servers = dump_mcp_servers(agent.mcp_servers)
     assert servers["linear"]["auth"] == {
         "strategy": "bearer",
         "value": "lin-api-secret",
@@ -1907,7 +1861,9 @@ def test_openhands_agent_settings_create_agent_preserves_mcp_auth_model() -> Non
     }
 
 
-def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() -> None:
+def test_openhands_agent_settings_mcp_servers_decrypt_legacy_plaintext_on_disk() -> (
+    None
+):
     """Loading a settings file that pre-dates per-value encryption (env /
     headers stored as plaintext) must NOT drop those values: each value that
     isn't a valid Fernet token is passed through unchanged so the next save
@@ -1917,14 +1873,12 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
 
     cipher = Cipher(secret_key="test-encryption-key")
     legacy_payload = {
-        "mcp_config": {
-            "mcpServers": {
-                "github": {
-                    "command": "uvx",
-                    "args": ["mcp-server-github"],
-                    # plaintext, as the previous (pre-encryption) build wrote
-                    "env": {"GITHUB_TOKEN": "ghp-legacy-plaintext"},
-                }
+        "mcp_servers": {
+            "github": {
+                "command": "uvx",
+                "args": ["mcp-server-github"],
+                # plaintext, as the previous (pre-encryption) build wrote
+                "env": {"GITHUB_TOKEN": "ghp-legacy-plaintext"},
             }
         }
     }
@@ -1932,19 +1886,15 @@ def test_openhands_agent_settings_mcp_config_decrypt_legacy_plaintext_on_disk() 
     restored = OpenHandsAgentSettings.model_validate(
         legacy_payload, context={"cipher": cipher}
     )
-    assert restored.mcp_config is not None
     assert (
-        restored.mcp_config.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            by_alias=True,
-            exclude_none=True,
-        )["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
+        dump_mcp_servers(restored.mcp_servers)["github"]["env"]["GITHUB_TOKEN"]
         == "ghp-legacy-plaintext"
     )
 
 
-def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() -> None:
+def test_openhands_agent_settings_mcp_servers_expose_encrypted_requires_cipher() -> (
+    None
+):
     """``expose_secrets="encrypted"`` without a cipher must raise — mirroring
     the contract used for individual ``SecretStr`` fields via
     :func:`serialize_secret`. Pydantic wraps the inner
@@ -1957,7 +1907,7 @@ def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() 
     from openhands.sdk.utils.pydantic_secrets import MissingCipherError
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_servers=coerce_mcp_servers(
             {
                 "mcpServers": {
                     "github": {
@@ -1979,7 +1929,7 @@ def test_openhands_agent_settings_mcp_config_expose_encrypted_requires_cipher() 
     assert isinstance(cause, MissingCipherError)
 
 
-def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -> None:
+def test_openhands_agent_settings_mcp_servers_expose_plaintext_passes_through() -> None:
     """``expose_secrets="plaintext"`` must return raw env / headers values
     even when a cipher is also in the context (e.g. an admin GET with
     explicit plaintext exposure).
@@ -1987,7 +1937,7 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
     from openhands.sdk.utils.cipher import Cipher
 
     settings = OpenHandsAgentSettings(
-        mcp_config=MCPConfig.model_validate(
+        mcp_servers=coerce_mcp_servers(
             {
                 "mcpServers": {
                     "github": {
@@ -2005,16 +1955,13 @@ def test_openhands_agent_settings_mcp_config_expose_plaintext_passes_through() -
         mode="json",
         context={"cipher": cipher, "expose_secrets": "plaintext"},
     )
-    assert (
-        dumped["mcp_config"]["mcpServers"]["github"]["env"]["GITHUB_TOKEN"]
-        == "ghp-secret"
-    )
+    assert dumped["mcp_servers"]["github"]["env"]["GITHUB_TOKEN"] == "ghp-secret"
 
 
 def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the runtime real env/headers (the field serializer
-    # redacts mcp_config for transit only).
-    mcp_config = MCPConfig.model_validate(
+    # redacts mcp_servers for transit only).
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "leaky": {
@@ -2025,16 +1972,16 @@ def test_openhands_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
             }
         }
     )
-    agent = OpenHandsAgentSettings(mcp_config=mcp_config).create_agent()
+    agent = OpenHandsAgentSettings(mcp_servers=mcp_servers).create_agent()
 
     assert (
-        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["env"]["API_KEY"]
+        dump_mcp_servers(agent.mcp_servers)["leaky"]["env"]["API_KEY"]
         == "sk-mcp-secret"
     )
 
 
-def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
-    mcp_config = MCPConfig.model_validate(
+def test_acp_agent_settings_mcp_servers_redacts_env_and_headers() -> None:
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "leaky": {
@@ -2046,22 +1993,22 @@ def test_acp_agent_settings_mcp_config_redacts_env_and_headers() -> None:
             }
         }
     )
-    settings = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config)
+    settings = ACPAgentSettings(acp_command=["echo"], mcp_servers=mcp_servers)
 
     blob = settings.model_dump_json()
     assert "sk-mcp-secret" not in blob
     assert "tok-mcp-secret" not in blob
 
     exposed = settings.model_dump(context={"expose_secrets": True})
-    leaky = exposed["mcp_config"]["mcpServers"]["leaky"]
+    leaky = exposed["mcp_servers"]["leaky"]
     assert leaky["env"]["API_KEY"] == "sk-mcp-secret"
     assert leaky["headers"]["X-API-Token"] == "tok-mcp-secret"
 
 
 def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
     # create_agent must hand the subprocess real env/headers (the field serializer
-    # redacts mcp_config for transit/storage only).
-    mcp_config = MCPConfig.model_validate(
+    # redacts mcp_servers for transit/storage only).
+    mcp_servers = coerce_mcp_servers(
         {
             "mcpServers": {
                 "leaky": {
@@ -2073,17 +2020,17 @@ def test_acp_agent_settings_create_agent_keeps_real_mcp_secrets() -> None:
             }
         }
     )
-    agent = ACPAgentSettings(acp_command=["echo"], mcp_config=mcp_config).create_agent()
+    agent = ACPAgentSettings(
+        acp_command=["echo"], mcp_servers=mcp_servers
+    ).create_agent()
 
     assert isinstance(agent, ACPAgent)
     assert (
-        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["env"]["API_KEY"]
+        dump_mcp_servers(agent.mcp_servers)["leaky"]["env"]["API_KEY"]
         == "sk-mcp-secret"
     )
     assert (
-        agent.mcp_config.to_plain_dict()["mcpServers"]["leaky"]["headers"][
-            "X-API-Token"
-        ]
+        dump_mcp_servers(agent.mcp_servers)["leaky"]["headers"]["X-API-Token"]
         == "tok-mcp-secret"
     )
 

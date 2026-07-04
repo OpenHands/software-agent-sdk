@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from openhands.sdk.context.condenser import CondenserBase, NoOpCondenser
 from openhands.sdk.hooks.config import HookConfig
-from openhands.sdk.mcp.config import MCPConfig
+from openhands.sdk.mcp.config import MCPServer, coerce_mcp_servers
 from openhands.sdk.utils.path import to_posix_path
 
 
@@ -81,26 +81,26 @@ def _extract_skills(fm: dict[str, object]) -> list[str]:
     return skills
 
 
-def _extract_mcp_config(fm: dict[str, Any]) -> MCPConfig:
-    """Extract MCP configuration from frontmatter.
+def _extract_mcp_servers(fm: dict[str, Any]) -> dict[str, MCPServer] | None:
+    """Extract MCP servers from frontmatter.
 
     Variable placeholders (``${VAR}`` and ``${VAR:-default}``) are preserved
     and expanded later when the agent runs, allowing per-conversation secrets
     to be injected at runtime. Expansion happens in LocalConversation when
-    the agent's mcp_config is processed.
+    the agent's mcp_servers are processed.
 
     Note: The older ``$VAR`` syntax (without braces) is NOT supported.
     Use ``${VAR}`` for environment variables and secrets.
     """
     mcp_servers_raw = fm.get("mcp_servers")
     if mcp_servers_raw is None:
-        return MCPConfig()
+        return None
     if not isinstance(mcp_servers_raw, dict):
         raise ValueError(
             f"mcp_servers must be a mapping of server names to configs, "
             f"got {type(mcp_servers_raw)}"
         )
-    return MCPConfig.model_validate({"mcpServers": mcp_servers_raw})
+    return coerce_mcp_servers(mcp_servers_raw)
 
 
 def _extract_profile_store_dir(fm: dict[str, object]) -> str | None:
@@ -250,12 +250,10 @@ class AgentDefinition(BaseModel):
         "Must be strictly positive, or None for no budget.",
         gt=0,
     )
-    mcp_config: MCPConfig = Field(
-        default_factory=MCPConfig,
-        description="MCP configuration for this agent.",
-        examples=[
-            {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
-        ],
+    mcp_servers: dict[str, MCPServer] | None = Field(
+        default=None,
+        description="MCP servers for this agent.",
+        examples=[{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}],
     )
     profile_store_dir: str | None = Field(
         default=None,
@@ -270,11 +268,6 @@ class AgentDefinition(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata from frontmatter"
     )
-
-    @property
-    def mcp_servers(self) -> dict[str, Any] | None:
-        """Return the frontmatter/API view of the MCP server mapping."""
-        return self.mcp_config.to_plain_dict().get("mcpServers") or None
 
     def get_confirmation_policy(self) -> ConfirmationPolicyBase | None:
         """Convert permission_mode to a ConfirmationPolicyBase instance.
@@ -345,7 +338,7 @@ class AgentDefinition(BaseModel):
         permission_mode: str | None = _extract_permission_mode(fm)
         max_iteration_per_run: int | None = _extract_max_iteration_per_run(fm)
         max_budget_per_run: float | None = _extract_max_budget_per_run(fm)
-        mcp_config = _extract_mcp_config(fm)
+        mcp_servers = _extract_mcp_servers(fm)
         profile_store_dir: str | None = _extract_profile_store_dir(fm)
         hooks: HookConfig | None = _extract_hooks(fm)
         condenser: CondenserBase | None = _extract_condenser(fm)
@@ -366,7 +359,7 @@ class AgentDefinition(BaseModel):
             permission_mode=permission_mode,
             max_iteration_per_run=max_iteration_per_run,
             max_budget_per_run=max_budget_per_run,
-            mcp_config=mcp_config,
+            mcp_servers=mcp_servers,
             hooks=hooks,
             profile_store_dir=profile_store_dir,
             condenser=condenser,

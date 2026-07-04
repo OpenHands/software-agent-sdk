@@ -11,7 +11,6 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.mcp import (
-    MCPConfig,
     MCPOAuthAuthCredential,
     MCPServer,
 )
@@ -42,15 +41,13 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-mcp_config = MCPConfig(
-    mcp_servers={
-        "Notion": MCPServer(
-            url="https://mcp.notion.com/mcp",
-            auth=MCPOAuthAuthCredential(strategy="oauth2"),
-        )
-    }
-)
-agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
+mcp_servers = {
+    "Notion": MCPServer(
+        url="https://mcp.notion.com/mcp",
+        auth=MCPOAuthAuthCredential(strategy="oauth2"),
+    )
+}
+agent = Agent(llm=llm, tools=tools, mcp_servers=mcp_servers)
 
 llm_messages = []  # collect raw LLM messages
 
