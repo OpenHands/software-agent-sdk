@@ -11,20 +11,20 @@ from __future__ import annotations
 import asyncio
 import copy
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, SupportsFloat
-
-from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
 from openhands.sdk.logger import get_logger
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
     MCPOAuthClientInfoState,
     MCPOAuthState,
     MCPOAuthTokenState,
     OpenHandsMCPConfig,
 )
-from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory
+from openhands.sdk.mcp.utils import create_mcp_tools
 
 
 logger = get_logger(__name__)
@@ -437,10 +437,24 @@ class InMemoryMCPOAuthTokenStore:
         return deleted
 
 
-def create_mcp_oauth_token_storage_factory(
+@dataclass(frozen=True)
+class SettingsBackedMCPToolProvider:
+    """Create MCP tools with FastMCP OAuth state persisted in settings."""
+
+    def create_tools(
+        self, config: OpenHandsMCPConfig, timeout: float = 30.0
+    ) -> MCPClient:
+        return create_mcp_tools(
+            config,
+            timeout,
+            mcp_oauth_token_storage=MCPSettingsOAuthTokenStore(),
+        )
+
+
+def create_settings_backed_mcp_tool_provider(
     config: Config,
-) -> MCPOAuthTokenStorageFactory:
-    """Return a per-client factory for persistent MCP OAuth token storage."""
+) -> SettingsBackedMCPToolProvider:
+    """Initialize settings storage and return the agent-server MCP provider."""
     get_settings_store(config)
     if config.secret_key is None:
         logger.warning(
@@ -448,8 +462,4 @@ def create_mcp_oauth_token_storage_factory(
             "(no OH_SECRET_KEY configured). Configure OH_SECRET_KEY for "
             "production deployments."
         )
-
-    def factory() -> AsyncKeyValue:
-        return MCPSettingsOAuthTokenStore()
-
-    return factory
+    return SettingsBackedMCPToolProvider()

@@ -8,7 +8,7 @@ from openhands.sdk.mcp.config import (
 )
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
-from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory, MCPRuntimeConfig
+from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
@@ -26,8 +26,8 @@ __all__ = [
     "MCPToolAction",
     "MCPToolObservation",
     "MCPToolExecutor",
-    "MCPOAuthTokenStorageFactory",
-    "MCPRuntimeConfig",
+    "DefaultMCPToolProvider",
+    "MCPToolProvider",
     "create_mcp_tools",
     "to_fastmcp_mcp_config",
     "MCPError",

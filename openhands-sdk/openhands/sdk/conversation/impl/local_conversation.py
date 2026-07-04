@@ -56,7 +56,8 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory, MCPRuntimeConfig
+from openhands.sdk.mcp.config import OpenHandsMCPConfig
+from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -167,7 +168,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
-    _mcp_runtime_config: MCPRuntimeConfig
+    _mcp_tool_provider: MCPToolProvider
 
     def __init__(
         self,
@@ -201,7 +202,7 @@ class LocalConversation(BaseConversation):
         observability_span_name: str = "conversation",
         prompt_cache_key: str | None = None,
         file_store: FileStore | None = None,
-        mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = None,
+        mcp_tool_provider: MCPToolProvider | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -278,11 +279,9 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
-        self._mcp_runtime_config = MCPRuntimeConfig(
-            oauth_token_storage_factory=mcp_oauth_token_storage_factory
-        )
+        self._mcp_tool_provider = mcp_tool_provider or DefaultMCPToolProvider()
 
-        # Create-or-resume: factory inspects BASE_STATE to decide
+        # Create-or-resume.
         desired_id = conversation_id or uuid.uuid4()
 
         # Resolve client-defined tools, then register them and inject the matching
@@ -308,7 +307,7 @@ class LocalConversation(BaseConversation):
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
-        agent.set_mcp_runtime_config(self._mcp_runtime_config)
+        agent.set_mcp_tool_provider(self._mcp_tool_provider)
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
@@ -457,7 +456,7 @@ class LocalConversation(BaseConversation):
         self.delete_on_close = delete_on_close
 
     def _attach_runtime_agent_config(self, agent: AgentBase) -> AgentBase:
-        agent.set_mcp_runtime_config(self._mcp_runtime_config)
+        agent.set_mcp_tool_provider(self._mcp_tool_provider)
         return agent
 
     def _tree_stamping(
@@ -1110,9 +1109,10 @@ class LocalConversation(BaseConversation):
     ) -> list[ToolDefinition]:
         if not plugin_mcp_config:
             return []
+        mcp_config = OpenHandsMCPConfig.model_validate(plugin_mcp_config)
         return list(
-            self._mcp_runtime_config.create_tools(
-                plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
+            self._mcp_tool_provider.create_tools(
+                mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
             ).tools
         )
 

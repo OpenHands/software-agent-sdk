@@ -44,9 +44,6 @@ from openhands.agent_server.init_router import (
     require_initialized,
 )
 from openhands.agent_server.llm_router import llm_router
-from openhands.agent_server.mcp_oauth_store import (
-    create_mcp_oauth_token_storage_factory,
-)
 from openhands.agent_server.mcp_router import mcp_router
 from openhands.agent_server.middleware import CORSDispatcher
 from openhands.agent_server.openai.router import (
@@ -593,10 +590,6 @@ def create_app(config: Config | None = None) -> FastAPI:
         config = get_default_config()
     app = _create_fastapi_instance(config)
     app.state.config = config
-    app.state.mcp_oauth_token_storage_factory = create_mcp_oauth_token_storage_factory(
-        config
-    )
-
     _add_api_routes(app)
     _setup_static_files(app, config)
     app.add_middleware(

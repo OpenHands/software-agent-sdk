@@ -32,8 +32,8 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp.config import to_fastmcp_mcp_config
-from openhands.sdk.mcp.runtime import MCPRuntimeConfig
+from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
+from openhands.sdk.mcp.runtime import DefaultMCPToolProvider, MCPToolProvider
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -414,16 +414,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
-    _mcp_runtime_config: MCPRuntimeConfig = PrivateAttr(
-        default_factory=MCPRuntimeConfig
+    _mcp_tool_provider: MCPToolProvider = PrivateAttr(
+        default_factory=DefaultMCPToolProvider
     )
 
-    def set_mcp_runtime_config(
+    def set_mcp_tool_provider(
         self,
-        runtime_config: MCPRuntimeConfig | None,
+        tool_provider: MCPToolProvider | None,
     ) -> None:
         object.__setattr__(
-            self, "_mcp_runtime_config", runtime_config or MCPRuntimeConfig()
+            self, "_mcp_tool_provider", tool_provider or DefaultMCPToolProvider()
         )
 
     @property
@@ -669,9 +669,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Submit MCP tools creation if configured
             if self.mcp_config:
+                mcp_config = OpenHandsMCPConfig.model_validate(self.mcp_config)
                 future = executor.submit(
-                    self._mcp_runtime_config.create_tools,
-                    self.mcp_config,
+                    self._mcp_tool_provider.create_tools,
+                    mcp_config,
                     30,
                 )
                 futures.append(future)

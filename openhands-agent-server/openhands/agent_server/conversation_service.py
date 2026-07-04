@@ -48,7 +48,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
-from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory
+from openhands.sdk.mcp.runtime import MCPToolProvider
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -462,7 +462,7 @@ class ConversationService:
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
     cipher: Cipher | None = None
-    mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = None
+    mcp_tool_provider: MCPToolProvider | None = None
     owner_instance_id: str = field(default_factory=lambda: uuid4().hex)
     max_concurrent_runs: int = 10
     lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
@@ -1259,7 +1259,7 @@ class ConversationService:
         # Initialise the settings-store singleton with the server cipher before
         # any conversation handler can call get_settings_store() without config.
         from openhands.agent_server.mcp_oauth_store import (
-            create_mcp_oauth_token_storage_factory,
+            create_settings_backed_mcp_tool_provider,
         )
         from openhands.agent_server.persistence import get_settings_store
 
@@ -1271,9 +1271,7 @@ class ConversationService:
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
             cipher=config.cipher,
-            mcp_oauth_token_storage_factory=create_mcp_oauth_token_storage_factory(
-                config
-            ),
+            mcp_tool_provider=create_settings_backed_mcp_tool_provider(config),
             max_concurrent_runs=config.max_concurrent_runs,
             lease_ttl_seconds=config.lease_ttl_seconds,
         )
@@ -1287,7 +1285,7 @@ class ConversationService:
             stored=stored,
             conversations_dir=self.conversations_dir,
             cipher=self.cipher,
-            mcp_oauth_token_storage_factory=self.mcp_oauth_token_storage_factory,
+            mcp_tool_provider=self.mcp_tool_provider,
             owner_instance_id=self.owner_instance_id,
             lease_ttl_seconds=self.lease_ttl_seconds,
         )

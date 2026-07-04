@@ -19,14 +19,14 @@ from pydantic import SecretStr
 import openhands.sdk.mcp.utils as mcp_utils
 from openhands.agent_server.config import Config
 from openhands.agent_server.mcp_oauth_store import (
-    create_mcp_oauth_token_storage_factory,
+    MCPSettingsOAuthTokenStore,
+    create_settings_backed_mcp_tool_provider,
 )
 from openhands.agent_server.persistence import (
     PersistedSettings,
     get_settings_store,
     reset_stores,
 )
-from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.config import OpenHandsMCPConfig
 
 
@@ -120,7 +120,7 @@ def protected_oauth_mcp_server():
 
 
 @pytest.mark.asyncio
-async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
+async def test_mcp_oauth_token_store_persists_values_in_settings(
     tmp_path: Path,
 ):
     reset_stores()
@@ -153,7 +153,7 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
         )
         settings_store = get_settings_store(config)
         settings_store.save(settings)
-        factory = create_mcp_oauth_token_storage_factory(config)
+        create_settings_backed_mcp_tool_provider(config)
 
         key = "https://mcp.example.com/mcp/tokens"
         client_info_key = "https://mcp.example.com/mcp/client_info"
@@ -169,7 +169,7 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
         }
         token_expiry = {"expires_at": 12345.0}
 
-        store = factory()
+        store = MCPSettingsOAuthTokenStore()
         await store.put(key=key, value=value, collection="mcp-oauth-token")
         await store.put(
             key=client_info_key,
@@ -182,7 +182,7 @@ async def test_mcp_oauth_token_storage_factory_persists_values_in_settings(
             collection="mcp-oauth-token-expiry",
         )
 
-        reloaded_store = factory()
+        reloaded_store = MCPSettingsOAuthTokenStore()
         assert (
             await reloaded_store.get(key=key, collection="mcp-oauth-token")
         ) == value
@@ -278,12 +278,11 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
         )
         settings_store = get_settings_store(config)
         settings_store.save(settings)
-        token_storage_factory = create_mcp_oauth_token_storage_factory(config)
+        tool_provider = create_settings_backed_mcp_tool_provider(config)
 
-        with create_mcp_tools(
+        with tool_provider.create_tools(
             mcp_config,
             timeout=10.0,
-            mcp_oauth_token_storage=token_storage_factory(),
         ) as client:
             tool = next(tool for tool in client.tools if tool.name == "read_subject")
             assert tool.executor is not None
@@ -313,10 +312,9 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
         assert state["client_info"]["client_id"]
 
         _HeadlessOAuth.reject_redirects = True
-        with create_mcp_tools(
+        with tool_provider.create_tools(
             persisted_mcp_config,
             timeout=10.0,
-            mcp_oauth_token_storage=token_storage_factory(),
         ) as client:
             tool = next(tool for tool in client.tools if tool.name == "read_subject")
             assert tool.executor is not None
@@ -358,7 +356,8 @@ async def test_mcp_oauth_token_storage_does_not_attach_to_non_oauth_server(
         settings_store = get_settings_store(config)
         settings_store.save(settings)
 
-        store = create_mcp_oauth_token_storage_factory(config)()
+        create_settings_backed_mcp_tool_provider(config)
+        store = MCPSettingsOAuthTokenStore()
 
         await store.put(
             key="https://mcp.example.com/mcp/tokens",
