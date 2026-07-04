@@ -13,9 +13,11 @@ from fastapi import (
     Query,
     status,
 )
+from fastapi.responses import JSONResponse
 
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_wire import dump_conversation_event_for_wire
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -62,7 +64,18 @@ def normalize_datetime_to_server_timezone(dt: datetime) -> datetime:
         return dt
 
 
-@event_router.get("/search", responses={404: {"description": "Conversation not found"}})
+def _dump_event_page_for_wire(page: EventPage) -> dict:
+    return {
+        "items": [dump_conversation_event_for_wire(event) for event in page.items],
+        "next_page_id": page.next_page_id,
+    }
+
+
+@event_router.get(
+    "/search",
+    response_model=EventPage,
+    responses={404: {"description": "Conversation not found"}},
+)
 async def search_conversation_events(
     page_id: Annotated[
         str | None,
@@ -99,7 +112,7 @@ async def search_conversation_events(
         Query(title="Filter: event timestamp < this datetime"),
     ] = None,
     event_service: EventService = Depends(get_event_service),
-) -> EventPage:
+) -> JSONResponse:
     """Search / List local events"""
     assert limit > 0
     assert limit <= 100
@@ -114,9 +127,10 @@ async def search_conversation_events(
         normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
     )
 
-    return await event_service.search_events(
+    page = await event_service.search_events(
         page_id, limit, kind, source, body, sort_order, normalized_gte, normalized_lt
     )
+    return JSONResponse(content=_dump_event_page_for_wire(page))
 
 
 @event_router.get("/count", responses={404: {"description": "Conversation not found"}})
@@ -163,27 +177,36 @@ async def count_conversation_events(
     return count
 
 
-@event_router.get("/{event_id}", responses={404: {"description": "Item not found"}})
+@event_router.get(
+    "/{event_id}",
+    response_model=Event,
+    responses={404: {"description": "Item not found"}},
+)
 async def get_conversation_event(
     event_id: str,
     event_service: EventService = Depends(get_event_service),
-) -> Event:
+) -> JSONResponse:
     """Get a local event given an id"""
     event = await event_service.get_event(event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    return event
+    return JSONResponse(content=dump_conversation_event_for_wire(event))
 
 
-@event_router.get("")
+@event_router.get("", response_model=list[Event | None])
 async def batch_get_conversation_events(
     event_ids: list[str],
     event_service: EventService = Depends(get_event_service),
-) -> list[Event | None]:
+) -> JSONResponse:
     """Get a batch of local events given their ids, returning null for any
     missing item."""
     events = await event_service.batch_get_events(event_ids)
-    return events
+    return JSONResponse(
+        content=[
+            dump_conversation_event_for_wire(event) if event is not None else None
+            for event in events
+        ]
+    )
 
 
 @event_router.post("")

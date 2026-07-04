@@ -26,6 +26,7 @@ from openhands.sdk.settings import (
     SettingsResponse,
     SettingsSchema,
     SettingsUpdateRequest,
+    dump_agent_settings_for_api,
     export_agent_settings_schema,
 )
 
@@ -153,8 +154,8 @@ async def get_settings(request: Request) -> SettingsResponse:
     context = build_expose_context(expose_mode, config.cipher)
     with translate_missing_cipher():
         return SettingsResponse(
-            agent_settings=settings.agent_settings.model_dump(
-                mode="json", context=context
+            agent_settings=dump_agent_settings_for_api(
+                settings.agent_settings, context=context
             ),
             conversation_settings=settings.conversation_settings.model_dump(
                 mode="json"
@@ -267,7 +268,7 @@ async def update_settings(
 
     # Don't expose secrets in PATCH response (consistent with GET behavior)
     return SettingsResponse(
-        agent_settings=settings.agent_settings.model_dump(mode="json"),
+        agent_settings=dump_agent_settings_for_api(settings.agent_settings),
         conversation_settings=settings.conversation_settings.model_dump(mode="json"),
         llm_api_key_is_set=settings.llm_api_key_is_set,
         active_profile=settings.active_profile,

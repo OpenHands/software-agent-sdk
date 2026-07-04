@@ -2525,7 +2525,7 @@ class TestAutoTitle:
         with patch(self._GENERATE_TITLE_PATH, return_value="✨ Generated Title"):
             subscriber = AutoTitleSubscriber(service=service)
             await subscriber(self._user_message_event())
-            await asyncio.sleep(0)
+            await self._drain_title_task(lambda: service.stored.title is not None)
 
         assert service.stored.title == "✨ Generated Title"
         service.save_meta.assert_called_once()

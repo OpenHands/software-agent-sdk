@@ -504,7 +504,7 @@ def test_resolver_decrypts_skill_mcp_tools(tmp_path: Path) -> None:
     resolved_tools = settings.agent_context.skills[0].mcp_tools
     assert resolved_tools is not None
     resolved = resolved_tools["mcpServers"]["svc"]
-    assert resolved["auth"] == {"strategy": "bearer", "value": secret}
+    assert resolved["headers"]["Authorization"] == f"Bearer {secret}"
     assert resolved["env"]["API_KEY"] == secret
 
 

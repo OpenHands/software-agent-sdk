@@ -314,6 +314,44 @@ def dump_agent_settings_for_storage(
     )
 
 
+def _agent_settings_payload_requires_current_schema_version(
+    payload: Mapping[str, Any],
+) -> bool:
+    """Return whether a serialized settings payload contains v5-only fields."""
+    mcp_config = payload.get("mcp_config")
+    if not isinstance(mcp_config, Mapping):
+        return False
+
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return False
+
+    for server in servers.values():
+        if not isinstance(server, Mapping):
+            continue
+        if isinstance(server.get("auth"), Mapping):
+            return True
+    return False
+
+
+def dump_agent_settings_for_api(
+    settings: OpenHandsAgentSettings | ACPAgentSettings,
+    *,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Serialize agent settings for the HTTP settings API.
+
+    The persisted settings schema is v5 because MCP settings gained a tagged
+    ``auth`` credential object. Payloads without that v5-only shape are still
+    valid v4 settings, so emit them as v4 for API clients that read ordinary
+    settings through an older SDK.
+    """
+    payload = settings.model_dump(mode="json", context=context)
+    if not _agent_settings_payload_requires_current_schema_version(payload):
+        payload["schema_version"] = AGENT_SETTINGS_API_COMPAT_SCHEMA_VERSION
+    return payload
+
+
 SettingsValueType = Literal[
     "string",
     "integer",
@@ -692,6 +730,7 @@ def _default_llm_settings() -> LLM:
 _RequestT = TypeVar("_RequestT")
 
 AGENT_SETTINGS_SCHEMA_VERSION = 5
+AGENT_SETTINGS_API_COMPAT_SCHEMA_VERSION = 4
 CONVERSATION_SETTINGS_SCHEMA_VERSION = 1
 
 

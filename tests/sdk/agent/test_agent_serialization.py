@@ -229,7 +229,7 @@ def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
                     "env": {
                         "GITHUB_PERSONAL_ACCESS_TOKEN": encrypted_env,
                         "DEBUG": "true",
-                        "PORT": 1234,
+                        "PORT": "1234",
                     },
                     "headers": {"Authorization": encrypted_header},
                 }
@@ -244,7 +244,7 @@ def test_agent_mcp_config_decrypts_nested_env_and_headers_with_cipher() -> None:
     server = agent.mcp_config["mcpServers"]["github"]
     assert server["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp-plaintext-token"
     assert server["env"]["DEBUG"] == "true"
-    assert server["env"]["PORT"] == 1234
+    assert server["env"]["PORT"] == "1234"
     assert server["headers"]["Authorization"] == "Bearer plaintext-token"
     assert (
         agent_dict["mcp_config"]["mcpServers"]["github"]["env"][

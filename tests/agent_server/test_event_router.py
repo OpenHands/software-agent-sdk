@@ -16,7 +16,7 @@ from openhands.agent_server.event_router import (
     normalize_datetime_to_server_timezone,
 )
 from openhands.agent_server.event_service import EventService
-from openhands.agent_server.models import SendMessageRequest
+from openhands.agent_server.models import EventPage, SendMessageRequest
 from openhands.sdk import Message
 from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
@@ -368,7 +368,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test with naive datetime
@@ -404,7 +404,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test with timezone-aware datetime (UTC)
@@ -441,7 +441,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test with both timestamp filters using timezone-aware datetimes
@@ -545,7 +545,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test 1: UTC timezone
@@ -600,7 +600,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test with source filter
@@ -635,7 +635,7 @@ class TestSearchEventsEndpoint:
         try:
             # Mock the search_events method to return a sample result
             mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
+                return_value=EventPage(items=[], next_page_id=None)
             )
 
             # Test with multiple filters including source
