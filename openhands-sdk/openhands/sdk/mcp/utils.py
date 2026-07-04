@@ -34,6 +34,15 @@ class MCPToolProvider(Protocol):
     ) -> MCPClient: ...
 
 
+class DefaultMCPToolProvider:
+    """Runtime MCP tool materializer without extra persistence hooks."""
+
+    def create_tools(
+        self, mcp_config: dict[str, MCPServer], timeout: float = 30.0
+    ) -> MCPClient:
+        return create_mcp_tools(mcp_config, timeout)
+
+
 def _oauth_auth_from_authentication_config(
     authentication: MCPOAuthAuthentication | None,
     *,
