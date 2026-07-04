@@ -215,7 +215,9 @@ async def test_mcp_oauth_token_store_persists_values_in_settings(
         loaded = settings_store.load()
         assert loaded is not None
         server = dump_mcp_config(loaded.agent_settings.mcp_config)["superhuman"]
-        assert server["auth"]["state"] == {
+        auth = server["auth"]
+        assert isinstance(auth, dict)
+        assert auth["state"] == {
             "tokens": value,
             "client_info": client_info,
             "token_expires_at": 12345.0,
@@ -250,7 +252,7 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
             {
                 "mail": {
                     "url": protected_oauth_mcp_server,
-                    "type": "http",
+                    "transport": "http",
                     "auth": {
                         "strategy": "oauth2",
                         "authentication": {
@@ -290,10 +292,21 @@ def test_oauth_mcp_connection_persists_and_reuses_settings_state(
         assert reloaded is not None
         persisted_mcp_config = reloaded.agent_settings.mcp_config
         server = dump_mcp_config(persisted_mcp_config)["mail"]
-        state = server["auth"]["state"]
-        assert state["tokens"]["access_token"].startswith("test_access_token_")
-        assert state["tokens"]["refresh_token"].startswith("test_refresh_token_")
-        assert state["client_info"]["client_id"]
+        auth = server["auth"]
+        assert isinstance(auth, dict)
+        state = auth["state"]
+        assert isinstance(state, dict)
+        tokens = state["tokens"]
+        assert isinstance(tokens, dict)
+        access_token = tokens["access_token"]
+        refresh_token = tokens["refresh_token"]
+        assert isinstance(access_token, str)
+        assert isinstance(refresh_token, str)
+        assert access_token.startswith("test_access_token_")
+        assert refresh_token.startswith("test_refresh_token_")
+        client_info = state["client_info"]
+        assert isinstance(client_info, dict)
+        assert client_info["client_id"]
 
         _HeadlessOAuth.reject_redirects = True
         with tool_provider.create_tools(

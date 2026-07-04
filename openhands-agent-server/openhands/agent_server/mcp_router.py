@@ -20,11 +20,11 @@ persist it through the settings API under the tested server's ``auth.state``.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated, Literal
+from typing import Literal
 
 import mcp.types
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from openhands.agent_server._secrets_exposure import get_cipher
 from openhands.agent_server.mcp_oauth_store import (
@@ -34,9 +34,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.config import (
-    MCPAuthCredential,
-    MCPOAuthAuthCredential,
-    MCPOAuthState,
     MCPOAuthStateResponse,
     MCPServer,
 )
@@ -53,87 +50,11 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # Request / response models
 # ---------------------------------------------------------------------------
 #
-# We accept a single server spec instead of the full MCP server map. The
-# UI flow this powers ("add a new MCP server") always validates one server
-# at a time, and keeping the request shape narrow avoids exposing tuple-of-
-# transports semantics the caller doesn't need.
+# We accept one MCPServer instead of the full MCP server map. The UI flow this
+# powers ("add a new MCP server") validates one server at a time; the route
+# wraps it in a temporary map only at the runtime boundary.
 
 _DEFAULT_SERVER_NAME = "test-server"
-
-
-class _StdioMCPServerSpec(BaseModel):
-    """Stdio (subprocess) MCP server spec.
-
-    Mirrors the subset of ``fastmcp.mcp_config.StdioMCPServer`` fields the
-    OpenHands UI exposes today.
-    """
-
-    type: Literal["stdio"] = "stdio"
-    command: str = Field(..., min_length=1, description="Executable to invoke")
-    args: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
-    cwd: str | None = None
-
-    def to_mcp_server(self, *, cipher: Cipher | None = None) -> MCPServer:
-        out: dict[str, object] = {"command": self.command, "args": list(self.args)}
-        if self.env:
-            out["env"] = dict(self.env)
-        if self.cwd:
-            out["cwd"] = self.cwd
-        return MCPServer.model_validate(
-            out,
-            context=_mcp_validation_context(cipher),
-        )
-
-
-class _RemoteMCPServerSpec(BaseModel):
-    """Remote (HTTP / SSE) MCP server spec."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    # ``shttp`` is the alias the OpenHands settings layer uses for
-    # streamable-http; we accept both spellings so the UI can forward
-    # its own value unchanged.
-    type: Literal["http", "shttp", "streamable-http", "sse"]
-    url: str = Field(..., min_length=1)
-    headers: dict[str, str] = Field(default_factory=dict)
-    auth: MCPAuthCredential | None = Field(
-        default=None,
-        description=(
-            "Tagged MCP auth credential. The strategy vocabulary mirrors the "
-            "OpenHands extensions catalog auth.strategy field."
-        ),
-    )
-
-    @property
-    def oauth_auth(self) -> MCPOAuthAuthCredential | None:
-        return self.auth if isinstance(self.auth, MCPOAuthAuthCredential) else None
-
-    @model_validator(mode="after")
-    def _no_auth_conflict(self) -> _RemoteMCPServerSpec:
-        has_authorization_header = any(
-            key.lower() == "authorization" for key in self.headers
-        )
-        if self.auth is not None and has_authorization_header:
-            raise ValueError(
-                "'auth' cannot be combined with an explicit top-level "
-                "'Authorization' header; use auth.strategy='header' instead."
-            )
-        return self
-
-    def to_mcp_server(self, *, cipher: Cipher | None = None) -> MCPServer:
-        out = self.model_dump(
-            mode="json",
-            context={"expose_secrets": "plaintext"},
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        transport = out.pop("type")
-        out["transport"] = "http" if transport == "shttp" else transport
-        return MCPServer.model_validate(
-            out,
-            context=_mcp_validation_context(cipher),
-        )
 
 
 class MCPToolCallSpec(BaseModel):
@@ -165,10 +86,7 @@ class MCPTestRequest(BaseModel):
             "persisted setting."
         ),
     )
-    server: Annotated[
-        _StdioMCPServerSpec | _RemoteMCPServerSpec,
-        Field(discriminator="type"),
-    ]
+    server: MCPServer
     timeout: float = Field(
         default=15.0,
         gt=0,
@@ -192,25 +110,8 @@ class MCPTestRequest(BaseModel):
         self.name = self.name.strip() or _DEFAULT_SERVER_NAME
         return self
 
-    @property
-    def oauth_auth(self) -> MCPOAuthAuthCredential | None:
-        if isinstance(self.server, _RemoteMCPServerSpec):
-            return self.server.oauth_auth
-        return None
-
-    def initial_oauth_state(
-        self, *, cipher: Cipher | None = None
-    ) -> MCPOAuthState | None:
-        auth = self.oauth_auth
-        if auth is None or auth.state is None:
-            return None
-        return MCPOAuthState.model_validate(
-            auth.state.to_plain_dict(cipher=cipher),
-            context=_mcp_validation_context(cipher),
-        )
-
     def to_mcp_config(self, *, cipher: Cipher | None = None) -> dict[str, MCPServer]:
-        return {self.name: self.server.to_mcp_server(cipher=cipher)}
+        return {self.name: self.server.with_decrypted_secrets(cipher=cipher)}
 
 
 class MCPToolCallResult(BaseModel):
@@ -271,10 +172,6 @@ MCPTestResponse = MCPTestSuccess | MCPTestFailure
 # ---------------------------------------------------------------------------
 
 
-def _mcp_validation_context(cipher: Cipher | None) -> dict[str, object] | None:
-    return {"cipher": cipher} if cipher is not None else None
-
-
 def _run_tool_call(
     client: MCPClient, spec: MCPToolCallSpec, tool_names: list[str], timeout: float
 ) -> MCPToolCallResult:
@@ -327,11 +224,11 @@ def _probe_mcp_server(
     mcp_config = request.to_mcp_config(cipher=cipher)
 
     try:
-        oauth_auth = request.oauth_auth
+        oauth_auth = request.server.oauth_auth
         oauth_token_storage: InMemoryMCPOAuthTokenStore | None = None
         if oauth_auth is not None:
             oauth_token_storage = InMemoryMCPOAuthTokenStore(
-                state=request.initial_oauth_state(cipher=cipher)
+                state=request.server.initial_oauth_state(cipher=cipher)
             )
         # ``create_mcp_tools`` returns a client that owns a background loop
         # and a (possibly long-lived) subprocess. Use the context-manager

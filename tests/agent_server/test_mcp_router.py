@@ -88,7 +88,7 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
         json={
             "name": "happy-server",
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -103,15 +103,14 @@ def test_mcp_test_remote_success(client: TestClient, http_mcp_server: MCPTestSer
     assert body.get("tool_result") is None
 
 
-def test_mcp_test_shttp_alias_is_accepted(
+def test_mcp_test_http_transport_is_accepted(
     client: TestClient, http_mcp_server: MCPTestServer
 ):
-    """The OpenHands-specific 'shttp' transport alias should map to http."""
     response = client.post(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "shttp",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -142,7 +141,7 @@ def test_mcp_test_stdio_success(client: TestClient):
         json={
             "name": "stdio-happy",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": sys.executable,
                 "args": ["-c", script],
             },
@@ -174,7 +173,7 @@ def test_mcp_test_tool_call_reports_in_band_failure_payload(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -197,7 +196,7 @@ def test_mcp_test_tool_call_handler_error_sets_is_error(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{slack_like_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -220,7 +219,7 @@ def test_mcp_test_tool_call_unknown_tool_reported_without_invocation(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
             },
             "timeout": 10.0,
@@ -264,7 +263,7 @@ def test_mcp_test_decrypts_encrypted_env_values_before_spawn():
         json={
             "name": "env-echo",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": sys.executable,
                 "args": ["-c", script],
                 "env": {
@@ -322,7 +321,7 @@ def test_mcp_test_decrypts_encrypted_remote_auth_before_connect(
         json={
             "name": "linear",
             "server": {
-                "type": "shttp",
+                "transport": "http",
                 "url": "https://mcp.linear.app/mcp",
                 "auth": {
                     "strategy": "bearer",
@@ -360,7 +359,7 @@ def test_mcp_test_stdio_failure_returns_structured_error(client: TestClient):
         json={
             "name": "broken",
             "server": {
-                "type": "stdio",
+                "transport": "stdio",
                 "command": "/this/path/does/not/exist/definitely-not-a-binary",
                 "args": [],
             },
@@ -382,7 +381,7 @@ def test_mcp_test_remote_unreachable(client: TestClient):
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{free_port}/mcp",
             },
             "timeout": 3.0,
@@ -403,7 +402,7 @@ def test_mcp_test_remote_unreachable(client: TestClient):
 def test_mcp_test_rejects_empty_command(client: TestClient):
     response = client.post(
         "/api/mcp/test",
-        json={"server": {"type": "stdio", "command": ""}},
+        json={"server": {"transport": "stdio", "command": ""}},
     )
     assert response.status_code == 422
 
@@ -411,7 +410,7 @@ def test_mcp_test_rejects_empty_command(client: TestClient):
 def test_mcp_test_rejects_unknown_transport(client: TestClient):
     response = client.post(
         "/api/mcp/test",
-        json={"server": {"type": "websocket", "url": "ws://example.com"}},
+        json={"server": {"transport": "websocket", "url": "ws://example.com"}},
     )
     assert response.status_code == 422
 
@@ -421,7 +420,7 @@ def test_mcp_test_clamps_timeout_range(client: TestClient):
     response = client.post(
         "/api/mcp/test",
         json={
-            "server": {"type": "stdio", "command": "true"},
+            "server": {"transport": "stdio", "command": "true"},
             "timeout": 0,
         },
     )
@@ -436,7 +435,7 @@ def test_mcp_test_bearer_token_in_auth_field(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
                 "auth": {"strategy": "bearer", "value": "test-token-123"},
             },
@@ -470,7 +469,7 @@ def test_mcp_test_accepts_oauth_auth_credential(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
                 "auth": {"strategy": "oauth2"},
             },
@@ -494,7 +493,7 @@ def test_mcp_test_rejects_auth_with_auth_header(client: TestClient):
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": "https://example.com/mcp",
                 "auth": {"strategy": "bearer", "value": "some-token"},
                 "headers": {"Authorization": "Bearer other-token"},
@@ -510,7 +509,7 @@ def test_mcp_test_rejects_legacy_remote_api_key_field(client: TestClient):
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": "https://example.com/mcp",
                 "api_key": "some-token",
             },
@@ -527,7 +526,7 @@ def test_mcp_test_rejects_oauth_auth_with_auth_header(client: TestClient):
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": "https://example.com/mcp",
                 "auth": {"strategy": "oauth2"},
                 "headers": {"Authorization": "Bearer some-token"},
@@ -546,7 +545,7 @@ def test_mcp_test_accepts_explicit_oauth_authentication(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": f"http://127.0.0.1:{http_mcp_server.port}/mcp",
                 "auth": {
                     "strategy": "oauth2",
@@ -630,7 +629,7 @@ def test_mcp_test_returns_encrypted_oauth_state_from_probe(
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": "https://mcp.example.com/mcp",
                 "auth": {
                     "strategy": "oauth2",
@@ -665,7 +664,7 @@ def test_mcp_test_rejects_legacy_top_level_oauth_authentication(client: TestClie
         "/api/mcp/test",
         json={
             "server": {
-                "type": "http",
+                "transport": "http",
                 "url": "https://example.com/mcp",
                 "authentication": {
                     "type": "oauth",

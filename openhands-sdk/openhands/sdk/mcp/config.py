@@ -20,6 +20,7 @@ from pydantic import (
     field_serializer,
     field_validator,
     model_serializer,
+    model_validator,
 )
 
 from openhands.sdk.utils.cipher import Cipher
@@ -364,16 +365,31 @@ MCPAuthCredential = Annotated[
     Field(discriminator="strategy"),
 ]
 
+MCPTransport = Literal["stdio", "http", "streamable-http", "sse"]
+
+
+def _normalize_transport_field(transport: object) -> object:
+    return "http" if transport == "shttp" else transport
+
+
+def _normalize_server_transport_field(
+    server: Mapping[str, object],
+) -> dict[str, object]:
+    normalized = dict(server)
+    typed_transport = normalized.pop("type", None)
+    if "transport" not in normalized and typed_transport is not None:
+        normalized["transport"] = _normalize_transport_field(typed_transport)
+    return normalized
+
 
 class MCPServer(_MCPBaseModel):
     """One MCP server in the settings DataModel."""
 
     model_config = ConfigDict(extra="forbid")
 
-    url: str | None = None
-    type: str | None = None
-    transport: str | None = None
-    command: str | None = None
+    url: str | None = Field(default=None, min_length=1)
+    transport: MCPTransport | None = None
+    command: str | None = Field(default=None, min_length=1)
     args: list[str] | None = None
     env: dict[str, SecretStr] | None = None
     cwd: str | None = None
@@ -396,6 +412,54 @@ class MCPServer(_MCPBaseModel):
     ) -> dict[str, str | None] | None:
         return _serialize_secret_map(value, info)
 
+    @model_validator(mode="after")
+    def _validate_server(self) -> MCPServer:
+        declared_transport = self.effective_transport
+        if declared_transport == "stdio" and not self.command:
+            raise ValueError("stdio MCP servers require 'command'")
+        if declared_transport in {"http", "streamable-http", "sse"} and not self.url:
+            raise ValueError("remote MCP servers require 'url'")
+        if self.auth is not None and self.headers is not None:
+            has_authorization_header = any(
+                key.lower() == "authorization" for key in self.headers
+            )
+            if has_authorization_header:
+                raise ValueError(
+                    "'auth' cannot be combined with an explicit top-level "
+                    "'Authorization' header; use auth.strategy='header' instead."
+                )
+        return self
+
+    @property
+    def effective_transport(self) -> MCPTransport | None:
+        return self.transport
+
+    @property
+    def oauth_auth(self) -> MCPOAuthAuthCredential | None:
+        return self.auth if isinstance(self.auth, MCPOAuthAuthCredential) else None
+
+    def initial_oauth_state(
+        self, *, cipher: Cipher | None = None
+    ) -> MCPOAuthState | None:
+        auth = self.oauth_auth
+        if auth is None or auth.state is None:
+            return None
+        return MCPOAuthState.model_validate(
+            auth.state.to_plain_dict(cipher=cipher),
+            context={"cipher": cipher} if cipher is not None else None,
+        )
+
+    def with_decrypted_secrets(self, *, cipher: Cipher | None = None) -> MCPServer:
+        if cipher is None:
+            return self
+        data = self.model_dump(
+            mode="json",
+            context={"expose_secrets": "plaintext"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        return type(self).model_validate(data, context={"cipher": cipher})
+
 
 _MCP_SERVER_KNOWN_FIELDS = frozenset(MCPServer.model_fields)
 _MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(
@@ -404,6 +468,7 @@ _MCP_CONFIG_ADAPTER: TypeAdapter[dict[str, MCPServer]] = TypeAdapter(
 
 
 def drop_unknown_mcp_server_fields(server: Mapping[str, object]) -> dict[str, object]:
+    server = _normalize_server_transport_field(server)
     return {
         key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
     }
@@ -426,8 +491,16 @@ def _extract_mcp_config(value: object) -> object:
 def coerce_mcp_config(
     value: object, *, context: dict[str, object] | None = None
 ) -> dict[str, MCPServer]:
+    extracted = _extract_mcp_config(value)
+    if isinstance(extracted, Mapping):
+        extracted = {
+            name: _normalize_server_transport_field(server)
+            if isinstance(server, Mapping)
+            else server
+            for name, server in extracted.items()
+        }
     return _MCP_CONFIG_ADAPTER.validate_python(
-        _extract_mcp_config(value),
+        extracted,
         context=context,
     )
 

@@ -618,7 +618,7 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
 
     assert servers["fastmcp-fields"] == {
         "url": "https://mcp.fields.example.com/mcp",
-        "type": "streamable-http",
+        "transport": "streamable-http",
         "description": "Fields server",
         "icon": "https://example.com/icon.png",
         "timeout": 10.0,
@@ -647,6 +647,38 @@ def test_validate_agent_settings_migrates_legacy_mcp_auth_shapes() -> None:
     assert servers["shttp"] == {
         "url": "https://mcp.linear.app/mcp",
         "auth": {"strategy": "bearer", "value": "linear-secret"},
+    }
+
+
+def test_validate_agent_settings_migrates_mcp_type_to_transport() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 6,
+            "agent_kind": "openhands",
+            "mcp_config": {
+                "http": {
+                    "url": "https://mcp.example.com/mcp",
+                    "type": "streamable-http",
+                },
+                "shttp-alias": {
+                    "url": "https://mcp.alias.example.com/mcp",
+                    "type": "shttp",
+                },
+            },
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert dump_mcp_config(settings.mcp_config) == {
+        "http": {
+            "url": "https://mcp.example.com/mcp",
+            "transport": "streamable-http",
+        },
+        "shttp-alias": {
+            "url": "https://mcp.alias.example.com/mcp",
+            "transport": "http",
+        },
     }
 
 
