@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-import openhands.sdk.conversation.impl.local_conversation as local_conversation_impl
+import openhands.sdk.mcp.runtime as mcp_runtime
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.hooks import HookConfig
@@ -649,9 +649,7 @@ class TestLocalConversationPlugins:
             mcp_tools_created.append((config, conversation.state.locked()))
             return RuntimeMCPClient()
 
-        monkeypatch.setattr(
-            local_conversation_impl, "create_mcp_tools", mock_create_mcp_tools
-        )
+        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
 
         conversation.load_plugin("mcp-plugin")
 
@@ -933,11 +931,7 @@ class TestLocalConversationPlugins:
             mcp_tools_created.append(config)
             return []  # Return empty list for testing
 
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
 
         plugin_dir = create_test_plugin(
             tmp_path / "plugin",
@@ -1077,11 +1071,7 @@ class TestPluginMcpSecretsExpansion:
             mcp_tools_created.append(config)
             return []
 
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
 
         # Create plugin with MCP config using ${VAR} WITHOUT default
         plugin_dir = create_test_plugin(
@@ -1144,11 +1134,7 @@ class TestPluginMcpSecretsExpansion:
             mcp_tools_created.append(config)
             return []
 
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
 
         # Create plugin with MCP config using ${VAR:-default} WITH default
         plugin_dir = create_test_plugin(
@@ -1211,11 +1197,7 @@ class TestPluginMcpSecretsExpansion:
             mcp_tools_created.append(config)
             return []
 
-        import openhands.sdk.agent.base
-
-        monkeypatch.setattr(
-            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
-        )
+        monkeypatch.setattr(mcp_runtime, "create_mcp_tools", mock_create_mcp_tools)
 
         # Create plugin with MCP config using ${VAR:-default}
         # Note: MCP config structure requires valid fields, so we use 'headers'

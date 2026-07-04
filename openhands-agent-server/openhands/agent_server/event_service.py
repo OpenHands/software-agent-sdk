@@ -22,7 +22,6 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk import LLM, AgentBase, Event, Message, TextContent, get_logger
 from openhands.sdk.agent import ACPAgent
-from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.goal import (
@@ -56,6 +55,7 @@ from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
+from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper

@@ -6,12 +6,11 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from key_value.aio.protocols import AsyncKeyValue
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -33,8 +32,8 @@ from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
-from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.mcp.config import OpenHandsMCPConfig, to_fastmcp_mcp_config
+from openhands.sdk.mcp.config import to_fastmcp_mcp_config
+from openhands.sdk.mcp.runtime import MCPRuntimeConfig
 from openhands.sdk.tool import (
     BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
@@ -59,34 +58,6 @@ if TYPE_CHECKING:
     )
 
 logger = get_logger(__name__)
-MCPOAuthTokenStorageFactory = Callable[[], AsyncKeyValue]
-
-
-def _decrypt_mcp_secret_values(
-    config: dict[str, Any], cipher: Cipher
-) -> dict[str, Any]:
-    if "mcpServers" not in config:
-        return config
-    servers = config["mcpServers"]
-    if not isinstance(servers, dict):
-        raise ValueError("mcp_config.mcpServers must be a dictionary when provided")
-    for server_name, server in servers.items():
-        if not isinstance(server, dict):
-            raise ValueError(
-                f"mcp_config.mcpServers[{server_name!r}] must be a dictionary"
-            )
-        for key in ("env", "headers"):
-            if key not in server:
-                continue
-            mapping = server[key]
-            if not isinstance(mapping, dict):
-                raise ValueError(
-                    f"mcp_config.mcpServers[{server_name!r}].{key} must be "
-                    "a dictionary when provided"
-                )
-    return to_fastmcp_mcp_config(
-        OpenHandsMCPConfig.model_validate(config, context={"cipher": cipher})
-    )
 
 
 # -- SOUL.md loader -------------------------------------------------------
@@ -308,7 +279,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if mcp_config is not None and not isinstance(mcp_config, dict):
                 raise ValueError("mcp_config must be a dictionary when provided")
             if isinstance(mcp_config, dict) and cipher is not None:
-                data["mcp_config"] = _decrypt_mcp_secret_values(mcp_config, cipher)
+                data["mcp_config"] = to_fastmcp_mcp_config(mcp_config, cipher=cipher)
             return data
 
         if not isinstance(encrypted, str):
@@ -443,21 +414,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
-    _mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None = PrivateAttr(
-        default=None
+    _mcp_runtime_config: MCPRuntimeConfig = PrivateAttr(
+        default_factory=MCPRuntimeConfig
     )
 
-    def set_mcp_oauth_token_storage_factory(
+    def set_mcp_runtime_config(
         self,
-        factory: MCPOAuthTokenStorageFactory | None,
+        runtime_config: MCPRuntimeConfig | None,
     ) -> None:
-        """Attach a runtime OAuth token store factory for MCP clients.
-
-        The factory is runtime-only and intentionally excluded from serialized
-        agent configuration; persisted OAuth credential values live in
-        settings.mcp_config through the storage implementation.
-        """
-        object.__setattr__(self, "_mcp_oauth_token_storage_factory", factory)
+        object.__setattr__(
+            self, "_mcp_runtime_config", runtime_config or MCPRuntimeConfig()
+        )
 
     @property
     def prompt_dir(self) -> str:
@@ -702,16 +669,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
             # Submit MCP tools creation if configured
             if self.mcp_config:
-                mcp_oauth_token_storage = (
-                    self._mcp_oauth_token_storage_factory()
-                    if self._mcp_oauth_token_storage_factory is not None
-                    else None
-                )
                 future = executor.submit(
-                    create_mcp_tools,
+                    self._mcp_runtime_config.create_tools,
                     self.mcp_config,
                     30,
-                    mcp_oauth_token_storage=mcp_oauth_token_storage,
                 )
                 futures.append(future)
 

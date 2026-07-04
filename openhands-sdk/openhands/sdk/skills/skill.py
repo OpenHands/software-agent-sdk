@@ -291,12 +291,11 @@ class Skill(BaseModel):
         MCP server secrets in plaintext wherever a ``Skill`` is serialized.
         Route it through the same ``serialize_mcp_config`` as settings
         ``mcp_config``: redacted by default, plaintext under ``expose_secrets``,
-        encrypted under a cipher. Imported lazily to avoid the
-        settings.model -> agent_context -> skills import cycle.
+        encrypted under a cipher.
         """
         if not value:
             return value
-        from openhands.sdk.settings.model import serialize_mcp_config
+        from openhands.sdk.mcp.config import serialize_mcp_config
 
         return serialize_mcp_config(_validate_openhands_mcp_config(value), info)
 

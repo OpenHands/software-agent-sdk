@@ -9,10 +9,7 @@ from pathlib import Path
 from typing import Any, Final, TypeGuard, cast
 
 from openhands.sdk.agent.acp_agent import ACPAgent
-from openhands.sdk.agent.base import (
-    AgentBase,
-    MCPOAuthTokenStorageFactory,
-)
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
@@ -59,7 +56,7 @@ from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.marketplace.registry import MarketplaceRegistry
-from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory, MCPRuntimeConfig
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.plugin import (
     Plugin,
@@ -170,7 +167,7 @@ class LocalConversation(BaseConversation):
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
     _subscription_disabled_condenser: Any | None
-    _mcp_oauth_token_storage_factory: MCPOAuthTokenStorageFactory | None
+    _mcp_runtime_config: MCPRuntimeConfig
 
     def __init__(
         self,
@@ -281,7 +278,9 @@ class LocalConversation(BaseConversation):
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
         self._subscription_disabled_condenser = None
-        self._mcp_oauth_token_storage_factory = mcp_oauth_token_storage_factory
+        self._mcp_runtime_config = MCPRuntimeConfig(
+            oauth_token_storage_factory=mcp_oauth_token_storage_factory
+        )
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -309,7 +308,7 @@ class LocalConversation(BaseConversation):
             if new_tools:
                 agent = agent.model_copy(update={"tools": [*agent.tools, *new_tools]})
 
-        agent.set_mcp_oauth_token_storage_factory(mcp_oauth_token_storage_factory)
+        agent.set_mcp_runtime_config(self._mcp_runtime_config)
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
@@ -458,7 +457,7 @@ class LocalConversation(BaseConversation):
         self.delete_on_close = delete_on_close
 
     def _attach_runtime_agent_config(self, agent: AgentBase) -> AgentBase:
-        agent.set_mcp_oauth_token_storage_factory(self._mcp_oauth_token_storage_factory)
+        agent.set_mcp_runtime_config(self._mcp_runtime_config)
         return agent
 
     def _tree_stamping(
@@ -1111,16 +1110,9 @@ class LocalConversation(BaseConversation):
     ) -> list[ToolDefinition]:
         if not plugin_mcp_config:
             return []
-        mcp_oauth_token_storage = (
-            self._mcp_oauth_token_storage_factory()
-            if self._mcp_oauth_token_storage_factory is not None
-            else None
-        )
         return list(
-            create_mcp_tools(
-                plugin_mcp_config,
-                _RUNTIME_MCP_TIMEOUT_SECS,
-                mcp_oauth_token_storage=mcp_oauth_token_storage,
+            self._mcp_runtime_config.create_tools(
+                plugin_mcp_config, _RUNTIME_MCP_TIMEOUT_SECS
             ).tools
         )
 

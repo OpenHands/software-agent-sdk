@@ -277,7 +277,7 @@ def test_agent_mcp_config_rejects_malformed_secret_containers() -> None:
         "kind": "Agent",
     }
 
-    with pytest.raises(ValueError, match="github.*env.*dictionary"):
+    with pytest.raises(ValueError, match=r"mcpServers\.github\.env"):
         AgentBase.model_validate(agent_dict, context={"cipher": cipher})
 
 

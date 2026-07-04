@@ -35,7 +35,7 @@ from openhands.agent_server.server_details_router import update_last_execution_t
 from openhands.agent_server.skills_service import discover_profile_skills_if_needed
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, AgentContext, Event, Message
-from openhands.sdk.agent.base import AgentBase, MCPOAuthTokenStorageFactory
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -48,6 +48,7 @@ from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.git.exceptions import GitCommandError, GitRepositoryError
 from openhands.sdk.git.utils import run_git_command, validate_git_repository
+from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory
 from openhands.sdk.tool.client_tool import register_client_tools
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace

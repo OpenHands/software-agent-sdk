@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from fastmcp.mcp_config import MCPConfig as FastMCPConfig
@@ -21,10 +22,12 @@ from pydantic import (
 
 from openhands.sdk.utils.pydantic_secrets import (
     REDACTED_SECRET_VALUE,
+    MissingCipherError,
     resolve_expose_mode,
     serialize_secret,
     validate_secret,
 )
+from openhands.sdk.utils.redact import sanitize_dict
 
 
 def _validate_optional_secret(value: Any, info: ValidationInfo) -> Any:
@@ -221,6 +224,89 @@ class OpenHandsMCPServer(BaseModel):
         return _serialize_secret_map(value, info)
 
 
+_MCP_SERVER_KNOWN_FIELDS = frozenset(OpenHandsMCPServer.model_fields)
+
+
+def _sanitize_mcp_extra_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """Sanitize unknown MCP server fields without collapsing known auth shape."""
+    config = copy.deepcopy(config)
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return sanitize_dict(config)
+    for server in servers.values():
+        if not isinstance(server, dict):
+            continue
+        for key, value in list(server.items()):
+            if key in _MCP_SERVER_KNOWN_FIELDS:
+                continue
+            server[key] = sanitize_dict({key: value})[key]
+    return config
+
+
+def drop_unknown_mcp_server_fields(server: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
+    }
+
+
+def normalize_empty_mcp_config(value: Any) -> Any:
+    """Coerce an empty/absent MCP config to ``None`` (else pass through)."""
+    return None if value in (None, {}) else value
+
+
+def serialize_mcp_config(
+    value: OpenHandsMCPConfig | None, info: SerializationInfo
+) -> dict[str, Any]:
+    """Serialize an MCP config, masking/encrypting secrets per expose mode."""
+    if value is None:
+        return {}
+    ctx = info.context or {}
+    mode = resolve_expose_mode(ctx)
+
+    if mode == "encrypted" and ctx.get("cipher") is None:
+        raise MissingCipherError(
+            "Cannot encrypt MCP secrets: no cipher configured. "
+            "Set OH_SECRET_KEY environment variable."
+        )
+
+    dumped = dump_openhands_mcp_config(value, context=ctx)
+    if mode == "redact":
+        return _sanitize_mcp_extra_fields(dumped)
+    return dumped
+
+
+def dump_mcp_config_secret_values(
+    value: Any,
+    *,
+    cipher: Any,
+    expose_secrets: Literal["encrypted", "plaintext"],
+) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    servers = value.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return value
+
+    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
+    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
+    updated = copy.deepcopy(dict(value))
+    updated["mcpServers"] = {
+        name: OpenHandsMCPServer.model_validate(
+            server,
+            context=validate_context,
+        ).model_dump(
+            mode="json",
+            context=dump_context,
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        if isinstance(server, Mapping)
+        else copy.deepcopy(server)
+        for name, server in servers.items()
+    }
+    return updated
+
+
 class OpenHandsMCPConfig(BaseModel):
     """MCP config persisted in OpenHands settings.
 
@@ -298,7 +384,7 @@ def dump_openhands_mcp_config(
     context: dict[str, Any] | None = None,
 ) -> dict:
     if isinstance(config, OpenHandsMCPConfig):
-        dump_context = context or {"expose_secrets": "plaintext"}
+        dump_context = {"expose_secrets": "plaintext"} if context is None else context
         return config.model_dump(
             mode="json",
             context=dump_context,
@@ -310,7 +396,13 @@ def dump_openhands_mcp_config(
     return copy.deepcopy(config)
 
 
-def to_fastmcp_mcp_config(config: OpenHandsMCPConfig | FastMCPConfig | dict) -> dict:
+def to_fastmcp_mcp_config(
+    config: OpenHandsMCPConfig | FastMCPConfig | dict,
+    *,
+    cipher: Any | None = None,
+) -> dict:
+    if cipher is not None and isinstance(config, dict):
+        config = OpenHandsMCPConfig.model_validate(config, context={"cipher": cipher})
     dumped = dump_openhands_mcp_config(config)
     servers = dumped.get("mcpServers")
     if not isinstance(servers, dict):

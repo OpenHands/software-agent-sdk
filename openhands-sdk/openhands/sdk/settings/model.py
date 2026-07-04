@@ -48,7 +48,10 @@ from openhands.sdk.llm.utils.openhands_provider import (
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     OpenHandsMCPConfig as MCPConfig,
-    OpenHandsMCPServer,
+    drop_unknown_mcp_server_fields,
+    dump_mcp_config_secret_values,
+    normalize_empty_mcp_config,
+    serialize_mcp_config,
     to_fastmcp_mcp_config,
 )
 from openhands.sdk.plugin import PluginSource
@@ -57,13 +60,10 @@ from openhands.sdk.tool import Tool
 from openhands.sdk.utils.cipher import FERNET_TOKEN_PREFIX, Cipher
 from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import (
-    MissingCipherError,
     decrypt_str_with_cipher_or_keep,
-    resolve_expose_mode,
     serialize_secret,
     validate_secret,
 )
-from openhands.sdk.utils.redact import sanitize_dict
 from openhands.sdk.workspace import LocalWorkspace
 
 from .acp_providers import (
@@ -91,82 +91,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-_MCP_SERVER_KNOWN_FIELDS = frozenset(
-    {
-        "url",
-        "type",
-        "transport",
-        "command",
-        "args",
-        "env",
-        "cwd",
-        "description",
-        "icon",
-        "timeout",
-        "sse_read_timeout",
-        "keep_alive",
-        "headers",
-        "auth",
-    }
-)
-
-
-def _sanitize_mcp_extra_fields(config: dict[str, Any]) -> dict[str, Any]:
-    """Sanitize unknown MCP server fields without collapsing known auth shape."""
-    config = copy.deepcopy(config)
-    servers = config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return sanitize_dict(config)
-    for server in servers.values():
-        if not isinstance(server, dict):
-            continue
-        for key, value in list(server.items()):
-            if key in _MCP_SERVER_KNOWN_FIELDS:
-                continue
-            server[key] = sanitize_dict({key: value})[key]
-    return config
-
-
-# ---------------------------------------------------------------------------
-# Shared ``mcp_config`` field (de)serialization, used verbatim by every
-# settings variant that exposes an ``mcp_config: MCPConfig | None`` field
-# (``OpenHandsAgentSettings`` and ``ACPAgentSettings``). Kept here as plain
-# functions so the per-class ``@field_validator`` / ``@field_serializer``
-# stubs — which pydantic requires to live on each model — stay one-liners and
-# the encrypt/decrypt logic has a single source of truth.
-# ---------------------------------------------------------------------------
-
-
-def normalize_empty_mcp_config(value: Any) -> Any:
-    """Coerce an empty/absent ``mcp_config`` to ``None`` (else pass through)."""
-    return None if value in (None, {}) else value
-
-
-def serialize_mcp_config(
-    value: MCPConfig | None, info: SerializationInfo
-) -> dict[str, Any]:
-    """Serialize an ``mcp_config`` field, masking/encrypting MCP secrets per
-    the active expose mode (``plaintext`` / ``encrypted`` / redacted)."""
-    if value is None:
-        return {}
-    ctx = info.context or {}
-    mode = resolve_expose_mode(ctx)
-
-    if mode == "encrypted" and ctx.get("cipher") is None:
-        raise MissingCipherError(
-            "Cannot encrypt MCP secrets: no cipher configured. "
-            "Set OH_SECRET_KEY environment variable."
-        )
-
-    dumped = value.model_dump(
-        mode="json",
-        context=ctx,
-        exclude_none=True,
-        exclude_defaults=True,
-    )
-    if mode == "redact":
-        return _sanitize_mcp_extra_fields(dumped)
-    return dumped
+# The per-class ``mcp_config`` field stubs below are intentionally one-liners:
+# MCP owns serialization, and settings only decides where settings secrets are
+# transformed for storage/migration.
 
 
 def _encrypt_secret_str_or_keep(cipher: Cipher, value: Any) -> Any:
@@ -193,38 +120,6 @@ def _transform_mapping_secret_values(
         return
     for key, value in list(mapping.items()):
         mapping[key] = transform(value)
-
-
-def _dump_mcp_config_secret_values(
-    value: Any,
-    *,
-    cipher: Cipher,
-    expose_secrets: Literal["encrypted", "plaintext"],
-) -> Any:
-    if not isinstance(value, Mapping):
-        return value
-    servers = value.get("mcpServers")
-    if not isinstance(servers, Mapping):
-        return value
-
-    validate_context = {"cipher": cipher} if expose_secrets == "plaintext" else None
-    dump_context = {"cipher": cipher, "expose_secrets": expose_secrets}
-    updated = copy.deepcopy(dict(value))
-    updated["mcpServers"] = {
-        name: OpenHandsMCPServer.model_validate(
-            server,
-            context=validate_context,
-        ).model_dump(
-            mode="json",
-            context=dump_context,
-            exclude_none=True,
-            exclude_defaults=True,
-        )
-        if isinstance(server, Mapping)
-        else copy.deepcopy(server)
-        for name, server in servers.items()
-    }
-    return updated
 
 
 def _transform_agent_settings_secret_values(
@@ -254,7 +149,7 @@ def _transform_agent_settings_secret_values(
 
     mcp_config = updated.get("mcp_config")
     if isinstance(mcp_config, dict):
-        updated["mcp_config"] = _dump_mcp_config_secret_values(
+        updated["mcp_config"] = dump_mcp_config_secret_values(
             mcp_config,
             cipher=cipher,
             expose_secrets=mcp_expose_secrets,
@@ -1002,12 +897,6 @@ def _migrate_authorization_header(headers: dict[str, Any]) -> dict[str, Any] | N
     return None
 
 
-def _drop_unknown_mcp_server_fields(server: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: value for key, value in server.items() if key in _MCP_SERVER_KNOWN_FIELDS
-    }
-
-
 def _migrate_mcp_server_auth(server: Any) -> Any:
     if not isinstance(server, Mapping):
         return server
@@ -1030,7 +919,7 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             if state is not None:
                 auth["state"] = state
         migrated["auth"] = auth
-        return _drop_unknown_mcp_server_fields(migrated)
+        return drop_unknown_mcp_server_fields(migrated)
 
     if auth == "oauth":
         oauth_auth: dict[str, Any] = {"strategy": "oauth2"}
@@ -1040,15 +929,15 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
         if state is not None:
             oauth_auth["state"] = state
         migrated["auth"] = oauth_auth
-        return _drop_unknown_mcp_server_fields(migrated)
+        return drop_unknown_mcp_server_fields(migrated)
 
     if isinstance(auth, str) and auth:
         migrated["auth"] = {"strategy": "bearer", "value": auth}
-        return _drop_unknown_mcp_server_fields(migrated)
+        return drop_unknown_mcp_server_fields(migrated)
 
     if isinstance(api_key, str) and api_key:
         migrated["auth"] = {"strategy": "api_key", "value": api_key}
-        return _drop_unknown_mcp_server_fields(migrated)
+        return drop_unknown_mcp_server_fields(migrated)
 
     headers = migrated.get("headers")
     if isinstance(headers, Mapping):
@@ -1061,7 +950,7 @@ def _migrate_mcp_server_auth(server: Any) -> Any:
             else:
                 migrated.pop("headers", None)
 
-    return _drop_unknown_mcp_server_fields(migrated)
+    return drop_unknown_mcp_server_fields(migrated)
 
 
 def _migrate_mcp_auth_shape(mcp_config: Any) -> Any:

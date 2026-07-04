@@ -17,7 +17,6 @@ from key_value.aio.protocols import AsyncKeyValue
 
 from openhands.agent_server.config import Config
 from openhands.agent_server.persistence import PersistedSettings, get_settings_store
-from openhands.sdk.agent.base import MCPOAuthTokenStorageFactory
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.config import (
     MCPOAuthClientInfoState,
@@ -25,6 +24,7 @@ from openhands.sdk.mcp.config import (
     MCPOAuthTokenState,
     OpenHandsMCPConfig,
 )
+from openhands.sdk.mcp.runtime import MCPOAuthTokenStorageFactory
 
 
 logger = get_logger(__name__)
