@@ -22,6 +22,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from openhands.agent_server.config import Config, load_config
+from openhands.agent_server.conversation_lease import DEFAULT_LEASE_TTL_SECONDS
 from openhands.agent_server.env_parser import (
     MISSING,
     BoolEnvParser,
@@ -1428,3 +1429,14 @@ def test_discriminated_union_single_empty_kind_no_variables(clean_env):
     # because there's no indication that this entry is configured
     result = parser.from_env("TEST")
     assert result is MISSING
+
+
+def test_config_lease_ttl_seconds_default(clean_env):
+    config = from_env(Config, "OH")
+    assert config.lease_ttl_seconds == DEFAULT_LEASE_TTL_SECONDS
+
+
+def test_config_lease_ttl_seconds_env_var(clean_env):
+    os.environ["OH_LEASE_TTL_SECONDS"] = "0"
+    config = from_env(Config, "OH")
+    assert config.lease_ttl_seconds == 0.0

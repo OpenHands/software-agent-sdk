@@ -165,6 +165,54 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_auto_load_marketplace_plugin_list_selects_plugins(
+        self, tmp_path: Path, mock_llm
+    ):
+        marketplace_dir = create_test_marketplace(
+            tmp_path / "marketplace",
+            plugins=[
+                {
+                    "name": "formatter",
+                    "skills": [{"name": "formatter-skill", "content": "Format"}],
+                },
+                {
+                    "name": "linter",
+                    "skills": [{"name": "linter-skill", "content": "Lint"}],
+                },
+            ],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        agent = Agent(
+            llm=mock_llm,
+            tools=[],
+            agent_context=AgentContext(
+                registered_marketplaces=[
+                    MarketplaceRegistration(
+                        name="selective",
+                        source=str(marketplace_dir),
+                        auto_load=["formatter"],
+                    )
+                ]
+            ),
+        )
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=workspace,
+            visualizer=None,
+        )
+        conversation._ensure_plugins_loaded()
+
+        assert conversation.agent.agent_context is not None
+        assert [skill.name for skill in conversation.agent.agent_context.skills] == [
+            "formatter-skill"
+        ]
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+
+        conversation.close()
+
     def test_auto_load_marketplace_expands_registration_secret_refs(
         self, tmp_path: Path, mock_llm
     ):
@@ -1462,4 +1510,38 @@ class TestAmbientPluginAutoLoad:
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "ambient-skill" in skill_names
         assert conversation.resolved_plugins is None
+        conversation.close()
+
+    def test_plugin_load_log_never_leaks_credentials(
+        self, tmp_path: Path, basic_agent, caplog: pytest.LogCaptureFixture
+    ):
+        """Plugin-load logs must never contain the source credential. A serializer
+        covers model dumps, not f-string log lines, so this guards against anyone
+        re-adding spec.source to that log (issue #3752)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            skills=[{"name": "s", "content": "c"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[
+                PluginSource(source="https://oauth2:LEAKME@host.example.com/o/r.git")
+            ],
+            visualizer=None,
+        )
+        with (
+            caplog.at_level(logging.DEBUG),
+            patch(
+                "openhands.sdk.conversation.impl.local_conversation."
+                "fetch_plugin_with_resolution",
+                return_value=(plugin_dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+            ),
+        ):
+            conversation._ensure_plugins_loaded()
+
+        assert "LEAKME" not in caplog.text
         conversation.close()

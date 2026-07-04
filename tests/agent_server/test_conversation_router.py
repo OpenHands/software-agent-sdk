@@ -27,6 +27,11 @@ from openhands.sdk.agent.acp_agent import ACPAgent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
+from openhands.sdk.marketplace.registry import (
+    PluginNotFoundError,
+    PluginResolutionError,
+)
+from openhands.sdk.plugin import PluginFetchError
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.settings import AGENT_SETTINGS_SCHEMA_VERSION
 from openhands.sdk.workspace import LocalWorkspace
@@ -2174,6 +2179,159 @@ def test_switch_conversation_profile_corrupted_profile(
         client.app.dependency_overrides.clear()
 
 
+def test_load_conversation_plugin_success(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint forwards the plugin ref to EventService."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 200
+        mock_event_service.load_plugin.assert_awaited_once_with("review-bot@team")
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_not_found(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps plugin resolution errors to 404."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = PluginNotFoundError("missing")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "missing"},
+        )
+
+        assert response.status_code == 404
+        assert "missing" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_malformed_ref_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps malformed plugin refs to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = PluginResolutionError(
+        "Plugin reference must use 'plugin-name@marketplace-name'"
+    )
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@"},
+        )
+
+        assert response.status_code == 400
+        assert "Plugin reference must use" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_fetch_error_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps plugin fetch failures to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = PluginFetchError("fetch failed")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "fetch failed" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_file_not_found_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps plugin load failures to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = FileNotFoundError("missing plugin dir")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "missing plugin dir" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_conversation_not_found(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """The /load_plugin endpoint returns 404 when the conversation is missing."""
+    mock_conversation_service.get_event_service.return_value = None
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_load_conversation_plugin_inactive_service_returns_400(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """The /load_plugin endpoint maps inactive runtime state to 400."""
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.load_plugin.side_effect = ValueError("inactive_service")
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/load_plugin",
+            json={"plugin_ref": "review-bot@team"},
+        )
+
+        assert response.status_code == 400
+        assert "inactive_service" in response.json()["detail"]
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_switch_conversation_llm_success(
     client, mock_conversation_service, mock_event_service, sample_conversation_id
 ):
@@ -2399,6 +2557,106 @@ def test_fork_conversation_duplicate_id_returns_409(
         )
 
         assert response.status_code == 409
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_from_event_id_passed_through(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """fork with from_event_id forwards the branch point to the service."""
+    mock_conversation_service.fork_conversation.return_value = sample_conversation_info
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-123"},
+        )
+
+        assert response.status_code == 201
+        _, kwargs = mock_conversation_service.fork_conversation.call_args
+        assert kwargs["from_event_id"] == "evt-123"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_fork_conversation_unknown_from_event_id_returns_404(
+    client, mock_conversation_service, sample_conversation_id
+):
+    """fork with an unknown from_event_id surfaces as a 404."""
+    mock_conversation_service.fork_conversation.side_effect = ValueError(
+        "Unknown from_event_id: evt-missing"
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/fork",
+            json={"from_event_id": "evt-missing"},
+        )
+
+        assert response.status_code == 404
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_navigate_conversation_success(
+    client, mock_conversation_service, sample_conversation_info, sample_conversation_id
+):
+    """navigate returns the updated conversation info and forwards event_id."""
+    mock_conversation_service.navigate_conversation.return_value = (
+        sample_conversation_info
+    )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+        _, kwargs = mock_conversation_service.navigate_conversation.call_args
+        assert kwargs["event_id"] == "evt-42"
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize("failure_mode", ["missing_conversation", "unknown_event"])
+def test_navigate_conversation_returns_404(
+    client, mock_conversation_service, sample_conversation_id, failure_mode
+):
+    """navigate returns 404 for a missing conversation or an unknown event."""
+    if failure_mode == "missing_conversation":
+        mock_conversation_service.navigate_conversation.return_value = None
+    else:
+        mock_conversation_service.navigate_conversation.side_effect = ValueError(
+            "Unknown event_id: evt-missing"
+        )
+
+    client.app.dependency_overrides[get_conversation_service] = lambda: (
+        mock_conversation_service
+    )
+
+    try:
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/navigate",
+            json={"event_id": "evt-42"},
+        )
+
+        assert response.status_code == 404
     finally:
         client.app.dependency_overrides.clear()
 

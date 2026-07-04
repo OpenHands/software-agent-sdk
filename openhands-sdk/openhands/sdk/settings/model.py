@@ -38,6 +38,7 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
+    ConversationObservabilitySpanName,
     ConversationObservabilityTags,
 )
 from openhands.sdk.hooks import HookConfig
@@ -796,6 +797,11 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Tags for the conversation root observability span.",
     )
+    observability_span_name: ConversationObservabilitySpanName | None = Field(
+        default=None,
+        exclude=True,
+        description="Optional named child span to emit under the conversation root.",
+    )
 
     # --- persisted fields ---------------------------------------------------
     max_iterations: int = Field(
@@ -920,6 +926,8 @@ class ConversationSettings(BaseModel):
             payload.setdefault("observability_metadata", self.observability_metadata)
         if self.observability_tags is not None:
             payload.setdefault("observability_tags", self.observability_tags)
+        if self.observability_span_name is not None:
+            payload.setdefault("observability_span_name", self.observability_span_name)
 
         # --- persisted defaults ---------------------------------------------
         payload.setdefault("confirmation_policy", self._build_confirmation_policy())

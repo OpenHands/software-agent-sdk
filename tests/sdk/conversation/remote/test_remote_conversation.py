@@ -232,6 +232,7 @@ class TestRemoteConversation:
             workspace=self.workspace,
             observability_metadata={"repo": "OpenHands/software-agent-sdk"},
             observability_tags=["sdk", "remote"],
+            observability_span_name="pr_review_evaluation",
             user_id="test-user-42",
         )
 
@@ -249,7 +250,43 @@ class TestRemoteConversation:
             "repo": "OpenHands/software-agent-sdk"
         }
         assert payload["observability_tags"] == ["sdk", "remote"]
+        assert payload["observability_span_name"] == "pr_review_evaluation"
         assert payload["user_id"] == "test-user-42"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_plugin_source_redacted_placeholder_kept(
+        self, mock_ws_client
+    ):
+        """The create payload masks inline plugin-source creds but keeps ${VAR}
+        placeholders, so the server clones private plugins via secret expansion
+        without raw credentials crossing the wire."""
+        from openhands.sdk.plugin import PluginSource
+
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        placeholder = "https://x-token-auth:${MY_TOKEN}@host/org/repo.git"
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            plugins=[
+                PluginSource(source="https://oauth2:LEAKME@host/org/priv.git"),
+                PluginSource(source=placeholder),
+            ],
+        )
+
+        create_call = next(
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+        )
+        sources = [p["source"] for p in create_call.kwargs["json"]["plugins"]]
+        assert "https://****@host/org/priv.git" in sources
+        assert placeholder in sources
+        assert "LEAKME" not in str(create_call.kwargs["json"]["plugins"])
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
@@ -1598,6 +1635,29 @@ class TestRemoteConversation:
         assert not any(
             f"/api/conversations/{conversation_id}/pause" in url for url in posts
         ), "interrupt() must not degrade to the pause endpoint"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_load_plugin(self, mock_ws_client):
+        """load_plugin() POSTs the plugin reference to the server."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.load_plugin("review-bot@team")
+
+        matching_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST"
+            and f"/api/conversations/{conversation_id}/load_plugin" in call[0][1]
+        ]
+        assert len(matching_calls) == 1
+        assert matching_calls[0].kwargs["json"] == {"plugin_ref": "review-bot@team"}
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

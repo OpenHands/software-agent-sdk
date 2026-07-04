@@ -72,6 +72,16 @@ def test_build_authorize_url():
 
 def test_openai_codex_models():
     """Test that OPENAI_CODEX_MODELS contains expected models."""
+    from openhands.sdk.settings.acp_providers import get_acp_provider
+
+    codex_provider = get_acp_provider("codex")
+    assert codex_provider is not None
+    assert OPENAI_CODEX_MODELS.issuperset(
+        model.id for model in codex_provider.available_models
+    )
+    assert "gpt-5.5" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4" in OPENAI_CODEX_MODELS
+    assert "gpt-5.4-mini" in OPENAI_CODEX_MODELS
     assert "gpt-5.3-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2" in OPENAI_CODEX_MODELS

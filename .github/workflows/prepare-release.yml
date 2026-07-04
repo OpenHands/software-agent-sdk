@@ -24,7 +24,7 @@ jobs:
                   echo "✅ Version format is valid: $INPUTS_VERSION"
 
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
               with:
                   token: ${{ secrets.OPENHANDS_BOT_GITHUB_PAT_PUBLIC }}
 
@@ -54,11 +54,6 @@ jobs:
               run: |
                   echo "🔧 Setting version to $INPUTS_VERSION"
                   make set-package-version version="$INPUTS_VERSION"
-
-            - name: Update sdk_ref default in run-eval workflow
-              env:
-                  INPUTS_VERSION: ${{ inputs.version }}
-              run: python3 .github/scripts/update_sdk_ref_default.py "$INPUTS_VERSION"
 
             - name: Commit version changes
               env:

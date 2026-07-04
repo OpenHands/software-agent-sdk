@@ -294,17 +294,17 @@ def test_switch_profile_preserves_prompt_cache_key(profile_store):
     """Regression test for #2918: switch_profile must repin _prompt_cache_key."""
     conv = _make_conversation()
     expected = str(conv.id)
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     conv.switch_profile("slow")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
     # Switching back to a cached registry entry must still carry the key.
     conv.switch_profile("fast")
-    assert conv.agent.llm._prompt_cache_key == expected
+    assert conv.agent.llm._call_context.prompt_cache_key == expected
 
 
 def test_switch_then_send_message(profile_store):
@@ -344,7 +344,7 @@ def test_switch_llm_swaps_when_store_empty(empty_profile_store):
     assert conv.agent.llm.usage_id == "caller-supplied-id"
     assert conv.llm_registry.get("caller-supplied-id").model == "inline-model"
     # Cache-key must be repinned (regression guard for #2918 on the new path).
-    assert conv.agent.llm._prompt_cache_key == str(conv.id)
+    assert conv.agent.llm._call_context.prompt_cache_key == str(conv.id)
 
 
 def test_switch_llm_refreshes_llm_condenser_credentials(

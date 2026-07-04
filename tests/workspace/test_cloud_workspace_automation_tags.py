@@ -375,6 +375,32 @@ class TestPluginsTagInConversation:
             )
             assert "https://github.com/OpenHands/review-skill" in plugin_urls
 
+    def test_credentials_redacted_in_plugins_tag(self):
+        """Inline creds must not reach the persisted plugins tag; ${VAR} survives."""
+        from unittest.mock import MagicMock
+
+        from openhands.sdk.conversation.conversation import Conversation
+        from openhands.sdk.plugin import PluginSource
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        mock_workspace = MagicMock(spec=RemoteWorkspace)
+        mock_workspace.default_conversation_tags = {}
+
+        plugins = [
+            PluginSource(source="https://oauth2:SUPER_SECRET@github.com/org/repo.git"),
+            PluginSource(source="https://x-token-auth:${MY_TOKEN}@host/org/ext.git"),
+        ]
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation.RemoteConversation"
+        ) as mock_convo_class:
+            mock_convo_class.return_value = MagicMock()
+            Conversation(agent=MagicMock(), workspace=mock_workspace, plugins=plugins)
+            tag = mock_convo_class.call_args.kwargs["tags"]["plugins"]
+
+        assert "SUPER_SECRET" not in tag
+        assert "https://****@github.com/org/repo.git" in tag.split(",")
+        assert "https://x-token-auth:${MY_TOKEN}@host/org/ext.git" in tag.split(",")
+
     def test_local_plugins_not_included_in_tags(self):
         """Should not include local path plugins in tags."""
         from unittest.mock import MagicMock
